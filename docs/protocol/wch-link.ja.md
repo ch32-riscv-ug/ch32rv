@@ -64,9 +64,13 @@ wlink `dmi.rs` から転記し実機で確認。DMI レジスタ番地: DMDATA0=
 | 操作 | 手順 | 状態 |
 |---|---|---|
 | halt | DMCONTROL に `0x80000001` を書き DMSTATUS の all/any-halted を待つ→`0x00000001` で haltreq クリア | verified |
+| resume | DMCONTROL=`0x40000001`(resumereq) | verified |
 | read_reg(GPR/CSR/PC) | DMDATA0=0 → DMCOMMAND=`0x00220000\|regno`(GPR=`0x1000+n`, PC=dpc `0x7b1`)→ abstractcs busy 待ち → DMDATA0 読み | verified |
+| write_reg(GPR/CSR/PC) | DMDATA0=value → DMCOMMAND=`0x00230000\|regno`→ busy 待ち | verified |
+| step(1命令) | dcsr(CSR `0x7b0`)の step(bit2)を立てて write_reg → resume → 再 halt を待つ → step クリア | verified(V203 で PC 前進を確認) |
 | read_mem32 | PROGBUF0=`0x0002a303`(lw x6,0(x5))・PROGBUF1=`0x00100073`(ebreak)→ DMDATA0=addr → DMCOMMAND=`0x00271005`(x5←data0 + postexec)→ DMCOMMAND=`0x00221006`(data0←x6)→ DMDATA0 読み | verified |
 | abstractcs | busy=bit12、cmderr=bits[10:8](書き戻しでクリア) | verified |
+| DMSTATUS running | allrunning=bit11, anyrunning=bit10, allhalted=bit9, anyhalted=bit8 | verified |
 
 ### 4.2 flash 書き込み経路(verified 2026-09-01。wlink から転記し実機確認)
 

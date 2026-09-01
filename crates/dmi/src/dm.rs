@@ -147,6 +147,44 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.read(DMDATA0)
     }
 
+    /// en: Write an abstract register (GPR/CSR/PC). The hart must be halted.
+    /// ja: abstract register(GPR/CSR/PC)へ書く。hart は halt 済みであること。
+    pub fn write_reg(&mut self, reg: RegName, value: u32) -> Result<(), DmiError> {
+        self.clear_cmderr()?;
+        self.write(DMDATA0, value)?;
+        // access register, transfer, write (0x0023_0000 | regno).
+        self.write(DMCOMMAND, 0x0023_0000 | u32::from(reg.abstract_regno()))?;
+        self.wait_abstract()
+    }
+
+    /// en: Single-step one instruction (dcsr.step). The hart must be halted; it stays halted
+    /// afterwards. dcsr is CSR 0x7b0, step is bit 2.
+    /// ja: 1 命令 single-step(dcsr.step)。hart は halt 済みで、実行後も halt のまま。
+    pub fn step(&mut self) -> Result<(), DmiError> {
+        const DCSR: u16 = 0x7b0;
+        const STEP_BIT: u32 = 1 << 2;
+        let dcsr = self.read_reg(RegName::Csr(DCSR))?;
+        self.write_reg(RegName::Csr(DCSR), dcsr | STEP_BIT)?;
+        // Resume: the core executes exactly one instruction, then re-halts.
+        self.resume()?;
+        let mut halted = false;
+        for _ in 0..64 {
+            if self.is_halted()? {
+                halted = true;
+                break;
+            }
+        }
+        // Clear the step bit regardless, so a later resume runs normally.
+        let _ = self.write_reg(RegName::Csr(DCSR), dcsr & !STEP_BIT);
+        if halted {
+            Ok(())
+        } else {
+            Err(DmiError::OperationFailed(
+                "did not re-halt after step".to_owned(),
+            ))
+        }
+    }
+
     /// en: Read one 32-bit word from target memory via program buffer (`lw x6,0(x5)`).
     /// The hart must be halted. Transcribed from wlink `read_mem32`.
     /// ja: program buffer 経由で target メモリの 32bit を 1 word 読む(`lw x6,0(x5)`)。

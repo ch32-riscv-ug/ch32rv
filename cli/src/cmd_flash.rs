@@ -17,10 +17,39 @@ use ch32rv_contract::{ErrorKind, ResultEnvelope, Warning};
 use ch32rv_flash::{Image, params_for_family};
 use ch32rv_wchlink::FlashParams as WlFlashParams;
 
+use std::path::Path;
+
 use crate::args::{Cli, FlashArgs, RecoverArgs};
 use crate::cmd_probe::{fail, mode_str, select_entry};
 use crate::parse;
 use crate::session::{Session, SessionError};
+
+/// en: Parse an image, treating a magic-less `.bin`/extensionless file as raw bin under
+/// `--format auto` (ELF/HEX/UF2 are still detected by magic; anything else still errors).
+/// ja: `--format auto` で magic の無い `.bin`/拡張子無しは raw bin 扱いにする。
+fn parse_image(
+    bytes: &[u8],
+    format: ch32rv_contract::policy::ImageFormat,
+    path: &Path,
+    bin_offset: Option<u32>,
+    code_flash_start: u32,
+) -> Result<Image, ch32rv_flash::ImageError> {
+    use ch32rv_contract::policy::ImageFormat;
+    match Image::parse(bytes, format, bin_offset, code_flash_start) {
+        Err(ch32rv_flash::ImageError::UnknownFormat) if format == ImageFormat::Auto => {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(str::to_ascii_lowercase);
+            if matches!(ext.as_deref(), Some("bin") | None) {
+                Image::parse(bytes, ImageFormat::Bin, bin_offset, code_flash_start)
+            } else {
+                Err(ch32rv_flash::ImageError::UnknownFormat)
+            }
+        }
+        other => other,
+    }
+}
 
 pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
     const CMD: &str = "flash";
@@ -85,7 +114,13 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         },
         None => None,
     };
-    let image = match Image::parse(&bytes, args.format, bin_offset, fp.code_flash_start) {
+    let image = match parse_image(
+        &bytes,
+        args.format,
+        &args.file,
+        bin_offset,
+        fp.code_flash_start,
+    ) {
         Ok(i) => i,
         Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
     };
@@ -346,6 +381,262 @@ fn finish(
         }
         ExitCode::SUCCESS
     }
+}
+
+/// en: Attach helper shared by erase/reset/verify: select a RISC-V probe and attach.
+/// ja: erase/reset/verify 共通の attach。RISC-V probe を選んで attach する。
+fn attach_for(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
+    let entry = select_entry(cli, cmd)?;
+    if entry.mode != ch32rv_contract::ProbeMode::Riscv {
+        return Err(fail(
+            cli,
+            cmd,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "probe is in {} mode; this needs RISC-V mode",
+                mode_str(entry.mode)
+            ),
+            None,
+        ));
+    }
+    let (speed, mut warnings) =
+        parse::speed(&cli.speed).map_err(|m| fail(cli, cmd, ErrorKind::Usage, m, None))?;
+    let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
+    Session::attach(&entry, speed, timeout, &mut warnings).map_err(|e| session_error(cli, cmd, e))
+}
+
+pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
+    const CMD: &str = "erase";
+    if args.region.is_some() || args.range.is_some() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            "--region / --range erase is not implemented yet; use --all",
+            Some("named-region and range erase arrive with the generated target DB / page erase"),
+        );
+    }
+    // --all: whole-chip erase.
+    let mut session = match attach_for(cli, CMD) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    if !cli.yes && !cli.non_interactive && !confirm("Erase the entire chip flash?") {
+        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    }
+    if let Err(e) = session.link().erase_flash() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::TransportTimeout,
+            format!("erase failed: {e}"),
+            None,
+        );
+    }
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({ "scope": "chip", "family": session.family() }));
+        crate::print_envelope(&env)
+    } else {
+        println!("erased entire chip flash ({})", session.family());
+        ExitCode::SUCCESS
+    }
+}
+
+pub fn reset(cli: &Cli, args: &crate::args::ResetArgs) -> ExitCode {
+    const CMD: &str = "reset";
+    let mut session = match attach_for(cli, CMD) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    if args.dm {
+        // Reset the debug module only (no target reset).
+        // Best-effort: DMCONTROL dmactive toggle is inside the DM layer's halt path; here we
+        // just detach/re-attach which re-initializes the DM.
+        let _ = session.link().detach_chip();
+        let _ = session.link().attach_chip();
+    } else if args.halt {
+        // Reset and halt: soft reset, then halt immediately.
+        if let Err(e) = session.link().soft_reset() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::TransportTimeout,
+                format!("reset failed: {e}"),
+                None,
+            );
+        }
+        let mut dm = session.dm();
+        if let Err(e) = dm.halt() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::AttachFailed,
+                format!("halt after reset failed: {e}"),
+                None,
+            );
+        }
+    } else if let Err(e) = session.link().soft_reset() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::TransportTimeout,
+            format!("reset failed: {e}"),
+            None,
+        );
+    }
+
+    let mut running = None;
+    if let Some(mode) = args.confirm_run
+        && !args.halt
+        && !args.dm
+    {
+        std::thread::sleep(Duration::from_millis(200));
+        running = Some(confirm_run(&mut session, mode));
+    }
+
+    if cli.json {
+        let mode = if args.dm {
+            "dm"
+        } else if args.halt {
+            "halt"
+        } else {
+            "run"
+        };
+        let mut env = if running == Some(false) {
+            ResultEnvelope::failure(
+                CMD,
+                ErrorKind::NotRunningAfterWrite,
+                "target not running after reset",
+            )
+        } else {
+            ResultEnvelope::success(CMD)
+        };
+        env.result = Some(serde_json::json!({ "mode": mode, "running": running }));
+        crate::print_envelope(&env)
+    } else {
+        let what = if args.dm {
+            "debug module reset"
+        } else if args.halt {
+            "reset and halted"
+        } else {
+            "reset, running"
+        };
+        println!("{what}");
+        if running == Some(false) {
+            eprintln!("ch32rv: error[not-running-after-write]: target not running after reset");
+            return ErrorKind::NotRunningAfterWrite.exit_code().into();
+        }
+        ExitCode::SUCCESS
+    }
+}
+
+pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
+    const CMD: &str = "verify";
+    let bytes = match std::fs::read(&args.file) {
+        Ok(d) => d,
+        Err(e) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                format!("read {}: {e}", args.file.display()),
+                None,
+            );
+        }
+    };
+    let bin_offset = match &args.offset {
+        Some(s) => match parse::u32_addr(s) {
+            Ok(a) => Some(a),
+            Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+        },
+        None => None,
+    };
+    let mut session = match attach_for(cli, CMD) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    let Some(fp) = params_for_family(session.attach.family_byte) else {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            "family not supported for verify",
+            None,
+        );
+    };
+    let image = match parse_image(
+        &bytes,
+        args.format,
+        &args.file,
+        bin_offset,
+        fp.code_flash_start,
+    ) {
+        Ok(i) => i,
+        Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
+    };
+    let mut dm = session.dm();
+    if let Err(e) = dm.halt() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::AttachFailed,
+            format!("halt failed: {e}"),
+            None,
+        );
+    }
+    for seg in &image.segments {
+        match dm.read_mem(seg.addr, seg.data.len() as u32) {
+            Ok(readback) => {
+                if readback != seg.data {
+                    let at = readback
+                        .iter()
+                        .zip(&seg.data)
+                        .position(|(a, b)| a != b)
+                        .unwrap_or(0);
+                    if cli.json {
+                        let env = ResultEnvelope::failure(
+                            CMD,
+                            ErrorKind::VerifyMismatch,
+                            format!("mismatch at {:#010x}", seg.addr as usize + at),
+                        );
+                        return crate::print_envelope(&env);
+                    }
+                    eprintln!("verify: MISMATCH at {:#010x}", seg.addr as usize + at);
+                    return ErrorKind::VerifyMismatch.exit_code().into();
+                }
+            }
+            Err(e) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransportTimeout,
+                    format!("readback failed: {e}"),
+                    None,
+                );
+            }
+        }
+    }
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({ "bytes": image.total_len(), "match": true }));
+        crate::print_envelope(&env)
+    } else {
+        println!("verify: OK ({} bytes match)", image.total_len());
+        ExitCode::SUCCESS
+    }
+}
+
+/// Simple y/N confirmation on stderr/stdin.
+fn confirm(prompt: &str) -> bool {
+    use std::io::Write;
+    eprint!("{prompt} [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    if std::io::stdin().read_line(&mut line).is_err() {
+        return false;
+    }
+    matches!(line.trim(), "y" | "Y" | "yes")
 }
 
 pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
