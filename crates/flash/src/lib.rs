@@ -83,27 +83,38 @@ pub struct FlashCtrlProfile {
     /// 上書きし復元不可 → resume で s1 使用時に fault)。対処: attach 後に soft-reset して program に
     /// レジスタを再構築させてから halt する。
     pub attach_corrupts_regs: bool,
+    /// en: True when an erased flash cell reads back as the real `0xff` over the debug link. On
+    /// V20x/V30x the WCH-Link returns a `0xe339e339` placeholder for erased cells instead, so a
+    /// read-modify-write of a page (e.g. `--restore-unwritten`) cannot tell a blank byte from
+    /// real data and would program the placeholder into it - hence such features are gated on this.
+    /// ja: 消去済みセルが debug read で本来の `0xff` を返す family か。V20x/V30x は placeholder
+    /// `0xe339e339` を返すため、page の read-modify-write(`--restore-unwritten` 等)で blank と
+    /// 実データを区別できず placeholder を焼き込んでしまう → この種の機能はこのフラグで gate する。
+    pub erased_reads_ff: bool,
 }
 
 /// en: Resolve the FLASH-controller profile from the AttachChip family byte. Returns None for
 /// families whose controller sequence is not capture-verified yet.
 /// ja: family byte から FLASH-controller profile を引く。未検証 family は None。
 pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
-    let (page_size, mode, gdb_breakpoints, attach_corrupts_regs) = match family_byte {
-        0x05 | 0x06 => (256, FlashProgMode::PgStart, true, false), // CH32V20x / V30x - verified
-        0x09 | 0x49 => (64, FlashProgMode::Buffered, true, false), // CH32V003 / CH641 - verified
-        0x0C | 0x0D => (256, FlashProgMode::Buffered, true, false), // CH643 / CH32X035 - verified
-        0x0E => (256, FlashProgMode::Buffered, true, false),       // CH32L103 - attested (as X035)
-        // CH32V103: FTER 128B erase + standard halfword program + commit. AttachChip corrupts s1,
-        // so gdb needs a reset-after-attach; then flash breakpoints work (verified).
-        0x01 => (128, FlashProgMode::V103, true, true),
-        _ => return None,
-    };
+    // (page_size, mode, gdb_breakpoints, attach_corrupts_regs, erased_reads_ff)
+    let (page_size, mode, gdb_breakpoints, attach_corrupts_regs, erased_reads_ff) =
+        match family_byte {
+            0x05 | 0x06 => (256, FlashProgMode::PgStart, true, false, false), // CH32V20x / V30x - verified (erased reads 0xe339e339)
+            0x09 | 0x49 => (64, FlashProgMode::Buffered, true, false, true), // CH32V003 / CH641 - verified
+            0x0C | 0x0D => (256, FlashProgMode::Buffered, true, false, true), // CH643 / CH32X035 - verified
+            0x0E => (256, FlashProgMode::Buffered, true, false, true), // CH32L103 - verified live
+            // CH32V103: FTER 128B erase + standard halfword program + commit. AttachChip corrupts s1,
+            // so gdb needs a reset-after-attach; then flash breakpoints work (verified).
+            0x01 => (128, FlashProgMode::V103, true, true, true),
+            _ => return None,
+        };
     Some(FlashCtrlProfile {
         page_size,
         mode,
         gdb_breakpoints,
         attach_corrupts_regs,
+        erased_reads_ff,
     })
 }
 

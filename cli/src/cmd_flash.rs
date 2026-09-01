@@ -14,7 +14,7 @@ use ch32rv_contract::event::Event;
 use ch32rv_contract::policy::{ConfirmRunMode, EraseMode, RecoverMethod, ResetPolicy, VerifyMode};
 use ch32rv_contract::progress::ProgressSink;
 use ch32rv_contract::{ErrorKind, ResultEnvelope, Warning};
-use ch32rv_flash::{Image, params_for_family};
+use ch32rv_flash::{Image, Segment, params_for_family};
 use ch32rv_wchlink::FlashParams as WlFlashParams;
 
 use std::path::Path;
@@ -72,6 +72,49 @@ fn covered_pages(
         }
     }
     pages
+}
+
+/// en: Resolve the effective erase scope. `auto` becomes `chip` for a program loaded from the
+/// flash base (a full flash - one fast whole-chip erase) and `sector` for a partial/offset image
+/// (never wipe outside it); `--restore-unwritten` forces `sector` since it needs a page-granular
+/// erase. Every other mode passes through unchanged.
+/// ja: 実効 erase scope を決める。`auto` は flash 先頭から始まる program(=フル)なら `chip`、
+/// 部分/offset image なら `sector`。`--restore-unwritten` は page 単位 erase が要るので `sector` に
+/// 倒す。他のモードはそのまま。
+fn resolve_erase(
+    requested: EraseMode,
+    base_addr: Option<u32>,
+    code_flash_start: u32,
+    restore_unwritten: bool,
+) -> EraseMode {
+    match requested {
+        EraseMode::Auto => {
+            if base_addr == Some(code_flash_start) && !restore_unwritten {
+                EraseMode::Chip
+            } else {
+                EraseMode::Sector
+            }
+        }
+        other => other,
+    }
+}
+
+/// en: Overlay `segments` onto one page's pre-read `content` (the page starts at `page_addr` and
+/// is `content.len()` bytes): bytes a segment covers take the segment's value, the rest keep their
+/// original `content`. Used by `--restore-unwritten` so a page can be re-programmed whole without
+/// losing bytes the image does not touch.
+/// ja: `content`(page 先頭 `page_addr`、長さ=page サイズ)に `segments` を上書き合成する。segment
+/// が覆う byte はその値、他は元の `content` のまま。`--restore-unwritten` で page 全体を再 program
+/// するのに使う。
+fn overlay_page(page_addr: u32, content: &mut [u8], segments: &[Segment]) {
+    let page_end = page_addr + content.len() as u32;
+    for seg in segments {
+        let lo = seg.addr.max(page_addr);
+        let hi = (seg.addr + seg.data.len() as u32).min(page_end);
+        for a in lo..hi {
+            content[(a - page_addr) as usize] = seg.data[(a - seg.addr) as usize];
+        }
+    }
 }
 
 pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
@@ -187,24 +230,31 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
     //   none   - skip erase.
     // The chosen scope is reported (JSON `erase`, and a line of normal output) so `auto` is never
     // a mystery.
-    let erase = match args.erase {
-        EraseMode::Auto => {
-            let from_base =
-                image.segments.iter().map(|s| s.addr).min() == Some(fp.code_flash_start);
-            if from_base {
-                EraseMode::Chip
-            } else {
-                EraseMode::Sector
-            }
-        }
-        other => other,
-    };
+    let erase = resolve_erase(
+        args.erase,
+        image.base_addr(),
+        fp.code_flash_start,
+        args.restore_unwritten,
+    );
     let erase_scope = match erase {
         EraseMode::None => "none",
         EraseMode::Chip => "chip",
         EraseMode::Sector => "sector",
         EraseMode::Auto => unreachable!("auto resolved above"),
     };
+    // `--restore-unwritten` re-programs whole pages, so it needs a page-granular (sector) erase.
+    if args.restore_unwritten && erase != EraseMode::Sector {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            format!("--restore-unwritten needs page-granular erase, but --erase is {erase_scope}"),
+            Some("use --erase sector (or --erase auto with a partial/offset image)"),
+        );
+    }
+    // Full pages to program instead of the sparse image, populated only under --restore-unwritten
+    // (each covered page read pre-erase, with the image overlaid, so unwritten bytes survive).
+    let mut restored: Option<Vec<Segment>> = None;
     match erase {
         EraseMode::Auto => unreachable!("auto resolved above"),
         EraseMode::None => {}
@@ -237,6 +287,20 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
                     Some("use --erase chip to erase the whole chip"),
                 );
             };
+            // restore-unwritten needs a true 0xff readback for erased cells, so a blank byte in a
+            // page is not confused with real data and re-programmed as a placeholder.
+            if args.restore_unwritten && !cprofile.erased_reads_ff {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::CapabilityUnsupported,
+                    format!(
+                        "--restore-unwritten is not supported on {} (erased cells do not read back as 0xff)",
+                        session.family()
+                    ),
+                    Some("omit --restore-unwritten; sector erase clears whole covered pages"),
+                );
+            }
             let page = cprofile.page_size;
             // Every flash page any segment touches (dedup + sorted, page-aligned). Erase them all
             // before programming so segments that share a page never wipe each other.
@@ -257,6 +321,33 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
                     format!("halt for sector erase failed: {e}"),
                     None,
                 );
+            }
+            // restore-unwritten: capture each page's current content (before erasing) and overlay
+            // the image on it, so the program step rewrites whole pages and unwritten bytes survive.
+            if args.restore_unwritten {
+                let mut dm = session.dm();
+                let mut merged = Vec::with_capacity(pages.len());
+                for &pg in &pages {
+                    let mut buf = match dm.read_mem(pg, page) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            return fail(
+                                cli,
+                                CMD,
+                                ErrorKind::TransportTimeout,
+                                format!("restore-unwritten read of page 0x{pg:08x} failed: {e}"),
+                                None,
+                            );
+                        }
+                    };
+                    buf.resize(page as usize, 0xff);
+                    overlay_page(pg, &mut buf, &image.segments);
+                    merged.push(Segment {
+                        addr: pg,
+                        data: buf,
+                    });
+                }
+                restored = Some(merged);
             }
             {
                 let mode = cprofile.mode;
@@ -286,15 +377,18 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         }
     }
 
-    // Program each segment.
+    // Program each segment. Under --restore-unwritten we program the merged whole pages instead of
+    // the sparse image (so unwritten bytes in a partially-filled page keep their original values).
+    let program_segments: &[Segment] = restored.as_deref().unwrap_or(&image.segments);
+    let program_total: u64 = program_segments.iter().map(|s| s.data.len() as u64).sum();
     sink.event(&Event::Phase {
         name: "program".into(),
-        total: Some(total),
+        total: Some(program_total),
     });
     {
         let s = &sink;
         let mut base = 0u64;
-        for seg in &image.segments {
+        for seg in program_segments {
             let seg_len = seg.data.len() as u64;
             if let Err(e) = session
                 .link()
@@ -302,7 +396,7 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
                     s.event(&Event::Progress {
                         phase: "program".into(),
                         done: base + done,
-                        total: Some(total),
+                        total: Some(program_total),
                     });
                 })
             {
@@ -1054,13 +1148,58 @@ fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::covered_pages;
+    use super::{Segment, covered_pages, overlay_page, resolve_erase};
+    use ch32rv_contract::policy::EraseMode;
+
+    const BASE: u32 = 0x0800_0000;
+
+    #[test]
+    fn auto_full_image_is_chip() {
+        // An image loaded from the flash base is a full program -> the one fast whole-chip erase.
+        assert_eq!(
+            resolve_erase(EraseMode::Auto, Some(BASE), BASE, false),
+            EraseMode::Chip
+        );
+    }
+
+    #[test]
+    fn auto_partial_image_is_sector() {
+        // An image at an offset must not wipe flash below it.
+        assert_eq!(
+            resolve_erase(EraseMode::Auto, Some(BASE + 0x8000), BASE, false),
+            EraseMode::Sector
+        );
+    }
+
+    #[test]
+    fn auto_with_restore_unwritten_is_sector_even_from_base() {
+        // restore-unwritten needs page-granular erase, so it overrides the full-image chip choice.
+        assert_eq!(
+            resolve_erase(EraseMode::Auto, Some(BASE), BASE, true),
+            EraseMode::Sector
+        );
+    }
+
+    #[test]
+    fn explicit_modes_pass_through() {
+        for m in [EraseMode::Chip, EraseMode::Sector, EraseMode::None] {
+            assert_eq!(resolve_erase(m, Some(BASE), BASE, false), m);
+            assert_eq!(resolve_erase(m, Some(BASE + 0x100), BASE, true), m);
+        }
+    }
 
     // en: The pages a sector erase must clear for a given image layout.
     fn pages(segs: &[(u32, u32)], page: u32) -> Vec<u32> {
         covered_pages(segs.iter().copied(), page)
             .into_iter()
             .collect()
+    }
+
+    fn seg(addr: u32, data: &[u8]) -> Segment {
+        Segment {
+            addr,
+            data: data.to_vec(),
+        }
     }
 
     #[test]
@@ -1112,5 +1251,45 @@ mod tests {
             pages(&[(0x0800_0000, 256)], 128),
             vec![0x0800_0000, 0x0800_0080]
         );
+    }
+
+    // --- overlay_page (restore-unwritten merge) ---
+
+    #[test]
+    fn overlay_writes_only_the_segment_span() {
+        // A page pre-read as all-0xff, image writes 4 bytes at the start -> rest stays 0xff.
+        let mut page = vec![0xff_u8; 8];
+        overlay_page(0x0800_0000, &mut page, &[seg(0x0800_0000, &[1, 2, 3, 4])]);
+        assert_eq!(page, [1, 2, 3, 4, 0xff, 0xff, 0xff, 0xff]);
+    }
+
+    #[test]
+    fn overlay_preserves_pre_read_bytes_outside_the_image() {
+        // The unwritten-byte-preservation case: original content survives where the image is absent.
+        let mut page = vec![0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7];
+        overlay_page(0x0800_0000, &mut page, &[seg(0x0800_0002, &[0xBB, 0xCC])]);
+        assert_eq!(page, [0xA0, 0xA1, 0xBB, 0xCC, 0xA4, 0xA5, 0xA6, 0xA7]);
+    }
+
+    #[test]
+    fn overlay_clips_a_segment_to_the_page() {
+        // A segment that starts before and ends after the page only writes the in-page slice.
+        // page covers [0x100, 0x108); segment covers [0x0FE, 0x106) -> writes page[0..6].
+        let mut page = vec![0u8; 8];
+        overlay_page(
+            0x0800_0100,
+            &mut page,
+            &[seg(0x0800_00fe, &[10, 11, 12, 13, 14, 15, 16, 17])],
+        );
+        // segment bytes at offsets 2..8 land in the page (0x100-0x0FE = 2).
+        assert_eq!(page, [12, 13, 14, 15, 16, 17, 0, 0]);
+    }
+
+    #[test]
+    fn overlay_ignores_a_segment_in_another_page() {
+        // A segment entirely outside the page leaves it untouched.
+        let mut page = vec![0x55_u8; 4];
+        overlay_page(0x0800_0000, &mut page, &[seg(0x0800_1000, &[1, 2, 3, 4])]);
+        assert_eq!(page, [0x55, 0x55, 0x55, 0x55]);
     }
 }

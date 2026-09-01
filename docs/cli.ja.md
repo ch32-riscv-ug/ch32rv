@@ -213,7 +213,7 @@ ch32rv flash <FILE>
   --confirm-run[=status|pc]          reset run 後の走行確認(既定 pc)。失敗で exit 50
   --sdi on|off                       書込後に SDI print を設定(capability 判定込み)
   --monitor uart|sdi|dmdata|rtt      書込後そのまま monitor へ移行
-  --restore-unwritten                sector 内の未書込 byte を保存 P2
+  --restore-unwritten                sector 消去で image が埋めない byte を保存(page 単位 erase 必須)
   --repeat                           target の再接続を検知して連続書込(量産)P2
 ```
 
@@ -221,6 +221,7 @@ ch32rv flash <FILE>
 - `--confirm-run=status` は DM の running 状態のみ確認。`=pc` はさらに瞬間 halt→dpc 読取→resume で PC を採取し、flash 領域内かを判定する。SRAM 先頭(`0x2000_0018` 型)で止まっていれば「BOOT ピン疑い」を hint に出す。
 - 対応 SKU でも **DB 上 verified でない場合は warn を出して続行**する(「実装済み」と「実機確認済み」の区別)。
 - **`--erase` のモード別挙動(2026-09-01 修正)**: `chip` は WCH-Link stub の全 chip 消去(`erase_flash`。1発で速い)。`sector` は **image が実際に覆う flash page だけ**を §4.2.1 の直接 FLASH controller(`flash_page_erase`)で消してから stub で program する — image 外の flash(高位の bootloader・校正データ等)を消さない。`auto` は **image の最小番地が flash 先頭(`code_flash_start`)なら chip、そうでなければ(部分/offset 書込)sector** を選ぶ。`none` は消去なし。**選ばれた scope は必ず出力する**(通常出力の `erase:` 行 / JSON の `erase` フィールド)ので auto の挙動が不透明にならない。**修正の背景**: 修正前は `sector`/`auto` とも無条件で全 chip 消去していた(=部分 image を焼くと chip 全体が飛ぶ silent な data-loss footgun)。auto を「全 image=chip・部分=sector」に賢くすることで footgun を潰しつつ、フル書込(=blink 等の常道)の速度も維持する。**sector が全 image 既定でない理由(実測)**: page 単位消去は ~100ms/page(直接 FLASH controller の DMI 往復)で、chip 消去 0.15s に対し 32KB(128 page)= 12.8s、64KB= ~25s、V307 の 288KB なら数分。フル書込を毎回 sector にすると Arduino ビルドループ等が致命的に遅くなるため、フル image は chip を選ぶ。sector は検証済み FLASH-controller profile を持つ family のみ(無ければ fail-closed。`--erase chip` を案内)。同一 page を共有するセグメントは 1 回に畳んで program 前に一括消去。実機検証(L103): フル image + `--erase auto` → `erase: chip`(0.78s で 64KB 書込+program)、`flash <256B> --offset 0x0800FF00 --erase auto/sector` → `erase: sector` で 0x08000000 の firmware・未対象域を無傷のまま対象 page だけ書換え(page 計算は単体テスト `covered_pages`)。program 後に stub が page-erase 済み(chip-erase でない)flash へ書けることも実機確認済み。
+- **`--restore-unwritten`(2026-09-01 実装)**: sector 消去は覆う page 全体を消すため、image が page の一部しか埋めない場合その page の残りは blank になる。このフラグを付けると、**消去前に対象 page を read → image を上書き合成 → page 全体を program** することで、image が触れない byte の元値を保つ。**page 単位 erase 必須**なので `--erase chip`/`none` と併用は fail-closed(usage error)、`--erase auto` は自動で sector に倒す。**family 制限**: 消去済みセルが debug read で本来の `0xff` を返す family(profile の `erased_reads_ff`=Buffered/V103 系)のみ。V20x/V30x は placeholder `0xe339e339` を返し blank と実データを区別できず placeholder を焼き込むため fail-closed(capability-unsupported、消去前に判定=非破壊)。実機検証(L103): page に pattern を置き先頭16Bだけ 0xAA を `--restore-unwritten` で書くと 16–255B目の pattern が保存、verify OK。V307 では消去せずに拒否・firmware 無傷を確認。
 
 #### verify / read / write / erase
 
