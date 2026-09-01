@@ -15,7 +15,7 @@ use ch32rv_wchlink::{
 
 use crate::cmd_probe::Entry;
 
-/// A held attach session. Detaches the target core when dropped.
+/// A held attach session. Detaches the target core when dropped (unless suppressed).
 pub struct Session {
     link: WchLink,
     pub attach: AttachInfo,

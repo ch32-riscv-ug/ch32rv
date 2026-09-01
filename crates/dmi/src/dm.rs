@@ -10,8 +10,22 @@
 
 use crate::{DmiError, DtmAccess};
 
+/// en: Encode up to 3 host->target bytes into a data0 word with bit7 clear (the target's
+/// poll() takes them). Empty input encodes to 0 (a bare ACK).
+/// ja: host→target の最大 3 byte を bit7 クリアの data0 word に符号化(空なら 0=ただの ACK)。
+fn encode_host_input(input: &[u8]) -> u32 {
+    let n = input.len().min(3);
+    let mut word = 0u32;
+    for (i, &b) in input.iter().take(3).enumerate() {
+        word |= u32::from(b) << (8 * (i + 1));
+    }
+    // Low byte carries the count (no bit7: this is a host->target frame).
+    word | (n as u32)
+}
+
 // Debug Module register addresses (DMI address space).
 const DMDATA0: u8 = 0x04;
+const DMDATA1: u8 = 0x05;
 const DMCONTROL: u8 = 0x10;
 const DMSTATUS: u8 = 0x11;
 const DMABSTRACTCS: u8 = 0x16;
@@ -71,6 +85,11 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
 
     fn read(&mut self, addr: u8) -> Result<u32, DmiError> {
         self.dtm.dmi_read(addr)
+    }
+
+    /// Raw DMI read for diagnostics (`dbg dmi read`).
+    pub fn raw_dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
+        self.read(addr)
     }
 
     /// Clear a sticky abstract-command error (cmderr) by writing 1s to the field.
@@ -201,6 +220,41 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.write(DMCOMMAND, 0x0022_1006)?;
         self.wait_abstract()?;
         self.read(DMDATA0)
+    }
+
+    /// en: One receive cycle of the ch32fun/minichlink DMDATA terminal (SerialDMDATA).
+    /// The core keeps RUNNING - this only reads the DM data registers. Frame layout
+    /// (target->host): data0 low byte = `0x80 | (count+4)`, upper 3 bytes = payload[0..3];
+    /// data1 = payload[3..7]. Returns the payload and ACKs by clearing data0 (with the given
+    /// host-input bytes, up to 3, for the reverse direction).
+    /// ja: SerialDMDATA(minichlink -T)の受信 1 周期。core は running のまま DM data レジスタ
+    /// のみ読む。frame は target→host: data0 下位 byte=`0x80|(count+4)`、上位 3B=payload、
+    /// data1=残り。ACK は data0 を書いてクリア(host→target の入力を最大 3 byte 同載)。
+    pub fn dmdata_poll(&mut self, host_input: &[u8]) -> Result<Option<Vec<u8>>, DmiError> {
+        let d0 = self.read(DMDATA0)?;
+        if d0 & 0x80 == 0 {
+            // No target frame pending. If we have input to send, place it (bit7 clear).
+            if !host_input.is_empty() {
+                self.write(DMDATA0, encode_host_input(host_input))?;
+            }
+            return Ok(None);
+        }
+        // count is biased by 4 in the low 6 bits.
+        let count = ((d0 & 0x3f).saturating_sub(4)) as usize;
+        let d1 = self.read(DMDATA1)?;
+        let bytes = [
+            (d0 >> 8) as u8,
+            (d0 >> 16) as u8,
+            (d0 >> 24) as u8,
+            d1 as u8,
+            (d1 >> 8) as u8,
+            (d1 >> 16) as u8,
+            (d1 >> 24) as u8,
+        ];
+        let out = bytes[..count.min(7)].to_vec();
+        // ACK: clear bit7; carry host input (if any) in the same word.
+        self.write(DMDATA0, encode_host_input(host_input))?;
+        Ok(Some(out))
     }
 
     /// en: Read `len` bytes starting at `addr` (word-aligned reads; caller trims). Halts first

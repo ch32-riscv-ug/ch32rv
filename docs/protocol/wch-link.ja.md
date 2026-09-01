@@ -105,9 +105,19 @@ family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0
 
 **実測の重要事実**: power-off erase 実行後、flash を debug 経由で読むと `39 e3 39 e3`(= `0xe339e339` の繰り返し)が返る。**これは wlink dump でも全く同じ**(独立ツールと一致)ので ch32rv のバグではなく、power-off erase 後の chip の debug-read 挙動そのもの(ちょうど ChipInfo の protection_raw と同じ値で、保護 fill の可能性)。RAM 読みと DMI 自体は正常。この状態でも **通常 flash を実行すれば即座に復旧**する(erase+program+verify OK を実機確認)。実運用の復旧経路「power-off erase → 通常 flash」は成立する。
 
-### 4.4 存在の証拠のみ(未実装)
+### 4.4 monitor(実行時 I/O)
 
-`wlink_sdi`(SDI print)、`wlink_disabledebug`、`wlink_getromram`(CODE/RAM split)、`wlink_rstout`、`wlink_chip_reset`、`wlink_armversion`、mode 切替、IAP entry(wlink-iap)。→ wlink source / RINS から転記 → capture で verified 化。
+| 経路 | コマンド/機構 | 状態 |
+|---|---|---|
+| dmdata(SerialDMDATA) | host が DMI で DM data0(0x04)/data1(0x05)を polling。target→host frame: data0 低byte=`0x80\|(count+4)`、上位3B+data1=payload。ACK は data0 に host 入力(bit7 クリア)を書く。**core は running のまま**(attach 後に resume が必要) | **verified**(2026-09-01、CH32V203 で連続受信) |
+| sdi enable/disable | `81 0d 02 ee 01`(enable)/`ee 00`(disable)。LinkE 専用 | コマンド送出は verified。**ただし in-process では CDC forward が起動しない既知問題**(下記) |
+| uart bridge | probe の CDC port を読むだけ | 実装済み(物理配線が無く未実機確認) |
+
+**SDI の既知問題(2026-09-01)**: `81 0d 02 ee 01` を送ると応答は成功、attach 後 core は running を確認済みだが、ch32rv から in-process で enable した場合 CDC への forward が始まらない。**wlink バイナリは同一バイト列で動作する**(`sdi 2,3,4...` を実測)。nusb interface の in-process claim/release の機微か、enable 前後の probe 状態差と推測。usbmon で wlink との差分を取るのが次の一手。回避策: `dmdata`(任意 probe で動作)または `wlink sdi-print enable`。CDC 読みは **serialport crate が open 時に DTR を assert すると LinkE が SDI forward を 1 行で止める**ため、Linux では生ブロッキングファイル読み(cat 相当)にしている。
+
+### 4.5 存在の証拠のみ(未実装)
+
+`wlink_disabledebug`、`wlink_getromram`(CODE/RAM split)、`wlink_rstout`、`wlink_chip_reset`、`wlink_armversion`、mode 切替、IAP entry(wlink-iap)。→ wlink source / RINS から転記 → capture で verified 化。
 
 ## 5. AttachChip 応答と chip 識別
 
