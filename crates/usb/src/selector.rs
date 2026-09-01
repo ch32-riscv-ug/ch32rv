@@ -113,6 +113,67 @@ fn keyword_value(v: &str, kw: &'static str) -> Result<String, SelectorParseError
     }
 }
 
+impl Selector {
+    /// en: Whether this selector matches the device at `index` in the enumeration order.
+    /// `Name` never matches here: aliases must be resolved to another selector first.
+    /// ja: 列挙順 `index` の device にこの selector が一致するか。`Name` はここでは一致しない
+    /// (別名は先に別の selector へ解決しておく)。
+    pub fn matches(&self, dev: &crate::UsbDeviceInfo, index: usize) -> bool {
+        match self {
+            Selector::UsbId { vid, pid, serial } => {
+                dev.vid() == *vid
+                    && dev.pid() == *pid
+                    && match serial {
+                        SerialFilter::Any => true,
+                        SerialFilter::NoSerial => dev.serial().is_none(),
+                        SerialFilter::Exact(sn) => dev.serial() == Some(sn.as_str()),
+                    }
+            }
+            Selector::Serial(sn) => dev.serial() == Some(sn.as_str()),
+            Selector::Topology(t) => dev.topology() == *t,
+            Selector::Index(i) => index == *i,
+            Selector::Name(_) => false,
+        }
+    }
+}
+
+/// en: Failure modes of [`resolve`], mapped to exit codes 10 / 14 by the caller.
+/// ja: [`resolve`] の失敗。呼び出し側で exit code 10 / 14 に写像する。
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ResolveError {
+    #[error("no matching device")]
+    NotFound,
+    #[error("selector matches {} devices (fail-closed)", .0.len())]
+    Ambiguous(Vec<usize>),
+    #[error("alias `{0}` was not resolved against the config file")]
+    UnresolvedName(String),
+}
+
+/// en: Resolve a selector against an enumerated device list, fail-closed: without a selector
+/// the list must contain exactly one device; with one, exactly one must match.
+/// Returns the index into `devs`.
+/// ja: selector を列挙結果へ fail-closed に解決する。selector 無しなら 1 台のみ、有りなら
+/// 一致がちょうど 1 台であること。`devs` 内の index を返す。
+pub fn resolve<'a, I>(selector: Option<&Selector>, devs: I) -> Result<usize, ResolveError>
+where
+    I: IntoIterator<Item = &'a crate::UsbDeviceInfo>,
+{
+    if let Some(Selector::Name(name)) = selector {
+        return Err(ResolveError::UnresolvedName(name.clone()));
+    }
+    let matches: Vec<usize> = devs
+        .into_iter()
+        .enumerate()
+        .filter(|(i, d)| selector.is_none_or(|s| s.matches(d, *i)))
+        .map(|(i, _)| i)
+        .collect();
+    match matches.as_slice() {
+        [] => Err(ResolveError::NotFound),
+        [one] => Ok(*one),
+        _ => Err(ResolveError::Ambiguous(matches)),
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
