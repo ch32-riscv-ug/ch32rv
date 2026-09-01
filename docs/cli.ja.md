@@ -206,7 +206,7 @@ ch32rv flash <FILE>
   --format auto|elf|hex|bin|uf2      既定 auto(magic 判別)
   --offset <addr>                    bin 用ロード先(既定: code 領域先頭)
   --region code|system               書込先領域(既定 code)。system は対応 family のみ、unlock 手順込み
-  --erase auto|sector|chip|none      既定 auto
+  --erase auto|sector|chip|none      既定 auto。chip/auto=全 chip 消去(全 image 書込の常道)。sector=image が覆う page のみ消去(image 外を消さない)。none=消去しない
   --verify readback|crc|none         既定 readback。crc は capability 依存。none は明示選択
   --preverify                        既に一致していれば書込を省略
   --reset run|halt|none              既定 run
@@ -220,6 +220,7 @@ ch32rv flash <FILE>
 - ELF/ihex はセグメントの物理アドレスを使い、`--offset` は無視して warn(bin のみ有効)。セグメントが DB 上の書込可能領域に収まらなければ実行前に exit 2。
 - `--confirm-run=status` は DM の running 状態のみ確認。`=pc` はさらに瞬間 halt→dpc 読取→resume で PC を採取し、flash 領域内かを判定する。SRAM 先頭(`0x2000_0018` 型)で止まっていれば「BOOT ピン疑い」を hint に出す。
 - 対応 SKU でも **DB 上 verified でない場合は warn を出して続行**する(「実装済み」と「実機確認済み」の区別)。
+- **`--erase` のモード別挙動(2026-09-01 修正)**: `chip`/`auto` は WCH-Link stub の全 chip 消去(`erase_flash`)。`sector` は **image が実際に覆う flash page だけ**を §4.2.1 の直接 FLASH controller(`flash_page_erase`)で消してから stub で program する — image 外の flash(高位の bootloader・校正データ等)を消さない。`none` は消去なし。**修正前は `sector` も暗黙で全 chip 消去していた**(=部分 image を焼くと chip 全体が飛ぶ silent な data-loss footgun)。`auto` は既定経路を変えないため全 chip 消去のまま(全 image 書込の常道で最速)。**注意**: `flash <部分image> --offset <高位> --erase auto`(既定)は今も全 chip を消す — 部分書込で下位を残したい場合は `--erase sector` を使う。sector は検証済み FLASH-controller profile を持つ family のみ(無ければ fail-closed。`--erase chip` を案内)。同一 page を共有するセグメントは 1 回に畳んで program 前に一括消去。実機検証: **L103 で `flash <256B> --offset 0x0800FF00 --erase sector` が 0x08000000 の firmware と未対象域を無傷のまま対象 page だけ書換え**(page 計算は単体テスト `covered_pages` あり)。program 後に stub が page-erase 済み(chip-erase でない)flash へ書けることも実機確認済み。
 
 #### verify / read / write / erase
 
@@ -234,7 +235,7 @@ ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指�
 
 領域名は `code` / `system`(bootloader)/ `option` / `eeprom` / `ram`。minichlink の `flash` / `bootloader` 名は別名として受ける。
 
-**`erase --range` / `--region` の実装状況(2026-09-01)**: `--all`(chip 全消去)に加え、**page 単位の部分消去**を実装。WCH-Link stub の write 経路は部分書き込みを受け付けない(probe が reason 0x55 で拒否)ため、**FLASH controller(0x4002_2000)を DMI 経由で直接叩く**新経路を追加(`DebugModule::flash_page_erase` / `flash_program_page`。KEYR/MODEKEYR unlock → FTER/FTPG + STRT/PGSTART → STATR busy 待ち)。消去は page 粒度なので **start と length を page 境界に揃えることを必須**とし(fail-closed。ズレは Usage error + page サイズを提示)、隣接 page を巻き込まない。`--region code[+off[+len]]` は probe 報告の flash サイズから解決。program は family 別に 3 方式(PgStart=V20x/V30x、Buffered=V003/X035/L103、V103=標準 16bit halfword+commit。§4.2.1)。**対応 family: V20x/V30x・V003/CH641(64B)・X035/CH643・L103・V103(128B)**。実機検証: V307 で page1 だけ消去し page0(reset vector)/page2 無傷、V003 で 64B page、V103 で 128B page 消去(隣接無傷)。**注意: 消去済みセルの read 値は family 差あり(V20x/V30x=`0xe339e339`、X035/V003=`0xff`)**ので、erase 完了判定は read でなく controller の STATR(BUSY クリア + WPRERR 無し)で行う。この直接 FLASH controller 経路は今後 flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台にもなる。
+**`erase --range` / `--region` の実装状況(2026-09-01)**: `--all`(chip 全消去)に加え、**page 単位の部分消去**を実装。WCH-Link stub の write 経路は部分書き込みを受け付けない(probe が reason 0x55 で拒否)ため、**FLASH controller(0x4002_2000)を DMI 経由で直接叩く**新経路を追加(`DebugModule::flash_page_erase` / `flash_program_page`。KEYR/MODEKEYR unlock → FTER/FTPG + STRT/PGSTART → STATR busy 待ち)。消去は page 粒度なので **start と length を page 境界に揃えることを必須**とし(fail-closed。ズレは Usage error + page サイズを提示)、隣接 page を巻き込まない。`--region code[+off[+len]]` は probe 報告の flash サイズから解決。program は family 別に 3 方式(PgStart=V20x/V30x、Buffered=V003/X035/L103、V103=標準 16bit halfword+commit。§4.2.1)。**対応 family: V20x/V30x・V003/CH641(64B)・X035/CH643・L103・V103(128B)**。実機検証: V307 で page1 だけ消去し page0(reset vector)/page2 無傷、V003 で 64B page、V103 で 128B page 消去(隣接無傷)、**L103 で 256B page を surgical に消去(先頭 firmware・中間 blank 域とも無傷、program/verify 往復 OK)**。**注意: 消去済みセルの read 値は family 差あり(V20x/V30x=`0xe339e339`、X035/V003=`0xff`)**ので、erase 完了判定は read でなく controller の STATR(BUSY クリア + WPRERR 無し)で行う。この直接 FLASH controller 経路は今後 flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台にもなる。
 
 #### reset / run / recover
 
@@ -335,6 +336,7 @@ ch32rv dap [--port <n>|--stdio]                     P2
   |---|---|---|---|
   | CH32V307 | QingKe V4F | 0x06 | **4**(実発火確認) |
   | CH32X035 | QingKe V4C | 0x0d | **4**(実発火確認) |
+  | CH32L103 | QingKe V4C | 0x0e | **4**(実発火確認。step + HW bp 発火 @0x300/0x2ea、attach でレジスタ非破壊) |
   | CH32V203 | QingKe V4B | 0x05 | **0** |
   | CH32V003 | QingKe V2A | 0x09 | **0** |
   | CH32V103 | QingKe V3 | 0x01 | **0** |
@@ -344,7 +346,7 @@ ch32rv dap [--port <n>|--stdio]                     P2
   - **HW trigger フォールバック**: RAM patch が着弾しない flash 番地で、空き trigger があれば透過的に使う → V307/X035 は通常 `break` が flash で発火(摩耗なし)。
   - **flash SW breakpoint フォールバック(2026-09-01 追加)**: trigger の無い core でも、検証済み FLASH-controller profile(256byte family)なら **§4.2.1 の直接 FLASH controller で page を read-modify-write** して `ebreak` を焼く。code は低位 alias(0x0000_0000)で走るが FLASH controller には物理 flash 番地(0x0800_0000+off)を渡す。同一 page 内の複数 breakpoint に対応し、page 内容が変わらない set/clear は書き込みを省く。detach 時に全 page を pristine へ復元(途中終了でも `ebreak` を焼き残さない)。**注意: set/clear ごとに flash を書くため摩耗する**(gdb の step-over は remove+再 insert で 2 回書く)。attach ログで警告し `set breakpoint always-inserted on` を勧める。program 方式は family 別(PgStart=V20x/V30x、Buffered=V003/X035/L103。§4.2.1)。**対応: V20x/V30x・V003/CH641・X035/CH643・L103・V103**。**V103 は attach quirk の対処が前提**: WCH-Link の AttachChip が生きた GPR s1/x9 を chip id で上書きし(元値は保存されない)、resume 後に program が s1 を使う瞬間 fault する(mcause=4 load-misaligned)。→ attach 後に soft-reset して program にレジスタを再構築させてから halt する(profile の `attach_corrupts_regs`。target は再起動する)。実機検証: V103 で flash 上コードへの通常 `break` が複数 `continue` で発火。
 - RV32E core(CH32V003、misa.E=bit4)対応: GPR は x0-x15 のみ存在し、x16-x31 を abstract command で読むと cmderr が出て session が落ちる。gdb server と `dbg regs` は misa.E を見て x0-x15 だけを扱う。
-- 実装状況(2026-09-01): gdbstub ベースの GDB server が **register/memory R/W・halt/continue/step・Ctrl-C・SW(RAM+flash)/HW breakpoint** を実機で end-to-end 動作(riscv-none-embed-gdb)。検証: V003/V203 で RAM SW breakpoint が `continue` を停止、V307/X035 で flash 上の通常 `break` が HW trigger で発火、**V203(trigger 無し)で flash 上の通常 `break` が flash-patch で発火(複数 `continue`・detach で flash が pristine 復元)**。RV32 arch は x0-x31+pc の整数のみ(V4F FPU は後続)。**V003/V103 の flash SW breakpoint は controller profile 未検証で後続**。`load`(vFlash)は未実装。
+- 実装状況(2026-09-01): gdbstub ベースの GDB server が **register/memory R/W・halt/continue/step・Ctrl-C・SW(RAM+flash)/HW breakpoint** を実機で end-to-end 動作(riscv-none-embed-gdb)。検証: V003/V203 で RAM SW breakpoint が `continue` を停止、V307/X035/**L103** で flash 上の通常 `break` が HW trigger で発火(L103 は step も毎命令前進・attach でレジスタ非破壊を確認)、**V203(trigger 無し)で flash 上の通常 `break` が flash-patch で発火(複数 `continue`・detach で flash が pristine 復元)**。RV32 arch は x0-x31+pc の整数のみ(V4F FPU は後続)。**V003/V103 の flash SW breakpoint は controller profile 未検証で後続**。`load`(vFlash)は未実装。
 
 ### 4.7 isp(factory ISP 経路)
 
