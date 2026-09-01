@@ -83,9 +83,11 @@ wlink `dmi.rs` から転記し実機で確認。DMI レジスタ番地: DMDATA0=
 | `0x02` | `0x08` | End | verified |
 | `0x0b` | `0x01` | soft reset して実行 | verified |
 
-family 別パラメータ(wlink 由来、実機確認): V103(family 0x01)= stub CH32V103・data packet 128、V20x/V30x(0x05/0x06)= stub CH32V307・data packet 256。write_pack_size は共通 4096、code flash 先頭 `0x08000000`。
+family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0x49、**1線 SWIO**)= stub CH32V003・data packet 64・write pack 1024、V103(0x01)= stub CH32V103・data packet 128・write pack 4096、V20x/V30x(0x05/0x06)= stub CH32V307・data packet 256・write pack 4096。code flash 先頭は共通 `0x08000000`。
 
-実機検証: CH32V203C8T6(LinkE)・CH32V103R8T6(CH549)へ Arduino ビルドの blink BIN を flash → readback が BIN とバイト一致 → confirm-run で running 確認。
+実機検証: CH32V203C8T6(LinkE)・CH32V103R8T6(CH549)・**CH32V003F4P6(LinkE、1線 SWIO)** へ Arduino ビルドの blink BIN を flash → readback が BIN とバイト一致 → confirm-run で running 確認。
+
+**1線 SWIO と 2線 RVSWD の差は USB protocol 層には現れない**: attach / DMI / flash のコマンドは同一で、物理配線の差(1線 QingKe V2A の V003 と 2線 の V103/V203)は LinkE firmware が吸収する。ただし 1線 target は LinkE/LinkW のみ対応(旧 CH549 Link は不可)。V003 の attach 応答は family `0x09`・chip_id `0x00300500`(= CH32V003F4P6)を実機確認。
 
 ### 4.3 特殊消去(SWD ピン共用 target の復旧。verified 2026-09-01)
 

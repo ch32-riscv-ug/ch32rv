@@ -32,7 +32,8 @@ pub fn params_for_family(family_byte: u8) -> Option<FlashParams> {
     // Values from wlink: data_packet_size, write_pack_size, code_flash_start, stub selection.
     let (stub, data_packet_size, write_pack_size): (&'static [u8], usize, usize) = match family_byte
     {
-        0x01 => (&stub::CH32V103, 128, 4096),        // CH32V103
+        0x09 | 0x49 => (&stub::CH32V003, 64, 1024), // CH32V003 / CH641 (single-wire SWIO)
+        0x01 => (&stub::CH32V103, 128, 4096),       // CH32V103
         0x05 | 0x06 => (&stub::CH32V307, 256, 4096), // CH32V20x / CH32V30x
         _ => return None,
     };
