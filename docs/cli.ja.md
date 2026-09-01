@@ -281,6 +281,7 @@ ch32rv target protect <on|off> [--yes]            off は全消去を伴う旨�
 
 - 構造化 key は family ごとに DB から導出(`db info <sku>` で一覧可能)。set は read-modify-write-verify。
 - 「未対応 SKU」と「DB に無い SKU」は JSON で区別する(exit 20 の detail)。
+- 実装状況(2026-09-01): **`option get` を実装**(読み取り専用)。option bytes(`0x1FFF_F800`、16 byte)を DMI で読み、共通フィールドを復号: read protection(RDPR==`0xA5`=off)、USER の IWDG/nRST_STOP/nRST_STDBY、Data0/Data1、WRP(write-protect mask)。生バイトを常に表示。**family 固有の USER ビット(RAM split・nRST pin 機能等)は target DB(依頼 0003)生成後**なので構造化復号は暫定とし warning を出す。実機検証: V203/V307/V003/X035 で RDPR=`0xA5`(unprotected)・補数バイト整合を確認。`option set/reset/write-raw` と `protect` は option-byte programming(OPTKEYR/OPTER/OPTPG、RDP リスク)で後続 — 直接 FLASH controller 経路(§4.2.1)を土台にする。
 
 ### 4.4 dbg
 
