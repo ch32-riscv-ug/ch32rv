@@ -18,7 +18,7 @@
 //! family、V003/V103 は後続)。attach で flash を書き換えず、flash breakpoint は detach 時に外して
 //! page を復元する。
 
-use ch32rv_dmi::{DebugModule, DmiError, DtmAccess, RegName};
+use ch32rv_dmi::{DebugModule, DmiError, DtmAccess, FlashProgMode, RegName};
 use gdbstub::common::Signal;
 use gdbstub::target::ext::base::singlethread::{
     SingleThreadBase, SingleThreadResume, SingleThreadResumeOps, SingleThreadSingleStep,
@@ -75,6 +75,8 @@ pub struct Ch32Target<T: DtmAccess> {
     /// Fast-page size for flash software breakpoints, or None when this family's FLASH-controller
     /// profile is not verified (so a flash breakpoint is refused rather than risked).
     flash_page_size: Option<u32>,
+    /// The family's fast-program mechanism (meaningful only when `flash_page_size` is Some).
+    flash_prog_mode: FlashProgMode,
     flash_bps: Vec<FlashBp>,
     flash_pages: Vec<FlashPage>,
 }
@@ -87,19 +89,20 @@ impl<T: DtmAccess> Ch32Target<T> {
         (0..self.hw_trigger_count).find(|s| !self.hw_breakpoints.iter().any(|b| b.slot == *s))
     }
 
-    /// en: Wrap a transport and halt the core so GDB attaches to a stopped target.
-    /// `flash_page_size` is the FLASH-controller fast-page size for this family (from
-    /// `ch32rv_flash::flash_controller_page_size`), or None to refuse flash software breakpoints.
-    /// ja: transport を包んで halt。`flash_page_size` はこの family の fast page サイズ(None なら
-    /// flash SW breakpoint を拒否)。
-    pub fn new(dtm: T, flash_page_size: Option<u32>) -> Result<Self, DmiError> {
+    /// en: Wrap a transport and halt the core so GDB attaches to a stopped target. `flash` is the
+    /// FLASH-controller profile for this family (fast-page size + program mode, from
+    /// `ch32rv_flash::flash_controller_profile`), or None to refuse flash software breakpoints.
+    /// ja: transport を包んで halt。`flash` はこの family の FLASH-controller profile(fast page
+    /// サイズ + program mode。None なら flash SW breakpoint を拒否)。
+    pub fn new(dtm: T, flash: Option<(u32, FlashProgMode)>) -> Result<Self, DmiError> {
         let mut t = Self {
             dtm,
             breakpoints: Vec::new(),
             hw_breakpoints: Vec::new(),
             hw_trigger_count: 0,
             gpr_count: 32,
-            flash_page_size,
+            flash_page_size: flash.map(|(p, _)| p),
+            flash_prog_mode: flash.map(|(_, m)| m).unwrap_or(FlashProgMode::PgStart),
             flash_bps: Vec::new(),
             flash_pages: Vec::new(),
         };
@@ -214,10 +217,11 @@ impl<T: DtmAccess> Ch32Target<T> {
             return Ok(false); // no net change: skip the flash write
         }
         let phys = Self::flash_phys(page_addr);
+        let mode = self.flash_prog_mode;
         {
             let mut dm = self.dm();
             dm.flash_page_erase(phys)?;
-            dm.flash_program_page(phys, &desired)?;
+            dm.flash_program_page(phys, &desired, mode)?;
         }
         self.flash_pages[idx].current = desired;
         Ok(true)

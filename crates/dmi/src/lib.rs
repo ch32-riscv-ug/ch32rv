@@ -11,7 +11,7 @@
 
 pub mod dm;
 
-pub use dm::{DebugModule, RegName};
+pub use dm::{DebugModule, FlashProgMode, RegName};
 
 use thiserror::Error;
 
