@@ -534,13 +534,18 @@ impl WchLink {
         Ok(())
     }
 
-    /// en: Enable/disable SDI-print forwarding (`0x81 0x0d 0x02 0xee 01|00`). The LinkE then
-    /// polls the target's DM data registers and forwards to its own CDC port. LinkE only.
-    /// ja: SDI print forward の有効/無効(`81 0d 02 ee 01|00`)。LinkE が target の DM data を
-    /// polling して自分の CDC へ流す。LinkE 専用。
+    /// en: Enable/disable SDI-print forwarding. Payload is `ee 00` to ENABLE, `ee 01` to
+    /// DISABLE (the flag is inverted vs intuition; verified against wlink and a usbmon capture:
+    /// `sdi-print enable` sends `81 0d 02 ee 00`). Response byte 0x00 = ok, 0xff = unsupported.
+    /// The LinkE then polls the target's DM data registers and forwards to its own CDC. LinkE only.
+    /// ja: SDI print forward の有効/無効。payload は enable=`ee 00`、disable=`ee 01`(直感と逆。
+    /// wlink と usbmon capture で確認)。応答 byte 0x00=成功、0xff=非対応。LinkE 専用。
     pub fn set_sdi_print_enabled(&mut self, enable: bool) -> Result<(), WchLinkError> {
-        let flag = if enable { 0x01 } else { 0x00 };
-        let _ = self.command(CMD_CONTROL, &[0xee, flag])?;
+        let flag = if enable { 0x00 } else { 0x01 };
+        let resp = self.command(CMD_CONTROL, &[0xee, flag])?;
+        if resp.first() == Some(&0xff) {
+            return Err(WchLinkError::UnexpectedResponse(resp));
+        }
         Ok(())
     }
 

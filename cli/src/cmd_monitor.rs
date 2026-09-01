@@ -245,17 +245,17 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
             }
             Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
         }
+        // en: Exactly wlink's `sdi-print enable` sequence (verified by usbmon): SetSpeed(0x01)
+        // -> AttachChip (learn the family; does not halt) -> SetSpeed(real family, so the LinkE
+        // forwards from the right DM data address) -> enable (`ee 00`). No detach, no halt.
+        // ja: wlink の `sdi-print enable` と同一手順(usbmon 確認): SetSpeed(0x01)→ AttachChip →
+        // SetSpeed(実 family)→ enable(`ee 00`)。detach/halt しない。
         let _ = link.set_speed_default(speed);
-        if let Err(e) = link.attach_chip() {
-            return fail(cli, CMD, ErrorKind::AttachFailed, e.to_string(), None);
-        }
-        // Ensure the core runs (attach can leave it halted; SerialSDI only prints while running).
-        {
-            let mut dm = ch32rv_dmi::DebugModule::new(&mut link);
-            if !dm.is_running().unwrap_or(false) {
-                let _ = dm.resume();
-            }
-        }
+        let attach = match link.attach_chip() {
+            Ok(a) => a,
+            Err(e) => return fail(cli, CMD, ErrorKind::AttachFailed, e.to_string(), None),
+        };
+        let _ = link.set_speed(attach.family_byte, speed);
         if let Err(e) = link.set_sdi_print_enabled(true) {
             return fail(
                 cli,
@@ -265,9 +265,9 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
                 None,
             );
         }
-        // link drops here, releasing the vendor interface.
+        // link drops here, releasing the vendor interface (wlink exits at this point too).
     }
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_millis(200));
     let port = match resolve_port(cli, CMD, &entry, &args.port) {
         Ok(p) => p,
         Err(c) => return c,
@@ -408,6 +408,13 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
         Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
     };
     let on = matches!(state, SwitchState::On);
+    // The probe must know the chip family (attach first) before it can forward SDI.
+    let _ = link.probe_info();
+    let (speed, _) = parse::speed(&cli.speed).unwrap_or((ch32rv_wchlink::Speed::High, Vec::new()));
+    let _ = link.set_speed_default(speed);
+    if let Ok(attach) = link.attach_chip() {
+        let _ = link.set_speed(attach.family_byte, speed);
+    }
     if let Err(e) = link.set_sdi_print_enabled(on) {
         return fail(
             cli,
