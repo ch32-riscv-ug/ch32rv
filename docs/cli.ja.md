@@ -301,8 +301,22 @@ ch32rv monitor list [--json]                        候補 port と役割(uart/s
 ch32rv monitor sdi <on|off>
 ```
 
-- 4 経路は同じ COM に見えても**別の transport 名**として扱う: `uart`(物理 UART bridge)/ `sdi`(WCH 公式 SDI print。受信のみ。必要なら自動 enable、firmware 2.10+ を capability で判定)/ `dmdata`(ch32fun の DMDATA0/1 メールボックス。双方向)/ `rtt`(RAM ring buffer)。
+4 つの `--source` は「4 本の並列 port」ではなく、**2 種類の host 機構**に分かれる(ArduinoCore-CH32 の Serial / SerialSDI / SerialDMDATA / SerialRTT ライブラリが target 側の一次仕様)。
+
+| source | target lib | host が受ける機構 | 対応 probe | 方向 | 備考 |
+|---|---|---|---|---|---|
+| `uart` | `Serial`(HW UART) | probe の **CDC port を開く**(serialport) | LinkE/LinkW の UART bridge | RX(TX 可) | 物理 TX/RX 配線が要る |
+| `sdi` | `SerialSDI` | **LinkE に forward を有効化する probe command を送ってから、同じ CDC port を開く** | **LinkE のみ** | RX のみ | uart と**同じ 1 本の CDC に混ざって出る**(分離不可)。core は halt しない |
+| `dmdata` | `SerialDMDATA` | **host が DMI で DM data0/data1 を polling**(minichlink `-T` の framing、7 byte out / 3 byte in) | 任意(CH549 も可) | 双方向 | CDC を使わない。core は halt しない |
+| `rtt` | `SerialRTT` | **host が DMI で RAM の RTT ring buffer を read/write**(`_SEGGER_RTT` を symbol/scan で発見) | 任意 | 双方向 | CDC を使わない。core は halt しない |
+
+要点(ユーザー指摘の反映、2026-09-01):
+
+- **`uart` と `sdi` は LinkE の同じ 1 本の CDC port に出る**。`sdi` は「LinkE に SDI forward を有効化させる」probe 側の**設定変更**であって別 port ではない。両方使うと 1 つの monitor 窓に**混在**して届き分離できない。SDI は LinkE 専用(CH549/LinkW 不可)、firmware 2.10+ を capability で判定。
+- **`sdi` と `dmdata` は同じ DM data0/data1 レジスタを使うが framing が違う**。SerialSDI は LinkE が forward する framing、SerialDMDATA は minichlink framing。**一方を読むツールにはもう一方は noise に見える**ので、target sketch は SerialSDI か SerialDMDATA のどちらか一方のみ(排他)。
+- **`dmdata` / `rtt` は CDC を一切使わず host が debug transport(DMI)で読む**。LinkE forward 不要でどの probe でも動き、双方向。これが「UART/SDI 以外の形式」。`dmdata` は SerialSDI 出力も(LinkE forward せず)DMI 直読みできる利点がある。
 - port は VID/PID/serial/interface から決め、COM 番号・`/dev/tty*` の番号に依存しない。`--probe name:bench-01` から同一物理 device の CDC を引けることが HIL の要件。
+- 実装は 2 backend に割れる: **CDC serial backend**(`uart`/`sdi`。`sdi` は先に enable command)と **DMI backend**(`dmdata`/`rtt`。core を halt せず running 中に DMI read/write)。
 
 ### 4.6 gdb / dap
 
