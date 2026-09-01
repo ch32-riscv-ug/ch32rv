@@ -86,7 +86,8 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
     };
     eprintln!("gdb: client connected from {peer}");
 
-    let mut target = match Ch32Target::new(link) {
+    let flash_page = ch32rv_flash::flash_controller_page_size(attach.family_byte);
+    let mut target = match Ch32Target::new(link, flash_page) {
         Ok(t) => t,
         Err(e) => {
             return fail(
@@ -99,20 +100,27 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
         }
     };
     let hw = target.hw_trigger_count();
+    let flash_bp = target.flash_breakpoints_supported();
     eprintln!(
-        "gdb: attached, {} hardware breakpoint slot(s){}",
-        hw,
-        if hw == 0 {
-            " (this core has no trigger module; RAM software breakpoints only, flash breakpoints unsupported)"
+        "gdb: attached, {hw} hardware breakpoint slot(s){}",
+        if hw > 0 {
+            " (plain `break` on flash auto-uses a hardware trigger)".to_owned()
+        } else if flash_bp {
+            " (no trigger module; plain `break` on flash rewrites the flash page - flash wear; \
+             `set breakpoint always-inserted on` reduces it)"
+                .to_owned()
         } else {
-            " (plain `break` on flash auto-uses a hardware trigger)"
+            " (no trigger module and no verified flash profile; RAM software breakpoints only)"
+                .to_owned()
         }
     );
 
     let conn = GdbConn(stream);
     let gdb = GdbStub::new(conn);
     let outcome = gdb.run_blocking::<Ch32EventLoop<WchLink>>(&mut target);
-    // Recover the link and detach cleanly (resumes the core).
+    // Restore any flash pages we patched, so an interrupted session never leaves an `ebreak`
+    // baked into flash, then recover the link and detach cleanly (resumes the core).
+    target.restore_flash_breakpoints();
     let mut link = target.into_inner();
     let _ = link.detach_chip();
 
