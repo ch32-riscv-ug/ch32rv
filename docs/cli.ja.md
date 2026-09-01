@@ -326,9 +326,20 @@ ch32rv dap [--port <n>|--stdio]                     P2
 ```
 
 - **attach 時に target flash を書き換えない**(WCH OpenOCD の挙動を再現しない)。`load`(vFlash)には対応するが必須にしない。
-- HW breakpoint(RISC-V trigger module)は **core が実際に trigger slot を持つ場合のみ GDB に広告する**(minichlink の `hwbreak+` 偽装をしない)。実測: QingKe V2A/V3(V003・V203)は標準 trigger CSR(tselect/tdata1)が 0 を返し trigger を **持たない** → `support_hw_breakpoint` は `None` を返し、attach ログにも "0 hardware breakpoint slot(s)" と実態どおり出す。
-- SW breakpoint は `ebreak`(4B)/`c.ebreak`(2B)への memory patch。**attach 時に dcsr の ebreakm/ebreaks/ebreaku を立て**、`ebreak` を例外 trap でなく Debug Mode 突入(halt)にする(これが無いと `continue` で止まらず暴走)。patch 後に read-back で着弾を確認し、着弾しない番地(flash など)は `false`(未対応)を返す。
-- 実装状況(2026-09-01): gdbstub ベースの GDB server が **register/memory R/W・halt/continue/step・Ctrl-C・RAM SW breakpoint(`continue` が実際に停止)** を実機で end-to-end 動作(CH32V203、riscv-none-embed-gdb で確認)。RV32 arch は x0-x31+pc の整数のみ(V4F FPU は後続)。**flash 上の SW breakpoint は未対応(flash patch = 一時 unprotect→page 書換→復元、が後続)**。`load`(vFlash)は未実装。
+- HW breakpoint(RISC-V trigger module)は **core が実際に trigger slot を持つ場合のみ GDB に広告する**(minichlink の `hwbreak+` 偽装をしない)。**有無は misa や core 世代と一致しない**ので、attach 時に tselect/tdata1 を実際に叩いて**動的に**数える(下表)。`support_hw_breakpoint` は slot>0 のときだけ `Some`、attach ログにも実 slot 数を出す。
+
+  | 実測(2026-09-01) | core | family | trigger slot |
+  |---|---|---|---|
+  | CH32V307 | QingKe V4F | 0x06 | **4**(実発火確認) |
+  | CH32X035 | QingKe V4C | 0x0d | **4**(実発火確認) |
+  | CH32V203 | QingKe V4B | 0x05 | **0** |
+  | CH32V003 | QingKe V2A | 0x09 | **0** |
+  | CH32V103 | QingKe V3 | 0x01 | **0** |
+
+  ※ V203 と X035 は misa 完全一致(`0x40901105`)なのに trigger 有無は逆 → **misa では判別不可、動的検出が必須**。
+- SW breakpoint は `ebreak`(4B)/`c.ebreak`(2B)への memory patch。**attach 時に dcsr の ebreakm/ebreaks/ebreaku を立て**、`ebreak` を例外 trap でなく Debug Mode 突入(halt)にする(これが無いと `continue` で止まらず暴走)。patch 後に read-back で着弾を確認し、**着弾しない番地(flash)で空き HW trigger があれば透過的に HW trigger へフォールバック**する → trigger を持つ core(V307/X035)では通常 `break` が flash 上のコードにも効く。trigger の無い core(V003/V103/V203)で flash `break` は `false`(未対応)を返す(GDB は "Cannot insert breakpoint")。
+- RV32E core(CH32V003、misa.E=bit4)対応: GPR は x0-x15 のみ存在し、x16-x31 を abstract command で読むと cmderr が出て session が落ちる。gdb server と `dbg regs` は misa.E を見て x0-x15 だけを扱う。
+- 実装状況(2026-09-01): gdbstub ベースの GDB server が **register/memory R/W・halt/continue/step・Ctrl-C・SW/HW breakpoint** を実機で end-to-end 動作(riscv-none-embed-gdb)。検証: V003/V203 で RAM SW breakpoint が `continue` を停止、V307/X035 で flash 上の通常 `break` が HW trigger で発火、V203 で trigger 無し flash `break` は綺麗に拒否。RV32 arch は x0-x31+pc の整数のみ(V4F FPU は後続)。**trigger の無い core の flash SW breakpoint は未対応(flash patch = 一時 unprotect→page 書換→復元、が後続)**。`load`(vFlash)は未実装。
 
 ### 4.7 isp(factory ISP 経路)
 
