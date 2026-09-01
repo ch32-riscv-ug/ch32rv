@@ -10,6 +10,26 @@
 //! docs/architecture.ja.md §3 のとおり in-repo source から build して hash を出す。手編集禁止。
 #![allow(clippy::all)]
 
+/// en: A stable FNV-1a 64-bit digest of every stub, for `version --json` reproducibility
+/// (docs/architecture.ja.md §3). Not cryptographic - just an identity fingerprint.
+/// ja: 全 stub の FNV-1a 64bit ダイジェスト。`version --json` の再現性表示用の同一性指紋。
+pub fn stub_digest() -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for stub in [
+        &CH32V307[..],
+        &CH32V103[..],
+        &CH32V003[..],
+        &CH643[..],
+        &CH32L103[..],
+    ] {
+        for &b in stub {
+            h ^= u64::from(b);
+            h = h.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("fnv1a64:{h:016x}")
+}
+
 /// Flash stub for CH32V307 family. 446 bytes. Source: wlink flash_op::CH32V307.
 pub const CH32V307: [u8; 446] = [
     0x01, 0x11, 0x02, 0xce, 0x93, 0x77, 0x15, 0x00, 0x99, 0xcf, 0xb7, 0x06, 0x67, 0x45, 0xb7, 0x27,

@@ -8,6 +8,7 @@
 
 mod args;
 mod cmd_dbg;
+mod cmd_doctor;
 mod cmd_flash;
 mod cmd_probe;
 mod cmd_target;
@@ -38,19 +39,23 @@ fn main() -> std::process::ExitCode {
         Command::Erase(args) => cmd_flash::erase(&cli, args),
         Command::Reset(args) => cmd_flash::reset(&cli, args),
         Command::Recover(args) => cmd_flash::recover(&cli, args),
+        Command::Doctor(args) => cmd_doctor::doctor(&cli, args),
         other => unimplemented_cmd(&cli, canonical_name(other)),
     }
 }
 
 fn cmd_version(cli: &Cli) -> std::process::ExitCode {
+    let git_rev = env!("CH32RV_GIT_REV");
+    let stub_digest = ch32rv_flash::stub::stub_digest();
     let mut env = ResultEnvelope::success("version");
     env.result = Some(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
-        // en: TODO(M1): fill git rev / target DB rev / flash stub hashes via a build script.
-        // ja: TODO(M1): build script で git rev / target DB rev / flash stub hash を埋める。
-        "git_rev": serde_json::Value::Null,
+        "git_rev": git_rev,
         "contract": contract::CONTRACT_VERSION,
+        // en: target DB is not generated yet (data request 0001 pending).
+        // ja: target DB は未生成(依頼 0001 待ち)。
         "target_db": serde_json::Value::Null,
+        "flash_stub_digest": stub_digest,
         "build": {
             "os": std::env::consts::OS,
             "arch": std::env::consts::ARCH,
@@ -59,9 +64,14 @@ fn cmd_version(cli: &Cli) -> std::process::ExitCode {
     if cli.json {
         print_envelope(&env)
     } else {
-        println!("ch32rv {}", env!("CARGO_PKG_VERSION"));
-        println!("contract: {}", contract::CONTRACT_VERSION);
-        println!("build: {}-{}", std::env::consts::ARCH, std::env::consts::OS);
+        println!("ch32rv {} ({git_rev})", env!("CARGO_PKG_VERSION"));
+        println!("contract:   {}", contract::CONTRACT_VERSION);
+        println!("flash stub: {stub_digest}");
+        println!(
+            "build:      {}-{}",
+            std::env::consts::ARCH,
+            std::env::consts::OS
+        );
         std::process::ExitCode::SUCCESS
     }
 }
