@@ -219,6 +219,66 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
 
     let sink = crate::progress::sink(cli);
 
+    // --preverify: if the target already holds this exact image, skip erase+program entirely (saves
+    // a flash cycle and its wear). Read the image region and compare before doing anything
+    // destructive; on a mismatch, reset the link state and fall through to a normal flash.
+    if args.preverify {
+        sink.event(&Event::Phase {
+            name: "preverify".into(),
+            total: Some(total),
+        });
+        let already_matches = {
+            let mut dm = session.dm();
+            if let Err(e) = dm.halt() {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::AttachFailed,
+                    format!("halt for preverify failed: {e}"),
+                    None,
+                );
+            }
+            let mut all = true;
+            for seg in &image.segments {
+                match dm.read_mem(seg.addr, seg.data.len() as u32) {
+                    Ok(readback) => {
+                        if readback != seg.data {
+                            all = false;
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        return fail(
+                            cli,
+                            CMD,
+                            ErrorKind::TransportTimeout,
+                            format!("preverify read failed at {:#010x}: {e}", seg.addr),
+                            None,
+                        );
+                    }
+                }
+            }
+            all
+        };
+        // We halted the core to read; reset the link/target state before whatever comes next.
+        session.link().detach_chip().ok();
+        let _ = session.link().attach_chip();
+        if already_matches {
+            return reset_and_finish(
+                cli,
+                CMD,
+                &mut session,
+                total,
+                "none",
+                true,
+                Some(true),
+                warnings,
+                args.reset,
+                args.confirm_run,
+            );
+        }
+    }
+
     // Erase per policy.
     //   chip   - one fast whole-chip erase (~100x faster per area than page erase).
     //   sector - erase only the flash pages the image covers, via the direct FLASH controller, so
@@ -463,29 +523,60 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         verified = Some(true);
     }
 
-    // Reset policy.
+    reset_and_finish(
+        cli,
+        CMD,
+        &mut session,
+        total,
+        erase_scope,
+        false,
+        verified,
+        warnings,
+        args.reset,
+        args.confirm_run,
+    )
+}
+
+/// en: Apply the reset policy (run/halt/none, with `--confirm-run`) and print/emit the result.
+/// Shared by the normal end of `flash` and the `--preverify` "already matches" skip path.
+/// ja: reset 方針(run/halt/none、`--confirm-run` 込み)を適用して結果を出す。`flash` の通常終了と
+/// `--preverify` の一致スキップ経路で共有する。
+#[allow(clippy::too_many_arguments)]
+fn reset_and_finish(
+    cli: &Cli,
+    cmd: &str,
+    session: &mut Session,
+    total: u64,
+    erase_scope: &str,
+    skipped: bool,
+    verified: Option<bool>,
+    warnings: Vec<Warning>,
+    reset: ResetPolicy,
+    confirm: Option<ConfirmRunMode>,
+) -> ExitCode {
     let mut running = None;
-    match args.reset {
+    match reset {
         ResetPolicy::Run => {
             if let Err(e) = session.link().soft_reset() {
                 return fail(
                     cli,
-                    CMD,
+                    cmd,
                     ErrorKind::TransportTimeout,
                     format!("reset failed: {e}"),
                     None,
                 );
             }
-            if let Some(mode) = args.confirm_run {
+            if let Some(mode) = confirm {
                 std::thread::sleep(Duration::from_millis(200));
-                running = Some(confirm_run(&mut session, mode));
+                running = Some(confirm_run(session, mode));
                 if running == Some(false) {
                     return finish(
                         cli,
-                        CMD,
-                        &mut session,
+                        cmd,
+                        session,
                         total,
                         erase_scope,
+                        skipped,
                         verified,
                         running,
                         warnings,
@@ -507,10 +598,11 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
 
     finish(
         cli,
-        CMD,
-        &mut session,
+        cmd,
+        session,
         total,
         erase_scope,
+        skipped,
         verified,
         running,
         warnings,
@@ -548,6 +640,7 @@ fn finish(
     session: &mut Session,
     total_bytes: u64,
     erase_scope: &str,
+    skipped: bool,
     verified: Option<bool>,
     running: Option<bool>,
     warnings: Vec<Warning>,
@@ -563,6 +656,7 @@ fn finish(
         env.result = Some(serde_json::json!({
             "bytes": total_bytes,
             "family": session.family(),
+            "skipped": skipped,
             "erase": erase_scope,
             "verify": verified,
             "running": running,
@@ -571,17 +665,22 @@ fn finish(
         crate::print_envelope(&env)
     } else {
         if ok {
-            println!("flashed {total_bytes} bytes to {}", session.family());
-            println!("erase:   {erase_scope}");
-            if let Some(v) = verified {
-                println!(
-                    "verify:  {}",
-                    if v {
-                        "OK (readback matches)"
-                    } else {
-                        "MISMATCH"
-                    }
-                );
+            if skipped {
+                // --preverify: the target already held the image, so nothing was erased/programmed.
+                println!("preverify: target already matches - skipped");
+            } else {
+                println!("flashed {total_bytes} bytes to {}", session.family());
+                println!("erase:   {erase_scope}");
+                if let Some(v) = verified {
+                    println!(
+                        "verify:  {}",
+                        if v {
+                            "OK (readback matches)"
+                        } else {
+                            "MISMATCH"
+                        }
+                    );
+                }
             }
             if let Some(r) = running {
                 println!("running: {}", if r { "yes" } else { "NO" });
