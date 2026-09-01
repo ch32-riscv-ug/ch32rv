@@ -110,10 +110,10 @@ family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0
 | 経路 | コマンド/機構 | 状態 |
 |---|---|---|
 | dmdata(SerialDMDATA) | host が DMI で DM data0(0x04)/data1(0x05)を polling。target→host frame: data0 低byte=`0x80\|(count+4)`、上位3B+data1=payload。ACK は data0 に host 入力(bit7 クリア)を書く。**core は running のまま**(attach 後に resume が必要) | **verified**(2026-09-01、CH32V203 で連続受信) |
-| sdi enable/disable | `81 0d 02 ee 01`(enable)/`ee 00`(disable)。LinkE 専用 | コマンド送出は verified。**ただし in-process では CDC forward が起動しない既知問題**(下記) |
+| sdi enable/disable | **enable=`81 0d 02 ee 00`、disable=`ee 01`**(フラグは直感と逆)。応答 payload[0]=`0x00` 成功/`0xff` 非対応。LinkE 専用 | **verified**(2026-09-01、CH32V203 で `sdi 1,2,3...` 連続受信) |
 | uart bridge | probe の CDC port を読むだけ | 実装済み(物理配線が無く未実機確認) |
 
-**SDI の既知問題(2026-09-01)**: `81 0d 02 ee 01` を送ると応答は成功、attach 後 core は running を確認済みだが、ch32rv から in-process で enable した場合 CDC への forward が始まらない。**wlink バイナリは同一バイト列で動作する**(`sdi 2,3,4...` を実測)。nusb interface の in-process claim/release の機微か、enable 前後の probe 状態差と推測。usbmon で wlink との差分を取るのが次の一手。回避策: `dmdata`(任意 probe で動作)または `wlink sdi-print enable`。CDC 読みは **serialport crate が open 時に DTR を assert すると LinkE が SDI forward を 1 行で止める**ため、Linux では生ブロッキングファイル読み(cat 相当)にしている。
+**SDI enable 手順(usbmon で確定、2026-09-01)**: wlink `sdi-print enable` の実キャプチャと一致させて解決した。手順は GetProbeInfo → SetSpeed(family=`0x01` placeholder)→ AttachChip(family 判明、halt しない)→ **SetSpeed(実 family、例 `0x05`)** → **SDI enable = `81 0d 02 ee 00`**。詰まっていた原因は 2 つ: (1) **enable のフラグが逆**だった(`ee 01` を送っていた=実は disable)、(2) AttachChip 後に実 family で SetSpeed を再送していなかった。enable 後は vendor interface を解放してよい(wlink も終了する)。CDC 読みは **serialport crate が open 時に DTR を assert すると LinkE が forward を 1 行で止める**ため、Linux では生ブロッキングファイル読み(cat 相当)にしている(uart bridge は DTR 無害なので serialport で baud を効かせる)。
 
 ### 4.5 存在の証拠のみ(未実装)
 
