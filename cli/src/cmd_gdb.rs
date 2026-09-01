@@ -105,7 +105,7 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
         if hw == 0 {
             " (this core has no trigger module; RAM software breakpoints only, flash breakpoints unsupported)"
         } else {
-            ""
+            " (plain `break` on flash auto-uses a hardware trigger)"
         }
     );
 

@@ -95,10 +95,15 @@ pub fn regs(cli: &Cli) -> ExitCode {
             None,
         );
     }
-    let mut gprs = Vec::with_capacity(32);
-    for i in 0..32u8 {
+    // RV32E cores (misa.E, e.g. CH32V003) expose only x0..x15; reading x16.. raises cmderr.
+    let gpr_count: u8 = match dm.read_reg(RegName::Csr(0x301)) {
+        Ok(misa) if misa & (1 << 4) != 0 => 16,
+        _ => 32,
+    };
+    let mut gprs = [0u32; 32];
+    for i in 0..gpr_count {
         match dm.read_reg(RegName::Gpr(i)) {
-            Ok(v) => gprs.push(v),
+            Ok(v) => gprs[i as usize] = v,
             Err(e) => {
                 return fail(
                     cli,
@@ -111,10 +116,17 @@ pub fn regs(cli: &Cli) -> ExitCode {
         }
     }
     let pc = dm.read_reg(RegName::Pc).ok();
+    if gpr_count == 16 {
+        warnings.push(Warning {
+            code: "rv32e".to_owned(),
+            msg: "RV32E core (misa.E): only x0-x15 exist; x16-x31 omitted".to_owned(),
+        });
+    }
+    let n = gpr_count as usize;
 
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
-        let regs: serde_json::Map<String, serde_json::Value> = (0..32)
+        let regs: serde_json::Map<String, serde_json::Value> = (0..n)
             .map(|i| {
                 (
                     format!("x{i}"),
@@ -129,7 +141,7 @@ pub fn regs(cli: &Cli) -> ExitCode {
         env.warnings = warnings;
         crate::print_envelope(&env)
     } else {
-        for i in 0..32 {
+        for i in 0..n {
             println!("x{i:<2} {:<4} 0x{:08x}", GPR_ABI[i], gprs[i]);
         }
         match pc {

@@ -69,12 +69,24 @@ wlink `dmi.rs` から転記し実機で確認。DMI レジスタ番地: DMDATA0=
 | write_reg(GPR/CSR/PC) | DMDATA0=value → DMCOMMAND=`0x00230000\|regno`→ busy 待ち | verified |
 | step(1命令) | dcsr(CSR `0x7b0`)の step(bit2)を立てて write_reg → resume → 再 halt を待つ → step クリア | verified(V203 で PC 前進を確認) |
 | ebreak を halt にする | dcsr(`0x7b0`)の ebreakm(bit15)/ebreaks(bit13)/ebreaku(bit12)を立てる。これで各特権 mode の `ebreak` が例外 trap でなく Debug Mode 突入(halt)になる。**SW breakpoint に必須**(未設定だと `continue` で止まらず暴走) | verified(2026-09-01、V203、gdb `continue` が breakpoint で停止) |
-| HW trigger 数 | tselect(`0x7a0`)に index を write→read-back で存在 slot 数を数え、各 slot の tdata1(`0x7a1`)の type field(bits[31:28])が非0 か検査。**QingKe V2A/V3(V003・V203)は 0 を返す=標準 trigger 無し** → HW breakpoint は広告しない | verified(2026-09-01、V003/V203 とも 0) |
+| HW trigger 数 | tselect(`0x7a0`)に index を write→read-back で存在確認し、mcontrol を tdata1(`0x7a1`)へ write→read-back で**定着するか**を検査(type field bits[31:28]=2)。**有無は misa/core 世代と無関係で動的検出が必須**(下記) | verified(2026-09-01、5 core 実測) |
 | read_mem32 | PROGBUF0=`0x0002a303`(lw x6,0(x5))・PROGBUF1=`0x00100073`(ebreak)→ DMDATA0=addr → DMCOMMAND=`0x00271005`(x5←data0 + postexec)→ DMCOMMAND=`0x00221006`(data0←x6)→ DMDATA0 読み | verified |
 | abstractcs | busy=bit12、cmderr=bits[10:8](書き戻しでクリア) | verified |
 | DMSTATUS running | allrunning=bit11, anyrunning=bit10, allhalted=bit9, anyhalted=bit8 | verified |
 
-**GDB breakpoint の実測(2026-09-01)**: SW breakpoint は対象番地を `ebreak`(4B `0x00100073`)/ `c.ebreak`(2B `0x9002`)で上書きし、read-back で着弾を確認する(flash 番地は write が無効で着弾しない → GDB へ未対応を返す)。**着弾しても上記の dcsr.ebreak* を立てていないと `ebreak` が trap し halt しない** — これが SW breakpoint が動かない主因だった。HW breakpoint(RISC-V trigger module)は試験した QingKe core に存在しないため、minichlink 同様に本来は flash-patch へ倒す必要があるが、flash-patch SW breakpoint(一時 unprotect→page 書換→復元)は後続。
+**HW trigger 実測マトリクス(2026-09-01、5 core)**:
+
+| core | family | misa | marchid | trigger slot | 実発火 |
+|---|---|---|---|---|---|
+| CH32V307 | 0x06 | `0x40901125` | `…d881` | **4** | ✓(pc=0x520 で停止) |
+| CH32X035 | 0x0d | `0x40901105` | `…d883` | **4** | ✓(pc=0x416 で停止) |
+| CH32V203 | 0x05 | `0x40901105` | `…d882` | **0** | — |
+| CH32V003 | 0x09 | `0x40800014` | `…d841` | **0** | — |
+| CH32V103 | 0x01 | `0x40101105` | `0`      | **0** | — |
+
+重要: **V203 と X035 は misa 完全一致(`0x40901105`)なのに trigger 有無が逆**(V203=0、X035=4)。marchid の下位だけ違う。→ trigger の有無は misa/命令セット/core letter からは判別できず、**tselect/tdata1 の write-readback による動的検出が唯一の確実な方法**。type field は 2(mcontrol)。空き slot に mcontrol(type2, dmode1, action1=enter-debug, m/s/u, execute)を書き tdata2=addr で execute breakpoint。
+
+**GDB breakpoint の実測(2026-09-01)**: SW breakpoint は対象番地を `ebreak`(4B `0x00100073`)/ `c.ebreak`(2B `0x9002`)で上書きし read-back で着弾を確認する。**着弾しても上記の dcsr.ebreak* を立てていないと `ebreak` が trap し halt しない** — これが SW breakpoint が動かない主因だった。flash 番地は write が無効で着弾しないので、**空き HW trigger があれば透過的に HW trigger へフォールバック**する(V307/X035 では通常 `break` が flash で発火。実機確認)。trigger の無い core(V003/V103/V203)では flash breakpoint を未対応と返す(GDB は "Cannot insert breakpoint"。`hwbreak+` 偽装はしない)。flash-patch SW breakpoint(一時 unprotect→page 書換→復元)は trigger 無し core 向けの後続。**RV32E(V003、misa.E=bit4)は GPR が x0-x15 のみ**で、x16-x31 を abstract command で読むと cmderr → x0-x15 だけ扱う。
 
 ### 4.2 flash 書き込み経路(verified 2026-09-01。wlink から転記し実機確認)
 
