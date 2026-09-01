@@ -13,8 +13,8 @@
 pub mod probe;
 
 pub use probe::{
-    AttachInfo, ChipInfo, ChipInfoStatus, FwMode, ProbeInfo, Speed, Variant, WchLink, WchLinkError,
-    family_name, known_bad_firmware,
+    AttachInfo, ChipInfo, ChipInfoStatus, DmiReply, DmiStatus, FlashParams, FwMode, ProbeInfo,
+    Speed, Variant, WchLink, WchLinkError, family_name, known_bad_firmware,
 };
 
 /// WCH USB Vendor ID.

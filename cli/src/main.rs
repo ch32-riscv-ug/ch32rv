@@ -7,9 +7,14 @@
 //! 他は exit 70(unimplemented)を返す。
 
 mod args;
+mod cmd_dbg;
+mod cmd_flash;
 mod cmd_probe;
 mod cmd_target;
 mod config;
+mod parse;
+mod progress;
+mod session;
 
 use clap::Parser;
 
@@ -23,6 +28,10 @@ fn main() -> std::process::ExitCode {
         Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(&cli, *watch),
         Command::Probe(ProbeCmd::Info) => cmd_probe::info(&cli),
         Command::Target(TargetCmd::Info) => cmd_target::info(&cli),
+        Command::Dbg(DbgCmd::Regs) => cmd_dbg::regs(&cli),
+        Command::Read(args) => cmd_dbg::read(&cli, args),
+        Command::Flash(args) => cmd_flash::flash(&cli, args),
+        Command::Recover(args) => cmd_flash::recover(&cli, args),
         other => unimplemented_cmd(&cli, canonical_name(other)),
     }
 }

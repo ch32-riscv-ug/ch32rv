@@ -55,15 +55,53 @@ probe → host:  0x82 | cmd | len | payload...   (成功)
 | `0x01` | `0x02` | UnprotectFlash | attested | probe-rs, wlink |
 | `0x0b` | - | Reset(target) | attested | probe-rs, wlink |
 | `0x0c` | - | SetSpeed(payload `[family, speed]`)。attach 前は family 不明のため `0x01` を送る。speed は high=`0x01` / medium=`0x02` / low=`0x03`(逆順注意) | **verified**(2026-09-01) | ch32rv 実装 + probe-rs |
-| `0x08` | - | DmiOp(nop / read / write) | attested | probe-rs, wlink, RINS |
+| `0x08` | - | DmiOp。payload 6 byte `[addr, data_be32, op]`(op=0 nop/1 read/2 write)。応答 6 byte `[addr, data_be32, status]`(status=0 success/2 failed/3 busy)。busy は再試行 | **verified**(2026-09-01: DM 経由で V203/V103 の全 GPR・PC・flash/RAM を読み、wlink dump とバイト一致) | ch32rv 実装 + probe-rs, wlink, RINS |
 
-### 4.2 存在の証拠のみ(WCH OpenOCD binary の文字列、wlink 実装)— すべて todo
+### 4.1.1 Debug Module 操作(DMI 上の高レベル層。ch32rv-dmi crate、状態: verified 2026-09-01)
 
-flash 書込経路: `wlink_ramcodewrite`(flash stub の RAM 転送)、`wlink_fastprogram`、`wlink_ready_write`、`wlink_endprogram`、`wlink_endprocess`。
-消去・保護: `wlink_erase`、`wlink_code_erase`、`wlink_flash_protect`。
-その他: `wlink_sdi`(SDI print 有効化)、`wlink_disabledebug`、`wlink_getromram`(CODE/RAM split 取得)、`wlink_rstout`(NRST 制御)、`wlink_chip_reset`、`wlink_set_address`、`wlink_speed_div`、`wlink_armversion`、mode 切替、IAP entry(wlink-iap 実装)。
+wlink `dmi.rs` から転記し実機で確認。DMI レジスタ番地: DMDATA0=`0x04` / DMCONTROL=`0x10` / DMSTATUS=`0x11` / DMABSTRACTCS=`0x16` / DMCOMMAND=`0x17` / DMPROGBUF0=`0x20` / DMPROGBUF1=`0x21`。
 
-→ それぞれ wlink source / wlink protocol.md / RINS から byte 列を転記 → capture で verified 化、が M0-M1 の作業。
+| 操作 | 手順 | 状態 |
+|---|---|---|
+| halt | DMCONTROL に `0x80000001` を書き DMSTATUS の all/any-halted を待つ→`0x00000001` で haltreq クリア | verified |
+| read_reg(GPR/CSR/PC) | DMDATA0=0 → DMCOMMAND=`0x00220000\|regno`(GPR=`0x1000+n`, PC=dpc `0x7b1`)→ abstractcs busy 待ち → DMDATA0 読み | verified |
+| read_mem32 | PROGBUF0=`0x0002a303`(lw x6,0(x5))・PROGBUF1=`0x00100073`(ebreak)→ DMDATA0=addr → DMCOMMAND=`0x00271005`(x5←data0 + postexec)→ DMCOMMAND=`0x00221006`(data0←x6)→ DMDATA0 読み | verified |
+| abstractcs | busy=bit12、cmderr=bits[10:8](書き戻しでクリア) | verified |
+
+### 4.2 flash 書き込み経路(verified 2026-09-01。wlink から転記し実機確認)
+
+**データ転送は command EP(0x01/0x81)ではなく data EP `0x02`/`0x82` を使う**(OQ-1 解決)。frame 化されず、生バイトを data_packet_size 単位(最終 packet は 0xff pad)で送る。
+
+| cmd | payload | 意味 | 状態 |
+|---|---|---|---|
+| `0x06` | `0x01` / `0x02` | CheckReadProtect(1=保護/2=非保護)/ Unprotect。保護時のみ解除(option page が消えるため) | verified |
+| `0x02` | `0x01` | EraseFlash(chip 全体)→ 後に AttachChip | verified |
+| `0x01` | `addr_be32 len_be32` | SetWriteMemoryRegion | verified |
+| `0x02` | `0x05` | WriteFlashOP → 直後に data EP へ flash stub を送る | verified |
+| `0x02` | `0x07` | 確認(応答 payload[0] が `0x07`) | verified |
+| `0x02` | `0x02` | WriteFlash → data EP へ write_pack_size(4096)ごとに chunk 送信、各 chunk 後に data EP から 4 byte ack を読む(`41 01 01 04`、byte3=`0x04` で成功) | verified |
+| `0x02` | `0x08` | End | verified |
+| `0x0b` | `0x01` | soft reset して実行 | verified |
+
+family 別パラメータ(wlink 由来、実機確認): V103(family 0x01)= stub CH32V103・data packet 128、V20x/V30x(0x05/0x06)= stub CH32V307・data packet 256。write_pack_size は共通 4096、code flash 先頭 `0x08000000`。
+
+実機検証: CH32V203C8T6(LinkE)・CH32V103R8T6(CH549)へ Arduino ビルドの blink BIN を flash → readback が BIN とバイト一致 → confirm-run で running 確認。
+
+### 4.3 特殊消去(SWD ピン共用 target の復旧。verified 2026-09-01)
+
+「Clear All Code Flash」(WCH-LinkUtility の Target タブ相当)。SWDIO/SWCLK を GPIO 等に使うと通常 attach ができなくなるが、これは target を電源/RST で再起動し、app が pin を再構成する前の boot 窓で消去する。**attach しない**(できない target が対象)。
+
+| cmd | payload | 意味 | 状態 |
+|---|---|---|---|
+| `0x0c` | `family speed` | SetSpeed(先に必要) | verified |
+| `0x0d` | `0x0f family` | EraseCodeFlash By Power off。probe が target を電源再投入(**LinkE/LinkW のみ**、target を probe 給電していること) | verified(コマンド受理を実機確認) |
+| `0x0d` | `0x08 family` | EraseCodeFlash By RST pin。NRST を使う(RST 配線が要る) | attested(未実機) |
+
+**実測の重要事実**: power-off erase 実行後、flash を debug 経由で読むと `39 e3 39 e3`(= `0xe339e339` の繰り返し)が返る。**これは wlink dump でも全く同じ**(独立ツールと一致)ので ch32rv のバグではなく、power-off erase 後の chip の debug-read 挙動そのもの(ちょうど ChipInfo の protection_raw と同じ値で、保護 fill の可能性)。RAM 読みと DMI 自体は正常。この状態でも **通常 flash を実行すれば即座に復旧**する(erase+program+verify OK を実機確認)。実運用の復旧経路「power-off erase → 通常 flash」は成立する。
+
+### 4.4 存在の証拠のみ(未実装)
+
+`wlink_sdi`(SDI print)、`wlink_disabledebug`、`wlink_getromram`(CODE/RAM split)、`wlink_rstout`、`wlink_chip_reset`、`wlink_armversion`、mode 切替、IAP entry(wlink-iap)。→ wlink source / RINS から転記 → capture で verified 化。
 
 ## 5. AttachChip 応答と chip 識別
 

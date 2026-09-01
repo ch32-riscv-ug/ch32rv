@@ -9,6 +9,10 @@
 //! quirk 層に隔離する。transport は [`DtmAccess`] trait 越しにのみ扱い、この crate は USB を知らない。
 //! 現状は境界 trait の定義のみ。
 
+pub mod dm;
+
+pub use dm::{DebugModule, RegName};
+
 use thiserror::Error;
 
 /// en: Minimal access to the DTM (Debug Transport Module), implemented by probe backends.

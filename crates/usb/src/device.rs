@@ -150,9 +150,11 @@ impl UsbDeviceInfo {
             .endpoint::<Bulk, In>(ep_in)
             .map_err(|_| UsbError::Endpoint(ep_in))?;
         Ok(UsbInterface {
-            _iface: iface,
+            iface,
             out,
             inp,
+            data_out: None,
+            data_in: None,
         })
     }
 }
@@ -172,47 +174,99 @@ pub fn enumerate() -> Result<Vec<UsbDeviceInfo>, UsbError> {
 /// ja: claim 済み interface と bulk OUT/IN endpoint の組。timeout 時は転送を cancel して
 /// 排出し、endpoint に未完了転送を残さない。
 pub struct UsbInterface {
-    _iface: nusb::Interface,
+    iface: nusb::Interface,
     out: nusb::Endpoint<Bulk, Out>,
     inp: nusb::Endpoint<Bulk, In>,
+    data_out: Option<nusb::Endpoint<Bulk, Out>>,
+    data_in: Option<nusb::Endpoint<Bulk, In>>,
 }
 
 impl UsbInterface {
     pub fn write(&mut self, data: &[u8], timeout: Duration) -> Result<usize, UsbError> {
-        let mut buf = Buffer::new(data.len());
-        buf.extend_from_slice(data);
-        self.out.submit(buf);
-        let Some(completion) = self.out.wait_next_complete(timeout) else {
-            self.out.cancel_all();
-            let _ = self.out.wait_next_complete(Duration::from_millis(100));
-            return Err(UsbError::Timeout);
-        };
-        completion
-            .status
-            .map_err(|e| UsbError::Transfer(e.to_string()))?;
-        Ok(completion.actual_len)
+        write_ep(&mut self.out, data, timeout)
     }
 
     pub fn read(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize, UsbError> {
-        let max_packet = self.inp.max_packet_size().max(1);
-        let requested = buf.len().div_ceil(max_packet) * max_packet;
-        self.inp.submit(Buffer::new(requested));
-        let Some(completion) = self.inp.wait_next_complete(timeout) else {
-            self.inp.cancel_all();
-            let _ = self.inp.wait_next_complete(Duration::from_millis(100));
-            return Err(UsbError::Timeout);
-        };
-        completion
-            .status
-            .map_err(|e| UsbError::Transfer(e.to_string()))?;
-        let n = completion.actual_len;
-        if n > buf.len() {
-            return Err(UsbError::Transfer(format!(
-                "device returned {n} bytes, buffer is {}",
-                buf.len()
-            )));
-        }
-        buf[..n].copy_from_slice(&completion.buffer[..n]);
-        Ok(n)
+        read_ep(&mut self.inp, buf, timeout)
     }
+
+    /// en: Open a second bulk endpoint pair (the WCH-Link flash data path, EP 0x02/0x82) on
+    /// the same claimed interface. Idempotent.
+    /// ja: 同じ interface 上に 2 つ目の bulk endpoint 組(WCH-Link の flash data 経路、
+    /// EP 0x02/0x82)を開く。冪等。
+    pub fn open_data_endpoints(&mut self, ep_out: u8, ep_in: u8) -> Result<(), UsbError> {
+        if self.data_out.is_none() {
+            self.data_out = Some(
+                self.iface
+                    .endpoint::<Bulk, Out>(ep_out)
+                    .map_err(|_| UsbError::Endpoint(ep_out))?,
+            );
+        }
+        if self.data_in.is_none() {
+            self.data_in = Some(
+                self.iface
+                    .endpoint::<Bulk, In>(ep_in)
+                    .map_err(|_| UsbError::Endpoint(ep_in))?,
+            );
+        }
+        Ok(())
+    }
+
+    /// Write to the data endpoint. Call [`open_data_endpoints`] first.
+    pub fn write_data(&mut self, data: &[u8], timeout: Duration) -> Result<usize, UsbError> {
+        let ep = self.data_out.as_mut().ok_or(UsbError::Endpoint(0x02))?;
+        write_ep(ep, data, timeout)
+    }
+
+    /// Read from the data endpoint. Call [`open_data_endpoints`] first.
+    pub fn read_data(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize, UsbError> {
+        let ep = self.data_in.as_mut().ok_or(UsbError::Endpoint(0x82))?;
+        read_ep(ep, buf, timeout)
+    }
+}
+
+fn write_ep(
+    ep: &mut nusb::Endpoint<Bulk, Out>,
+    data: &[u8],
+    timeout: Duration,
+) -> Result<usize, UsbError> {
+    let mut buf = Buffer::new(data.len());
+    buf.extend_from_slice(data);
+    ep.submit(buf);
+    let Some(completion) = ep.wait_next_complete(timeout) else {
+        ep.cancel_all();
+        let _ = ep.wait_next_complete(Duration::from_millis(100));
+        return Err(UsbError::Timeout);
+    };
+    completion
+        .status
+        .map_err(|e| UsbError::Transfer(e.to_string()))?;
+    Ok(completion.actual_len)
+}
+
+fn read_ep(
+    ep: &mut nusb::Endpoint<Bulk, In>,
+    buf: &mut [u8],
+    timeout: Duration,
+) -> Result<usize, UsbError> {
+    let max_packet = ep.max_packet_size().max(1);
+    let requested = buf.len().div_ceil(max_packet) * max_packet;
+    ep.submit(Buffer::new(requested));
+    let Some(completion) = ep.wait_next_complete(timeout) else {
+        ep.cancel_all();
+        let _ = ep.wait_next_complete(Duration::from_millis(100));
+        return Err(UsbError::Timeout);
+    };
+    completion
+        .status
+        .map_err(|e| UsbError::Transfer(e.to_string()))?;
+    let n = completion.actual_len;
+    if n > buf.len() {
+        return Err(UsbError::Transfer(format!(
+            "device returned {n} bytes, buffer is {}",
+            buf.len()
+        )));
+    }
+    buf[..n].copy_from_slice(&completion.buffer[..n]);
+    Ok(n)
 }

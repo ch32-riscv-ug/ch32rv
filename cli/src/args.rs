@@ -196,7 +196,7 @@ pub struct VerifyArgs {
 }
 
 #[derive(Args)]
-#[command(group(clap::ArgGroup::new("src").required(true).args(["range", "region", "blank_check"])))]
+#[command(group(clap::ArgGroup::new("src").required(true).args(["range", "region"])))]
 pub struct ReadArgs {
     /// Range to read: <addr>[+len|..end]
     #[arg(long)]
@@ -209,7 +209,7 @@ pub struct ReadArgs {
     pub out: Option<PathBuf>,
     #[arg(long, value_enum, default_value = "bin")]
     pub format: ReadFormat,
-    /// Blank check (failure: exit 30)
+    /// Blank check the range instead of dumping it (not blank: exit 30)
     #[arg(long)]
     pub blank_check: bool,
 }
