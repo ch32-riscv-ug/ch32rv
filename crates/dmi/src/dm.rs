@@ -365,6 +365,24 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.wait_abstract()
     }
 
+    /// en: Store one 16-bit halfword to target memory via program buffer (`sh x7,0(x5)`). The
+    /// hart must be halted. Needed for CH32V103 standard flash programming, which latches the
+    /// FLASH controller on each 16-bit store (a 32-bit `sw` does not program it correctly).
+    /// ja: program buffer 経由で 16bit halfword を store(`sh x7,0(x5)`)。CH32V103 の標準 flash
+    /// programming は 16bit store ごとに controller が latch するため必要(32bit `sw` では不可)。
+    pub fn write_mem16(&mut self, addr: u32, data: u16) -> Result<(), DmiError> {
+        self.write(DMPROGBUF0, 0x0072_9023)?; // sh x7, 0(x5)
+        self.write(DMPROGBUF1, 0x0010_0073)?; // ebreak
+        self.write(DMDATA0, addr)?; // data0 <- address
+        self.clear_cmderr()?;
+        self.write(DMCOMMAND, 0x0023_1005)?; // x5 <- data0
+        self.wait_abstract()?;
+        self.write(DMDATA0, u32::from(data))?; // data0 <- data
+        self.clear_cmderr()?;
+        self.write(DMCOMMAND, 0x0027_1007)?; // x7 <- data0 + postexec (sh)
+        self.wait_abstract()
+    }
+
     /// en: Write `data` to target memory starting at `addr`. Reads-modifies-writes the head
     /// and tail words to keep byte granularity. The hart must be halted.
     /// ja: `addr` から `data` を書く。端の word は read-modify-write で byte 単位を保つ。
@@ -469,10 +487,23 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         Err(DmiError::Timeout)
     }
 
-    /// en: Fast-page-erase the page at `addr` (must be page-aligned; 256 bytes on the covered
-    /// families). Uses FTER + STRT and waits for completion. The hart must be halted.
-    /// ja: `addr` の fast page を消去(page 境界必須、対象 family は 256byte)。halt 済みで。
-    pub fn flash_page_erase(&mut self, addr: u32) -> Result<(), DmiError> {
+    /// en: CH32V103-only "commit" side effect the EVT driver performs after every fast erase /
+    /// buffer load: read the word at `(addr & !3) ^ 0x1000` and write it to the undocumented
+    /// FLASH register 0x4002_2034. Without it, a V103 erase/program silently does nothing.
+    /// ja: CH32V103 専用。EVT ドライバが fast erase / buffer load の後に必ず行う "commit" 副作用:
+    /// `(addr & !3) ^ 0x1000` の word を読み、未文書 FLASH レジスタ 0x4002_2034 へ書く。これが
+    /// 無いと V103 の erase/program は無反応になる。
+    fn flash_v103_commit(&mut self, addr: u32) -> Result<(), DmiError> {
+        let v = self.read_mem32((addr & 0xFFFF_FFFC) ^ 0x0000_1000)?;
+        self.write_mem32(FLASH_MAGIC_V103, v)
+    }
+
+    /// en: Fast-page-erase the page at `addr` (page-aligned) with FTER + STRT. `mode` selects the
+    /// family quirks: [`FlashProgMode::V103`] adds the mandatory commit side effect. The hart
+    /// must be halted.
+    /// ja: `addr` の fast page を FTER + STRT で消去。`mode` で family 差を選ぶ(V103 は commit 副作用
+    /// が必須)。halt 済みで。
+    pub fn flash_page_erase(&mut self, addr: u32, mode: FlashProgMode) -> Result<(), DmiError> {
         self.flash_unlock()?;
         if self.read_mem32(FLASH_STATR)? & FLASH_BUSY != 0 {
             return Err(DmiError::OperationFailed("flash busy".to_owned()));
@@ -487,6 +518,9 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         let ctlr = self.read_mem32(FLASH_CTLR)?;
         self.write_mem32(FLASH_CTLR, ctlr & !FLASH_FTER)?;
         self.write_mem32(FLASH_STATR, statr)?; // write 1s to clear EOP/WPRERR
+        if mode == FlashProgMode::V103 {
+            self.flash_v103_commit(addr)?;
+        }
         self.flash_lock()?;
         if statr & FLASH_WPRERR != 0 {
             return Err(DmiError::OperationFailed(
@@ -498,12 +532,12 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
 
     /// en: Fast-page-program `data` at `addr` (page-aligned, `data.len()` == the page size, and
     /// the page already erased), using the family's programming `mode`. The hart must be halted.
-    /// Two fast-program mechanisms exist: [`FlashProgMode::PgStart`] (V20x/V30x - load words, then
-    /// PGSTART) and [`FlashProgMode::Buffered`] (V003/X035/L103 - buffer reset, then per-word
-    /// write+BUFLOAD, then STRT). Both verified live (V203/V307, V003/X035).
-    /// ja: `addr` へ `data` を fast page program(page 境界・page サイズ長・消去済みが前提)。family の
-    /// `mode` で分岐: PgStart(V20x/V30x)は word 書込→PGSTART、Buffered(V003/X035/L103)は
-    /// buffer reset→word 書込+BUFLOAD→STRT。両方実機確認済み。
+    /// Three programming mechanisms exist: [`FlashProgMode::PgStart`] (V20x/V30x - load words,
+    /// then PGSTART), [`FlashProgMode::Buffered`] (V003/X035/L103 - buffer reset, then per-word
+    /// write+BUFLOAD, then STRT), and [`FlashProgMode::V103`] (CH32V103 - standard 16-bit halfword
+    /// programming via CR_PG with the mandatory commit side effect per word). All verified live.
+    /// ja: `addr` へ `data` を program(page 境界・page サイズ長・消去済みが前提)。`mode` で分岐:
+    /// PgStart(V20x/V30x)、Buffered(V003/X035/L103)、V103(標準 16bit halfword + commit)。全て実機確認済み。
     pub fn flash_program_page(
         &mut self,
         addr: u32,
@@ -519,7 +553,28 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         if self.read_mem32(FLASH_STATR)? & FLASH_BUSY != 0 {
             return Err(DmiError::OperationFailed("flash busy".to_owned()));
         }
+        if mode == FlashProgMode::V103 {
+            // Standard programming via 16-bit halfword stores. Set PG once for the whole page,
+            // store each halfword (waiting for BSY), then clear PG and do the commit once - this
+            // is verified equivalent to the EVT per-word sequence but far fewer DMI round-trips,
+            // which keeps a single Z0 insert under GDB's remote timeout.
+            let ctlr = self.read_mem32(FLASH_CTLR)?;
+            self.write_mem32(FLASH_CTLR, ctlr | FLASH_PG)?;
+            for (i, word) in data.chunks(4).enumerate() {
+                let a = addr + i as u32 * 4;
+                self.write_mem16(a, u16::from_le_bytes([word[0], word[1]]))?;
+                self.flash_wait(FLASH_BUSY)?;
+                self.write_mem16(a + 2, u16::from_le_bytes([word[2], word[3]]))?;
+                self.flash_wait(FLASH_BUSY)?;
+            }
+            let ctlr = self.read_mem32(FLASH_CTLR)?;
+            self.write_mem32(FLASH_CTLR, ctlr & !FLASH_PG)?;
+            self.flash_v103_commit(addr)?;
+            self.flash_lock()?;
+            return Ok(());
+        }
         match mode {
+            FlashProgMode::V103 => unreachable!("handled above"),
             FlashProgMode::PgStart => {
                 self.write_mem32(FLASH_CTLR, FLASH_FTPG)?;
                 for (i, word) in data.chunks(4).enumerate() {
@@ -565,18 +620,23 @@ pub enum FlashProgMode {
     PgStart,
     /// V003/X035/L103: buffer reset, per-word write + BUFLOAD, then STRT.
     Buffered,
+    /// CH32V103: standard 16-bit halfword programming (CR_PG) + the mandatory commit side effect.
+    V103,
 }
 
 // FLASH controller registers (memory-mapped at 0x4002_2000) and bit masks. Transcribed from
-// the QingKe reference manual / wlink; see the FLASH-controller section above.
+// the QingKe reference manual / wlink / WCH EVT drivers; see the FLASH-controller section above.
 const FLASH_KEYR: u32 = 0x4002_2004;
 const FLASH_STATR: u32 = 0x4002_200C;
 const FLASH_CTLR: u32 = 0x4002_2010;
 const FLASH_ADDR: u32 = 0x4002_2014;
 const FLASH_MODEKEYR: u32 = 0x4002_2024;
+// Undocumented CH32V103 "commit" register (EVT ch32v10x_flash.c writes it after each op).
+const FLASH_MAGIC_V103: u32 = 0x4002_2034;
 const FLASH_KEY1: u32 = 0x4567_0123;
 const FLASH_KEY2: u32 = 0xCDEF_89AB;
 // CTLR bits.
+const FLASH_PG: u32 = 1 << 0; // standard programming enable (V103)
 const FLASH_STRT: u32 = 1 << 6; // start erase
 const FLASH_LOCK: u32 = 1 << 7;
 const FLASH_FLOCK: u32 = 1 << 15; // fast-mode lock

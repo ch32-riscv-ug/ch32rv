@@ -220,7 +220,7 @@ impl<T: DtmAccess> Ch32Target<T> {
         let mode = self.flash_prog_mode;
         {
             let mut dm = self.dm();
-            dm.flash_page_erase(phys)?;
+            dm.flash_page_erase(phys, mode)?;
             dm.flash_program_page(phys, &desired, mode)?;
         }
         self.flash_pages[idx].current = desired;

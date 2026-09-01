@@ -1,7 +1,7 @@
 # ch32rv 仕様ドキュメント
 
 - 作成日: 2026-09-01
-- 状態: 提案(実装未着手)。spec-first の方針に基づき、実装より先にここを固定する
+- 状態: 仕様は固定済み、実装進行中。spec-first の方針に基づき、実装より先にここを固定する(実装状況は [CHANGELOG](../CHANGELOG.md) と [direction-review-2026-09-01.ja.md](direction-review-2026-09-01.ja.md) を参照)
 
 ## 構成
 
@@ -14,6 +14,7 @@
 | [contract/](contract/README.ja.md) | JSON contract(result envelope・NDJSON event の schema)。契約版 1 |
 | [protocol/wch-link.ja.md](protocol/wch-link.ja.md) | WCH-Link USB protocol ノート(骨組み。capture で verified 化する) |
 | [data-requests/](data-requests/README.ja.md) | ch32-device-data への CSV 作成依頼書(ファイル単位で依頼に使う) |
+| [direction-review-2026-09-01.ja.md](direction-review-2026-09-01.ja.md) | ArduinoCore-CH32 側からの方向性レビュー記録。リリース方針(probe-rs 非同梱・ch32rv 一本化・Linux 先行ドッグフーディング)とギャップ・開始条件 |
 
 ## 前提資料
 

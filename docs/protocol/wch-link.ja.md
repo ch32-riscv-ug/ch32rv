@@ -143,9 +143,11 @@ family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0
 | CH32V003/CH641(0x09/0x49) | 64 | Buffered | ✓ V003 |
 | CH32X035/CH643(0x0d/0x0c) | 256 | Buffered | ✓ X035 |
 | CH32L103(0x0e) | 256 | Buffered | attested(X035 と同 profile、未接続) |
-| CH32V103(0x01) | 128 | Buffered(+quirk) | ✗ 素の buffered では erase/program が通らず後続(minichlink の V10x 特殊処理あり) |
+| CH32V103(0x01) | erase 128 / prog 標準 | V103(標準 halfword+commit) | ✓ erase --range・program 実機確認(gdb flash bp のみ quirk で無効) |
 
 **当初 X035 を PgStart 方式で実装したが program が全く効かなかった(erase→FF のまま)**。X035 は buffered 方式が必要と実測で判明し修正(erase は FTER+STRT で全 family 共通なので erase --range は当初から動いていた)。
+
+**CH32V103 の flash(WCH EVT `ch32v10x_flash.c` から確定)**: 他 family と 3 点で違う。(1) **fast erase=128B page(PAGE_ER bit17)/ program は fast buffer でなく標準 16bit halfword(CR_PG bit0)** が確実(fast BufLoad は 128bit=4word 単位で DMI 経由だと corrupt した)→ `sh x7,0(x5)`=`0x00729023` の `write_mem16` を追加。(2) **各 erase/program 後に未文書の commit 副作用が必須: `*(0x40022034) = *((addr & ~3) ^ 0x1000)`**(無いと erase/program が無反応。実測)。(3) 高速化: PG も commit も page で 1 回にして per-word の EVT 手順と等価を確認(gdb Z0 応答を remote timeout 内に収めるため)。実機検証: erase→FF→program a0a1..→erase の往復 OK、`erase --range` surgical(128B、隣接無傷)。**gdb flash bp の quirk**: flash-patch は着弾し **step 無しで patch→resume すれば実機で trap する(halt pc でも)**。しかし **gdb の single-step を跨ぐ(step→patch→resume)と core が trap せず暴走**(2/4byte 問わず、resumereq クリア・prefetch flush でも直らず)。V10x fetch-coherency と単一 step の相互作用が原因と推定、要追加調査 → `gdb_breakpoints=false` で gdb flash bp のみ無効(erase --range は有効)。
 
 **消去済みセルの debug read 値は family で違う**: V20x/V30x は **`0xe339e339`**(実セルは 0xff だが LinkE の placeholder。power-off erase 後・ChipInfo protection_raw と同値)、**X035/V003 は素直に `0xff`**。→ **erase の成否判定は read 値でなく controller STATR(BUSY クリア + WPRERR 無し)で行う**。この経路は flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台。
 
