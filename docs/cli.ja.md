@@ -352,14 +352,20 @@ ch32rv isp reset
 
 ```text
 ch32rv boot enter [--method touch1200|double-reset|magic|pin] [--port <p>]
-ch32rv boot dfu flash <FILE> [--alt <n>] [--address <a>]      dfu-util 相当
+ch32rv boot dfu flash <FILE> [--alt <n>] [--address <a>] [--usb-id <VID:PID>]   dfu-util 相当
 ch32rv boot dfu info
 ch32rv boot uf2 flash <FILE>                                   volume 検出→(必要なら変換)→copy→完了監視
 ch32rv boot uart flash|info <FILE> [--node <id>]               tinyboot 系(RS-485 multi-drop 含む)
-ch32rv boot hid flash <FILE>                                   rv003usb / b003fun 系
+ch32rv boot hid flash <FILE> [--usb-id <VID:PID>]              rv003usb / b003fun 系(UIAPduino 等)
 ```
 
 UF2 family ID・DFU の VID:PID・HID の magic packet は target DB / 設定で管理する。すべて P2。
+
+**任意 VID/PID 指定(逃げ道。TODO 2026-09-01、ユーザー依頼)**: bootloader 系は vendor/build ごとに USB VID:PID が異なる(rv003usb/b003fun 系は既定 `0x1209:0xb003` だが、**UIAPduino は `0x1209:0xb803`** = ボードごとに変わる)。minichlink は PID をソースに **ハードコード**しており、UIAPduino に書くには PID を書き換えて **リビルドが必要**だった(参照: <https://qiita.com/tomorrow56/items/6cae8ddc7470cb64ad7d>)。ch32rv は同じ轍を踏まない:
+
+- **known table**: UIAPduino(CH32V003・16KB・b003fun HID bootloader・`0x1209:0xb803`・bootloader 入りは「reset を押しながら USB 接続」)を含む既知 bootloader device を target DB / 設定で持ち、既定で発見できるようにする。
+- **`--usb-id <VID:PID>` 上書き**: known table に無い未知 PID でも、`--usb-id 1209:b803` のように CLI から VID:PID を直接指定して書けるようにする(**リビルド不要の逃げ道**)。`boot dfu` / `boot hid` / `boot uf2`(volume 検出の補助)に共通で効かせる。bootloader protocol は device class から自動判別しつつ、必要なら `--protocol dfu|hid|uf2` で明示指定も許す。
+- 設計原則: **単一 PID をコードに焼き込まない**。発見は「known table + ユーザー指定 VID:PID」の二段で、知らない PID にも到達できる状態を既定にする。
 
 ### 4.9 db
 
