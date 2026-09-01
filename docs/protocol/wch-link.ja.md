@@ -68,9 +68,13 @@ wlink `dmi.rs` から転記し実機で確認。DMI レジスタ番地: DMDATA0=
 | read_reg(GPR/CSR/PC) | DMDATA0=0 → DMCOMMAND=`0x00220000\|regno`(GPR=`0x1000+n`, PC=dpc `0x7b1`)→ abstractcs busy 待ち → DMDATA0 読み | verified |
 | write_reg(GPR/CSR/PC) | DMDATA0=value → DMCOMMAND=`0x00230000\|regno`→ busy 待ち | verified |
 | step(1命令) | dcsr(CSR `0x7b0`)の step(bit2)を立てて write_reg → resume → 再 halt を待つ → step クリア | verified(V203 で PC 前進を確認) |
+| ebreak を halt にする | dcsr(`0x7b0`)の ebreakm(bit15)/ebreaks(bit13)/ebreaku(bit12)を立てる。これで各特権 mode の `ebreak` が例外 trap でなく Debug Mode 突入(halt)になる。**SW breakpoint に必須**(未設定だと `continue` で止まらず暴走) | verified(2026-09-01、V203、gdb `continue` が breakpoint で停止) |
+| HW trigger 数 | tselect(`0x7a0`)に index を write→read-back で存在 slot 数を数え、各 slot の tdata1(`0x7a1`)の type field(bits[31:28])が非0 か検査。**QingKe V2A/V3(V003・V203)は 0 を返す=標準 trigger 無し** → HW breakpoint は広告しない | verified(2026-09-01、V003/V203 とも 0) |
 | read_mem32 | PROGBUF0=`0x0002a303`(lw x6,0(x5))・PROGBUF1=`0x00100073`(ebreak)→ DMDATA0=addr → DMCOMMAND=`0x00271005`(x5←data0 + postexec)→ DMCOMMAND=`0x00221006`(data0←x6)→ DMDATA0 読み | verified |
 | abstractcs | busy=bit12、cmderr=bits[10:8](書き戻しでクリア) | verified |
 | DMSTATUS running | allrunning=bit11, anyrunning=bit10, allhalted=bit9, anyhalted=bit8 | verified |
+
+**GDB breakpoint の実測(2026-09-01)**: SW breakpoint は対象番地を `ebreak`(4B `0x00100073`)/ `c.ebreak`(2B `0x9002`)で上書きし、read-back で着弾を確認する(flash 番地は write が無効で着弾しない → GDB へ未対応を返す)。**着弾しても上記の dcsr.ebreak* を立てていないと `ebreak` が trap し halt しない** — これが SW breakpoint が動かない主因だった。HW breakpoint(RISC-V trigger module)は試験した QingKe core に存在しないため、minichlink 同様に本来は flash-patch へ倒す必要があるが、flash-patch SW breakpoint(一時 unprotect→page 書換→復元)は後続。
 
 ### 4.2 flash 書き込み経路(verified 2026-09-01。wlink から転記し実機確認)
 

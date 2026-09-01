@@ -98,6 +98,16 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
             );
         }
     };
+    let hw = target.hw_trigger_count();
+    eprintln!(
+        "gdb: attached, {} hardware breakpoint slot(s){}",
+        hw,
+        if hw == 0 {
+            " (this core has no trigger module; RAM software breakpoints only, flash breakpoints unsupported)"
+        } else {
+            ""
+        }
+    );
 
     let conn = GdbConn(stream);
     let gdb = GdbStub::new(conn);

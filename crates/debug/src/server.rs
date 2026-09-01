@@ -13,7 +13,7 @@ use gdbstub::target::ext::base::singlethread::{
     SingleThreadSingleStepOps,
 };
 use gdbstub::target::ext::breakpoints::{
-    Breakpoints, BreakpointsOps, SwBreakpoint, SwBreakpointOps,
+    Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps, SwBreakpoint, SwBreakpointOps,
 };
 use gdbstub::target::{Target, TargetError, TargetResult};
 
@@ -25,6 +25,12 @@ struct SwBp {
     original: Vec<u8>,
 }
 
+/// A hardware breakpoint: the trigger slot it occupies and the address it watches.
+struct HwBp {
+    slot: u32,
+    addr: u32,
+}
+
 /// en: gdbstub target that OWNS its transport `T` (owning, not borrowing, keeps the type free
 /// of a lifetime so it fits `BlockingEventLoop::Target`). Recover the transport with
 /// [`Ch32Target::into_inner`] to detach cleanly afterwards.
@@ -33,6 +39,8 @@ struct SwBp {
 pub struct Ch32Target<T: DtmAccess> {
     dtm: T,
     breakpoints: Vec<SwBp>,
+    hw_breakpoints: Vec<HwBp>,
+    hw_trigger_count: u32,
 }
 
 impl<T: DtmAccess> Ch32Target<T> {
@@ -41,9 +49,19 @@ impl<T: DtmAccess> Ch32Target<T> {
         let mut t = Self {
             dtm,
             breakpoints: Vec::new(),
+            hw_breakpoints: Vec::new(),
+            hw_trigger_count: 0,
         };
         t.dm().halt()?;
+        // Make `ebreak` halt into debug mode so software breakpoints stop the core.
+        let _ = t.dm().enable_ebreak_debug();
+        t.hw_trigger_count = t.dm().hw_trigger_count();
         Ok(t)
+    }
+
+    /// Number of hardware trigger slots the core exposes (0 on V003/V2A).
+    pub fn hw_trigger_count(&self) -> u32 {
+        self.hw_trigger_count
     }
 
     fn dm(&mut self) -> DebugModule<'_, T> {
@@ -147,6 +165,43 @@ impl<T: DtmAccess> Breakpoints for Ch32Target<T> {
     #[inline(always)]
     fn support_sw_breakpoint(&mut self) -> Option<SwBreakpointOps<'_, Self>> {
         Some(self)
+    }
+
+    #[inline(always)]
+    fn support_hw_breakpoint(&mut self) -> Option<HwBreakpointOps<'_, Self>> {
+        // Only advertise HW breakpoints when the core actually has trigger slots.
+        if self.hw_trigger_count > 0 {
+            Some(self)
+        } else {
+            None
+        }
+    }
+}
+
+impl<T: DtmAccess> HwBreakpoint for Ch32Target<T> {
+    fn add_hw_breakpoint(&mut self, addr: u32, _kind: usize) -> TargetResult<bool, Self> {
+        // Find a free trigger slot.
+        let used: Vec<u32> = self.hw_breakpoints.iter().map(|b| b.slot).collect();
+        let Some(slot) = (0..self.hw_trigger_count).find(|s| !used.contains(s)) else {
+            return Ok(false); // out of trigger slots
+        };
+        self.dm()
+            .set_hw_breakpoint(slot, addr)
+            .map_err(TargetError::Fatal)?;
+        self.hw_breakpoints.push(HwBp { slot, addr });
+        Ok(true)
+    }
+
+    fn remove_hw_breakpoint(&mut self, addr: u32, _kind: usize) -> TargetResult<bool, Self> {
+        if let Some(pos) = self.hw_breakpoints.iter().position(|b| b.addr == addr) {
+            let bp = self.hw_breakpoints.remove(pos);
+            self.dm()
+                .clear_hw_breakpoint(bp.slot)
+                .map_err(TargetError::Fatal)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
     }
 }
 
