@@ -86,7 +86,12 @@ wlink `dmi.rs` から転記し実機で確認。DMI レジスタ番地: DMDATA0=
 
 重要: **V203 と X035 は misa 完全一致(`0x40901105`)なのに trigger 有無が逆**(V203=0、X035=4)。marchid の下位だけ違う。→ trigger の有無は misa/命令セット/core letter からは判別できず、**tselect/tdata1 の write-readback による動的検出が唯一の確実な方法**。type field は 2(mcontrol)。空き slot に mcontrol(type2, dmode1, action1=enter-debug, m/s/u, execute)を書き tdata2=addr で execute breakpoint。
 
-**GDB breakpoint の実測(2026-09-01)**: SW breakpoint は対象番地を `ebreak`(4B `0x00100073`)/ `c.ebreak`(2B `0x9002`)で上書きし read-back で着弾を確認する。**着弾しても上記の dcsr.ebreak* を立てていないと `ebreak` が trap し halt しない** — これが SW breakpoint が動かない主因だった。flash 番地は write が無効で着弾しないので、**空き HW trigger があれば透過的に HW trigger へフォールバック**する(V307/X035 では通常 `break` が flash で発火。実機確認)。trigger の無い core(V003/V103/V203)では flash breakpoint を未対応と返す(GDB は "Cannot insert breakpoint"。`hwbreak+` 偽装はしない)。flash-patch SW breakpoint(一時 unprotect→page 書換→復元)は trigger 無し core 向けの後続。**RV32E(V003、misa.E=bit4)は GPR が x0-x15 のみ**で、x16-x31 を abstract command で読むと cmderr → x0-x15 だけ扱う。
+**GDB breakpoint の実測(2026-09-01)**: SW breakpoint は対象番地を `ebreak`(4B `0x00100073`)/ `c.ebreak`(2B `0x9002`)で上書きし read-back で着弾を確認する。**着弾しても上記の dcsr.ebreak* を立てていないと `ebreak` が trap し halt しない** — これが SW breakpoint が動かない主因だった。SW(Z0)要求の `break` は「RAM patch → 空き HW trigger〔摩耗なし〕→ flash SW breakpoint〔§4.2.1 の直接 FLASH controller で page を書き換え〕」の順にフォールバックする。
+
+- **HW trigger 経由**: V307/X035 は通常 `break` が flash で発火(実機確認)。
+- **flash SW breakpoint 経由(trigger 無し core)**: V203 で通常 `break` が flash 上コードで発火し、複数 `continue`・detach 後の flash pristine 復元まで実機確認。**要点: code は低位 alias(0x0000_0000)で走るが FLASH controller には物理 flash 番地(0x0800_0000+off)を渡す**(alias 番地で erase/program すると効かず `continue` が暴走した)。read は alias/物理どちらでも鏡なので可。**摩耗**: set/clear ごとに page erase+program、step-over は remove+再 insert で 2 回書く。V003(64byte buffered)/V103 は profile 未検証。
+
+trigger も flash profile も無い場合のみ未対応を返す(GDB は "Cannot insert breakpoint"。`hwbreak+` 偽装はしない)。**RV32E(V003、misa.E=bit4)は GPR が x0-x15 のみ**で、x16-x31 を abstract command で読むと cmderr → x0-x15 だけ扱う。
 
 ### 4.2 flash 書き込み経路(verified 2026-09-01。wlink から転記し実機確認)
 
