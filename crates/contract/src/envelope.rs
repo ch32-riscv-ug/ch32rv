@@ -69,6 +69,9 @@ pub struct ProbeReport {
     pub mode: Option<ProbeMode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub firmware: Option<FirmwareVersion>,
+    /// Serial-port nodes belonging to this probe (UART bridge / SDI output), e.g. "/dev/ttyACM5".
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub ports: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +100,9 @@ pub struct FirmwareVersion {
     pub wch: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub known_bad: Option<bool>,
+    /// Firmware mode ("riscv" / "arm"); separate firmware exists only on the CH549 Link.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
 }
 
 impl FirmwareVersion {
@@ -107,6 +113,7 @@ impl FirmwareVersion {
             norm: format!("{major}.{minor}"),
             wch: format!("v{}", u32::from(major) * 10 + u32::from(minor)),
             known_bad: None,
+            mode: None,
         }
     }
 }
@@ -130,6 +137,9 @@ pub struct TargetReport {
     pub provisional: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protected: Option<bool>,
+    /// Flash size in KiB as reported by the probe (ChipInfo).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flash_kb: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

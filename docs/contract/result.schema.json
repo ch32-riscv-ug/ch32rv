@@ -30,8 +30,14 @@
             "raw": { "type": "string", "description": "生 byte の hex" },
             "norm": { "type": "string", "description": "正規化表記 (2.12)。比較はこの値で行う" },
             "wch": { "type": "string", "description": "WCH 表示 (v32)" },
-            "known_bad": { "type": "boolean" }
+            "known_bad": { "type": "boolean" },
+            "mode": { "type": "string", "description": "firmware mode (riscv|arm)。RV/ARM別firmwareはCH549のみ" }
           }
+        },
+        "ports": {
+          "type": "array",
+          "description": "この probe に属する serial port ノード (UART bridge / SDI)。例 /dev/ttyACM5",
+          "items": { "type": "string" }
         }
       }
     },
@@ -45,7 +51,8 @@
         "uid": { "type": "string" },
         "verified": { "type": "boolean", "description": "DB 上で実機確認済みの SKU か" },
         "provisional": { "type": "boolean", "description": "暫定 overlay 由来の DB entry か" },
-        "protected": { "type": "boolean" }
+        "protected": { "type": "boolean" },
+        "flash_kb": { "type": "integer", "description": "probe が報告する flash 容量 (KiB)" }
       }
     },
     "result": {
