@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ch32-riscv-ug/ch32rv/docs/contract/events.schema.json",
+  "title": "ch32rv NDJSON progress event (contract 1)",
+  "description": "--progress ndjson 時に stderr へ 1 行 1 object。library の ProgressSink event と同一の型",
+  "type": "object",
+  "required": ["ev"],
+  "properties": {
+    "ev": {
+      "type": "string",
+      "enum": ["phase", "progress", "retry", "warn", "log"]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "ev": { "const": "phase" },
+        "name": { "type": "string", "description": "erase / program / verify / reset / confirm-run 等" },
+        "total": { "type": "integer", "description": "単位数が事前に分かる場合" }
+      },
+      "required": ["ev", "name"]
+    },
+    {
+      "properties": {
+        "ev": { "const": "progress" },
+        "phase": { "type": "string" },
+        "done": { "type": "integer" },
+        "total": { "type": "integer" }
+      },
+      "required": ["ev", "phase", "done"]
+    },
+    {
+      "properties": {
+        "ev": { "const": "retry" },
+        "phase": { "type": "string" },
+        "attempt": { "type": "integer", "minimum": 1 },
+        "cause": { "type": "string", "description": "transport-timeout 等の安定名" }
+      },
+      "required": ["ev", "phase", "attempt", "cause"]
+    },
+    {
+      "properties": {
+        "ev": { "const": "warn" },
+        "code": { "type": "string" },
+        "msg": { "type": "string" }
+      },
+      "required": ["ev", "code", "msg"]
+    },
+    {
+      "properties": {
+        "ev": { "const": "log" },
+        "level": { "type": "string", "enum": ["error", "warn", "info", "debug", "trace"] },
+        "msg": { "type": "string" }
+      },
+      "required": ["ev", "level", "msg"]
+    }
+  ]
+}
