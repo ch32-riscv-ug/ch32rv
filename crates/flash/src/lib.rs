@@ -70,34 +70,40 @@ pub fn params_for_family(family_byte: u8) -> Option<FlashParams> {
 pub struct FlashCtrlProfile {
     pub page_size: u32,
     pub mode: FlashProgMode,
-    /// en: Whether gdb flash software breakpoints are reliable on this family. True everywhere
-    /// with a verified profile except CH32V103, where the flash-patch erase/program works but a
-    /// gdb single-step over a freshly flash-patched `ebreak` leaves the core unable to trap on it
-    /// (a V10x fetch-coherency quirk); `erase --range` is unaffected.
-    /// ja: この family で gdb flash SW breakpoint が信頼できるか。CH32V103 は flash-patch の
-    /// erase/program は動くが、flash-patch 直後の `ebreak` を gdb が single-step 跨ぎすると trap
-    /// しなくなる(V10x の fetch coherency quirk)ため false。`erase --range` は無関係。
+    /// en: Whether gdb flash software breakpoints are supported on this family (all verified
+    /// profiles). CH32V103 also needs [`attach_corrupts_regs`] handled by the gdb server.
+    /// ja: この family で gdb flash SW breakpoint を使えるか(全 verified profile で true)。
+    /// CH32V103 は [`attach_corrupts_regs`] の対処が前提。
     pub gdb_breakpoints: bool,
+    /// en: True when the WCH-Link AttachChip corrupts a live GPR (CH32V103: it overwrites s1/x9
+    /// with the chip id and saves the original nowhere, so resuming the user program faults on its
+    /// next use of s1). Workaround: soft-reset the target after attach so the program re-runs and
+    /// re-establishes its registers before we halt it.
+    /// ja: WCH-Link の AttachChip が生きた GPR を壊す family か(CH32V103 は s1/x9 を chip id で
+    /// 上書きし復元不可 → resume で s1 使用時に fault)。対処: attach 後に soft-reset して program に
+    /// レジスタを再構築させてから halt する。
+    pub attach_corrupts_regs: bool,
 }
 
 /// en: Resolve the FLASH-controller profile from the AttachChip family byte. Returns None for
 /// families whose controller sequence is not capture-verified yet.
 /// ja: family byte から FLASH-controller profile を引く。未検証 family は None。
 pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
-    let (page_size, mode, gdb_breakpoints) = match family_byte {
-        0x05 | 0x06 => (256, FlashProgMode::PgStart, true), // CH32V20x / V30x - verified V203/V307
-        0x09 | 0x49 => (64, FlashProgMode::Buffered, true), // CH32V003 / CH641 - verified V003
-        0x0C | 0x0D => (256, FlashProgMode::Buffered, true), // CH643 / CH32X035 - verified X035
-        0x0E => (256, FlashProgMode::Buffered, true),       // CH32L103 - attested (same as X035)
-        // CH32V103: erase/program verified (FTER erase + standard halfword program + commit), but
-        // gdb flash breakpoints hit a single-step fetch-coherency quirk, so keep erase only.
-        0x01 => (128, FlashProgMode::V103, false),
+    let (page_size, mode, gdb_breakpoints, attach_corrupts_regs) = match family_byte {
+        0x05 | 0x06 => (256, FlashProgMode::PgStart, true, false), // CH32V20x / V30x - verified
+        0x09 | 0x49 => (64, FlashProgMode::Buffered, true, false), // CH32V003 / CH641 - verified
+        0x0C | 0x0D => (256, FlashProgMode::Buffered, true, false), // CH643 / CH32X035 - verified
+        0x0E => (256, FlashProgMode::Buffered, true, false),       // CH32L103 - attested (as X035)
+        // CH32V103: FTER 128B erase + standard halfword program + commit. AttachChip corrupts s1,
+        // so gdb needs a reset-after-attach; then flash breakpoints work (verified).
+        0x01 => (128, FlashProgMode::V103, true, true),
         _ => return None,
     };
     Some(FlashCtrlProfile {
         page_size,
         mode,
         gdb_breakpoints,
+        attach_corrupts_regs,
     })
 }
 
