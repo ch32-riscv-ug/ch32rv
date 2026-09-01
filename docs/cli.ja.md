@@ -1,0 +1,414 @@
+# ch32rv CLI 仕様: コマンド体系
+
+- 作成日: 2026-09-01
+- 状態: 提案。**全機能を最終的に実装する前提の完成形**を先に固定する。優先度(P0/P1/P2)は実装順であって体系の一部ではない
+- 根拠: [requirements.ja.md](requirements.ja.md) の吸収マップ
+
+## 1. 設計原則
+
+1. **経路(route)を隠さない**。target への到達経路は debug probe / factory ISP / custom bootloader の 3 つで、可能な操作・device 発見方法・失敗モードが根本的に違う。probe 経路を top-level 動詞とし、他は `isp` / `boot` 名前空間にする。同じ `flash` 動詞を経路間で overload しない(capability 差がフラグ仕様に漏れて契約が壊れるため)。
+2. **noun-verb 階層 + 高頻度動詞のみ top-level**。日常の書き込みループ(flash/verify/erase/reset/run/monitor)と緊急動詞(recover/doctor)だけを最上位に置く。
+3. **fail-closed**。probe が一意に解決されない、target が曖昧、DB に無い、capability が無い——いずれも実行せず、候補と根拠を出して固有の exit code で止まる。「最初に見つかった 1 台」に暗黙 fallback しない。
+4. **全 command に `--json`**。進捗・再試行・警告は NDJSON の別 stream。text 出力を機械に解析させない。
+5. **破壊操作は明示**。erase 範囲・unprotect(全消去を伴う)・firmware update・mode 切替は確認プロンプトを持ち、`--yes` で省略できる。`--non-interactive` 時は `--yes` が無ければ拒否。
+6. **追加はするが変更しない**。command・flag・JSON field・exit code は追加のみ(§7 互換性ポリシー)。
+
+## 2. コマンドツリー(完成形)
+
+```text
+ch32rv
+├─ flash <file>                書き込み(erase/verify/reset/confirm-run policy)     P0  [probe-rs download, wlink flash, LinkUtility]
+├─ verify <file>               照合のみ                                            P0  [probe-rs verify]
+├─ read                        メモリ/flash 読み出し・dump・blank check            P1  [wlink dump, minichlink -r, LinkUtility]
+├─ write                       生メモリ/領域書き込み(上級)                        P1  [minichlink -w, wlink write-mem]
+├─ erase                       消去(chip/region/range)                            P0  [各 tool]
+├─ reset                       リセット(run/halt/dm) + --confirm-run              P0  [wlink reset]
+├─ run <elf>                   書き込み+実行+出力監視+exit code 伝搬               P1  [probe-rs run/attach]
+├─ recover                     復旧(power-off/nrst/unprotect/unbrick)             P0  [wlink erase --method, minichlink -u, LinkUtility]
+│
+├─ probe                       probe 本体の管理
+│  ├─ list                     一覧(型番/FW版/mode/serial/使用中/driver)          P0  [wlink list, probe-rs list]
+│  ├─ info                     詳細 + 既知不良 FW 判定 + IAP 滞留検出              P0  [wlink status]
+│  ├─ power <3v3|5v> <on|off>  電源出力                                            P0  [wlink set-power, minichlink -3/-5/-t/-f]
+│  ├─ power cycle              電源再投入                                          P0
+│  ├─ mode <get|set>           RISC-V / DAP 切替                                   P1  [wlink mode-switch]
+│  ├─ firmware <info|check|update>  版の解釈・不良版検出・IAP 書込                 P0/P0/P1  [wlink-iap, LinkUtility]
+│  └─ vendor <hex>             backend 固有 escape(隠し)                          P2  [minichlink -X]
+│
+├─ target                      target の識別と不揮発設定
+│  ├─ info                     chip ID/SKU 候補/UID/容量/保護/option 要約          P0  [minichlink -i, LinkUtility]
+│  ├─ option <get|set|reset|write-raw>  構造化 option bytes                        P1  [minichlink -d/-D/-S/-N/-n, LinkUtility]
+│  └─ protect <on|off>         読み出し保護                                        P0  [wlink protect/unprotect, minichlink -p/-P]
+│
+├─ dbg                         実行制御ワンショット
+│  ├─ halt [--reset] / resume / step [N]                                           P1  [wlink halt/resume, minichlink -a/-A/-e]
+│  ├─ regs / reg <read|write> <name>                                               P1  [wlink regs]
+│  └─ dmi <read|write>         DM レジスタ直接操作(expert)                        P2  [minichlink -s/-m, wlink write-reg]
+│
+├─ monitor [--source uart|sdi|dmdata|rtt]   実行時 I/O                             P0(uart)/P1(sdi,dmdata)/P2(rtt)
+│  ├─ list                     monitor 候補 port の列挙                            P1
+│  └─ sdi <on|off>             SDI print の有効/無効                               P1  [wlink sdi-print]
+│
+├─ gdb                         GDB server(attach 時 flash 非改変)                P1  [WCH OpenOCD, minichlink -G, probe-rs gdb]
+├─ dap                         DAP server                                          P2  [probe-rs dap-server]
+│
+├─ isp                         factory ISP 経路(USB/UART)                        P2  [wchisp, WCHISPTool_CMD]
+│  ├─ list / info / enter / reset
+│  ├─ flash <file> / verify <file> / erase
+│  ├─ eeprom <read|write|erase>
+│  └─ config <get|set|reset>
+│
+├─ boot                        custom bootloader 経路                              P2  [dfu-util, UF2 copy, tinyboot, rv003usb]
+│  ├─ enter [--method touch1200|double-reset|magic|pin]
+│  ├─ dfu <flash|info>
+│  ├─ uf2 flash <file>
+│  ├─ uart <flash|info> [--node <id>]
+│  └─ hid flash <file>
+│
+├─ db                          target DB の閲覧
+│  ├─ list                     SKU 一覧(verified 区別)                           P1  [probe-rs chip list]
+│  └─ info <sku>               geometry/領域/option layout/provenance              P1  [probe-rs chip info]
+│
+├─ capabilities                probe×FW×target×operation の可否 matrix             P0
+├─ doctor                      環境診断と次の一手(--emit-udev)                   P0
+├─ version                     tool/contract/DB/stub の版(--json)                 P0
+├─ complete <shell>            shell 補完                                          P2
+│
+└─ arduino                     Arduino IDE 統合(machine 向け)
+   ├─ discovery                Pluggable Discovery(stdio JSON)                   P1
+   └─ monitor                  Pluggable Monitor(stdio JSON)                     P1
+```
+
+## 3. 共通契約
+
+### 3.1 グローバルオプション
+
+| flag | 値 | 既定 | 説明 |
+|---|---|---|---|
+| `--probe <selector>` | §3.4 | (一意なら自動) | probe の選択。複数一致は exit 14 |
+| `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed) |
+| `--core <n>` | 0.. | 0 | dual-core(H41x)の core 選択 |
+| `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn |
+| `--connect-under-reset` | | off | NRST を assert して attach |
+| `--json` | | off | 結果を JSON で stdout へ(§3.5) |
+| `--progress <bar\|ndjson\|none>` | | bar(tty)/none | 進捗の出力形式。ndjson は stderr へ |
+| `--non-interactive` | | off | 対話プロンプトを全て拒否に変える |
+| `--yes` | | off | 破壊操作の確認を省略 |
+| `--lock-timeout <s>` | | 10 | device lock の待ち時間(§3.7) |
+| `--timeout <s>` | | 操作ごと | transport timeout の上書き |
+| `--db <path>` | | 内蔵 | target DB の overlay(新 SKU の試行用) |
+| `--log-file <path>` | | - | 詳細 log の保存 |
+| `--capture <path>` | | - | USB/serial transaction の記録(replay fixture 用)P1 |
+| `--dry-run` | | off | device を開かず計画のみ表示 P2 |
+| `-v` / `-q` | 重ね掛け | | 冗長度 |
+
+### 3.2 環境変数
+
+| 変数 | 対応 flag |
+|---|---|
+| `CH32RV_PROBE` | `--probe` |
+| `CH32RV_CHIP` | `--chip` |
+| `CH32RV_DB` | `--db` |
+| `CH32RV_NON_INTERACTIVE` | `--non-interactive` |
+
+flag > 環境変数 > 設定ファイル > 既定値。
+
+### 3.3 設定ファイル
+
+`./ch32rv.toml`(プロジェクト)→ `~/.config/ch32rv/config.toml`(ユーザ)の順で探索。probe の別名(HIL fixture の `CH32_PROBE_<名前>` 慣行の一般化)と既定値のみを持つ。挙動を変える隠し設定は置かない。
+
+```toml
+[probes]
+bench-01 = "1a86:8010:434A124C5596"
+bench-02 = "usb:3-1.4.2"
+
+[defaults]
+chip = "CH32V203C8T6"
+```
+
+### 3.4 probe selector 書式
+
+```text
+--probe <selector>
+  VID:PID[:SERIAL]      canonical(probe-rs 互換)。例 1a86:8010:434A124C5596
+  serial:<sn>           serial だけで指定
+  name:<alias>          設定ファイルの別名
+  usb:<bus>-<ports>     USB topology(固定 hub の物理 port。HIL lane 用)
+  index:<n>             列挙順(非推奨)。--non-interactive では拒否
+```
+
+- serial を持たない device(ISP mode 等)は `VID:PID:` (空 serial)と topology で選ぶ。
+- 解決結果が 0 台なら exit 10、2 台以上なら exit 14 で候補一覧を出す。
+- `probe list --json` が selector に使える全 key を出力する。
+
+### 3.5 出力契約
+
+- **stdout**: 結果。`--json` 時は単一の JSON object のみ。human 出力時も結果のみ。
+- **stderr**: log・進捗・警告。`--progress ndjson` 時は 1 行 1 event の NDJSON。
+- JSON には必ず `contract`(契約版)と `ok` を含む。schema は `docs/contract/` に置き、CLI の版とは独立に versioning する。
+
+```json
+{"contract":"1","ok":true,"cmd":"flash",
+ "probe":{"model":"WCH-LinkE","firmware":{"raw":"020c","norm":"2.12","wch":"v32"},"serial":"434A124C5596"},
+ "target":{"sku":"CH32V203C8T6","chip_id":"0x30330504","verified":true},
+ "flash":{"written":16700,"erase":"sector","verify":"readback","retries":1},
+ "run":{"confirmed":true,"pc":"0x08000156"}}
+```
+
+NDJSON event(stderr)の例。**再試行は必ず event として可視化する**(「16.7 KB で固まる」問題の運用要件):
+
+```json
+{"ev":"phase","name":"erase","total":12}
+{"ev":"progress","phase":"program","done":8192,"total":16700}
+{"ev":"retry","phase":"program","attempt":2,"cause":"transport-timeout"}
+{"ev":"warn","code":"fw-known-bad","msg":"LinkE firmware 2.11 has a known reset defect"}
+```
+
+### 3.6 exit code
+
+| code | 意味 |
+|---|---|
+| 0 | 成功 |
+| 2 | 引数・使い方(clap) |
+| 10 | 入口 device が見つからない(probe / ISP device / DFU / port) |
+| 11 | device を開けない(権限、driver binding) |
+| 12 | device firmware が要求を満たさない(既知不良版を含む) |
+| 13 | device 使用中(lock 取得失敗) |
+| 14 | device が一意に解決されない(fail-closed) |
+| 20 | target を特定できない(応答なし / DB に無い。両者は JSON で区別) |
+| 21 | target が protected(明示 unprotect が必要) |
+| 22 | attach 失敗(配線、電源、BOOT) |
+| 23 | target 曖昧(複数候補 / `--chip` と検出の矛盾) |
+| 24 | capability 不足(probe×FW×target×operation で不可) |
+| 30 | verify 不一致 / blank check 失敗 |
+| 40 | transport timeout・転送中断 |
+| 41 | probe が固まっており USB 再接続が必要(検出時) |
+| 50 | 書けたが target が走っていない(`--confirm-run` 失敗) |
+| 70 | 内部エラー(bug。report 情報を出す) |
+
+10-14 は「経路の入口 device」、20-24 は「target」、30-41 は「転送・検証」、50 は「実行確認」。将来の追加は各帯の空き番号のみ使う。
+
+### 3.7 排他制御と再試行
+
+- **lock**: USB serial(無ければ topology)単位の advisory lock を OS の runtime dir に置く。`--lock-timeout` 待って取れなければ exit 13。異常終了した保持者の stale lock は起動時に回収する。
+- **open 再試行**: 挿抜直後は CDC interface が vendor interface より先に見える(実測)。open 失敗は 1 秒間隔で計 3 回まで再試行してから exit する。
+- **転送再試行**: chunk 単位の timeout→再試行(既定 3 回)。再試行が起きた事実は NDJSON event と JSON 結果(`retries`)に必ず出す。
+- **固まり検出**: 再試行が尽きて probe が応答しなくなったら、`USBDEVFS_RESET` は使わず、再接続手順(usbipd / 物理挿抜)を提示して exit 41。
+
+## 4. コマンド詳細
+
+### 4.1 書き込み系(top-level、probe 経路)
+
+#### flash
+
+```text
+ch32rv flash <FILE>
+  --format auto|elf|hex|bin|uf2      既定 auto(magic 判別)
+  --offset <addr>                    bin 用ロード先(既定: code 領域先頭)
+  --region code|system               書込先領域(既定 code)。system は対応 family のみ、unlock 手順込み
+  --erase auto|sector|chip|none      既定 auto
+  --verify readback|crc|none         既定 readback。crc は capability 依存。none は明示選択
+  --preverify                        既に一致していれば書込を省略
+  --reset run|halt|none              既定 run
+  --confirm-run[=status|pc]          reset run 後の走行確認(既定 pc)。失敗で exit 50
+  --sdi on|off                       書込後に SDI print を設定(capability 判定込み)
+  --monitor uart|sdi|dmdata|rtt      書込後そのまま monitor へ移行
+  --restore-unwritten                sector 内の未書込 byte を保存 P2
+  --repeat                           target の再接続を検知して連続書込(量産)P2
+```
+
+- ELF/ihex はセグメントの物理アドレスを使い、`--offset` は無視して warn(bin のみ有効)。セグメントが DB 上の書込可能領域に収まらなければ実行前に exit 2。
+- `--confirm-run=status` は DM の running 状態のみ確認。`=pc` はさらに瞬間 halt→dpc 読取→resume で PC を採取し、flash 領域内かを判定する。SRAM 先頭(`0x2000_0018` 型)で止まっていれば「BOOT ピン疑い」を hint に出す。
+- 対応 SKU でも **DB 上 verified でない場合は warn を出して続行**する(「実装済み」と「実機確認済み」の区別)。
+
+#### verify / read / write / erase
+
+```text
+ch32rv verify <FILE> [--format ...] [--offset ...] [--region ...]     不一致は exit 30
+ch32rv read  (--range <addr>[+len|..end] | --region <r>[+off][+len])
+             [-o <file>|-] [--format bin|hex|ihex] [--blank-check]
+ch32rv write (<FILE> | hex:<bytes> | word:<u32>) --at <addr|region[+off]>
+             [--erase auto|none]                                       上級。flash 先で erase none は warn
+ch32rv erase (--chip | --region <r> | --range <a>..<b>)               範囲指定は必須(暗黙の全消去をしない)
+```
+
+領域名は `code` / `system`(bootloader)/ `option` / `eeprom` / `ram`。minichlink の `flash` / `bootloader` 名は別名として受ける。
+
+#### reset / run / recover
+
+```text
+ch32rv reset [--halt] [--dm] [--confirm-run]      既定: reset して実行、detach
+ch32rv run <ELF> [--no-flash] [--source dmdata|rtt|uart|sdi]
+             [--exit-on semihosting|timeout=<s>]  target の exit code を伝搬(HIL 用)
+ch32rv recover --method power-off|nrst|unprotect|unbrick
+             [--chip <family>]                    特殊消去(power-off/nrst)は --chip 必須
+```
+
+- `recover` の method は別 operation として固定する: `power-off`(給電断 erase)、`nrst`(RST ピン erase。配線要件を事前表示)、`unprotect`(RDP 解除 = 全消去。確認プロンプト)、`unbrick`(電源サイクル + DM 連打 + option 工場値 + 全消去。minichlink 手順の移植)。
+- attach 手段としての connect-under-reset は recover ではなく global `--connect-under-reset`。
+
+### 4.2 probe
+
+```text
+ch32rv probe list [--watch]                       --json に selector 全 key、Windows は interface ごとの bound driver 名
+ch32rv probe info [--probe <sel>]                 型番/HW/FW 版(raw・正規・WCH 表記)/mode/serial/interface 構成/使用中
+ch32rv probe power <3v3|5v> <on|off>
+ch32rv probe power cycle [--off-ms 300]
+ch32rv probe mode get
+ch32rv probe mode set <riscv|dap> [--yes]
+ch32rv probe firmware info                        版と hash。既知不良版 DB と照合して判定を出す
+ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12
+ch32rv probe firmware update --image <FILE> [--yes]
+ch32rv probe vendor <hex...>                      隠し。backend 固有 command の escape hatch
+```
+
+- firmware 版は **raw byte・正規化表記(2.12)・WCH 表記(v32)を常に併記**し、比較は正規化値で行う(表記系の混同と probe-rs の版比較バグを構造的に避ける)。
+- `firmware update` は IAP mode(`4348:55e0`)への遷移・書込・再 enumeration 待ち・版確認までを 1 操作にする。既に IAP に滞留した個体を検出したら update の続行か脱出(exit IAP)を提示する。image は同梱しない(user-supplied)。
+- 対応 probe: WCH-LinkE / LinkW / LinkS / 旧 Link(CH549)を型番として区別し、非対応 operation は capability で事前に弾く。互換 probe(funprog HID / NHC-Link042 / ardulink / rv003usb 系)は P2 の backend として同じ体系に入る。
+
+### 4.3 target
+
+```text
+ch32rv target info                                chip ID/family/SKU 候補(根拠付き)/UID/flash size/保護状態/option 要約/verified
+ch32rv target option get
+ch32rv target option set <key>=<value>...         例: rdp=off nrst=gpio split=160/32 debug=off
+ch32rv target option reset                        工場出荷値
+ch32rv target option write-raw <hex> [--yes]      生値(expert)
+ch32rv target protect <on|off> [--yes]            off は全消去を伴う旨を明示
+```
+
+- 構造化 key は family ごとに DB から導出(`db info <sku>` で一覧可能)。set は read-modify-write-verify。
+- 「未対応 SKU」と「DB に無い SKU」は JSON で区別する(exit 20 の detail)。
+
+### 4.4 dbg
+
+```text
+ch32rv dbg halt [--reset]     ch32rv dbg resume     ch32rv dbg step [N]
+ch32rv dbg regs                                     GPR + pc(dpc)一括
+ch32rv dbg reg read|write <x1..x31|pc|csr:<addr>> [<value>]
+ch32rv dbg dmi read|write <addr> [<value>]          DM レジスタ直接(expert)
+```
+
+### 4.5 monitor
+
+```text
+ch32rv monitor [--source uart|sdi|dmdata|rtt]
+  --port <path:/dev/ttyACM0 | usb:VID:PID[:SERIAL][:IFACE]>   省略時は --probe の CDC から導出
+  --baud 115200      (uart のみ)
+  --timestamps / --log <file> / --raw
+  --reconnect        再 enumeration 追従(既定 on。upload 直後の配送停止は再 open で直る実測に基づく)
+ch32rv monitor list [--json]                        候補 port と役割(uart/sdi)の対応
+ch32rv monitor sdi <on|off>
+```
+
+- 4 経路は同じ COM に見えても**別の transport 名**として扱う: `uart`(物理 UART bridge)/ `sdi`(WCH 公式 SDI print。受信のみ。必要なら自動 enable、firmware 2.10+ を capability で判定)/ `dmdata`(ch32fun の DMDATA0/1 メールボックス。双方向)/ `rtt`(RAM ring buffer)。
+- port は VID/PID/serial/interface から決め、COM 番号・`/dev/tty*` の番号に依存しない。`--probe name:bench-01` から同一物理 device の CDC を引けることが HIL の要件。
+
+### 4.6 gdb / dap
+
+```text
+ch32rv gdb [--listen 127.0.0.1:3333] [--reset-halt] [--no-flash]
+ch32rv dap [--port <n>|--stdio]                     P2
+```
+
+- **attach 時に target flash を書き換えない**(WCH OpenOCD の挙動を再現しない)。`load`(vFlash)には対応するが必須にしない。
+- V003 等 HW breakpoint の無い family は flash patch による SW breakpoint を実装し、**GDB へは実態どおり申告する**(minichlink の `hwbreak+` 偽装をしない)。
+
+### 4.7 isp(factory ISP 経路)
+
+```text
+ch32rv isp [--transport usb|uart] [--port <serial-port>] [--baud <n>] [--device <usb:sel|index:n>]
+ch32rv isp list                                     ISP mode device の列挙。LinkE IAP(同 VID:PID)は区別して表示
+ch32rv isp info                                     chip/BTVER/UID/保護状態
+ch32rv isp enter [--via touch1200 --port <p>]       app 協調での ISP 突入(X03x/X315/H417)。他は BOOT 手順を提示
+ch32rv isp flash <FILE> [--erase auto|none] [--verify on|none] [--reset run|none]
+ch32rv isp verify <FILE>
+ch32rv isp erase
+ch32rv isp eeprom read|write|erase [<FILE>]         dataflash
+ch32rv isp config get|set <key>=<v>|reset           config bytes(debug 有効/無効、保護解除を含む)
+ch32rv isp reset
+```
+
+- ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed。複数台は `usb:<bus>-<ports>` で選ぶ。
+- protocol は自前実装(wchisp は GPL-2.0 のため取り込まない)。wchisp/minichlink に無い 0xa6 VERIFY・DATA 系・UART transport も protocol.md に記録した上で実装する。
+
+### 4.8 boot(custom bootloader 経路)
+
+```text
+ch32rv boot enter [--method touch1200|double-reset|magic|pin] [--port <p>]
+ch32rv boot dfu flash <FILE> [--alt <n>] [--address <a>]      dfu-util 相当
+ch32rv boot dfu info
+ch32rv boot uf2 flash <FILE>                                   volume 検出→(必要なら変換)→copy→完了監視
+ch32rv boot uart flash|info <FILE> [--node <id>]               tinyboot 系(RS-485 multi-drop 含む)
+ch32rv boot hid flash <FILE>                                   rv003usb / b003fun 系
+```
+
+UF2 family ID・DFU の VID:PID・HID の magic packet は target DB / 設定で管理する。すべて P2。
+
+### 4.9 db
+
+```text
+ch32rv db list [--family <f>] [--verified-only]
+ch32rv db info <SKU>            geometry(page/fast/block)、領域、option layout、chip ID、生成元 revision、verified 根拠
+```
+
+DB は ch32-device-data / ch32-data からの生成物で手書き YAML を持たない(architecture.ja.md §4)。`--db <path>` overlay で新 SKU を再ビルドなしに試せる。
+
+### 4.10 capabilities / doctor / version / complete
+
+```text
+ch32rv capabilities [--probe <sel>] [--chip <sku>]   probe 型番 × probe FW × target family × operation の可否と理由
+ch32rv doctor [--emit-udev]                          権限/udev、Windows driver binding、既知不良 FW、IAP 滞留、
+                                                     target 電源/BOOT/配線の切り分けと次の一手。--fix は持たない(暗黙の sudo をしない)
+ch32rv version [--json]                              tool 版 / git rev / contract 版 / target DB rev+hash / flash stub hash / build target
+ch32rv complete <bash|zsh|fish|powershell>
+```
+
+すべての操作 command は実行前に capabilities と同じ判定を通り、不可なら exit 24 で同じ構造の理由を返す。`tool supports LinkE` の boolean は存在しない。
+
+### 4.11 arduino
+
+```text
+ch32rv arduino discovery       Pluggable Discovery protocol(stdio JSON)。probe を wchlink://<serial> の port として公開し、
+                               ISP device・CDC monitor port(uart/sdi の役割判定付き)も列挙する
+ch32rv arduino monitor         Pluggable Monitor protocol(stdio JSON)。--source uart|sdi|dmdata|rtt を wrap する
+```
+
+Arduino 専用の書き込みロジックは持たない。recipe は §5 の通常 command を呼ぶ。
+
+## 5. 呼び出し例
+
+Arduino recipe(platform.txt)。probe selector は空にできる 1 変数に畳む(現行 probe-rs recipe と同じ制約):
+
+```text
+"{path}/ch32rv" flash "{build.path}/{build.project_name}.elf" --format elf --chip {build.ch32rv_chip} --reset run --confirm-run --non-interactive --progress none {upload.probe_args}
+```
+
+CI / HIL:
+
+```sh
+ch32rv probe firmware check --min 2.12 --probe name:bench-01        # 既知不良版なら exit 12
+ch32rv flash app.elf --probe name:bench-01 --json > result.json     # retries も JSON に残る
+ch32rv run tests.elf --probe name:bench-01 --source dmdata --exit-on semihosting
+```
+
+日常:
+
+```sh
+ch32rv flash blink.elf --monitor sdi      # 書いて、走行確認して、そのまま SDI print を見る
+ch32rv doctor                             # 動かない時の一手目
+```
+
+## 6. 互換性ポリシー
+
+- **contract 版**(JSON schema・NDJSON event・exit code)は CLI 版と独立に管理し、破壊変更でのみ major を上げる。field 追加は随時。
+- command と flag は追加のみ。廃止する場合は 2 minor 版の deprecation 警告を挟む。
+- exit code は追加のみ(§3.6 の帯を守る)。
+- `--json` の schema は `docs/contract/` に置き、release ごとに固定する。
+
+## 7. 参照
+
+- [requirements.ja.md](requirements.ja.md)(吸収マップと根拠)
+- [原設計案 §4・§6](../../note/research/new-programming-tool-design.ja.md)
+- `../../ArduinoCore-CH32/platform.txt`(recipe 制約の現物)
+- [Arduino Pluggable Discovery / Monitor specification](https://arduino.github.io/arduino-cli/latest/pluggable-discovery-specification/)
