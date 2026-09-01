@@ -327,6 +327,7 @@ ch32rv dap [--port <n>|--stdio]                     P2
 
 - **attach 時に target flash を書き換えない**(WCH OpenOCD の挙動を再現しない)。`load`(vFlash)には対応するが必須にしない。
 - V003 等 HW breakpoint の無い family は flash patch による SW breakpoint を実装し、**GDB へは実態どおり申告する**(minichlink の `hwbreak+` 偽装をしない)。
+- 実装状況(2026-09-01): gdbstub ベースの GDB server が **register/memory R/W・halt/continue/step・Ctrl-C・SW breakpoint(memory patch、当面 RAM のみ)** を実機で動作(CH32V203、riscv-none-embed-gdb で確認)。RV32 arch は x0-x31+pc の整数のみ(V4F FPU は後続)。**flash 上の SW breakpoint は QingKe trigger module(HW breakpoint)実装が必要で未対応**。`load`(vFlash)は未実装。
 
 ### 4.7 isp(factory ISP 経路)
 
