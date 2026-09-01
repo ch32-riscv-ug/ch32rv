@@ -143,6 +143,148 @@ pub fn regs(cli: &Cli) -> ExitCode {
     }
 }
 
+pub fn halt(cli: &Cli, reset: bool) -> ExitCode {
+    const CMD: &str = "dbg.halt";
+    let mut warnings = Vec::new();
+    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    if reset && let Err(e) = session.link().soft_reset() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::TransportTimeout,
+            format!("reset failed: {e}"),
+            None,
+        );
+    }
+    let mut dm = session.dm();
+    match dm.halt() {
+        Ok(()) => {
+            let pc = dm.read_reg(RegName::Pc).ok();
+            simple_ok(
+                cli,
+                CMD,
+                serde_json::json!({ "halted": true, "pc": pc.map(|v| format!("0x{v:08x}")) }),
+                &format!(
+                    "halted{}",
+                    pc.map(|v| format!(" at 0x{v:08x}")).unwrap_or_default()
+                ),
+                warnings,
+            )
+        }
+        Err(e) => fail(
+            cli,
+            CMD,
+            ErrorKind::AttachFailed,
+            format!("halt failed: {e}"),
+            None,
+        ),
+    }
+}
+
+pub fn resume(cli: &Cli) -> ExitCode {
+    const CMD: &str = "dbg.resume";
+    let mut warnings = Vec::new();
+    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    let mut dm = session.dm();
+    match dm.resume() {
+        Ok(()) => simple_ok(
+            cli,
+            CMD,
+            serde_json::json!({ "resumed": true }),
+            "resumed",
+            warnings,
+        ),
+        Err(e) => fail(
+            cli,
+            CMD,
+            ErrorKind::TransportTimeout,
+            format!("resume failed: {e}"),
+            None,
+        ),
+    }
+}
+
+pub fn step(cli: &Cli, n: Option<u32>) -> ExitCode {
+    const CMD: &str = "dbg.step";
+    let count = n.unwrap_or(1).max(1);
+    let mut warnings = Vec::new();
+    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    let mut dm = session.dm();
+    if let Err(e) = dm.halt() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::AttachFailed,
+            format!("halt failed: {e}"),
+            None,
+        );
+    }
+    for i in 0..count {
+        if let Err(e) = dm.step() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::TransportTimeout,
+                format!("step {} failed: {e}", i + 1),
+                None,
+            );
+        }
+    }
+    let pc = dm.read_reg(RegName::Pc).ok();
+    simple_ok(
+        cli,
+        CMD,
+        serde_json::json!({ "stepped": count, "pc": pc.map(|v| format!("0x{v:08x}")) }),
+        &format!(
+            "stepped {count}{}",
+            pc.map(|v| format!(", pc 0x{v:08x}")).unwrap_or_default()
+        ),
+        warnings,
+    )
+}
+
+fn simple_ok(
+    cli: &Cli,
+    cmd: &str,
+    result: serde_json::Value,
+    human: &str,
+    warnings: Vec<Warning>,
+) -> ExitCode {
+    if cli.json {
+        let mut env = ResultEnvelope::success(cmd);
+        env.result = Some(result);
+        env.warnings = warnings;
+        crate::print_envelope(&env)
+    } else {
+        println!("{human}");
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
+        ExitCode::SUCCESS
+    }
+}
+
 pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     const CMD: &str = "read";
     // The clap ArgGroup guarantees exactly one of --range / --region is present.
