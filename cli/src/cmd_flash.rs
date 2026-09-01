@@ -176,15 +176,39 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
 
     let sink = crate::progress::sink(cli);
 
-    // Erase per policy. `chip` and `auto` do a whole-chip erase (fast; the natural choice for a
-    // full-image flash, which is the common case). `sector` erases only the flash pages the image
-    // actually covers, via the direct FLASH controller - so it never wipes flash outside the image
-    // (e.g. a bootloader or calibration data in high flash). `none` skips erase entirely.
-    // en: `sector` was previously an alias for a whole-chip erase (a silent data-loss footgun);
-    // it now erases surgically. `auto` stays whole-chip so the default flashing path is unchanged.
-    match args.erase {
+    // Erase per policy.
+    //   chip   - one fast whole-chip erase (~100x faster per area than page erase).
+    //   sector - erase only the flash pages the image covers, via the direct FLASH controller, so
+    //            nothing outside the image is touched (a bootloader / calibration data in high
+    //            flash survives). `sector` was previously a silent alias for chip erase - a
+    //            data-loss footgun - and now erases surgically.
+    //   auto   - chip for a program loaded from the flash base (a full flash, so the one fast
+    //            erase is right), sector for a partial/offset image (never wipe outside it).
+    //   none   - skip erase.
+    // The chosen scope is reported (JSON `erase`, and a line of normal output) so `auto` is never
+    // a mystery.
+    let erase = match args.erase {
+        EraseMode::Auto => {
+            let from_base =
+                image.segments.iter().map(|s| s.addr).min() == Some(fp.code_flash_start);
+            if from_base {
+                EraseMode::Chip
+            } else {
+                EraseMode::Sector
+            }
+        }
+        other => other,
+    };
+    let erase_scope = match erase {
+        EraseMode::None => "none",
+        EraseMode::Chip => "chip",
+        EraseMode::Sector => "sector",
+        EraseMode::Auto => unreachable!("auto resolved above"),
+    };
+    match erase {
+        EraseMode::Auto => unreachable!("auto resolved above"),
         EraseMode::None => {}
-        EraseMode::Chip | EraseMode::Auto => {
+        EraseMode::Chip => {
             sink.event(&Event::Phase {
                 name: "erase".into(),
                 total: None,
@@ -367,6 +391,7 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
                         CMD,
                         &mut session,
                         total,
+                        erase_scope,
                         verified,
                         running,
                         warnings,
@@ -391,6 +416,7 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         CMD,
         &mut session,
         total,
+        erase_scope,
         verified,
         running,
         warnings,
@@ -427,6 +453,7 @@ fn finish(
     cmd: &str,
     session: &mut Session,
     total_bytes: u64,
+    erase_scope: &str,
     verified: Option<bool>,
     running: Option<bool>,
     warnings: Vec<Warning>,
@@ -442,6 +469,7 @@ fn finish(
         env.result = Some(serde_json::json!({
             "bytes": total_bytes,
             "family": session.family(),
+            "erase": erase_scope,
             "verify": verified,
             "running": running,
         }));
@@ -450,6 +478,7 @@ fn finish(
     } else {
         if ok {
             println!("flashed {total_bytes} bytes to {}", session.family());
+            println!("erase:   {erase_scope}");
             if let Some(v) = verified {
                 println!(
                     "verify:  {}",

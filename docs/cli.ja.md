@@ -206,7 +206,7 @@ ch32rv flash <FILE>
   --format auto|elf|hex|bin|uf2      既定 auto(magic 判別)
   --offset <addr>                    bin 用ロード先(既定: code 領域先頭)
   --region code|system               書込先領域(既定 code)。system は対応 family のみ、unlock 手順込み
-  --erase auto|sector|chip|none      既定 auto。chip/auto=全 chip 消去(全 image 書込の常道)。sector=image が覆う page のみ消去(image 外を消さない)。none=消去しない
+  --erase auto|sector|chip|none      既定 auto。chip=全 chip 消去(1発・高速)。sector=image が覆う page のみ消去(image 外を消さない)。auto=flash 先頭開始の image は chip・部分/offset image は sector。none=消去しない
   --verify readback|crc|none         既定 readback。crc は capability 依存。none は明示選択
   --preverify                        既に一致していれば書込を省略
   --reset run|halt|none              既定 run
@@ -220,7 +220,7 @@ ch32rv flash <FILE>
 - ELF/ihex はセグメントの物理アドレスを使い、`--offset` は無視して warn(bin のみ有効)。セグメントが DB 上の書込可能領域に収まらなければ実行前に exit 2。
 - `--confirm-run=status` は DM の running 状態のみ確認。`=pc` はさらに瞬間 halt→dpc 読取→resume で PC を採取し、flash 領域内かを判定する。SRAM 先頭(`0x2000_0018` 型)で止まっていれば「BOOT ピン疑い」を hint に出す。
 - 対応 SKU でも **DB 上 verified でない場合は warn を出して続行**する(「実装済み」と「実機確認済み」の区別)。
-- **`--erase` のモード別挙動(2026-09-01 修正)**: `chip`/`auto` は WCH-Link stub の全 chip 消去(`erase_flash`)。`sector` は **image が実際に覆う flash page だけ**を §4.2.1 の直接 FLASH controller(`flash_page_erase`)で消してから stub で program する — image 外の flash(高位の bootloader・校正データ等)を消さない。`none` は消去なし。**修正前は `sector` も暗黙で全 chip 消去していた**(=部分 image を焼くと chip 全体が飛ぶ silent な data-loss footgun)。`auto` は既定経路を変えないため全 chip 消去のまま(全 image 書込の常道で最速)。**注意**: `flash <部分image> --offset <高位> --erase auto`(既定)は今も全 chip を消す — 部分書込で下位を残したい場合は `--erase sector` を使う。sector は検証済み FLASH-controller profile を持つ family のみ(無ければ fail-closed。`--erase chip` を案内)。同一 page を共有するセグメントは 1 回に畳んで program 前に一括消去。実機検証: **L103 で `flash <256B> --offset 0x0800FF00 --erase sector` が 0x08000000 の firmware と未対象域を無傷のまま対象 page だけ書換え**(page 計算は単体テスト `covered_pages` あり)。program 後に stub が page-erase 済み(chip-erase でない)flash へ書けることも実機確認済み。
+- **`--erase` のモード別挙動(2026-09-01 修正)**: `chip` は WCH-Link stub の全 chip 消去(`erase_flash`。1発で速い)。`sector` は **image が実際に覆う flash page だけ**を §4.2.1 の直接 FLASH controller(`flash_page_erase`)で消してから stub で program する — image 外の flash(高位の bootloader・校正データ等)を消さない。`auto` は **image の最小番地が flash 先頭(`code_flash_start`)なら chip、そうでなければ(部分/offset 書込)sector** を選ぶ。`none` は消去なし。**選ばれた scope は必ず出力する**(通常出力の `erase:` 行 / JSON の `erase` フィールド)ので auto の挙動が不透明にならない。**修正の背景**: 修正前は `sector`/`auto` とも無条件で全 chip 消去していた(=部分 image を焼くと chip 全体が飛ぶ silent な data-loss footgun)。auto を「全 image=chip・部分=sector」に賢くすることで footgun を潰しつつ、フル書込(=blink 等の常道)の速度も維持する。**sector が全 image 既定でない理由(実測)**: page 単位消去は ~100ms/page(直接 FLASH controller の DMI 往復)で、chip 消去 0.15s に対し 32KB(128 page)= 12.8s、64KB= ~25s、V307 の 288KB なら数分。フル書込を毎回 sector にすると Arduino ビルドループ等が致命的に遅くなるため、フル image は chip を選ぶ。sector は検証済み FLASH-controller profile を持つ family のみ(無ければ fail-closed。`--erase chip` を案内)。同一 page を共有するセグメントは 1 回に畳んで program 前に一括消去。実機検証(L103): フル image + `--erase auto` → `erase: chip`(0.78s で 64KB 書込+program)、`flash <256B> --offset 0x0800FF00 --erase auto/sector` → `erase: sector` で 0x08000000 の firmware・未対象域を無傷のまま対象 page だけ書換え(page 計算は単体テスト `covered_pages`)。program 後に stub が page-erase 済み(chip-erase でない)flash へ書けることも実機確認済み。
 
 #### verify / read / write / erase
 
