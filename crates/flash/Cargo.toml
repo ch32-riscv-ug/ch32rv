@@ -1,0 +1,19 @@
+[package]
+name = "ch32rv-flash"
+description = "Flash programming orchestration (erase/program/verify/confirm-run) for the ch32rv tool suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ch32rv-contract = { workspace = true }
+ch32rv-dmi = { workspace = true }
+ch32rv-target = { workspace = true }
+object = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

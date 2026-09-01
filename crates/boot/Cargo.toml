@@ -1,0 +1,16 @@
+[package]
+name = "ch32rv-boot"
+description = "Custom bootloader clients (DFU, UF2, UART/RS-485, HID) for the ch32rv tool suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ch32rv-contract = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

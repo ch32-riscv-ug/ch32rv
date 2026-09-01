@@ -1,0 +1,16 @@
+[package]
+name = "ch32rv-dmi"
+description = "RISC-V Debug Module Interface layer for the ch32rv tool suite, with WCH-specific quirks isolated behind the DtmAccess boundary"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ch32rv-contract = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

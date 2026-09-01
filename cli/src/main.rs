@@ -1,0 +1,176 @@
+//! en: ch32rv CLI. A thin layer that only composes the library crates (docs/architecture.ja.md §2).
+//! Scaffold status: the whole command tree (docs/cli.ja.md) is defined, `version` works,
+//! everything else exits 70 (unimplemented).
+//!
+//! ja: ch32rv CLI。library crate 群を組み合わせるだけの薄い層(docs/architecture.ja.md §2)。
+//! 現状は scaffold: コマンド体系(docs/cli.ja.md)は全定義済み、`version` のみ動作し、
+//! 他は exit 70(unimplemented)を返す。
+
+mod args;
+
+use clap::Parser;
+
+use args::*;
+use ch32rv_contract::{self as contract, ErrorKind, ResultEnvelope};
+
+fn main() -> std::process::ExitCode {
+    let cli = Cli::parse();
+    match &cli.command {
+        Command::Version => cmd_version(&cli),
+        other => unimplemented_cmd(&cli, canonical_name(other)),
+    }
+}
+
+fn cmd_version(cli: &Cli) -> std::process::ExitCode {
+    let mut env = ResultEnvelope::success("version");
+    env.result = Some(serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        // en: TODO(M1): fill git rev / target DB rev / flash stub hashes via a build script.
+        // ja: TODO(M1): build script で git rev / target DB rev / flash stub hash を埋める。
+        "git_rev": serde_json::Value::Null,
+        "contract": contract::CONTRACT_VERSION,
+        "target_db": serde_json::Value::Null,
+        "build": {
+            "os": std::env::consts::OS,
+            "arch": std::env::consts::ARCH,
+        },
+    }));
+    if cli.json {
+        print_envelope(&env)
+    } else {
+        println!("ch32rv {}", env!("CARGO_PKG_VERSION"));
+        println!("contract: {}", contract::CONTRACT_VERSION);
+        println!("build: {}-{}", std::env::consts::ARCH, std::env::consts::OS);
+        std::process::ExitCode::SUCCESS
+    }
+}
+
+fn unimplemented_cmd(cli: &Cli, cmd: &str) -> std::process::ExitCode {
+    if cli.json {
+        let mut env = ResultEnvelope::failure(
+            cmd,
+            ErrorKind::Unimplemented,
+            "not implemented yet (scaffold)",
+        );
+        if let Some(e) = env.error.as_mut() {
+            e.hint = Some(
+                "see docs/cli.ja.md for the specified behavior and the milestone plan".to_owned(),
+            );
+        }
+        let code = ErrorKind::Unimplemented.exit_code();
+        let _ = print_envelope(&env);
+        code.into()
+    } else {
+        eprintln!("ch32rv: `{cmd}` is not implemented yet (scaffold; see docs/cli.ja.md)");
+        contract::ExitCode::Internal.into()
+    }
+}
+
+fn print_envelope(env: &ResultEnvelope) -> std::process::ExitCode {
+    match serde_json::to_string(env) {
+        Ok(s) => {
+            println!("{s}");
+            if env.ok {
+                std::process::ExitCode::SUCCESS
+            } else {
+                env.error
+                    .as_ref()
+                    .map(|e| std::process::ExitCode::from(e.code))
+                    .unwrap_or(contract::ExitCode::Internal.into())
+            }
+        }
+        Err(e) => {
+            eprintln!("ch32rv: internal error: failed to serialize result: {e}");
+            contract::ExitCode::Internal.into()
+        }
+    }
+}
+
+/// en: Canonical command name (`cmd` in the JSON envelope; docs/contract/result.schema.json).
+/// ja: command の正規名(JSON の `cmd`。docs/contract/result.schema.json)。
+fn canonical_name(cmd: &Command) -> &'static str {
+    match cmd {
+        Command::Flash(_) => "flash",
+        Command::Verify(_) => "verify",
+        Command::Read(_) => "read",
+        Command::Write(_) => "write",
+        Command::Erase(_) => "erase",
+        Command::Reset(_) => "reset",
+        Command::Run(_) => "run",
+        Command::Recover(_) => "recover",
+        Command::Probe(p) => match p {
+            ProbeCmd::List { .. } => "probe.list",
+            ProbeCmd::Info => "probe.info",
+            ProbeCmd::Power(PowerCmd::V3v3 { .. }) => "probe.power.3v3",
+            ProbeCmd::Power(PowerCmd::V5 { .. }) => "probe.power.5v",
+            ProbeCmd::Power(PowerCmd::Cycle { .. }) => "probe.power.cycle",
+            ProbeCmd::Mode(ModeCmd::Get) => "probe.mode.get",
+            ProbeCmd::Mode(ModeCmd::Set { .. }) => "probe.mode.set",
+            ProbeCmd::Firmware(FirmwareCmd::Info) => "probe.firmware.info",
+            ProbeCmd::Firmware(FirmwareCmd::Check { .. }) => "probe.firmware.check",
+            ProbeCmd::Firmware(FirmwareCmd::Update { .. }) => "probe.firmware.update",
+            ProbeCmd::Vendor { .. } => "probe.vendor",
+        },
+        Command::Target(t) => match t {
+            TargetCmd::Info => "target.info",
+            TargetCmd::Opt(OptionCmd::Get) => "target.option.get",
+            TargetCmd::Opt(OptionCmd::Set { .. }) => "target.option.set",
+            TargetCmd::Opt(OptionCmd::Reset) => "target.option.reset",
+            TargetCmd::Opt(OptionCmd::WriteRaw { .. }) => "target.option.write-raw",
+            TargetCmd::Protect { .. } => "target.protect",
+        },
+        Command::Dbg(d) => match d {
+            DbgCmd::Halt { .. } => "dbg.halt",
+            DbgCmd::Resume => "dbg.resume",
+            DbgCmd::Step { .. } => "dbg.step",
+            DbgCmd::Regs => "dbg.regs",
+            DbgCmd::Reg(RegCmd::Read { .. }) => "dbg.reg.read",
+            DbgCmd::Reg(RegCmd::Write { .. }) => "dbg.reg.write",
+            DbgCmd::Dmi(DmiCmd::Read { .. }) => "dbg.dmi.read",
+            DbgCmd::Dmi(DmiCmd::Write { .. }) => "dbg.dmi.write",
+        },
+        Command::Monitor(m) => match &m.cmd {
+            Some(MonitorCmd::List) => "monitor.list",
+            Some(MonitorCmd::Sdi { .. }) => "monitor.sdi",
+            None => "monitor",
+        },
+        Command::Gdb(_) => "gdb",
+        Command::Dap(_) => "dap",
+        Command::Isp(i) => match &i.cmd {
+            IspCmd::List => "isp.list",
+            IspCmd::Info => "isp.info",
+            IspCmd::Enter { .. } => "isp.enter",
+            IspCmd::Flash { .. } => "isp.flash",
+            IspCmd::Verify { .. } => "isp.verify",
+            IspCmd::Erase => "isp.erase",
+            IspCmd::Eeprom(EepromCmd::Read { .. }) => "isp.eeprom.read",
+            IspCmd::Eeprom(EepromCmd::Write { .. }) => "isp.eeprom.write",
+            IspCmd::Eeprom(EepromCmd::Erase) => "isp.eeprom.erase",
+            IspCmd::Config(IspConfigCmd::Get) => "isp.config.get",
+            IspCmd::Config(IspConfigCmd::Set { .. }) => "isp.config.set",
+            IspCmd::Config(IspConfigCmd::Reset) => "isp.config.reset",
+            IspCmd::Reset => "isp.reset",
+        },
+        Command::Boot(b) => match b {
+            BootCmd::Enter { .. } => "boot.enter",
+            BootCmd::Dfu(DfuCmd::Flash { .. }) => "boot.dfu.flash",
+            BootCmd::Dfu(DfuCmd::Info) => "boot.dfu.info",
+            BootCmd::Uf2(Uf2Cmd::Flash { .. }) => "boot.uf2.flash",
+            BootCmd::Uart(UartBootCmd::Flash { .. }) => "boot.uart.flash",
+            BootCmd::Uart(UartBootCmd::Info { .. }) => "boot.uart.info",
+            BootCmd::Hid(HidBootCmd::Flash { .. }) => "boot.hid.flash",
+        },
+        Command::Db(d) => match d {
+            DbCmd::List { .. } => "db.list",
+            DbCmd::Info { .. } => "db.info",
+        },
+        Command::Capabilities => "capabilities",
+        Command::Doctor(_) => "doctor",
+        Command::Version => "version",
+        Command::Complete(_) => "complete",
+        Command::Arduino(a) => match a {
+            ArduinoCmd::Discovery => "arduino.discovery",
+            ArduinoCmd::Monitor => "arduino.monitor",
+        },
+    }
+}

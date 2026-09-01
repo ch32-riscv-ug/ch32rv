@@ -1,0 +1,21 @@
+[package]
+name = "ch32rv-debug"
+description = "Run control, breakpoints, and GDB server for the ch32rv tool suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ch32rv-contract = { workspace = true }
+ch32rv-dmi = { workspace = true }
+ch32rv-target = { workspace = true }
+ch32rv-flash = { workspace = true }
+# exact pin(architecture.ja.md §1.3。probe-rs が =0.7.8 に pin した前例に倣う)
+gdbstub = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

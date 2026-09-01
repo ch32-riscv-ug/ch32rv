@@ -1,0 +1,19 @@
+[package]
+name = "ch32rv-monitor"
+description = "Runtime I/O monitor (physical UART, WCH SDI print, ch32fun DMDATA mailbox, RTT) for the ch32rv tool suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ch32rv-contract = { workspace = true }
+ch32rv-usb = { workspace = true }
+ch32rv-dmi = { workspace = true }
+serialport = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
