@@ -20,6 +20,7 @@ ch32rv-monitor = { workspace = true }
 ch32rv-isp = { workspace = true }
 ch32rv-boot = { workspace = true }
 clap = { workspace = true }
+gdbstub = { workspace = true }
 serde_json = { workspace = true }
 serialport = { workspace = true }
 toml = { workspace = true }

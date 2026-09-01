@@ -97,6 +97,7 @@ dependencies = [
  "ch32rv-usb",
  "ch32rv-wchlink",
  "clap",
+ "gdbstub",
  "serde_json",
  "serialport",
  "toml",

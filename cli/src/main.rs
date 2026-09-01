@@ -10,6 +10,7 @@ mod args;
 mod cmd_dbg;
 mod cmd_doctor;
 mod cmd_flash;
+mod cmd_gdb;
 mod cmd_monitor;
 mod cmd_probe;
 mod cmd_target;
@@ -42,6 +43,7 @@ fn main() -> std::process::ExitCode {
         Command::Recover(args) => cmd_flash::recover(&cli, args),
         Command::Doctor(args) => cmd_doctor::doctor(&cli, args),
         Command::Monitor(args) => cmd_monitor::monitor(&cli, args),
+        Command::Gdb(args) => cmd_gdb::gdb(&cli, args),
         other => unimplemented_cmd(&cli, canonical_name(other)),
     }
 }

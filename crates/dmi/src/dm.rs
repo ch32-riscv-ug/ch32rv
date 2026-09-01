@@ -257,6 +257,58 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         Ok(Some(out))
     }
 
+    /// en: Write one 32-bit word to target memory via program buffer (`sw x7,0(x5)`). The hart
+    /// must be halted. Transcribed from wlink `write_mem32`.
+    /// ja: program buffer 経由で target メモリへ 32bit を 1 word 書く(`sw x7,0(x5)`)。
+    /// hart は halt 済みであること。wlink `write_mem32` から転記。
+    pub fn write_mem32(&mut self, addr: u32, data: u32) -> Result<(), DmiError> {
+        self.write(DMPROGBUF0, 0x0072_a023)?; // sw x7, 0(x5)
+        self.write(DMPROGBUF1, 0x0010_0073)?; // ebreak
+        self.write(DMDATA0, addr)?; // data0 <- address
+        self.clear_cmderr()?;
+        self.write(DMCOMMAND, 0x0023_1005)?; // x5 <- data0
+        self.wait_abstract()?;
+        self.write(DMDATA0, data)?; // data0 <- data
+        self.clear_cmderr()?;
+        self.write(DMCOMMAND, 0x0027_1007)?; // x7 <- data0 + postexec (sw)
+        self.wait_abstract()
+    }
+
+    /// en: Write `data` to target memory starting at `addr`. Reads-modifies-writes the head
+    /// and tail words to keep byte granularity. The hart must be halted.
+    /// ja: `addr` から `data` を書く。端の word は read-modify-write で byte 単位を保つ。
+    pub fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), DmiError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let mut a = addr;
+        let mut rest = data;
+        // Head: if misaligned, patch within the first word.
+        while !rest.is_empty() {
+            let word_addr = a & !3;
+            let off = (a - word_addr) as usize;
+            if off == 0 && rest.len() >= 4 {
+                let w = u32::from_le_bytes([rest[0], rest[1], rest[2], rest[3]]);
+                self.write_mem32(word_addr, w)?;
+                a = a
+                    .checked_add(4)
+                    .ok_or(DmiError::OperationFailed("overflow".into()))?;
+                rest = &rest[4..];
+            } else {
+                // Partial word: read, splice, write.
+                let mut w = self.read_mem32(word_addr)?.to_le_bytes();
+                let n = (4 - off).min(rest.len());
+                w[off..off + n].copy_from_slice(&rest[..n]);
+                self.write_mem32(word_addr, u32::from_le_bytes(w))?;
+                a = word_addr
+                    .checked_add(4)
+                    .ok_or(DmiError::OperationFailed("overflow".into()))?;
+                rest = &rest[n..];
+            }
+        }
+        Ok(())
+    }
+
     /// en: Read `len` bytes starting at `addr` (word-aligned reads; caller trims). Halts first
     /// is the caller's responsibility.
     /// ja: `addr` から `len` byte を読む(word 単位。端数は呼び出し側で調整)。
