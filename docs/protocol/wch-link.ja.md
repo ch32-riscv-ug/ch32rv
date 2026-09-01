@@ -21,10 +21,10 @@
 
 | 用途 | EP | 状態 | 根拠 |
 |---|---|---|---|
-| command OUT / IN | `0x01` / `0x81` | **conflict** | probe-rs `usb_interface.rs:11-12`。wlink protocol.md も同様 |
+| command OUT / IN | `0x01` / `0x81` | **verified**(2026-09-01) | ch32rv 実装で LinkE(FW 2.22)・Link CH549(FW 2.12)の実機 2 台に対し GetProbeInfo が成功。probe-rs `usb_interface.rs:11-12`、wlink protocol.md と一致 |
 | data(raw)OUT / IN | `0x02` / `0x82` | **conflict** | probe-rs はコメントアウトのまま未使用。minichlink `pgm-wch-linke.c` は OUT `0x02` / IN `0x81` を使用 |
 
-→ **OQ-1**: command と data の EP 使い分け(コマンドはどちらの EP でも受くのか、flash データ転送だけ `0x02` なのか)を capture で確定する。timeout は probe-rs が 100ms 固定、minichlink はより長い。
+→ **OQ-1**(縮小): command 経路は `0x01`/`0x81` で確定。残る疑問は data EP `0x02`/`0x82` の使い分け(flash データ転送で使うのか、minichlink が OUT `0x02` を使う理由は何か)。flash 実装時の capture で確定する。timeout は probe-rs が 100ms 固定、ch32rv は 500ms で成功。
 
 ## 3. フレーム形式
 
@@ -42,7 +42,7 @@ probe → host:  0x82 | cmd | len | payload...   (成功)
 
 | cmd | sub | 意味 | 状態 | 根拠 |
 |---|---|---|---|---|
-| `0x0d` | `0x01` | GetProbeInfo(型番・firmware 版) | attested | probe-rs, wlink |
+| `0x0d` | `0x01` | GetProbeInfo(型番・firmware 版)。応答 payload = `[fw_major, fw_minor, variant, ...]`、variant は 1=CH549 / 2,0x12=LinkE / 3=LinkS / 5,0x85=LinkW | **verified**(2026-09-01、LinkE=variant 2・raw `02 16`=2.22、CH549=variant 1・raw `02 0c`=2.12 を実機確認) | ch32rv 実装 + probe-rs, wlink |
 | `0x0d` | `0x02` | AttachChip(family byte + chip ID 応答) | attested | probe-rs, wlink |
 | `0x0d` | `0xff` | DetachChip | attested | probe-rs |
 | `0x0d 0x01` | `0x09`/`0x0a` | 3.3V 出力 on/off(`81 0d 01 09` / `0a`) | attested | minichlink `pgm-wch-linke.c:604-613`, wlink |
@@ -96,7 +96,7 @@ family byte(probe-rs `wlink/mod.rs:90-128` より転記。状態: attested):
 
 | 項目 | 内容 | 状態 |
 |---|---|---|
-| 取得 | GetProbeInfo 応答の v_major / v_minor(raw byte) | attested |
+| 取得 | GetProbeInfo 応答の v_major / v_minor(raw byte) | verified(実機: LinkE raw `0216`→2.22/v42、CH549 raw `020c`→2.12/v32) |
 | 表記の三重性 | raw `02 0c` = 正規化 `2.12` = WCH 表示 `v32`(`major*10+minor`) | attested |
 | 既知不良版 | **2.11(v31): `download --reset` 後に target が走らない**(ArduinoCore-CH32 で実測)。2.12 で解消 | verified(実測 log あり) |
 | SDI print 要件 | firmware 2.10 以降(wlink README) | single-source |

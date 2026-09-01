@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Implement `probe list` and `probe info` end to end: nusb-based enumeration, blocking bulk transfers, fail-closed selector resolution (VID:PID:SERIAL / serial: / name: aliases from ch32rv.toml / usb: topology / index:), the WCH-Link GetProbeInfo command, firmware-version triple notation with the known-bad table, and exit codes 10/14/2 for not-found/ambiguous/index-rejection. Verified live against a WCH-LinkE (fw 2.22) and a WCH-Link CH549 (fw 2.12); the command endpoint pair 0x01/0x81 and the GetProbeInfo layout are now capture-verified in the protocol notes.
+- (JA) `probe list` / `probe info` を実装: nusb 列挙、ブロッキング bulk 転送、fail-closed な selector 解決(VID:PID:SERIAL / serial: / ch32rv.toml の name: 別名 / usb: topology / index:)、WCH-Link GetProbeInfo、firmware 版の三重表記と既知不良版表、exit code 10/14/2(不在/曖昧/index 拒否)。実機 WCH-LinkE(fw 2.22)と WCH-Link CH549(fw 2.12)で検証済み。command endpoint 0x01/0x81 と GetProbeInfo の応答配列は protocol ノートで verified に昇格。
+
 - (EN) Add the specification set: requirements with the tool-absorption map (9 tool lineages), the complete CLI command tree with the output contract (JSON envelope, NDJSON events, exit codes, probe selectors), architecture (Rust verification and crate layout), and naming decisions.
 - (JA) 仕様一式を追加: 9系統ツールの吸収マップ付き要件、出力契約(JSON envelope・NDJSON event・exit code・probe selector)込みのCLIコマンド体系、アーキテクチャ(Rust検証とcrate分割)、命名の決定。
 - (EN) Add data-request documents for the ch32-device-data repository (device IDs for the 7 gap series, debug interface types, option-byte write layouts and factory defaults), with a provisional-overlay acceptance flow.

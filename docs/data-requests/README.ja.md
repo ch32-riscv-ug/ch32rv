@@ -19,8 +19,8 @@ ch32rv が必要とする device データは ch32rv 内部で作らず、`ch32-
 
 | # | 依頼 | 状態 | 優先度 |
 |---|---|---|---|
-| [0001](0001-device-id.ja.md) | chip ID(device_id)の evidence 表新設 | draft | **高**(M2 の target 自動検出のブロッカ) |
-| [0002](0002-debug-interface.ja.md) | debug interface 種別(1線/2線)の明示列 | draft | 中(M1-M2。当面は core 名からの導出で代替可) |
-| [0003](0003-option-byte-layout.ja.md) | option bytes の書き込みレイアウトと工場出荷値 | draft | 中(M2 の `target option` / `recover unbrick` で必要) |
+| [0001](0001-device-id.ja.md) | chip ID(device_id)の evidence 表新設 | 依頼済 | **高**(M2 の target 自動検出のブロッカ) |
+| [0002](0002-debug-interface.ja.md) | debug interface 種別(1線/2線)の明示列 | 依頼済 | 中(M1-M2。当面は core 名からの導出で代替可) |
+| [0003](0003-option-byte-layout.ja.md) | option bytes の書き込みレイアウトと工場出荷値 | 依頼済 | 中(M2 の `target option` / `recover unbrick` で必要) |
 
 将来の依頼候補(まだ依頼書にしない): WCH-Link firmware の hash→版対応の継続拡充(既存 `evidence/link_firmware.csv` の新版追従)、UF2 family ID / DFU VID:PID 等の bootloader 識別子表(P2 の `boot` 実装時)。

@@ -1,6 +1,6 @@
 # 依頼 0003: option bytes の書き込みレイアウトと工場出荷値
 
-- 状態: draft
+- 状態: 依頼済(2026-09-01)
 - 依頼元: ch32rv
 - 優先度: 中(M2。`target option get/set`(構造化 read-modify-write)と `recover unbrick`(工場値書き戻し)で必要)
 - 作成日: 2026-09-01

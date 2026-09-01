@@ -1,6 +1,6 @@
 # 依頼 0001: chip ID(device_id)の evidence 表新設
 
-- 状態: draft
+- 状態: 依頼済(2026-09-01)
 - 依頼元: ch32rv(CH32 RISC-V 書き込みツール)
 - 優先度: **高**。ch32rv の target 自動検出(chip ID → family/SKU 判定、fail-closed)の一次データであり、M2 のブロッカ
 - 作成日: 2026-09-01

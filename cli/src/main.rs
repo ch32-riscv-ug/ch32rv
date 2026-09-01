@@ -7,6 +7,8 @@
 //! 他は exit 70(unimplemented)を返す。
 
 mod args;
+mod cmd_probe;
+mod config;
 
 use clap::Parser;
 
@@ -17,6 +19,8 @@ fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
     match &cli.command {
         Command::Version => cmd_version(&cli),
+        Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(&cli, *watch),
+        Command::Probe(ProbeCmd::Info) => cmd_probe::info(&cli),
         other => unimplemented_cmd(&cli, canonical_name(other)),
     }
 }
@@ -45,7 +49,7 @@ fn cmd_version(cli: &Cli) -> std::process::ExitCode {
     }
 }
 
-fn unimplemented_cmd(cli: &Cli, cmd: &str) -> std::process::ExitCode {
+pub(crate) fn unimplemented_cmd(cli: &Cli, cmd: &str) -> std::process::ExitCode {
     if cli.json {
         let mut env = ResultEnvelope::failure(
             cmd,
@@ -66,7 +70,7 @@ fn unimplemented_cmd(cli: &Cli, cmd: &str) -> std::process::ExitCode {
     }
 }
 
-fn print_envelope(env: &ResultEnvelope) -> std::process::ExitCode {
+pub(crate) fn print_envelope(env: &ResultEnvelope) -> std::process::ExitCode {
     match serde_json::to_string(env) {
         Ok(s) => {
             println!("{s}");
