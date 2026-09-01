@@ -31,6 +31,7 @@ fn main() -> std::process::ExitCode {
         Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(&cli, *watch),
         Command::Probe(ProbeCmd::Info) => cmd_probe::info(&cli),
         Command::Target(TargetCmd::Info) => cmd_target::info(&cli),
+        Command::Target(TargetCmd::Opt(OptionCmd::Get)) => cmd_target::option_get(&cli),
         Command::Dbg(DbgCmd::Regs) => cmd_dbg::regs(&cli),
         Command::Dbg(DbgCmd::Halt { reset }) => cmd_dbg::halt(&cli, *reset),
         Command::Dbg(DbgCmd::Resume) => cmd_dbg::resume(&cli),
