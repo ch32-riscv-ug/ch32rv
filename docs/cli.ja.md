@@ -229,7 +229,7 @@ ch32rv read  (--range <addr>[+len|..end] | --region <r>[+off][+len])
              [-o <file>|-] [--format bin|hex|ihex] [--blank-check]
 ch32rv write (<FILE> | hex:<bytes> | word:<u32>) --at <addr|region[+off]>
              [--erase auto|none]                                       上級。flash 先で erase none は warn
-ch32rv erase (--chip | --region <r> | --range <a>..<b>)               範囲指定は必須(暗黙の全消去をしない)
+ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指定は必須(暗黙の全消去をしない)。--all の名は global --chip <SKU> との衝突回避
 ```
 
 領域名は `code` / `system`(bootloader)/ `option` / `eeprom` / `ram`。minichlink の `flash` / `bootloader` 名は別名として受ける。

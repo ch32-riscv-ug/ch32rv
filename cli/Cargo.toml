@@ -1,0 +1,26 @@
+[package]
+name = "ch32rv"
+description = "Flashing and debugging tool for WCH CH32 RISC-V microcontrollers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ch32rv-contract = { workspace = true, features = ["clap"] }
+ch32rv-usb = { workspace = true }
+ch32rv-wchlink = { workspace = true }
+ch32rv-dmi = { workspace = true }
+ch32rv-target = { workspace = true }
+ch32rv-flash = { workspace = true }
+ch32rv-debug = { workspace = true }
+ch32rv-monitor = { workspace = true }
+ch32rv-isp = { workspace = true }
+ch32rv-boot = { workspace = true }
+clap = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

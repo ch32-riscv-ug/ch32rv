@@ -1,0 +1,17 @@
+[package]
+name = "ch32rv-target"
+description = "Generated CH32 RISC-V device database (chip detection, flash geometry, option byte layouts) for the ch32rv tool suite"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ch32rv-contract = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "ch32rv-usb"
+description = "USB device enumeration, probe selectors, per-device locking, and transaction capture for the ch32rv tool suite (nusb wrapper)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+ch32rv-contract = { workspace = true }
+nusb = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

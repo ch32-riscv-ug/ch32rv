@@ -47,7 +47,7 @@
 | `list` | `probe list` | P0。serial を canonical ID に昇格 |
 | `status` | `probe info` + `target info` | P0。probe 型番と firmware 版の machine-readable 化 |
 | `flash -a -e -R --enable-sdi-print --watch-serial` | `flash --offset --erase --reset --sdi on --monitor uart` | P0。verify 既定 on(wlink には verify が無い) |
-| `erase` | `erase --chip` | P0 |
+| `erase` | `erase --all` | P0 |
 | `erase --method power-off\|pin-rst` | `recover --method power-off\|nrst` | P0。特殊消去は復旧系に分離 |
 | `dump <addr> <len>` | `read --range` | P1 |
 | `regs` | `dbg regs` | P1 |
@@ -72,7 +72,7 @@ wlink の契約上の欠陥で、ch32rv が同じ轍を踏まないもの: verif
 | `-C linke\|esp32s2chfun\|funprog\|nchlink\|b003boot\|ardulink` | 互換 probe backend | P2。capability を実行前に返す |
 | `-C isp` | `isp` 名前空間 | P2 |
 | `-w file addr` / `-r file addr size` | `flash` / `write --at` / `read` | P0/P1。named region(`flash` `bootloader` `option` `ram` +offset)は `--region code\|system\|option\|eeprom\|ram[+off]` として継承 |
-| `-E` | `erase --chip` | P0 |
+| `-E` | `erase --all` | P0 |
 | `-u`(unbrick) | `recover --method unbrick` | P0。電源サイクル+DM 連打+option 工場値+全消去 |
 | `-U`(bootloader unlock) | `flash --region system` に内蔵 | P1。unlock 手順(FLASH_BOOT_MODEKEYR)は自動化 |
 | `-a -A -b -e` | `dbg halt --reset` / `dbg halt` / `reset` / `dbg resume` | P1 |
@@ -99,7 +99,7 @@ minichlink の構造的欠陥で、設計として再現しないもの: 固定�
 | `list` / `info` | `probe list` / `probe info` + `target info` | P0 |
 | `download --binary-format --base-address --skip --verify --preverify --chip-erase --restore-unwritten` | `flash --format --offset --verify --preverify --erase chip --restore-unwritten` | P0(restore-unwritten は P2) |
 | `verify` | `verify` | P0 |
-| `erase` | `erase --chip` | P0 |
+| `erase` | `erase --all` | P0 |
 | `read` / `write` | `read` / `write` | P1 |
 | `reset` | `reset` | P0。**`--confirm-run` を追加**(probe-rs に無い最重要差分) |
 | `run`(RTT/semihosting/exit code/embedded-test) | `run` | P1(RTT/exit code)。embedded-test runner は P2 以降の検討 |
