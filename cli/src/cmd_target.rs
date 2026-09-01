@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use ch32rv_contract::{ErrorKind, ProbeMode, ResultEnvelope, TargetReport, Warning};
 
-use crate::args::Cli;
+use crate::args::{Cli, SwitchState};
 use crate::cmd_probe::{
     apply_probe_info, base_report, fail, mode_str, print_probe_human, select_entry,
 };
@@ -280,4 +280,304 @@ fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+const OPTION_BASE: u32 = 0x1FFF_F800;
+
+/// en: Attach a RISC-V session for an option-byte command (shared boilerplate). ja: option 系の
+/// 共通 attach。
+fn option_session(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
+    let entry = select_entry(cli, cmd)?;
+    if entry.mode != ProbeMode::Riscv {
+        return Err(fail(
+            cli,
+            cmd,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "probe is in {} mode; attaching to a target requires RISC-V mode",
+                mode_str(entry.mode)
+            ),
+            None,
+        ));
+    }
+    let (speed, mut warnings) =
+        parse::speed(&cli.speed).map_err(|msg| fail(cli, cmd, ErrorKind::Usage, msg, None))?;
+    let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
+    Session::attach(&entry, speed, timeout, &mut warnings).map_err(|e| session_error(cli, cmd, e))
+}
+
+/// Confirm a destructive option-byte write: `--yes` skips it, `--non-interactive` without `--yes`
+/// refuses, otherwise prompt on the terminal.
+fn ob_confirm(cli: &Cli, prompt: &str) -> bool {
+    use std::io::Write;
+    if cli.yes {
+        return true;
+    }
+    if cli.non_interactive {
+        return false;
+    }
+    eprint!("{prompt} [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut s = String::new();
+    let _ = std::io::stdin().read_line(&mut s);
+    matches!(s.trim(), "y" | "Y" | "yes" | "YES")
+}
+
+/// Parse exactly 16 hex bytes (optionally space/`:`-separated) for `option write-raw`.
+fn parse_hex16(s: &str) -> Result<[u8; 16], String> {
+    let clean: String = s
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != ':' && *c != '_')
+        .collect();
+    if clean.len() != 32 || !clean.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!(
+            "expected 16 hex bytes (32 hex digits), got {} digit(s)",
+            clean.len()
+        ));
+    }
+    let mut out = [0u8; 16];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&clean[i * 2..i * 2 + 2], 16).map_err(|e| e.to_string())?;
+    }
+    Ok(out)
+}
+
+/// en: Read the 16 option bytes (attach, halt, read, detach). ja: 16 byte の option bytes を読む。
+fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<[u8; 16], ExitCode> {
+    let mut session = option_session(cli, cmd)?;
+    let mut dm = session.dm();
+    dm.halt().map_err(|e| {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::AttachFailed,
+            format!("halt failed: {e}"),
+            None,
+        )
+    })?;
+    let v = dm.read_mem(OPTION_BASE, 16).map_err(|e| {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::TransportTimeout,
+            format!("reading option bytes failed: {e}"),
+            None,
+        )
+    })?;
+    let mut a = [0u8; 16];
+    a.copy_from_slice(&v[..16]);
+    Ok(a)
+}
+
+/// en: Erase + program the 16 option bytes to `new` (value+complement pairs, as `option get`
+/// returns), then read back and verify. `new[0]` (RDPR) is programmed first so read protection is
+/// re-established immediately. The bytes take effect after a system reset. ja: option bytes を
+/// `new` へ erase+program し read-back で検証。RDPR を最初に書く。反映は system reset 後。
+fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
+    let mut session = match option_session(cli, cmd) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    let family = session.family();
+    let mut dm = session.dm();
+    if let Err(e) = dm.halt() {
+        return fail(
+            cli,
+            cmd,
+            ErrorKind::AttachFailed,
+            format!("halt failed: {e}"),
+            None,
+        );
+    }
+    let before = match dm.read_mem(OPTION_BASE, 16) {
+        Ok(v) => v,
+        Err(e) => {
+            return fail(
+                cli,
+                cmd,
+                ErrorKind::TransportTimeout,
+                format!("reading option bytes failed: {e}"),
+                None,
+            );
+        }
+    };
+    if let Err(e) = dm.flash_program_option_bytes(new) {
+        return fail(
+            cli,
+            cmd,
+            ErrorKind::TransportTimeout,
+            format!(
+                "programming option bytes failed: {e} - the target may be left with erased (read-protected) option bytes; recover with `ch32rv recover`"
+            ),
+            None,
+        );
+    }
+    let after = match dm.read_mem(OPTION_BASE, 16) {
+        Ok(v) => v,
+        Err(e) => {
+            return fail(
+                cli,
+                cmd,
+                ErrorKind::TransportTimeout,
+                format!("verify read failed: {e}"),
+                None,
+            );
+        }
+    };
+    // Verify the value bytes (even indices) we asked for actually landed.
+    let mismatch = (0..16).step_by(2).find(|&i| after[i] != new[i]);
+    if cli.json {
+        let mut env = ResultEnvelope::success(cmd);
+        env.result = Some(serde_json::json!({
+            "family": family,
+            "before": hex(&before),
+            "after": hex(&after),
+            "verified": mismatch.is_none(),
+            "note": "option bytes take effect after a power-on / system reset",
+        }));
+        crate::print_envelope(&env)
+    } else {
+        println!(
+            "option bytes: {} -> {} ({family})",
+            hex(&before),
+            hex(&after)
+        );
+        if let Some(i) = mismatch {
+            eprintln!(
+                "warning[option-verify]: value byte {i} reads back 0x{:02x}, not the requested 0x{:02x}",
+                after[i], new[i]
+            );
+        }
+        println!("note: option bytes take effect after a power-on / system reset");
+        ExitCode::SUCCESS
+    }
+}
+
+/// `target option write-raw <hex>`: overwrite the 16 option bytes with a raw value (expert).
+pub fn option_write_raw(cli: &Cli, hexstr: &str) -> ExitCode {
+    const CMD: &str = "target.option.write-raw";
+    let bytes = match parse_hex16(hexstr) {
+        Ok(b) => b,
+        Err(m) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                m,
+                Some("e.g. a55aff00ff00ff00ff00ff00ff00ff00 (16 bytes: RDPR nRDPR USER nUSER ...)"),
+            );
+        }
+    };
+    if bytes[0] != 0xA5
+        && !ob_confirm(
+            cli,
+            &format!(
+                "RDPR byte is 0x{:02x} (not 0xA5): this ENABLES read protection - flash becomes unreadable until you unprotect (which erases it). Continue?",
+                bytes[0]
+            ),
+        )
+    {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            "aborted: RDPR would enable read protection (pass --yes to force)",
+            None,
+        );
+    }
+    if !ob_confirm(cli, "Overwrite the target's option bytes?") {
+        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    }
+    program_option(cli, CMD, &bytes)
+}
+
+/// `target option reset`: restore factory-default option bytes (RDPR off, USER/Data/WRP cleared).
+pub fn option_reset(cli: &Cli) -> ExitCode {
+    const CMD: &str = "target.option.reset";
+    // RDPR=0xA5 (unprotected), USER/Data0/Data1/WRPR0..3 = 0xff, each followed by its complement.
+    let defaults: [u8; 16] = [
+        0xA5, 0x5A, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF,
+        0x00,
+    ];
+    if !ob_confirm(
+        cli,
+        "Restore factory-default option bytes (RDPR off, USER/Data/WRP cleared)?",
+    ) {
+        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    }
+    program_option(cli, CMD, &defaults)
+}
+
+/// `target protect on|off`: enable/disable flash read protection (RDPR). Turning it OFF triggers a
+/// full mass erase of the target's flash.
+pub fn protect(cli: &Cli, state: SwitchState) -> ExitCode {
+    const CMD: &str = "target.protect";
+    let mut ob = match read_option_bytes(cli, CMD) {
+        Ok(b) => b,
+        Err(c) => return c,
+    };
+    match state {
+        SwitchState::On => {
+            if ob[0] != 0xA5 {
+                println!("read protection is already ON (RDPR=0x{:02x})", ob[0]);
+                return ExitCode::SUCCESS;
+            }
+            if !ob_confirm(
+                cli,
+                "Enable read protection? The flash becomes unreadable/undebuggable until you turn it OFF (which ERASES all flash).",
+            ) {
+                return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+            }
+            ob[0] = 0xFF;
+            ob[1] = 0x00;
+        }
+        SwitchState::Off => {
+            if ob[0] == 0xA5 {
+                println!("read protection is already OFF (RDPR=0xA5)");
+                return ExitCode::SUCCESS;
+            }
+            if !ob_confirm(
+                cli,
+                "Disable read protection? This ERASES ALL FLASH (mass erase) on the target.",
+            ) {
+                return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+            }
+            ob[0] = 0xA5;
+            ob[1] = 0x5A;
+        }
+    }
+    program_option(cli, CMD, &ob)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::parse_hex16;
+
+    #[test]
+    fn parses_16_contiguous_bytes() {
+        let b = parse_hex16("a55aff00ff00ff00ff00ff00ff00ff00").unwrap();
+        assert_eq!(b[0], 0xA5);
+        assert_eq!(b[1], 0x5A);
+        assert_eq!(b[15], 0x00);
+    }
+
+    #[test]
+    fn accepts_separators() {
+        let a = parse_hex16("a5:5a:ff:00:ff:00:ff:00:ff:00:ff:00:ff:00:ff:00").unwrap();
+        let b = parse_hex16("a5 5a ff 00 ff 00 ff 00 ff 00 ff 00 ff 00 ff 00").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(a[0], 0xA5);
+    }
+
+    #[test]
+    fn rejects_wrong_length() {
+        assert!(parse_hex16("abcd").is_err());
+        assert!(parse_hex16("a55aff00ff00ff00ff00ff00ff00ff0000").is_err()); // 17 bytes
+    }
+
+    #[test]
+    fn rejects_non_hex() {
+        assert!(parse_hex16("zz5aff00ff00ff00ff00ff00ff00ff00").is_err());
+    }
 }
