@@ -11,7 +11,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use ch32rv_contract::event::Event;
-use ch32rv_contract::policy::{ConfirmRunMode, EraseMode, RecoverMethod, ResetPolicy, VerifyMode};
+use ch32rv_contract::policy::{
+    ConfirmRunMode, EraseMode, MonitorSource, RecoverMethod, ResetPolicy, VerifyMode,
+};
 use ch32rv_contract::progress::ProgressSink;
 use ch32rv_contract::{ErrorKind, ResultEnvelope, Warning};
 use ch32rv_flash::{Image, Segment, params_for_family};
@@ -19,7 +21,7 @@ use ch32rv_wchlink::FlashParams as WlFlashParams;
 
 use std::path::Path;
 
-use crate::args::{Cli, FlashArgs, RecoverArgs};
+use crate::args::{Cli, FlashArgs, RecoverArgs, SwitchState};
 use crate::cmd_probe::{fail, mode_str, select_entry};
 use crate::parse;
 use crate::session::{Session, SessionError};
@@ -118,6 +120,60 @@ fn overlay_page(page_addr: u32, content: &mut [u8], segments: &[Segment]) {
 }
 
 pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
+    if args.repeat {
+        flash_repeat(cli, args)
+    } else {
+        flash_once(cli, args)
+    }
+}
+
+/// en: `--repeat` (production): program the current target, then wait for the operator to remove it
+/// and insert the next one, and program that too - looping until interrupted (Ctrl-C). A failed
+/// board is reported and the loop moves on to the next, matching a production line's flow.
+/// ja: `--repeat`(量産): 今の target を焼き、operator が外して次を挿すのを待って焼く、を Ctrl-C まで
+/// 繰り返す。失敗 board は報告して次へ進む(産線の流れに合わせる)。
+fn flash_repeat(cli: &Cli, args: &FlashArgs) -> ExitCode {
+    let mut count = 0u32;
+    loop {
+        count += 1;
+        eprintln!("repeat: programming target #{count} (Ctrl-C to stop)");
+        let _ = flash_once(cli, args);
+        eprintln!("repeat: remove the programmed target ...");
+        wait_for_chip(cli, false);
+        eprintln!("repeat: insert the next target ...");
+        wait_for_chip(cli, true);
+    }
+}
+
+/// en: Poll the selected probe until a target chip is present (`want == true`) or absent
+/// (`want == false`). The probe (WCH-Link) stays enumerated across a target swap, so this attaches
+/// to the chip through it; only Ctrl-C (process signal) breaks the wait.
+/// ja: 選択 probe に target chip が有る(want=true)/無い(want=false)になるまで poll。probe 自体は
+/// target 交換で再列挙されないので、それ越しに chip へ attach を試す。抜けるのは Ctrl-C のみ。
+fn wait_for_chip(cli: &Cli, want: bool) {
+    loop {
+        if chip_present(cli) == want {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+}
+
+/// Whether a target chip currently answers AttachChip on the selected probe.
+fn chip_present(cli: &Cli) -> bool {
+    let Ok(entry) = select_entry(cli, "flash") else {
+        return false;
+    };
+    let Ok(mut link) = ch32rv_wchlink::WchLink::open(&entry.dev) else {
+        return false;
+    };
+    let _ = link.probe_info();
+    let present = link.attach_chip().is_ok();
+    let _ = link.detach_chip();
+    present
+}
+
+fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
     const CMD: &str = "flash";
     let bytes = match std::fs::read(&args.file) {
         Ok(d) => d,
@@ -264,10 +320,10 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         session.link().detach_chip().ok();
         let _ = session.link().attach_chip();
         if already_matches {
-            return reset_and_finish(
+            return finish_flash(
                 cli,
                 CMD,
-                &mut session,
+                session,
                 total,
                 "none",
                 true,
@@ -275,6 +331,8 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
                 warnings,
                 args.reset,
                 args.confirm_run,
+                args.sdi,
+                args.monitor,
             );
         }
     }
@@ -523,10 +581,10 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         verified = Some(true);
     }
 
-    reset_and_finish(
+    finish_flash(
         cli,
         CMD,
-        &mut session,
+        session,
         total,
         erase_scope,
         false,
@@ -534,18 +592,24 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         warnings,
         args.reset,
         args.confirm_run,
+        args.sdi,
+        args.monitor,
     )
 }
 
-/// en: Apply the reset policy (run/halt/none, with `--confirm-run`) and print/emit the result.
-/// Shared by the normal end of `flash` and the `--preverify` "already matches" skip path.
-/// ja: reset 方針(run/halt/none、`--confirm-run` 込み)を適用して結果を出す。`flash` の通常終了と
-/// `--preverify` の一致スキップ経路で共有する。
+/// en: Apply the reset policy (run/halt/none, with `--confirm-run`), optionally set the SDI print
+/// state (`--sdi`) and hand off to a monitor session (`--monitor`), then print/emit the result.
+/// Shared by the normal end of `flash` and the `--preverify` "already matches" skip path. Takes the
+/// session by value so it can be dropped (releasing the probe's USB handle) before a monitor
+/// session re-opens the probe.
+/// ja: reset 方針を適用し、必要なら SDI print 状態を設定(`--sdi`)して monitor へ移行(`--monitor`)、
+/// 結果を出す。`flash` の通常終了と `--preverify` スキップ経路で共有。monitor が probe を開き直せる
+/// よう session を値で受け、drop で USB を解放してから渡す。
 #[allow(clippy::too_many_arguments)]
-fn reset_and_finish(
+fn finish_flash(
     cli: &Cli,
     cmd: &str,
-    session: &mut Session,
+    mut session: Session,
     total: u64,
     erase_scope: &str,
     skipped: bool,
@@ -553,6 +617,8 @@ fn reset_and_finish(
     warnings: Vec<Warning>,
     reset: ResetPolicy,
     confirm: Option<ConfirmRunMode>,
+    sdi: Option<SwitchState>,
+    monitor: Option<MonitorSource>,
 ) -> ExitCode {
     let mut running = None;
     match reset {
@@ -568,12 +634,12 @@ fn reset_and_finish(
             }
             if let Some(mode) = confirm {
                 std::thread::sleep(Duration::from_millis(200));
-                running = Some(confirm_run(session, mode));
+                running = Some(confirm_run(&mut session, mode));
                 if running == Some(false) {
                     return finish(
                         cli,
                         cmd,
-                        session,
+                        &mut session,
                         total,
                         erase_scope,
                         skipped,
@@ -596,10 +662,22 @@ fn reset_and_finish(
         ResetPolicy::None => {}
     }
 
-    finish(
+    // --sdi: set the probe's SDI-print forwarding after the target is (re)started. A failure here
+    // must not fail the flash (programming already succeeded) - surface it as a warning.
+    if let Some(state) = sdi {
+        let on = matches!(state, SwitchState::On);
+        if let Err(e) = session.link().set_sdi_print_enabled(on) {
+            eprintln!(
+                "warning[sdi]: could not set SDI print {}: {e}",
+                if on { "on" } else { "off" }
+            );
+        }
+    }
+
+    let exit = finish(
         cli,
         cmd,
-        session,
+        &mut session,
         total,
         erase_scope,
         skipped,
@@ -607,7 +685,25 @@ fn reset_and_finish(
         running,
         warnings,
         None,
-    )
+    );
+
+    // --monitor: hand off to a monitor session (runs until Ctrl-C). Drop the flash session first so
+    // its USB handle is released and the monitor backend can open the probe / its CDC port.
+    if let Some(source) = monitor {
+        drop(session);
+        let margs = crate::args::MonitorArgs {
+            cmd: None,
+            source,
+            port: None,
+            baud: 115_200,
+            timestamps: false,
+            log: None,
+            raw: false,
+            no_reconnect: false,
+        };
+        return crate::cmd_monitor::monitor(cli, &margs);
+    }
+    exit
 }
 
 /// en: confirm-run: sample whether the target is actually executing. `status` checks the

@@ -610,6 +610,63 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         }
         Ok(())
     }
+
+    /// en: Program the 16 option bytes (0x1FFF_F800: 8 halfwords of value+complement). The hart must
+    /// be halted. `bytes` is the full 16-byte image exactly as `read_mem(0x1FFF_F800, 16)` returns
+    /// it; each halfword is written verbatim, so the CALLER owns the complement bytes. CAUTION: a
+    /// wrong RDPR (byte 0) or WRPR here enables read/write protection - an all-0xff option area means
+    /// read protection ON, so RDPR is programmed first. Transcribed from minichlink's option path.
+    /// ja: 16 byte の option bytes(0x1FFF_F800、value+complement の 8 halfword)を program。hart は
+    /// halt 済み。`bytes` は `read_mem(0x1FFF_F800,16)` の 16 byte をそのまま。各 halfword を verbatim で
+    /// 書くので complement は呼び出し側の責任。注意: RDPR(byte0)/WRPR を誤ると保護 ON(全 0xff = 読み
+    /// 出し保護 ON)なので RDPR を最初に書く。minichlink の option 書込経路から転記。
+    pub fn flash_program_option_bytes(&mut self, bytes: &[u8; 16]) -> Result<(), DmiError> {
+        const OB_BASE: u32 = 0x1FFF_F800;
+        const FLASH_OBKEYR: u32 = 0x4002_2008; // option-write unlock (STM32F1-style OPTKEYR)
+        const OPTPG: u32 = 1 << 4;
+        const OPTER: u32 = 1 << 5;
+        const OPTWRE: u32 = 1 << 9;
+        // Unlock main flash and the option-write enable (OBKEYR sets OPTWRE); MODEKEYR is harmless.
+        self.write_mem32(FLASH_KEYR, FLASH_KEY1)?;
+        self.write_mem32(FLASH_KEYR, FLASH_KEY2)?;
+        self.write_mem32(FLASH_OBKEYR, FLASH_KEY1)?;
+        self.write_mem32(FLASH_OBKEYR, FLASH_KEY2)?;
+        self.write_mem32(FLASH_MODEKEYR, FLASH_KEY1)?;
+        self.write_mem32(FLASH_MODEKEYR, FLASH_KEY2)?;
+        if self.read_mem32(FLASH_CTLR)? & OPTWRE == 0 {
+            return Err(DmiError::OperationFailed(
+                "option-byte unlock failed (OPTWRE not set)".to_owned(),
+            ));
+        }
+        // Erase all option bytes (they must be blank before programming).
+        self.write_mem32(FLASH_CTLR, OPTER | OPTWRE)?;
+        self.write_mem32(FLASH_CTLR, OPTER | OPTWRE | FLASH_STRT)?;
+        let statr = self.flash_wait(FLASH_BUSY)?;
+        if statr & FLASH_WPRERR != 0 {
+            self.write_mem32(FLASH_CTLR, 0)?;
+            return Err(DmiError::OperationFailed(
+                "option-byte erase: write-protect error".to_owned(),
+            ));
+        }
+        // Program the 8 halfwords; RDPR (halfword 0) first, so read protection is re-established
+        // immediately after the erase blanked it.
+        for i in 0..8u32 {
+            self.write_mem32(FLASH_CTLR, OPTPG | OPTWRE)?;
+            self.write_mem32(FLASH_CTLR, OPTPG | OPTWRE | FLASH_STRT)?;
+            let lo = bytes[(i * 2) as usize];
+            let hi = bytes[(i * 2 + 1) as usize];
+            self.write_mem16(OB_BASE + i * 2, u16::from_le_bytes([lo, hi]))?;
+            let statr = self.flash_wait(FLASH_BUSY)?;
+            if statr & FLASH_WPRERR != 0 {
+                self.write_mem32(FLASH_CTLR, 0)?;
+                return Err(DmiError::OperationFailed(format!(
+                    "option-byte program: write-protect error at halfword {i}"
+                )));
+            }
+        }
+        self.write_mem32(FLASH_CTLR, 0)?; // clear OPTPG / OPTWRE
+        Ok(())
+    }
 }
 
 /// en: Which fast-program mechanism a family uses (see [`DebugModule::flash_program_page`]).
