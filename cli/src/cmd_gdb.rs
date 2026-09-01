@@ -86,14 +86,12 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
     };
     eprintln!("gdb: client connected from {peer}");
 
-    let flash = ch32rv_flash::flash_controller_profile(attach.family_byte).map(|p| {
-        let mode = if p.buffered {
-            ch32rv_dmi::FlashProgMode::Buffered
-        } else {
-            ch32rv_dmi::FlashProgMode::PgStart
-        };
-        (p.page_size, mode)
-    });
+    // Flash software breakpoints need a verified profile that is also reliable through gdb's
+    // single-step (CH32V103 is excluded: erase/program works but a step over a flash `ebreak`
+    // does not trap - see flash_controller_profile).
+    let flash = ch32rv_flash::flash_controller_profile(attach.family_byte)
+        .filter(|p| p.gdb_breakpoints)
+        .map(|p| (p.page_size, p.mode));
     let mut target = match Ch32Target::new(link, flash) {
         Ok(t) => t,
         Err(e) => {

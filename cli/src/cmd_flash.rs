@@ -513,10 +513,11 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
             None,
         );
     }
+    let mode = profile.mode;
     let mut dm = session.dm();
     for i in 0..pages {
         let addr = start + i * page;
-        if let Err(e) = dm.flash_page_erase(addr) {
+        if let Err(e) = dm.flash_page_erase(addr, mode) {
             return fail(
                 cli,
                 CMD,

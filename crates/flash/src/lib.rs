@@ -12,6 +12,7 @@ pub mod stub;
 pub use image::{Image, ImageError, Segment};
 
 use ch32rv_contract::policy::{ConfirmRunMode, EraseMode, Region, ResetPolicy, VerifyMode};
+use ch32rv_dmi::FlashProgMode;
 
 /// en: Flash geometry/protocol parameters selected by the AttachChip family byte. Interim
 /// source: wlink `RiscvChip` methods. The eventual source is the generated target DB
@@ -59,34 +60,44 @@ pub fn params_for_family(family_byte: u8) -> Option<FlashParams> {
     })
 }
 
-/// en: The direct FLASH-controller programming profile for a family: the fast-page size and
-/// whether it uses the buffered fast-program mechanism (V003/X035 - buffer reset + per-word
-/// BUFLOAD + STRT) or the PGSTART mechanism (V20x/V30x). Used by `erase --range/--region` and
-/// flash software breakpoints. `true` in `buffered` maps to `FlashProgMode::Buffered`.
-/// ja: family の直接 FLASH-controller programming profile: fast page サイズと、buffered 方式
-/// (V003/X035)か PGSTART 方式(V20x/V30x)か。`erase --range/--region` と flash SW breakpoint で使う。
+/// en: The direct FLASH-controller programming profile for a family: the page size that
+/// `erase --range` / flash software breakpoints work at, and the programming mechanism
+/// ([`FlashProgMode`]). Used to drive [`ch32rv_dmi::DebugModule::flash_page_erase`] /
+/// `flash_program_page`.
+/// ja: family の直接 FLASH-controller profile: `erase --range` / flash SW breakpoint が使う page
+/// サイズと、programming 方式([`FlashProgMode`])。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FlashCtrlProfile {
     pub page_size: u32,
-    pub buffered: bool,
+    pub mode: FlashProgMode,
+    /// en: Whether gdb flash software breakpoints are reliable on this family. True everywhere
+    /// with a verified profile except CH32V103, where the flash-patch erase/program works but a
+    /// gdb single-step over a freshly flash-patched `ebreak` leaves the core unable to trap on it
+    /// (a V10x fetch-coherency quirk); `erase --range` is unaffected.
+    /// ja: この family で gdb flash SW breakpoint が信頼できるか。CH32V103 は flash-patch の
+    /// erase/program は動くが、flash-patch 直後の `ebreak` を gdb が single-step 跨ぎすると trap
+    /// しなくなる(V10x の fetch coherency quirk)ため false。`erase --range` は無関係。
+    pub gdb_breakpoints: bool,
 }
 
 /// en: Resolve the FLASH-controller profile from the AttachChip family byte. Returns None for
-/// families whose controller sequence is not capture-verified (CH32V103's buffered mode has a
-/// quirk that the plain sequence does not satisfy, so it is a follow-up).
-/// ja: family byte から FLASH-controller profile を引く。未検証 family(CH32V103 の buffered は
-/// 追加手順が要り後続)は None。
+/// families whose controller sequence is not capture-verified yet.
+/// ja: family byte から FLASH-controller profile を引く。未検証 family は None。
 pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
-    let (page_size, buffered) = match family_byte {
-        0x05 | 0x06 => (256, false), // CH32V20x / CH32V30x (PGSTART) - verified V203/V307
-        0x09 | 0x49 => (64, true),   // CH32V003 / CH641 (buffered) - verified V003
-        0x0C | 0x0D => (256, true),  // CH643 / CH32X035 (buffered) - verified X035
-        0x0E => (256, true),         // CH32L103 (buffered) - attested (same profile as X035)
-        _ => return None,            // CH32V103 (0x01) buffered-with-quirk: follow-up
+    let (page_size, mode, gdb_breakpoints) = match family_byte {
+        0x05 | 0x06 => (256, FlashProgMode::PgStart, true), // CH32V20x / V30x - verified V203/V307
+        0x09 | 0x49 => (64, FlashProgMode::Buffered, true), // CH32V003 / CH641 - verified V003
+        0x0C | 0x0D => (256, FlashProgMode::Buffered, true), // CH643 / CH32X035 - verified X035
+        0x0E => (256, FlashProgMode::Buffered, true),       // CH32L103 - attested (same as X035)
+        // CH32V103: erase/program verified (FTER erase + standard halfword program + commit), but
+        // gdb flash breakpoints hit a single-step fetch-coherency quirk, so keep erase only.
+        0x01 => (128, FlashProgMode::V103, false),
+        _ => return None,
     };
     Some(FlashCtrlProfile {
         page_size,
-        buffered,
+        mode,
+        gdb_breakpoints,
     })
 }
 
