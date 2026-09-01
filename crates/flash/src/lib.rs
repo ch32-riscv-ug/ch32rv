@@ -59,6 +59,21 @@ pub fn params_for_family(family_byte: u8) -> Option<FlashParams> {
     })
 }
 
+/// en: Fast-page size for the direct FLASH-controller path (`DebugModule::flash_page_erase` /
+/// `flash_program_page`), used by `erase --range/--region` and flash software breakpoints.
+/// Returns None for families whose controller profile is not yet capture-verified (V003/CH641's
+/// 64-byte buffered mode and CH32V103 differ and are a follow-up). The 256-byte profile is
+/// verified live on CH32V203/V307/X035 (2026-09-01).
+/// ja: 直接 FLASH-controller 経路の fast page サイズ。未検証 family(V003/CH641 の 64byte
+/// buffered mode・CH32V103 は手順が異なり後続)は None。256byte profile は V203/V307/X035 で実機確認。
+pub fn flash_controller_page_size(family_byte: u8) -> Option<u32> {
+    match family_byte {
+        // CH32V20x / CH32V30x / CH32X035 / CH643 / CH32L103: 256-byte fast pages.
+        0x05 | 0x06 | 0x0C | 0x0D | 0x0E => Some(256),
+        _ => None,
+    }
+}
+
 /// en: Policy set for one `flash` invocation. Defaults match docs/cli.ja.md §4.1.
 /// ja: `flash` 1 回分の方針。既定値は docs/cli.ja.md §4.1 と一致させる。
 #[derive(Debug, Clone, PartialEq, Eq)]

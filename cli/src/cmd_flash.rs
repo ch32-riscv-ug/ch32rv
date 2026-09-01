@@ -408,13 +408,7 @@ fn attach_for(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
 pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
     const CMD: &str = "erase";
     if args.region.is_some() || args.range.is_some() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::CapabilityUnsupported,
-            "--region / --range erase is not implemented yet; use --all",
-            Some("named-region and range erase arrive with the generated target DB / page erase"),
-        );
+        return erase_range(cli, args);
     }
     // --all: whole-chip erase.
     let mut session = match attach_for(cli, CMD) {
@@ -441,6 +435,148 @@ pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         println!("erased entire chip flash ({})", session.family());
         ExitCode::SUCCESS
     }
+}
+
+/// en: `erase --range <a+len|a..b>` / `--region code[+off+len]`: page-granular erase via the
+/// direct FLASH controller (docs/cli.ja.md §4.1). Requires page alignment (fail-closed) since
+/// erase is per-page. `code` resolves to the probe-reported code-flash window.
+/// ja: `erase --range/--region` を FLASH controller の page 単位消去で実装。page 境界必須。
+fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
+    const CMD: &str = "erase";
+    let mut session = match attach_for(cli, CMD) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    let family = session.attach.family_byte;
+    let Some(page) = ch32rv_flash::flash_controller_page_size(family) else {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "range/region erase is not yet supported for {} (0x{family:02x})",
+                session.family()
+            ),
+            Some(
+                "only the 256-byte fast-page families (V20x/V30x/X035/CH643/L103) are verified so far",
+            ),
+        );
+    };
+
+    // Resolve (start, len) from --range or --region.
+    let (start, len) = if let Some(r) = &args.range {
+        match parse::range(r) {
+            Ok(v) => v,
+            Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+        }
+    } else if let Some(region) = &args.region {
+        match resolve_region(region, &session) {
+            Ok(v) => v,
+            Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+        }
+    } else {
+        return fail(cli, CMD, ErrorKind::Usage, "no --range or --region", None);
+    };
+
+    if len == 0 {
+        return fail(cli, CMD, ErrorKind::Usage, "empty range", None);
+    }
+    // Erase is per-page: demand page alignment so we never silently wipe neighbours.
+    if start % page != 0 || len % page != 0 {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            format!("range 0x{start:08x}+0x{len:x} is not aligned to the {page}-byte flash page"),
+            Some("align both the start and the length to the page size"),
+        );
+    }
+    let pages = len / page;
+    let end = start.saturating_add(len);
+
+    if !cli.yes
+        && !cli.non_interactive
+        && !confirm(&format!(
+            "Erase {len} bytes ({pages} page(s)) at 0x{start:08x}..0x{end:08x}?"
+        ))
+    {
+        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    }
+
+    if let Err(e) = session.dm().halt() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::AttachFailed,
+            format!("halt failed: {e}"),
+            None,
+        );
+    }
+    let mut dm = session.dm();
+    for i in 0..pages {
+        let addr = start + i * page;
+        if let Err(e) = dm.flash_page_erase(addr) {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::TransportTimeout,
+                format!("page erase failed at 0x{addr:08x}: {e}"),
+                None,
+            );
+        }
+    }
+
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "scope": "range",
+            "start": format!("0x{start:08x}"),
+            "len": len,
+            "pages": pages,
+            "page_size": page,
+            "family": session.family(),
+        }));
+        crate::print_envelope(&env)
+    } else {
+        println!(
+            "erased {pages} page(s) ({len} bytes) at 0x{start:08x}..0x{end:08x} ({})",
+            session.family()
+        );
+        ExitCode::SUCCESS
+    }
+}
+
+/// en: Resolve a `--region` spec into (start, len). Supports `code[+off[+len]]` for now; the
+/// bare name means the whole code-flash window (probe-reported size). Other named regions
+/// arrive with the generated target DB.
+/// ja: `--region` を (start, len) に解決。今は `code[+off[+len]]` に対応(bare は code flash 全体)。
+fn resolve_region(spec: &str, session: &Session) -> Result<(u32, u32), String> {
+    let mut it = spec.split('+');
+    let name = it.next().unwrap_or("");
+    if name != "code" {
+        return Err(format!(
+            "region `{name}` is not supported yet (only `code`); use --range for an explicit range"
+        ));
+    }
+    let base = 0x0800_0000u32;
+    let Some(chip) = &session.chip else {
+        return Err("code region needs the flash size, which the probe did not report".to_owned());
+    };
+    let flash_len = u32::from(chip.flash_kb) * 1024;
+    let off = match it.next() {
+        Some(s) => parse::byte_len(s)?,
+        None => 0,
+    };
+    let len = match it.next() {
+        Some(s) => parse::byte_len(s)?,
+        None => flash_len.saturating_sub(off),
+    };
+    if off.saturating_add(len) > flash_len {
+        return Err(format!(
+            "region extends past the {flash_len}-byte code flash"
+        ));
+    }
+    Ok((base + off, len))
 }
 
 pub fn reset(cli: &Cli, args: &crate::args::ResetArgs) -> ExitCode {

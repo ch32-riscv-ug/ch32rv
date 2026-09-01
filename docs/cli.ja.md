@@ -234,6 +234,8 @@ ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指�
 
 領域名は `code` / `system`(bootloader)/ `option` / `eeprom` / `ram`。minichlink の `flash` / `bootloader` 名は別名として受ける。
 
+**`erase --range` / `--region` の実装状況(2026-09-01)**: `--all`(chip 全消去)に加え、**page 単位の部分消去**を実装。WCH-Link stub の write 経路は部分書き込みを受け付けない(probe が reason 0x55 で拒否)ため、**FLASH controller(0x4002_2000)を DMI 経由で直接叩く**新経路を追加(`DebugModule::flash_page_erase` / `flash_program_page`。KEYR/MODEKEYR unlock → FTER/FTPG + STRT/PGSTART → STATR busy 待ち)。消去は page 粒度なので **start と length を page 境界に揃えることを必須**とし(fail-closed。ズレは Usage error + page サイズを提示)、隣接 page を巻き込まない。`--region code[+off[+len]]` は probe 報告の flash サイズから解決。対応 family は **256byte fast page の V20x/V30x/X035/CH643/L103**(V003 の 64byte buffered mode・V103 は手順が違い後続 → CapabilityUnsupported)。実機検証(V307): page1 だけ消去して page0(reset vector)/page2 が無傷を確認。**注意: 消去済みセルは LinkE 経由だと 0xff でなく `0xe339e339` を返す**(power-off erase と同じ placeholder)ので、erase 完了判定は read でなく controller の STATR(BUSY クリア + WPRERR 無し)で行う。この直接 FLASH controller 経路は今後 flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台にもなる。
+
 #### reset / run / recover
 
 ```text

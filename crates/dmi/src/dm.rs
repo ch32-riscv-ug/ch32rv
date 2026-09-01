@@ -420,4 +420,135 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         out.truncate(len as usize);
         Ok(out)
     }
+
+    // ---- Direct FLASH-controller programming over DMI (fast page erase / program) ----
+    //
+    // en: These drive the memory-mapped FLASH controller (0x4002_2000) through `read_mem32`/
+    // `write_mem32`, exactly as the QingKe reference manual and wlink's reference block
+    // describe. Unlike the WCH-Link stub write path, this is page-granular (256-byte fast
+    // pages on V20x/V30x/X035/CH643/L103), so it supports surgical read-modify-write of a
+    // single page - the basis for `erase --range` and flash software breakpoints. Verified
+    // live on CH32V203/V307/X035 (2026-09-01). Note: an erased cell reads back as the
+    // `0xe339e339` placeholder over the LinkE, not 0xff, so callers must not blank-check for
+    // 0xff; trust the controller's completion status instead. The hart must be halted.
+    // ja: memory-mapped FLASH controller(0x4002_2000)を read_mem32/write_mem32 で駆動する
+    // (QingKe manual と wlink 参照ブロックの手順)。WCH-Link stub 経路と違い page 単位
+    // (V20x/V30x/X035/CH643/L103 は 256byte fast page)なので 1 page の read-modify-write が
+    // でき、`erase --range` と flash SW breakpoint の土台になる。CH32V203/V307/X035 で実機確認。
+    // 消去済みセルは LinkE 経由だと 0xff でなく `0xe339e339` を返すので 0xff の blank-check は
+    // 不可、controller の完了ステータスで判定する。hart は halt 済みであること。
+
+    /// en: Unlock the FLASH controller (LOCK + FLOCK) with the standard key sequence. Idempotent.
+    /// ja: FLASH controller を鍵手順で unlock(LOCK + FLOCK)。冪等。
+    fn flash_unlock(&mut self) -> Result<(), DmiError> {
+        let ctlr = self.read_mem32(FLASH_CTLR)?;
+        if ctlr & (FLASH_LOCK | FLASH_FLOCK) == 0 {
+            return Ok(()); // already unlocked
+        }
+        self.write_mem32(FLASH_KEYR, FLASH_KEY1)?;
+        self.write_mem32(FLASH_KEYR, FLASH_KEY2)?;
+        self.write_mem32(FLASH_MODEKEYR, FLASH_KEY1)?;
+        self.write_mem32(FLASH_MODEKEYR, FLASH_KEY2)?;
+        Ok(())
+    }
+
+    /// Re-lock the FLASH controller (LOCK + FLOCK).
+    fn flash_lock(&mut self) -> Result<(), DmiError> {
+        let ctlr = self.read_mem32(FLASH_CTLR)?;
+        self.write_mem32(FLASH_CTLR, ctlr | FLASH_LOCK | FLASH_FLOCK)
+    }
+
+    /// Spin until every bit in `mask` reads 0 in the FLASH status register, then return it.
+    fn flash_wait(&mut self, mask: u32) -> Result<u32, DmiError> {
+        for _ in 0..4000 {
+            let v = self.read_mem32(FLASH_STATR)?;
+            if v & mask == 0 {
+                return Ok(v);
+            }
+        }
+        Err(DmiError::Timeout)
+    }
+
+    /// en: Fast-page-erase the page at `addr` (must be page-aligned; 256 bytes on the covered
+    /// families). Uses FTER + STRT and waits for completion. The hart must be halted.
+    /// ja: `addr` の fast page を消去(page 境界必須、対象 family は 256byte)。halt 済みで。
+    pub fn flash_page_erase(&mut self, addr: u32) -> Result<(), DmiError> {
+        self.flash_unlock()?;
+        if self.read_mem32(FLASH_STATR)? & FLASH_BUSY != 0 {
+            return Err(DmiError::OperationFailed("flash busy".to_owned()));
+        }
+        let ctlr = self.read_mem32(FLASH_CTLR)?;
+        self.write_mem32(FLASH_CTLR, ctlr | FLASH_FTER)?;
+        self.write_mem32(FLASH_ADDR, addr)?;
+        let ctlr = self.read_mem32(FLASH_CTLR)?;
+        self.write_mem32(FLASH_CTLR, ctlr | FLASH_STRT)?;
+        let statr = self.flash_wait(FLASH_BUSY)?;
+        // Clear FTER regardless, then surface a write-protect error.
+        let ctlr = self.read_mem32(FLASH_CTLR)?;
+        self.write_mem32(FLASH_CTLR, ctlr & !FLASH_FTER)?;
+        self.write_mem32(FLASH_STATR, statr)?; // write 1s to clear EOP/WPRERR
+        self.flash_lock()?;
+        if statr & FLASH_WPRERR != 0 {
+            return Err(DmiError::OperationFailed(
+                "flash write-protected".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// en: Fast-page-program `data` at `addr` (page-aligned, `data.len()` == the page size, and
+    /// the page already erased). Loads words then triggers PGSTART. The hart must be halted.
+    /// ja: `addr` へ `data` を fast page program(page 境界・page サイズ長・消去済みが前提)。
+    pub fn flash_program_page(&mut self, addr: u32, data: &[u8]) -> Result<(), DmiError> {
+        if !data.len().is_multiple_of(4) {
+            return Err(DmiError::OperationFailed(
+                "page data length must be a multiple of 4".to_owned(),
+            ));
+        }
+        self.flash_unlock()?;
+        if self.read_mem32(FLASH_STATR)? & FLASH_BUSY != 0 {
+            return Err(DmiError::OperationFailed("flash busy".to_owned()));
+        }
+        let ctlr = self.read_mem32(FLASH_CTLR)?;
+        self.write_mem32(FLASH_CTLR, ctlr | FLASH_FTPG)?;
+        for (i, word) in data.chunks(4).enumerate() {
+            let w = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+            self.write_mem32(addr + i as u32 * 4, w)?;
+            self.flash_wait(FLASH_WRBUSY)?;
+        }
+        let ctlr = self.read_mem32(FLASH_CTLR)?;
+        self.write_mem32(FLASH_CTLR, ctlr | FLASH_PGSTART)?;
+        let statr = self.flash_wait(FLASH_BUSY)?;
+        let ctlr = self.read_mem32(FLASH_CTLR)?;
+        self.write_mem32(FLASH_CTLR, ctlr & !FLASH_FTPG)?;
+        self.write_mem32(FLASH_STATR, statr)?;
+        self.flash_lock()?;
+        if statr & FLASH_WPRERR != 0 {
+            return Err(DmiError::OperationFailed(
+                "flash write-protected".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }
+
+// FLASH controller registers (memory-mapped at 0x4002_2000) and bit masks. Transcribed from
+// the QingKe reference manual / wlink; see the FLASH-controller section above.
+const FLASH_KEYR: u32 = 0x4002_2004;
+const FLASH_STATR: u32 = 0x4002_200C;
+const FLASH_CTLR: u32 = 0x4002_2010;
+const FLASH_ADDR: u32 = 0x4002_2014;
+const FLASH_MODEKEYR: u32 = 0x4002_2024;
+const FLASH_KEY1: u32 = 0x4567_0123;
+const FLASH_KEY2: u32 = 0xCDEF_89AB;
+// CTLR bits.
+const FLASH_STRT: u32 = 1 << 6; // start erase
+const FLASH_LOCK: u32 = 1 << 7;
+const FLASH_FLOCK: u32 = 1 << 15; // fast-mode lock
+const FLASH_FTPG: u32 = 1 << 16; // fast page program
+const FLASH_FTER: u32 = 1 << 17; // fast page erase
+const FLASH_PGSTART: u32 = 1 << 21; // start fast page program
+// STATR bits.
+const FLASH_BUSY: u32 = 1 << 0;
+const FLASH_WRBUSY: u32 = 1 << 1;
+const FLASH_WPRERR: u32 = 1 << 4;
