@@ -58,6 +58,19 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
     };
     let _ = link.set_speed(attach.family_byte, speed);
 
+    // On families whose AttachChip corrupts a live GPR (CH32V103 overwrites s1 with the chip id),
+    // soft-reset so the program re-runs and re-establishes its registers before we halt it -
+    // otherwise the resumed program faults on its next use of that register. This restarts the
+    // target (reset-attach semantics) but is the only way to debug it cleanly.
+    let profile = ch32rv_flash::flash_controller_profile(attach.family_byte);
+    if profile.map(|p| p.attach_corrupts_regs).unwrap_or(false) {
+        let _ = link.soft_reset();
+        std::thread::sleep(Duration::from_millis(50));
+        eprintln!(
+            "gdb: soft-reset after attach (this core's attach corrupts a register; the target restarted)"
+        );
+    }
+
     // Listen for one GDB connection.
     let listener = match TcpListener::bind(&args.listen) {
         Ok(l) => l,
@@ -86,10 +99,9 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
     };
     eprintln!("gdb: client connected from {peer}");
 
-    // Flash software breakpoints need a verified profile that is also reliable through gdb's
-    // single-step (CH32V103 is excluded: erase/program works but a step over a flash `ebreak`
-    // does not trap - see flash_controller_profile).
-    let flash = ch32rv_flash::flash_controller_profile(attach.family_byte)
+    // Flash software breakpoints need a verified controller profile (reset-after-attach already
+    // handled above for families whose attach corrupts registers).
+    let flash = profile
         .filter(|p| p.gdb_breakpoints)
         .map(|p| (p.page_size, p.mode));
     let mut target = match Ch32Target::new(link, flash) {
