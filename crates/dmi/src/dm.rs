@@ -176,6 +176,97 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.wait_abstract()
     }
 
+    /// en: Make `ebreak` enter Debug Mode (halt) instead of trapping, by setting dcsr
+    /// ebreakm/ebreaks/ebreaku. Required for `ebreak`-based software breakpoints to stop the
+    /// core. The hart must be halted.
+    /// ja: `ebreak` を例外 trap でなく Debug Mode 突入(halt)にする(dcsr の
+    /// ebreakm/ebreaks/ebreaku を立てる)。ebreak ベースの SW breakpoint に必須。halt 済みで。
+    pub fn enable_ebreak_debug(&mut self) -> Result<(), DmiError> {
+        const DCSR: u16 = 0x7b0;
+        const EBREAK_BITS: u32 = (1 << 15) | (1 << 13) | (1 << 12); // ebreakm | ebreaks | ebreaku
+        let dcsr = self.read_reg(RegName::Csr(DCSR))?;
+        self.write_reg(RegName::Csr(DCSR), dcsr | EBREAK_BITS)
+    }
+
+    // ---- Hardware breakpoints (RISC-V trigger module; QingKe V3/V4, not V2A/V003) ----
+
+    /// en: Number of usable hardware triggers, probed by writing `tselect` and reading it back
+    /// (the CSR saturates at the highest index). Returns 0 when there is no trigger module
+    /// (e.g. CH32V003) or it is inaccessible. The hart must be halted.
+    /// ja: 使える HW trigger 数を `tselect` の書き戻しで調べる(最大 index で飽和する)。
+    /// trigger module が無い(V003 等)場合は 0。hart は halt 済みであること。
+    pub fn hw_trigger_count(&mut self) -> u32 {
+        const TSELECT: u16 = 0x7a0;
+        const TDATA1: u16 = 0x7a1;
+        // A slot is usable only if tselect accepts the index AND tdata1 reports a non-zero
+        // trigger type (type field [31:28]). On cores without a real trigger module the CSRs
+        // read back 0, so this avoids advertising breakpoints that never fire.
+        let mut count = 0u32;
+        for i in 0..16u32 {
+            if self.write_reg(RegName::Csr(TSELECT), i).is_err() {
+                break;
+            }
+            let sel_ok = matches!(self.read_reg(RegName::Csr(TSELECT)), Ok(v) if v == i);
+            if !sel_ok {
+                break;
+            }
+            let type_field = self
+                .read_reg(RegName::Csr(TDATA1))
+                .map(|t| t >> 28)
+                .unwrap_or(0);
+            if type_field == 0 || type_field == 0xf {
+                // type 0 = none, 0xf = disabled/unavailable.
+                break;
+            }
+            count = i + 1;
+        }
+        let _ = self.write_reg(RegName::Csr(TSELECT), 0);
+        count
+    }
+
+    /// en: Program hardware trigger `slot` as an execute breakpoint at `addr` (mcontrol type 2:
+    /// action=enter-debug, match=exact, execute, m/s/u). The hart must be halted.
+    /// ja: HW trigger `slot` を `addr` の実行 breakpoint に設定(mcontrol type2)。halt 済みで。
+    pub fn set_hw_breakpoint(&mut self, slot: u32, addr: u32) -> Result<(), DmiError> {
+        const TSELECT: u16 = 0x7a0;
+        const TDATA1: u16 = 0x7a1;
+        const TDATA2: u16 = 0x7a2;
+        // mcontrol: type=2, dmode=1, action=1 (enter debug), match=0 (exact),
+        // m/s/u = 1, execute = 1.
+        const MCONTROL: u32 = 0x2800_0000 // type(2)<<28 | dmode<<27
+            | 0x0000_1000 // action=1
+            | 0x0000_0040 // m
+            | 0x0000_0010 // s
+            | 0x0000_0008 // u
+            | 0x0000_0004; // execute
+        self.write_reg(RegName::Csr(TSELECT), slot)?;
+        // Clear before reprogramming.
+        self.write_reg(RegName::Csr(TDATA1), 0)?;
+        self.write_reg(RegName::Csr(TDATA2), addr)?;
+        self.write_reg(RegName::Csr(TDATA1), MCONTROL)?;
+        Ok(())
+    }
+
+    /// Read back a trigger slot's tdata1/tdata2 (for diagnostics). The hart must be halted.
+    pub fn read_trigger(&mut self, slot: u32) -> Result<(u32, u32), DmiError> {
+        const TSELECT: u16 = 0x7a0;
+        const TDATA1: u16 = 0x7a1;
+        const TDATA2: u16 = 0x7a2;
+        self.write_reg(RegName::Csr(TSELECT), slot)?;
+        let t1 = self.read_reg(RegName::Csr(TDATA1))?;
+        let t2 = self.read_reg(RegName::Csr(TDATA2))?;
+        Ok((t1, t2))
+    }
+
+    /// Clear hardware trigger `slot`. The hart must be halted.
+    pub fn clear_hw_breakpoint(&mut self, slot: u32) -> Result<(), DmiError> {
+        const TSELECT: u16 = 0x7a0;
+        const TDATA1: u16 = 0x7a1;
+        self.write_reg(RegName::Csr(TSELECT), slot)?;
+        self.write_reg(RegName::Csr(TDATA1), 0)?;
+        Ok(())
+    }
+
     /// en: Single-step one instruction (dcsr.step). The hart must be halted; it stays halted
     /// afterwards. dcsr is CSR 0x7b0, step is bit 2.
     /// ja: 1 命令 single-step(dcsr.step)。hart は halt 済みで、実行後も halt のまま。
