@@ -448,7 +448,7 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         Err(c) => return c,
     };
     let family = session.attach.family_byte;
-    let Some(page) = ch32rv_flash::flash_controller_page_size(family) else {
+    let Some(profile) = ch32rv_flash::flash_controller_profile(family) else {
         return fail(
             cli,
             CMD,
@@ -458,10 +458,11 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
                 session.family()
             ),
             Some(
-                "only the 256-byte fast-page families (V20x/V30x/X035/CH643/L103) are verified so far",
+                "verified so far: V20x/V30x, V003/CH641, X035/CH643, L103 (CH32V103 is a follow-up)",
             ),
         );
     };
+    let page = profile.page_size;
 
     // Resolve (start, len) from --range or --region.
     let (start, len) = if let Some(r) = &args.range {

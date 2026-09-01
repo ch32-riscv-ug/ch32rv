@@ -124,18 +124,30 @@ family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0
 |---|---|---|
 | FLASH_KEYR | `0x40022004` | KEY1=`0x45670123`, KEY2=`0xCDEF89AB` で LOCK 解除 |
 | FLASH_STATR | `0x4002200C` | bit0 BUSY / bit1 WRBUSY / bit4 WPRERR |
-| FLASH_CTLR | `0x40022010` | bit6 STRT / bit7 LOCK / bit15 FLOCK / bit16 FTPG / bit17 FTER / bit21 PGSTART |
-| FLASH_ADDR | `0x40022014` | 消去 page アドレス |
+| FLASH_CTLR | `0x40022010` | bit6 STRT / bit7 LOCK / bit15 FLOCK / bit16 FTPG / bit17 FTER / bit18 BUFLOAD / bit19 BUFRST / bit21 PGSTART |
+| FLASH_ADDR | `0x40022014` | 消去/プログラム page アドレス |
 | FLASH_MODEKEYR | `0x40022024` | KEY1,KEY2 で FLOCK(fast mode)解除 |
 
 - **unlock**: CTLR&(LOCK\|FLOCK)==0 ならスキップ。else KEYR に KEY1,KEY2 → MODEKEYR に KEY1,KEY2。
-- **page erase**: unlock → CTLR\|=FTER → FLASH_ADDR=addr → CTLR\|=STRT → STATR BUSY クリア待ち → CTLR&=~FTER → STATR 書き戻し(EOP クリア)→ lock。WPRERR で write-protect エラー。
-- **page program**(消去済み前提): unlock → CTLR\|=FTPG → 4B ずつ write_mem32 して各 word 後 STATR WRBUSY 待ち → CTLR\|=PGSTART → STATR BUSY 待ち → CTLR&=~FTPG → lock。
+- **page erase(全 family 共通)**: unlock → CTLR=FTER → FLASH_ADDR=addr → CTLR=FTER\|STRT → STATR BUSY クリア待ち → CTLR=0 → STATR 書き戻し(EOP クリア)→ lock。WPRERR で write-protect エラー。
+- **page program は 2 方式ある**(消去済み前提。unlock 後):
+  - **PgStart 方式(V20x/V30x)**: CTLR=FTPG → 4B ずつ write_mem32(各 word 後 WRBUSY 待ち)→ CTLR=FTPG\|PGSTART(bit21)→ STATR BUSY 待ち → CTLR=0 → lock。
+  - **Buffered 方式(V003/CH641・X035/CH643・L103)**: CTLR=FTPG → CTLR=FTPG\|BUFRST(buffer reset)→ BUSY 待ち → 各 word: write_mem32(word) → CTLR=FTPG\|BUFLOAD → BUSY 待ち → 全 word 後: FLASH_ADDR=addr → CTLR=FTPG\|STRT(bit6)→ BUSY 待ち → CTLR=0 → lock。minichlink が X035 を V003 と同じ buffered 系に分類しているのが根拠。
 - **hart は halt 済みが前提**(progbuf を使うため)。stub 不要=probe 側の 0x55 拒否を回避。
 
-実機検証(2026-09-01、V203/V307/X035): page erase+program を 3 cycle read-modify-write して surgical かつ可逆を確認。V307 で page1 だけ消去し page0(reset vector)/page2 が無傷。対応 family は **256B fast page の 0x05/0x06/0x0c/0x0d/0x0e**(V003 0x09/0x49 の 64B buffered mode・V103 0x01 は手順が異なり後続)。
+実機検証(2026-09-01):
 
-**重要: 消去済みセルは LinkE 経由の debug read で `0xe339e339` を返す**(実測: erase→read=e339、program A0A1..→read=a0a1..、erase→read=e339)。実セルは 0xff だが LinkE がこの placeholder を返す(power-off erase 後・ChipInfo protection_raw と同じ値)。→ **erase の成否判定は read の 0xff でなく controller STATR(BUSY クリア + WPRERR 無し)で行う**。この経路は今後 flash SW breakpoint(trigger 無し core)・option byte 書き込みの土台。
+| family | page | 方式 | 検証 |
+|---|---|---|---|
+| CH32V20x/V30x(0x05/0x06) | 256 | PgStart | ✓ V203/V307(erase+program+restore) |
+| CH32V003/CH641(0x09/0x49) | 64 | Buffered | ✓ V003 |
+| CH32X035/CH643(0x0d/0x0c) | 256 | Buffered | ✓ X035 |
+| CH32L103(0x0e) | 256 | Buffered | attested(X035 と同 profile、未接続) |
+| CH32V103(0x01) | 128 | Buffered(+quirk) | ✗ 素の buffered では erase/program が通らず後続(minichlink の V10x 特殊処理あり) |
+
+**当初 X035 を PgStart 方式で実装したが program が全く効かなかった(erase→FF のまま)**。X035 は buffered 方式が必要と実測で判明し修正(erase は FTER+STRT で全 family 共通なので erase --range は当初から動いていた)。
+
+**消去済みセルの debug read 値は family で違う**: V20x/V30x は **`0xe339e339`**(実セルは 0xff だが LinkE の placeholder。power-off erase 後・ChipInfo protection_raw と同値)、**X035/V003 は素直に `0xff`**。→ **erase の成否判定は read 値でなく controller STATR(BUSY クリア + WPRERR 無し)で行う**。この経路は flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台。
 
 ### 4.3 特殊消去(SWD ピン共用 target の復旧。verified 2026-09-01)
 

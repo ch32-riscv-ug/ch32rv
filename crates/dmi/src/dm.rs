@@ -497,9 +497,19 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     }
 
     /// en: Fast-page-program `data` at `addr` (page-aligned, `data.len()` == the page size, and
-    /// the page already erased). Loads words then triggers PGSTART. The hart must be halted.
-    /// ja: `addr` へ `data` を fast page program(page 境界・page サイズ長・消去済みが前提)。
-    pub fn flash_program_page(&mut self, addr: u32, data: &[u8]) -> Result<(), DmiError> {
+    /// the page already erased), using the family's programming `mode`. The hart must be halted.
+    /// Two fast-program mechanisms exist: [`FlashProgMode::PgStart`] (V20x/V30x - load words, then
+    /// PGSTART) and [`FlashProgMode::Buffered`] (V003/X035/L103 - buffer reset, then per-word
+    /// write+BUFLOAD, then STRT). Both verified live (V203/V307, V003/X035).
+    /// ja: `addr` へ `data` を fast page program(page 境界・page サイズ長・消去済みが前提)。family の
+    /// `mode` で分岐: PgStart(V20x/V30x)は word 書込→PGSTART、Buffered(V003/X035/L103)は
+    /// buffer reset→word 書込+BUFLOAD→STRT。両方実機確認済み。
+    pub fn flash_program_page(
+        &mut self,
+        addr: u32,
+        data: &[u8],
+        mode: FlashProgMode,
+    ) -> Result<(), DmiError> {
         if !data.len().is_multiple_of(4) {
             return Err(DmiError::OperationFailed(
                 "page data length must be a multiple of 4".to_owned(),
@@ -509,18 +519,33 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         if self.read_mem32(FLASH_STATR)? & FLASH_BUSY != 0 {
             return Err(DmiError::OperationFailed("flash busy".to_owned()));
         }
-        let ctlr = self.read_mem32(FLASH_CTLR)?;
-        self.write_mem32(FLASH_CTLR, ctlr | FLASH_FTPG)?;
-        for (i, word) in data.chunks(4).enumerate() {
-            let w = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
-            self.write_mem32(addr + i as u32 * 4, w)?;
-            self.flash_wait(FLASH_WRBUSY)?;
+        match mode {
+            FlashProgMode::PgStart => {
+                self.write_mem32(FLASH_CTLR, FLASH_FTPG)?;
+                for (i, word) in data.chunks(4).enumerate() {
+                    let w = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+                    self.write_mem32(addr + i as u32 * 4, w)?;
+                    self.flash_wait(FLASH_WRBUSY)?;
+                }
+                self.write_mem32(FLASH_CTLR, FLASH_FTPG | FLASH_PGSTART)?;
+            }
+            FlashProgMode::Buffered => {
+                // Reset the page buffer, then load each word (write + BUFLOAD), then start.
+                self.write_mem32(FLASH_CTLR, FLASH_FTPG)?;
+                self.write_mem32(FLASH_CTLR, FLASH_FTPG | FLASH_BUFRST)?;
+                self.flash_wait(FLASH_BUSY)?;
+                for (i, word) in data.chunks(4).enumerate() {
+                    let w = u32::from_le_bytes([word[0], word[1], word[2], word[3]]);
+                    self.write_mem32(addr + i as u32 * 4, w)?;
+                    self.write_mem32(FLASH_CTLR, FLASH_FTPG | FLASH_BUFLOAD)?;
+                    self.flash_wait(FLASH_BUSY)?;
+                }
+                self.write_mem32(FLASH_ADDR, addr)?;
+                self.write_mem32(FLASH_CTLR, FLASH_FTPG | FLASH_STRT)?;
+            }
         }
-        let ctlr = self.read_mem32(FLASH_CTLR)?;
-        self.write_mem32(FLASH_CTLR, ctlr | FLASH_PGSTART)?;
         let statr = self.flash_wait(FLASH_BUSY)?;
-        let ctlr = self.read_mem32(FLASH_CTLR)?;
-        self.write_mem32(FLASH_CTLR, ctlr & !FLASH_FTPG)?;
+        self.write_mem32(FLASH_CTLR, 0)?; // clear FTPG (and any BUF bits)
         self.write_mem32(FLASH_STATR, statr)?;
         self.flash_lock()?;
         if statr & FLASH_WPRERR != 0 {
@@ -530,6 +555,16 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         }
         Ok(())
     }
+}
+
+/// en: Which fast-program mechanism a family uses (see [`DebugModule::flash_program_page`]).
+/// ja: family が使う fast-program 方式([`DebugModule::flash_program_page`] 参照)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlashProgMode {
+    /// V20x/V30x: load words, then set PGSTART.
+    PgStart,
+    /// V003/X035/L103: buffer reset, per-word write + BUFLOAD, then STRT.
+    Buffered,
 }
 
 // FLASH controller registers (memory-mapped at 0x4002_2000) and bit masks. Transcribed from
@@ -547,7 +582,9 @@ const FLASH_LOCK: u32 = 1 << 7;
 const FLASH_FLOCK: u32 = 1 << 15; // fast-mode lock
 const FLASH_FTPG: u32 = 1 << 16; // fast page program
 const FLASH_FTER: u32 = 1 << 17; // fast page erase
-const FLASH_PGSTART: u32 = 1 << 21; // start fast page program
+const FLASH_BUFLOAD: u32 = 1 << 18; // load one word into the page buffer (buffered mode)
+const FLASH_BUFRST: u32 = 1 << 19; // reset the page buffer (buffered mode)
+const FLASH_PGSTART: u32 = 1 << 21; // start fast page program (PgStart mode)
 // STATR bits.
 const FLASH_BUSY: u32 = 1 << 0;
 const FLASH_WRBUSY: u32 = 1 << 1;

@@ -86,8 +86,15 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
     };
     eprintln!("gdb: client connected from {peer}");
 
-    let flash_page = ch32rv_flash::flash_controller_page_size(attach.family_byte);
-    let mut target = match Ch32Target::new(link, flash_page) {
+    let flash = ch32rv_flash::flash_controller_profile(attach.family_byte).map(|p| {
+        let mode = if p.buffered {
+            ch32rv_dmi::FlashProgMode::Buffered
+        } else {
+            ch32rv_dmi::FlashProgMode::PgStart
+        };
+        (p.page_size, mode)
+    });
+    let mut target = match Ch32Target::new(link, flash) {
         Ok(t) => t,
         Err(e) => {
             return fail(
