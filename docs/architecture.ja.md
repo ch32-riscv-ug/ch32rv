@@ -18,7 +18,7 @@
 | R4 | library として分割再利用できる(GUI 別プロジェクト、将来は他言語・ブラウザも視野) | 本要件 |
 | R5 | 型付き error と JSON contract("成功表示なのに失敗"の構造的排除) | 契約(cli §3) |
 | R6 | GDB stub 等の実績ある部品が存在する | debug 層 |
-| R7 | license inventory が自プロジェクトの依存だけで閉じる(MIT OR Apache-2.0 で再配布) | 配布 |
+| R7 | license inventory が自プロジェクトの依存だけで閉じる(**MIT** で再配布) | 配布 |
 
 ### 1.2 候補比較
 
@@ -112,14 +112,17 @@ nusb が WebUSB(wasm)backend を持つため、**ブラウザ版 flasher(wch-web
 
 ## 3. target DB 生成
 
+**データ調達の原則**: tool が必要とする device データは ch32rv 内部で作らず、**`ch32-device-data` への CSV 追加依頼を第一**とする。依頼は即納されない前提で、納品までの間は `ch32rv-target/provisional/` に暫定 overlay(provenance 付き)を置いて開発を進めてよい。納品時に暫定側と突き合わせて(crosscheck)受け入れ、受け入れ後は暫定側を削除する——2 系統の恒久併存を作らない。差分が出た場合は data repo 側を正として調査する。
+
 | 項目 | 方針 |
 |---|---|
-| 源泉 | flash geometry・memory map・option 分割・DM レジスタ番地 = `ch32-device-data`(stable 表、provenance 付き)。chip ID(device_id)値と flash mode 付き memory 定義 = `ch32-data`。**gap の 7 series(V205/V407/V467/X305/X315/M030/M103)の device_id は実機実測で evidence 表を新設**(手順は `ch32-data/docs/device-ids.md`、実測前例は `curated/debug-data-measured.json`) |
+| 源泉 | flash geometry・memory map・option 分割・DM レジスタ番地 = `ch32-device-data`(stable 表、provenance 付き)。chip ID(device_id)値と flash mode 付き memory 定義 = `ch32-data`。**gap の 7 series(V205/V407/V467/X305/X315/M030/M103)の device_id は `ch32-device-data` に evidence 表の新設を依頼する**(実測手順は `ch32-data/docs/device-ids.md`、実測 basis の前例は `curated/debug-data-measured.json`)。probe firmware の hash→版対応も既存の `evidence/link_firmware.csv` を使い、不足分は依頼で埋める |
+| 暫定 overlay | 依頼中データの一時置き場(`provisional/`)。生成 pipeline を必ず通し、生成物と CLI 出力に `provisional` flag を出す(verified と同列の可視性) |
 | 生成 | `xtask db-gen` が入力 repo の pinned revision から `ch32rv-target/generated/` を生成して **commit する**(hermetic build。build.rs でネットワークや隣接 repo に依存しない)。CI が再生成一致を検査 |
 | 再現性 | 入力 rev と sha256 を生成物に埋め、`version --json` に出す |
 | verified | SKU ごとに「実機確認済み」flag と根拠(いつ・どの probe・どの操作)を持ち、CLI 出力に出す |
-| flash stub | 事前 build blob を持たず、in-repo の source から CI で build して hash を `version --json` に出す |
-| 手書き禁止 | 例外が要る場合も curated overlay(provenance 付き)として入れ、生成 pipeline を通す |
+| flash stub | 事前 build blob を持たず、in-repo の source から CI で build して hash を `version --json` に出す(データではなくコードなので ch32rv 内で持つ) |
+| 手書き禁止 | 例外が要る場合も暫定 overlay として入れ、`ch32-device-data` への依頼(issue 等)と紐付ける |
 
 ## 4. テストの骨子(原設計案 §7.1 の確認)
 
@@ -131,7 +134,7 @@ nusb が WebUSB(wasm)backend を持つため、**ブラウザ版 flasher(wch-web
 
 | 項目 | 方針 |
 |---|---|
-| license | MIT OR Apache-2.0 |
+| license | **MIT**(単一。repo の LICENSE 取得済み)。依存 crate の inventory は cargo-deny で管理 |
 | binary | cargo-dist で Win x64/arm64、Linux x64/arm64、macOS x64/arm64。checksum + artifact attestation + SBOM |
 | USB 権限 | udev rule を同梱し `doctor --emit-udev` でも出す。Windows は WinUSB binding の検出と手順提示を `doctor` が持つ(自動変更しない) |
 | Arduino | Board Manager package。ch32rv は自前 release を持つため ADR-0011 の `mirror-` 枠で追従できる(ADR-0014 の `build-` 枠は不要) |

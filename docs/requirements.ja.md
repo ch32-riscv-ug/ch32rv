@@ -216,7 +216,7 @@ flash/erase/unbrick/NRST option の参考実装。`flash` / `erase` / `recover` 
 6. **ISP device は USB serial を持たない**(`4348:55e0`)。ISP 経路の複数台識別は topology(bus/port)か「1台のみ」fail-closed になる。probe 経路と同じ selector 文法に topology を含める理由。
 7. **LinkE IAP mode と factory ISP device が同じ VID:PID**。`isp list` / `doctor` に区別ロジックが要る(§3.7)。
 8. **LinkE firmware の hash→版対応表が手元にある**(`ch32-device-data/evidence/link_firmware.csv`)。既知不良版検出(P0)の源泉。
-9. **target DB の源泉分担が確定**: flash geometry・memory map・option 分割・DM レジスタ番地は ch32-device-data(stable 表 + provenance)、**chip ID(device_id)値は ch32-data のみが持つ**が、ちょうど gap の 7 series が欠落 → 実機実測で evidence 表を新設するのが M2 の必須作業(手順は `ch32-data/docs/device-ids.md` に既存)。
+9. **target DB の源泉分担が確定**: flash geometry・memory map・option 分割・DM レジスタ番地は ch32-device-data(stable 表 + provenance)、**chip ID(device_id)値は ch32-data のみが持つ**が、ちょうど gap の 7 series が欠落 → 実機実測での evidence 表新設が M2 の必須作業。作成は ch32-device-data 側へ依頼し、納品まで ch32rv 内の暫定 overlay で進める(方針は architecture.ja.md §3。実測手順は `ch32-data/docs/device-ids.md` に既存)。
 10. **CDC が vendor interface より先に見える attach レース**が実測されている(1 秒間隔 3 回の再試行が必要)。probe open の retry を契約に含める。
 11. **Arduino recipe の制約**: `{serial.port}` を使わず、probe selector は「空にできる 1 変数」に畳む必要がある。`--non-interactive` と進捗抑止も必須。現行 platform.txt の probe-rs 呼び出しがそのまま移行先の形を規定する。
 12. **エコシステムの現状**(architecture.ja.md §1 の根拠): nusb 0.2.7(活発、hotplug、WinUSB/IOKit/usbfs/WebUSB)、gdbstub 0.7.10 + gdbstub_arch 0.3.3(RISC-V は整数レジスタのみ → V4F の FPU レジスタは自前 Arch 定義)、serialport 4.10.0、cargo-dist は上流(axodotdev)復活済みで 0.32.0、ihex crate は 2020 年から更新なし。
