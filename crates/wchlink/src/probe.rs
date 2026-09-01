@@ -534,6 +534,16 @@ impl WchLink {
         Ok(())
     }
 
+    /// en: Enable/disable SDI-print forwarding (`0x81 0x0d 0x02 0xee 01|00`). The LinkE then
+    /// polls the target's DM data registers and forwards to its own CDC port. LinkE only.
+    /// ja: SDI print forward の有効/無効(`81 0d 02 ee 01|00`)。LinkE が target の DM data を
+    /// polling して自分の CDC へ流す。LinkE 専用。
+    pub fn set_sdi_print_enabled(&mut self, enable: bool) -> Result<(), WchLinkError> {
+        let flag = if enable { 0x01 } else { 0x00 };
+        let _ = self.command(CMD_CONTROL, &[0xee, flag])?;
+        Ok(())
+    }
+
     /// en: "Clear All Code Flash - By RST pin" (EraseCodeFlash `0x08`). Same idea but toggles
     /// NRST instead of power; requires the RST pin wired.
     /// ja: 「Clear All Code Flash - By RST pin」。電源でなく NRST を使う。RST 配線が要る。

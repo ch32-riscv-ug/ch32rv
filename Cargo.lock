@@ -98,6 +98,7 @@ dependencies = [
  "ch32rv-wchlink",
  "clap",
  "serde_json",
+ "serialport",
  "toml",
 ]
 
