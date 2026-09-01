@@ -99,6 +99,37 @@ impl UsbDeviceInfo {
         }
     }
 
+    /// en: Serial-port device nodes (CDC etc.) belonging to this USB device, e.g.
+    /// "/dev/ttyACM5". Linux only for now (sysfs walk); other platforms return empty.
+    /// ja: この USB device に属する serial port ノード(CDC 等)。当面 Linux のみ
+    /// (sysfs 走査)。他 OS は空を返す(TODO M2: Windows COM / macOS cu.*)。
+    pub fn serial_ports(&self) -> Vec<String> {
+        #[cfg(target_os = "linux")]
+        {
+            let dev_path = match self.inner.sysfs_path().canonicalize() {
+                Ok(p) => p,
+                Err(_) => return Vec::new(),
+            };
+            let Ok(entries) = std::fs::read_dir("/sys/class/tty") else {
+                return Vec::new();
+            };
+            let mut ports: Vec<String> = entries
+                .flatten()
+                .filter_map(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    let real = e.path().canonicalize().ok()?;
+                    real.starts_with(&dev_path).then(|| format!("/dev/{name}"))
+                })
+                .collect();
+            ports.sort();
+            ports
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            Vec::new()
+        }
+    }
+
     /// en: Open the device and claim one interface with one bulk OUT/IN endpoint pair.
     /// ja: device を開き、interface 1 つと bulk OUT/IN endpoint の組を claim する。
     pub fn open_interface(

@@ -1,7 +1,8 @@
-//! en: `probe list` / `probe info` (docs/cli.ja.md §4.2). Read-only against the probe:
-//! only GetProbeInfo is issued; no target attach, no reset, no power control.
-//! ja: `probe list` / `probe info`。probe への読み取りのみ(GetProbeInfo だけを発行し、
-//! target attach・reset・電源制御は行わない)。
+//! en: `probe list` / `probe info` (docs/cli.ja.md §4.2), plus probe selection helpers shared
+//! with other commands. Read-only against the probe: only GetProbeInfo is issued here; no
+//! target attach, no reset, no power control.
+//! ja: `probe list` / `probe info` と、他 command と共有する probe 選択ヘルパー。
+//! probe への読み取りのみ(GetProbeInfo だけを発行し、attach・reset・電源制御は行わない)。
 
 use std::process::ExitCode;
 use std::time::Duration;
@@ -10,23 +11,25 @@ use ch32rv_contract::{
     ErrorKind, FirmwareVersion, ProbeMode, ProbeReport, ResultEnvelope, Warning,
 };
 use ch32rv_usb::{ResolveError, Selector, UsbDeviceInfo, UsbError};
-use ch32rv_wchlink::{self as wchlink, WchLink, WchLinkError, known_bad_firmware};
+use ch32rv_wchlink::{self as wchlink, WchLink, known_bad_firmware};
 
 use crate::args::Cli;
 
 /// A WCH device relevant to `probe` commands, with its mode derived from VID:PID.
-struct Entry {
-    dev: UsbDeviceInfo,
-    mode: ProbeMode,
+pub(crate) struct Entry {
+    pub(crate) dev: UsbDeviceInfo,
+    pub(crate) mode: ProbeMode,
 }
 
-fn wch_devices() -> Result<Vec<Entry>, UsbError> {
+pub(crate) fn wch_devices() -> Result<Vec<Entry>, UsbError> {
     let devs = ch32rv_usb::enumerate()?;
     Ok(devs
         .into_iter()
         .filter_map(|dev| {
             let mode = match (dev.vid(), dev.pid()) {
-                (wchlink::VID_WCH, wchlink::PID_LINK_RISCV) => ProbeMode::Riscv,
+                (wchlink::VID_WCH, wchlink::PID_LINK_RISCV | wchlink::PID_LINK_RISCV2) => {
+                    ProbeMode::Riscv
+                }
                 (wchlink::VID_WCH, wchlink::PID_LINK_DAP) => ProbeMode::Dap,
                 (wchlink::VID_IAP, wchlink::PID_IAP) => ProbeMode::Iap,
                 _ => return None,
@@ -36,7 +39,7 @@ fn wch_devices() -> Result<Vec<Entry>, UsbError> {
         .collect())
 }
 
-fn mode_str(mode: ProbeMode) -> &'static str {
+pub(crate) fn mode_str(mode: ProbeMode) -> &'static str {
     match mode {
         ProbeMode::Riscv => "riscv",
         ProbeMode::Dap => "dap",
@@ -46,18 +49,64 @@ fn mode_str(mode: ProbeMode) -> &'static str {
     }
 }
 
-/// en: Query firmware/variant over GetProbeInfo (RISC-V mode only).
-/// ja: GetProbeInfo で firmware/型番を取得(RISC-V mode のみ)。
-fn query_riscv(dev: &UsbDeviceInfo) -> Result<(String, FirmwareVersion), WchLinkError> {
-    let mut link = WchLink::open(dev)?;
-    let info = link.probe_info()?;
-    let mut fw = FirmwareVersion::from_major_minor(info.fw_major, info.fw_minor);
-    fw.known_bad = Some(known_bad_firmware(info.fw_major, info.fw_minor).is_some());
-    Ok((info.variant.name(), fw))
+/// en: Resolve --probe (env/config aliases included) to exactly one WCH device, fail-closed.
+/// Shared by every probe-routed command.
+/// ja: --probe(env・設定別名込み)を fail-closed にちょうど 1 台へ解決する。
+/// probe 経路の全 command が共用する。
+pub(crate) fn select_entry(cli: &Cli, cmd: &str) -> Result<Entry, ExitCode> {
+    let mut entries =
+        wch_devices().map_err(|e| fail(cli, cmd, ErrorKind::Internal, e.to_string(), None))?;
+    let selector = parse_selector(cli, cmd)?;
+    let idx = match ch32rv_usb::resolve(selector.as_ref(), entries.iter().map(|e| &e.dev)) {
+        Ok(i) => i,
+        Err(ResolveError::NotFound) => {
+            return Err(fail(
+                cli,
+                cmd,
+                ErrorKind::DeviceNotFound,
+                "no probe matched the selector",
+                Some("run `ch32rv probe list` to see available probes"),
+            ));
+        }
+        Err(ResolveError::Ambiguous(indices)) => {
+            let candidates: Vec<serde_json::Value> = indices
+                .iter()
+                .filter_map(|&i| entries.get(i))
+                .map(|e| {
+                    serde_json::json!({
+                        "usb": e.dev.usb_id(),
+                        "serial": e.dev.serial(),
+                        "topology": e.dev.topology(),
+                        "mode": mode_str(e.mode),
+                    })
+                })
+                .collect();
+            return Err(fail_with_candidates(
+                cli,
+                cmd,
+                ErrorKind::DeviceAmbiguous,
+                format!("{} probes match; specify --probe", candidates.len()),
+                Some("select one with --probe VID:PID:SERIAL or usb:<bus>-<ports>"),
+                candidates,
+            ));
+        }
+        Err(ResolveError::UnresolvedName(n)) => {
+            return Err(fail(
+                cli,
+                cmd,
+                ErrorKind::Usage,
+                format!("alias `{n}` not found in ch32rv.toml / ~/.config/ch32rv/config.toml"),
+                None,
+            ));
+        }
+    };
+    Ok(entries.swap_remove(idx))
 }
 
-fn report_for(entry: &Entry) -> (ProbeReport, Vec<Warning>, Option<String>) {
-    let mut report = ProbeReport {
+/// en: Probe report from enumeration data alone (no device I/O).
+/// ja: 列挙情報だけで作る probe report(device I/O なし)。
+pub(crate) fn base_report(entry: &Entry) -> ProbeReport {
+    ProbeReport {
         model: match entry.mode {
             ProbeMode::Dap => "WCH-Link (DAP mode)".to_owned(),
             ProbeMode::Iap => "WCH-Link (IAP mode) or WCH factory ISP device".to_owned(),
@@ -68,47 +117,75 @@ fn report_for(entry: &Entry) -> (ProbeReport, Vec<Warning>, Option<String>) {
         topology: Some(entry.dev.topology()),
         mode: Some(entry.mode),
         firmware: None,
-    };
+        ports: entry.dev.serial_ports(),
+    }
+}
+
+/// en: Merge a GetProbeInfo result into a report, attaching contract warnings.
+/// ja: GetProbeInfo の結果を report へ反映し、契約上の warning を付ける。
+pub(crate) fn apply_probe_info(
+    report: &mut ProbeReport,
+    info: &wchlink::ProbeInfo,
+    warnings: &mut Vec<Warning>,
+) {
+    let mut fw = FirmwareVersion::from_major_minor(info.fw_major, info.fw_minor);
+    fw.mode = info.fw_mode.map(|m| m.as_str().to_owned());
+    if let Some(msg) = known_bad_firmware(info.fw_major, info.fw_minor) {
+        fw.known_bad = Some(true);
+        warnings.push(Warning {
+            code: "fw-known-bad".to_owned(),
+            msg: msg.to_owned(),
+        });
+    } else {
+        fw.known_bad = Some(false);
+    }
+    let model = info.variant.name();
+    if model.contains("unknown variant") {
+        warnings.push(Warning {
+            code: "probe-variant-unknown".to_owned(),
+            msg: format!("unrecognized probe variant: {model}"),
+        });
+    }
+    report.model = model;
+    report.firmware = Some(fw);
+}
+
+pub(crate) fn report_for(entry: &Entry) -> (ProbeReport, Vec<Warning>, Option<String>) {
+    let mut report = base_report(entry);
     let mut warnings = Vec::new();
     let mut error = None;
     if entry.mode == ProbeMode::Riscv {
-        match query_riscv(&entry.dev) {
-            Ok((model, fw)) => {
-                if fw.known_bad == Some(true)
-                    && let Some(msg) = known_bad_firmware_msg(&fw)
-                {
-                    warnings.push(Warning {
-                        code: "fw-known-bad".to_owned(),
-                        msg,
-                    });
-                }
-                if model.contains("unknown variant") {
-                    warnings.push(Warning {
-                        code: "probe-variant-unknown".to_owned(),
-                        msg: format!("unrecognized probe variant: {model}"),
-                    });
-                }
-                report.model = model;
-                report.firmware = Some(fw);
-            }
+        let queried = WchLink::open(&entry.dev).and_then(|mut link| link.probe_info());
+        match queried {
+            Ok(info) => apply_probe_info(&mut report, &info, &mut warnings),
             Err(e) => error = Some(e.to_string()),
         }
     }
     (report, warnings, error)
 }
 
-fn known_bad_firmware_msg(fw: &FirmwareVersion) -> Option<String> {
-    // en: Re-derive the message from the normalized version (single source: wchlink crate).
-    // ja: 正規化版から不良メッセージを引き直す(情報源は wchlink crate に一元化)。
-    let mut it = fw.norm.split('.');
-    let major: u8 = it.next()?.parse().ok()?;
-    let minor: u8 = it.next()?.parse().ok()?;
-    known_bad_firmware(major, minor).map(str::to_owned)
+/// en: Like [`report_for`] but with the open retry from docs/cli.ja.md §3.7 (3 attempts,
+/// 1 s apart; permission errors are not retried).
+/// ja: [`report_for`] + open 再試行(1 秒間隔 3 回。権限エラーは再試行しない)。
+pub(crate) fn report_with_retry(entry: &Entry) -> (ProbeReport, Vec<Warning>, Option<String>) {
+    let mut last = report_for(entry);
+    if entry.mode == ProbeMode::Riscv {
+        for _ in 0..2 {
+            match &last.2 {
+                Some(e) if !e.contains("access denied") => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    last = report_for(entry);
+                }
+                _ => break,
+            }
+        }
+    }
+    last
 }
 
 pub fn list(cli: &Cli, watch: bool) -> ExitCode {
     if watch {
-        return crate::unimplemented_cmd(cli, "probe.list --watch");
+        return crate::unimplemented_cmd(cli, "probe.list");
     }
     let entries = match wch_devices() {
         Ok(e) => e,
@@ -142,8 +219,8 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
             eprintln!("no WCH-Link / ISP devices found (run `ch32rv doctor` for diagnostics)");
         } else {
             println!(
-                "{:<6} {:<10} {:<16} {:<10} {:<22} FIRMWARE",
-                "MODE", "USB", "SERIAL", "TOPOLOGY", "MODEL"
+                "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} FIRMWARE",
+                "MODE", "USB", "SERIAL", "TOPOLOGY", "MODEL", "PORTS"
             );
             for l in &lines {
                 println!("{l}");
@@ -170,92 +247,27 @@ fn format_row(r: &ProbeReport, error: Option<&str>) -> String {
         (None, None) => "-".to_owned(),
     };
     format!(
-        "{:<6} {:<10} {:<16} {:<10} {:<22} {}",
+        "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} {}",
         r.mode.map(mode_str).unwrap_or("?"),
         r.usb.as_deref().unwrap_or("-"),
         r.serial.as_deref().unwrap_or("-"),
         r.topology.as_deref().unwrap_or("-"),
         r.model,
+        if r.ports.is_empty() {
+            "-".to_owned()
+        } else {
+            r.ports.join(",")
+        },
         fw
     )
 }
 
 pub fn info(cli: &Cli) -> ExitCode {
-    let entries = match wch_devices() {
+    let entry = match select_entry(cli, "probe.info") {
         Ok(e) => e,
-        Err(e) => return fail(cli, "probe.info", ErrorKind::Internal, e.to_string(), None),
-    };
-    let selector = match parse_selector(cli) {
-        Ok(s) => s,
         Err(code) => return code,
     };
-    let devs: Vec<&Entry> = entries.iter().collect();
-    let idx = match ch32rv_usb::resolve(selector.as_ref(), devs.iter().map(|e| &e.dev)) {
-        Ok(i) => i,
-        Err(ResolveError::NotFound) => {
-            return fail(
-                cli,
-                "probe.info",
-                ErrorKind::DeviceNotFound,
-                "no probe matched the selector",
-                Some("run `ch32rv probe list` to see available probes"),
-            );
-        }
-        Err(ResolveError::Ambiguous(indices)) => {
-            let candidates: Vec<serde_json::Value> = indices
-                .iter()
-                .filter_map(|&i| devs.get(i))
-                .map(|e| {
-                    serde_json::json!({
-                        "usb": e.dev.usb_id(),
-                        "serial": e.dev.serial(),
-                        "topology": e.dev.topology(),
-                        "mode": mode_str(e.mode),
-                    })
-                })
-                .collect();
-            return fail_with_candidates(
-                cli,
-                "probe.info",
-                ErrorKind::DeviceAmbiguous,
-                format!("{} probes match; specify --probe", candidates.len()),
-                Some("select one with --probe VID:PID:SERIAL or usb:<bus>-<ports>"),
-                candidates,
-            );
-        }
-        Err(ResolveError::UnresolvedName(n)) => {
-            return fail(
-                cli,
-                "probe.info",
-                ErrorKind::Usage,
-                format!("alias `{n}` not found in ch32rv.toml / ~/.config/ch32rv/config.toml"),
-                None,
-            );
-        }
-    };
-    let entry = devs[idx];
-
-    // en: Open with retry (3 attempts, 1 s apart) per docs/cli.ja.md §3.7; permission errors
-    // are not retried.
-    // ja: docs/cli.ja.md §3.7 に従い 1 秒間隔 3 回まで再試行。権限エラーは再試行しない。
-    let (report, warnings, error) = {
-        let mut last = report_for(entry);
-        if entry.mode == ProbeMode::Riscv {
-            for _ in 0..2 {
-                if last.2.is_none()
-                    || last
-                        .2
-                        .as_deref()
-                        .is_some_and(|e| e.contains("access denied"))
-                {
-                    break;
-                }
-                std::thread::sleep(Duration::from_secs(1));
-                last = report_for(entry);
-            }
-        }
-        last
-    };
+    let (report, warnings, error) = report_with_retry(&entry);
 
     if let Some(e) = error {
         let kind = if e.contains("access denied") {
@@ -280,14 +292,7 @@ pub fn info(cli: &Cli) -> ExitCode {
         env.warnings = warnings;
         crate::print_envelope(&env)
     } else {
-        println!("model:    {}", report.model);
-        println!("mode:     {}", report.mode.map(mode_str).unwrap_or("?"));
-        println!("usb:      {}", report.usb.as_deref().unwrap_or("-"));
-        println!("serial:   {}", report.serial.as_deref().unwrap_or("-"));
-        println!("topology: {}", report.topology.as_deref().unwrap_or("-"));
-        if let Some(fw) = &report.firmware {
-            println!("firmware: {} (WCH {}, raw {})", fw.norm, fw.wch, fw.raw);
-        }
+        print_probe_human(&report);
         for w in &warnings {
             eprintln!("warning[{}]: {}", w.code, w.msg);
         }
@@ -295,18 +300,40 @@ pub fn info(cli: &Cli) -> ExitCode {
     }
 }
 
+pub(crate) fn print_probe_human(report: &ProbeReport) {
+    println!("model:    {}", report.model);
+    println!("mode:     {}", report.mode.map(mode_str).unwrap_or("?"));
+    println!("usb:      {}", report.usb.as_deref().unwrap_or("-"));
+    println!("serial:   {}", report.serial.as_deref().unwrap_or("-"));
+    println!("topology: {}", report.topology.as_deref().unwrap_or("-"));
+    if !report.ports.is_empty() {
+        println!("ports:    {}", report.ports.join(", "));
+    }
+    if let Some(fw) = &report.firmware {
+        let mode = fw
+            .mode
+            .as_deref()
+            .map(|m| format!(", {m} firmware"))
+            .unwrap_or_default();
+        println!(
+            "firmware: {} (WCH {}, raw {}{mode})",
+            fw.norm, fw.wch, fw.raw
+        );
+    }
+}
+
 /// en: Parse --probe, resolving `name:` aliases via the config files and rejecting `index:`
 /// under --non-interactive (docs/cli.ja.md §3.3-§3.4).
 /// ja: --probe をパースする。`name:` は設定ファイルで解決し、`index:` は
 /// --non-interactive 時に拒否する。
-fn parse_selector(cli: &Cli) -> Result<Option<Selector>, ExitCode> {
+fn parse_selector(cli: &Cli, cmd: &str) -> Result<Option<Selector>, ExitCode> {
     let Some(raw) = cli.probe.as_deref() else {
         return Ok(None);
     };
     let sel: Selector = raw.parse().map_err(|e| {
         fail(
             cli,
-            "probe.info",
+            cmd,
             ErrorKind::Usage,
             format!("invalid --probe selector: {e}"),
             None,
@@ -317,7 +344,7 @@ fn parse_selector(cli: &Cli) -> Result<Option<Selector>, ExitCode> {
             Some(aliased) => aliased.parse().map_err(|e| {
                 fail(
                     cli,
-                    "probe.info",
+                    cmd,
                     ErrorKind::Usage,
                     format!("alias `{name}` resolves to an invalid selector: {e}"),
                     None,
@@ -326,7 +353,7 @@ fn parse_selector(cli: &Cli) -> Result<Option<Selector>, ExitCode> {
             None => {
                 return Err(fail(
                     cli,
-                    "probe.info",
+                    cmd,
                     ErrorKind::Usage,
                     format!(
                         "alias `{name}` not found in ch32rv.toml / ~/.config/ch32rv/config.toml"
@@ -340,7 +367,7 @@ fn parse_selector(cli: &Cli) -> Result<Option<Selector>, ExitCode> {
     if matches!(sel, Selector::Index(_)) && cli.non_interactive {
         return Err(fail(
             cli,
-            "probe.info",
+            cmd,
             ErrorKind::Usage,
             "index: selectors are rejected under --non-interactive (not stable across replug)",
             Some("use VID:PID:SERIAL, serial:, name:, or usb:<bus>-<ports>"),
@@ -349,7 +376,7 @@ fn parse_selector(cli: &Cli) -> Result<Option<Selector>, ExitCode> {
     Ok(Some(sel))
 }
 
-fn fail(
+pub(crate) fn fail(
     cli: &Cli,
     cmd: &str,
     kind: ErrorKind,
@@ -359,7 +386,7 @@ fn fail(
     fail_with_candidates(cli, cmd, kind, msg, hint, Vec::new())
 }
 
-fn fail_with_candidates(
+pub(crate) fn fail_with_candidates(
     cli: &Cli,
     cmd: &str,
     kind: ErrorKind,

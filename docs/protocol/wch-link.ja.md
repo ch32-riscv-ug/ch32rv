@@ -10,8 +10,9 @@
 
 | mode | VID:PID | interface 構成 | 状態 |
 |---|---|---|---|
-| RISC-V mode | `1a86:8010` | vendor bulk(MI_00)+ CDC serial | attested(全実装一致) |
-| ARM/DAP mode | `1a86:8012` | CMSIS-DAP + CDC | attested |
+| RISC-V mode | `1a86:8010` | vendor bulk(MI_00)+ CDC serial | verified(実機 2 台) |
+| RISC-V mode(第 2 PID) | `1a86:8011` | 同上 | attested(ch32-device-data `read_link_version.py` が対応。手元に実機なし) |
+| ARM/DAP mode | `1a86:8012` | CMSIS-DAP + CDC。**version 照会(`81 0d 01 01`)には EP `0x02`/`0x83` で同一フレームが通る** | attested(同スクリプト実測) |
 | IAP mode | `4348:55e0` | WCH factory ISP と同一の bulk 構成 | attested(minichlink / wlink-iap) |
 
 - product string は `"WCH-Link"` または `"WCH_Link"`(probe-rs は両方を受ける)。
@@ -42,16 +43,18 @@ probe → host:  0x82 | cmd | len | payload...   (成功)
 
 | cmd | sub | 意味 | 状態 | 根拠 |
 |---|---|---|---|---|
-| `0x0d` | `0x01` | GetProbeInfo(型番・firmware 版)。応答 payload = `[fw_major, fw_minor, variant, ...]`、variant は 1=CH549 / 2,0x12=LinkE / 3=LinkS / 5,0x85=LinkW | **verified**(2026-09-01、LinkE=variant 2・raw `02 16`=2.22、CH549=variant 1・raw `02 0c`=2.12 を実機確認) | ch32rv 実装 + probe-rs, wlink |
-| `0x0d` | `0x02` | AttachChip(family byte + chip ID 応答) | attested | probe-rs, wlink |
-| `0x0d` | `0xff` | DetachChip | attested | probe-rs |
+| `0x0d` | `0x01` | GetProbeInfo(型番・firmware 版)。応答 payload = `[fw_major, fw_minor, variant, fw_mode]`(4 byte)。variant は 1=CH549 / 2,0x12=LinkE / 3=LinkS / 4=DAPLink / 5,0x85=LinkW。fw_mode は 0=RISC-V / 1=ARM(RV/ARM 別 firmware は CH549 のみ) | **verified**(2026-09-01、LinkE=variant 0x12 系・raw `02 16`=2.22、CH549=variant 1・raw `02 0c`=2.12、fw_mode=0 を実機確認) | ch32rv 実装 + probe-rs, wlink, read_link_version.py |
+| `0x0d` | `0x02` | AttachChip。応答 payload = `[family, chip_id_be32]`(5 byte)。target 無しの場合は 4 byte 応答または reason `0x55` のエラー応答 | **verified**(2026-09-01: V203C8T6 → family `0x05`・chip_id `0x20310500`、V103R8T6 → family `0x01`・chip_id `0x2500410f`) | ch32rv 実装 + probe-rs, board-identify |
+| `0x0d` | `0x03` | RedetectChip。target を **reset せずに** probe に把握し直させる(havereset sticky bit で確認済み)。壊れ読み値(§7)の復旧に使う | attested(board-identify 実測) | board-identify `wch_link.py` |
+| `0x0d` | `0xff` | DetachChip(OptEnd)。掴んだ core の解放とセッション前の状態クリアの両方に使う | **verified**(2026-09-01) | ch32rv 実装 + probe-rs, board-identify |
+| `0x11` | `0x05` | ChipInfo。**応答はフレームヘッダ無しの生 20 byte**: `[0:2]? / flash_kb(be16, [2:4]) / UUID([4:12]) / protection flags([12:16], 解釈未確立) / chip_id([16:20])`。UUID 全 0/全 ff は未応答 | **verified**(2026-09-01: V203C8T6 → flash 64KiB・UUID `b661abcd1e91bc63`・protection_raw `e339e339`。UUID は board-identify の独立読取と一致) | ch32rv 実装 + board-identify, wlink |
 | `0x0d 0x01` | `0x09`/`0x0a` | 3.3V 出力 on/off(`81 0d 01 09` / `0a`) | attested | minichlink `pgm-wch-linke.c:604-613`, wlink |
 | `0x0d 0x01` | `0x0b`/`0x0c` | 5V 出力 on/off | attested | minichlink `pgm-wch-linke.c:615-624` |
 | `0x0d 0x01` | `0x0f 0x09` | 公式 unbrick | single-source | minichlink(**コメントアウト**。「X シリーズで不安定」と注記あり。採用判断は capture 後) |
 | `0x01` | `0x01` | CheckFlashProtection | attested | probe-rs, wlink |
 | `0x01` | `0x02` | UnprotectFlash | attested | probe-rs, wlink |
 | `0x0b` | - | Reset(target) | attested | probe-rs, wlink |
-| `0x0c` | - | SetSpeed(family + 速度段階) | attested | probe-rs。段階は low=400kHz / medium=4MHz / high=6MHz の 3 つのみ |
+| `0x0c` | - | SetSpeed(payload `[family, speed]`)。attach 前は family 不明のため `0x01` を送る。speed は high=`0x01` / medium=`0x02` / low=`0x03`(逆順注意) | **verified**(2026-09-01) | ch32rv 実装 + probe-rs |
 | `0x08` | - | DmiOp(nop / read / write) | attested | probe-rs, wlink, RINS |
 
 ### 4.2 存在の証拠のみ(WCH OpenOCD binary の文字列、wlink 実装)— すべて todo
@@ -112,6 +115,8 @@ family byte(probe-rs `wlink/mod.rs:90-128` より転記。状態: attested):
 | attach 直後のレース | 挿抜直後は CDC が vendor interface より先に enumerate され、その窓で開くと失敗する。1 秒間隔 3 回の retry で回避 | ArduinoCore-CH32 実測 |
 | 大 image で固まる | 16.7KB の書込中に bulk timeout → probe が無応答化。USB 再接続でのみ復旧(`USBDEVFS_RESET` 不可) | ArduinoCore-CH32 実測 |
 | flash 直後の UART bridge | LinkE の CDC 配送が止まることがあり、port の再 open で直る | ArduinoCore-CH32 実測 |
+| **LinkE の壊れ読み値** | 一部ツールの後、probe が target の壊れた読み値を保持する: family byte は正しいまま chip ID と UUID が同一 32bit word の繰り返しになる。再 attach でも target 電源断でも直らない(**probe 側の状態**)。復旧は RedetectChip(`0x0d 0x03`)+ detach + 再 attach。ChipInfo 応答全体が同一 word 繰り返しかで検出できる | board-identify 実測(ch32rv も同じ検出・復旧を実装) |
+| attach の掴み | AttachChip は target core を掴む。セッション終了時は必ず DetachChip で解放する(失敗経路含む) | board-identify 実測 |
 
 ## 8. capture 計画(M0-M1)
 

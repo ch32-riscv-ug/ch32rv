@@ -8,6 +8,7 @@
 
 mod args;
 mod cmd_probe;
+mod cmd_target;
 mod config;
 
 use clap::Parser;
@@ -21,6 +22,7 @@ fn main() -> std::process::ExitCode {
         Command::Version => cmd_version(&cli),
         Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(&cli, *watch),
         Command::Probe(ProbeCmd::Info) => cmd_probe::info(&cli),
+        Command::Target(TargetCmd::Info) => cmd_target::info(&cli),
         other => unimplemented_cmd(&cli, canonical_name(other)),
     }
 }
