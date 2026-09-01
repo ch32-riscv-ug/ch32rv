@@ -6,7 +6,10 @@
 //! ja: 書き込み層。erase / program / verify / confirm-run の編成。flash loader stub は
 //! [`stub`](暫定: wlink から転記、将来は source から build)。ELF は object、HEX は自前 parser。
 
+pub mod image;
 pub mod stub;
+
+pub use image::{Image, ImageError, Segment};
 
 use ch32rv_contract::policy::{ConfirmRunMode, EraseMode, Region, ResetPolicy, VerifyMode};
 
@@ -35,6 +38,8 @@ pub fn params_for_family(family_byte: u8) -> Option<FlashParams> {
         0x09 | 0x49 => (&stub::CH32V003, 64, 1024), // CH32V003 / CH641 (single-wire SWIO)
         0x01 => (&stub::CH32V103, 128, 4096),       // CH32V103
         0x05 | 0x06 => (&stub::CH32V307, 256, 4096), // CH32V20x / CH32V30x
+        0x0D | 0x0C => (&stub::CH643, 256, 4096),   // CH32X035 / CH643
+        0x0E => (&stub::CH32L103, 256, 4096),       // CH32L103
         _ => return None,
     };
     // support_special_erase: everything except the CH56x/57x/58x/59x BLE families.

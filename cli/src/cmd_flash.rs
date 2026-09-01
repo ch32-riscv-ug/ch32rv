@@ -14,7 +14,7 @@ use ch32rv_contract::event::Event;
 use ch32rv_contract::policy::{ConfirmRunMode, EraseMode, RecoverMethod, ResetPolicy, VerifyMode};
 use ch32rv_contract::progress::ProgressSink;
 use ch32rv_contract::{ErrorKind, ResultEnvelope, Warning};
-use ch32rv_flash::params_for_family;
+use ch32rv_flash::{Image, params_for_family};
 use ch32rv_wchlink::FlashParams as WlFlashParams;
 
 use crate::args::{Cli, FlashArgs, RecoverArgs};
@@ -24,25 +24,7 @@ use crate::session::{Session, SessionError};
 
 pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
     const CMD: &str = "flash";
-    // en: For the first milestone only raw bin is supported; ELF/HEX/UF2 come next.
-    // ja: 第1段階は raw bin のみ対応。ELF/HEX/UF2 は次段階。
-    if !matches!(
-        args.format,
-        ch32rv_contract::policy::ImageFormat::Auto | ch32rv_contract::policy::ImageFormat::Bin
-    ) {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::Usage,
-            format!(
-                "input format {:?} is not implemented yet (bin only for now)",
-                args.format
-            ),
-            Some("convert to a raw .bin, or wait for ELF/HEX support"),
-        );
-    }
-    // Guard against accidentally treating an ELF/HEX as bin.
-    let data = match std::fs::read(&args.file) {
+    let bytes = match std::fs::read(&args.file) {
         Ok(d) => d,
         Err(e) => {
             return fail(
@@ -54,17 +36,6 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
             );
         }
     };
-    if args.format == ch32rv_contract::policy::ImageFormat::Auto
-        && (data.starts_with(b"\x7fELF") || data.first() == Some(&b':'))
-    {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::Usage,
-            "input looks like ELF/Intel-HEX; only raw bin is implemented so far",
-            Some("pass a raw .bin (ELF/HEX support is coming)"),
-        );
-    }
 
     let entry = match select_entry(cli, CMD) {
         Ok(e) => e,
@@ -106,13 +77,36 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         );
     };
 
-    let load_addr = match &args.offset {
+    // Parse the input into flash segments (ELF / Intel HEX / UF2 / raw bin).
+    let bin_offset = match &args.offset {
         Some(s) => match parse::u32_addr(s) {
-            Ok(a) => a,
+            Ok(a) => Some(a),
             Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
         },
-        None => fp.code_flash_start,
+        None => None,
     };
+    let image = match Image::parse(&bytes, args.format, bin_offset, fp.code_flash_start) {
+        Ok(i) => i,
+        Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
+    };
+    // The probe reports flash size; use it to reject out-of-range segments.
+    let flash_size = session
+        .chip
+        .as_ref()
+        .map(|c| u32::from(c.flash_kb) * 1024)
+        .unwrap_or(0);
+    if flash_size > 0
+        && let Err(e) = image.check_within_flash(fp.code_flash_start, flash_size)
+    {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            e.to_string(),
+            Some("wrong --chip or --offset?"),
+        );
+    }
+    let total = image.total_len() as u64;
 
     let wl = WlFlashParams {
         stub: fp.stub,
@@ -124,7 +118,7 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
 
     let sink = crate::progress::sink(cli);
 
-    // Erase.
+    // Erase (once for the whole chip).
     if !matches!(args.erase, EraseMode::None) {
         sink.event(&Event::Phase {
             name: "erase".into(),
@@ -141,27 +135,35 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         }
     }
 
-    // Program.
+    // Program each segment.
     sink.event(&Event::Phase {
         name: "program".into(),
-        total: Some(data.len() as u64),
+        total: Some(total),
     });
     {
         let s = &sink;
-        if let Err(e) = session.link().write_flash(&data, load_addr, &wl, |done| {
-            s.event(&Event::Progress {
-                phase: "program".into(),
-                done,
-                total: Some(data.len() as u64),
-            });
-        }) {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::TransportTimeout,
-                format!("program failed: {e}"),
-                None,
-            );
+        let mut base = 0u64;
+        for seg in &image.segments {
+            let seg_len = seg.data.len() as u64;
+            if let Err(e) = session
+                .link()
+                .write_flash(&seg.data, seg.addr, &wl, |done| {
+                    s.event(&Event::Progress {
+                        phase: "program".into(),
+                        done: base + done,
+                        total: Some(total),
+                    });
+                })
+            {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransportTimeout,
+                    format!("program failed at {:#010x}: {e}", seg.addr),
+                    None,
+                );
+            }
+            base += seg_len;
         }
     }
 
@@ -170,7 +172,7 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
     if !matches!(args.verify, VerifyMode::None) {
         sink.event(&Event::Phase {
             name: "verify".into(),
-            total: Some(data.len() as u64),
+            total: Some(total),
         });
         session.link().detach_chip().ok();
         let _ = session.link().attach_chip();
@@ -184,38 +186,36 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
                 None,
             );
         }
-        match dm.read_mem(load_addr, data.len() as u32) {
-            Ok(readback) => {
-                if readback == data {
-                    verified = Some(true);
-                } else {
-                    let at = readback
-                        .iter()
-                        .zip(&data)
-                        .position(|(a, b)| a != b)
-                        .unwrap_or(0);
+        for seg in &image.segments {
+            match dm.read_mem(seg.addr, seg.data.len() as u32) {
+                Ok(readback) => {
+                    if readback != seg.data {
+                        let at = readback
+                            .iter()
+                            .zip(&seg.data)
+                            .position(|(a, b)| a != b)
+                            .unwrap_or(0);
+                        return fail(
+                            cli,
+                            CMD,
+                            ErrorKind::VerifyMismatch,
+                            format!("verify mismatch at {:#010x}", seg.addr as usize + at),
+                            None,
+                        );
+                    }
+                }
+                Err(e) => {
                     return fail(
                         cli,
                         CMD,
-                        ErrorKind::VerifyMismatch,
-                        format!(
-                            "verify mismatch at offset {at} (0x{:08x})",
-                            load_addr as usize + at
-                        ),
+                        ErrorKind::TransportTimeout,
+                        format!("readback failed: {e}"),
                         None,
                     );
                 }
             }
-            Err(e) => {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::TransportTimeout,
-                    format!("readback failed: {e}"),
-                    None,
-                );
-            }
         }
+        verified = Some(true);
     }
 
     // Reset policy.
@@ -239,7 +239,7 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
                         cli,
                         CMD,
                         &mut session,
-                        &data,
+                        total,
                         verified,
                         running,
                         warnings,
@@ -263,7 +263,7 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         cli,
         CMD,
         &mut session,
-        &data,
+        total,
         verified,
         running,
         warnings,
@@ -299,7 +299,7 @@ fn finish(
     cli: &Cli,
     cmd: &str,
     session: &mut Session,
-    data: &[u8],
+    total_bytes: u64,
     verified: Option<bool>,
     running: Option<bool>,
     warnings: Vec<Warning>,
@@ -313,7 +313,7 @@ fn finish(
             ResultEnvelope::success(cmd)
         };
         env.result = Some(serde_json::json!({
-            "bytes": data.len(),
+            "bytes": total_bytes,
             "family": session.family(),
             "verify": verified,
             "running": running,
@@ -322,7 +322,7 @@ fn finish(
         crate::print_envelope(&env)
     } else {
         if ok {
-            println!("flashed {} bytes to {}", data.len(), session.family());
+            println!("flashed {total_bytes} bytes to {}", session.family());
             if let Some(v) = verified {
                 println!(
                     "verify:  {}",
