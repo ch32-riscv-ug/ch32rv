@@ -8,6 +8,7 @@
 
 use std::time::Duration;
 
+use ch32rv_dmi::{DmiError, DtmAccess};
 use ch32rv_usb::{UsbDeviceInfo, UsbError, UsbInterface};
 use thiserror::Error;
 
@@ -17,7 +18,59 @@ const EP_OUT: u8 = 0x01;
 const EP_IN: u8 = 0x81;
 const CMD_CONTROL: u8 = 0x0d;
 const CMD_SET_SPEED: u8 = 0x0c;
+const CMD_DMI_OP: u8 = 0x08;
+const CMD_SET_MEM_REGION: u8 = 0x01;
+const CMD_PROGRAM: u8 = 0x02;
+const CMD_CONFIG_CHIP: u8 = 0x06;
+const CMD_RESET: u8 = 0x0b;
+const DATA_EP_OUT: u8 = 0x02;
+const DATA_EP_IN: u8 = 0x82;
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// en: Flash parameters that vary by chip family (docs/protocol/wch-link.ja.md, from wlink).
+/// ja: chip family ごとに変わる flash パラメータ(wlink 由来)。
+#[derive(Debug, Clone, Copy)]
+pub struct FlashParams {
+    /// Flash loader stub run in target RAM.
+    pub stub: &'static [u8],
+    /// Data-endpoint packet size (the stub and each chunk are padded to this).
+    pub data_packet_size: usize,
+    /// fastprogram chunk size.
+    pub write_pack_size: usize,
+    /// Whether this family accepts the flash-protection command group.
+    pub supports_protect: bool,
+    /// Whether this family accepts power-off / RST special erase.
+    pub supports_special_erase: bool,
+}
+
+/// en: DMI operation status from the probe (byte 5 of the DmiOp reply).
+/// ja: DmiOp 応答の byte 5 が返す DMI 操作の状態。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DmiStatus {
+    Success,
+    Failed,
+    Busy,
+    Other(u8),
+}
+
+impl DmiStatus {
+    fn from_u8(v: u8) -> Self {
+        match v {
+            0 => DmiStatus::Success,
+            2 => DmiStatus::Failed,
+            3 => DmiStatus::Busy,
+            other => DmiStatus::Other(other),
+        }
+    }
+}
+
+/// One DmiOp reply: `[addr, data_be32, op]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DmiReply {
+    pub addr: u8,
+    pub data: u32,
+    pub status: DmiStatus,
+}
 
 /// en: Debug speed. WCH-Link supports exactly three steps; the wire encoding is inverted
 /// (High=0x01 ... Low=0x03).
@@ -313,12 +366,39 @@ impl WchLink {
         })
     }
 
+    /// en: DmiOp (`0x81 0x08 0x06 addr data_be32 op`): one DMI transaction on the target's
+    /// debug transport. op = 0 nop / 1 read / 2 write. Reply is `[addr, data_be32, status]`.
+    /// Status: attested (probe-rs / wlink); verified against a live target on 2026-09-01.
+    /// ja: DmiOp。target debug transport への 1 トランザクション。op=0 nop/1 read/2 write。
+    /// 応答は `[addr, data_be32, status]`。実機で検証済み。
+    pub fn dmi_op(&mut self, addr: u8, data: u32, op: u8) -> Result<DmiReply, WchLinkError> {
+        let mut payload = [0u8; 6];
+        payload[0] = addr;
+        payload[1..5].copy_from_slice(&data.to_be_bytes());
+        payload[5] = op;
+        let resp = self.command(CMD_DMI_OP, &payload)?;
+        if resp.len() != 6 {
+            return Err(WchLinkError::UnexpectedResponse(resp));
+        }
+        Ok(DmiReply {
+            addr: resp[0],
+            data: u32::from_be_bytes([resp[1], resp[2], resp[3], resp[4]]),
+            status: DmiStatus::from_u8(resp[5]),
+        })
+    }
+
     /// en: DetachChip (`0x81 0x0d 0x01 0xff`), aka OptEnd / clear-state. Releases the held
     /// target core; also used to clear probe state before a session (board-identify).
     /// ja: DetachChip。掴んでいる target core を解放する。セッション前の状態クリアにも使う。
     pub fn detach_chip(&mut self) -> Result<(), WchLinkError> {
         let _ = self.command(CMD_CONTROL, &[0xff])?;
         Ok(())
+    }
+
+    /// en: Set the target debug speed (family placeholder 0x01 for a pre-attach session).
+    /// ja: target debug 速度を設定する(attach 前は family placeholder 0x01)。
+    pub fn set_speed_default(&mut self, speed: Speed) -> Result<(), WchLinkError> {
+        self.set_speed(0x01, speed)
     }
 
     /// en: RedetectChip (`0x81 0x0d 0x01 0x03`): makes the probe re-establish its target
@@ -328,6 +408,138 @@ impl WchLink {
     /// sticky bit で board-identify が実測確認)。LinkE の壊れ読み値の解消に使う。
     pub fn redetect_chip(&mut self) -> Result<(), WchLinkError> {
         let _ = self.command(CMD_CONTROL, &[0x03])?;
+        Ok(())
+    }
+
+    // ---- Flash programming (docs/protocol/wch-link.ja.md §4.2 flash path, from wlink) ----
+
+    /// Send a command and return the first payload byte (Program/ConfigChip replies).
+    fn command_u8(&mut self, cmd: u8, payload: &[u8]) -> Result<u8, WchLinkError> {
+        let resp = self.command(cmd, payload)?;
+        resp.first()
+            .copied()
+            .ok_or(WchLinkError::UnexpectedResponse(resp))
+    }
+
+    /// en: Check read-protection state (ConfigChip 0x01). 1 = protected, 2 = unprotected.
+    /// ja: 読み出し保護状態を確認(ConfigChip 0x01)。1=保護、2=非保護。
+    pub fn check_read_protect(&mut self) -> Result<u8, WchLinkError> {
+        self.command_u8(CMD_CONFIG_CHIP, &[0x01])
+    }
+
+    /// en: Unprotect flash (ConfigChip 0x02). Only meaningful when currently protected: the
+    /// probe firmware mass-erases the option-byte page, so wlink skips it otherwise.
+    /// ja: 保護解除(ConfigChip 0x02)。保護時のみ実行する。
+    pub fn unprotect_if_needed(&mut self) -> Result<(), WchLinkError> {
+        if self.check_read_protect()? == 0x01 {
+            let _ = self.command_u8(CMD_CONFIG_CHIP, &[0x02])?;
+            self.detach_chip()?;
+            let _ = self.attach_chip()?;
+        }
+        Ok(())
+    }
+
+    /// en: Whole-chip flash erase (Program 0x01) followed by a fresh attach. The caller must
+    /// have attached first.
+    /// ja: chip 全体の flash 消去(Program 0x01)後に再 attach。
+    pub fn erase_flash(&mut self) -> Result<(), WchLinkError> {
+        let _ = self.command_u8(CMD_PROGRAM, &[0x01])?;
+        let _ = self.attach_chip()?;
+        Ok(())
+    }
+
+    /// en: Program `data` to `address` via the flash loader stub (wlink `write_flash`).
+    /// Sequence: SetWriteMemoryRegion -> WriteFlashOP -> upload stub on the data EP ->
+    /// confirm 0x07 -> WriteFlash -> stream chunks on the data EP, checking each ack ->
+    /// End. `progress(done)` is called after each chunk.
+    /// ja: flash loader stub 経由で `data` を `address` へ書く(wlink `write_flash`)。
+    pub fn write_flash(
+        &mut self,
+        data: &[u8],
+        address: u32,
+        params: &FlashParams,
+        mut progress: impl FnMut(u64),
+    ) -> Result<(), WchLinkError> {
+        self.iface.open_data_endpoints(DATA_EP_OUT, DATA_EP_IN)?;
+        if params.supports_protect {
+            self.unprotect_if_needed()?;
+        }
+
+        // SetWriteMemoryRegion (cmd 0x01): start_addr BE32 + len BE32.
+        let mut region = Vec::with_capacity(8);
+        region.extend_from_slice(&address.to_be_bytes());
+        region.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let _ = self.command(CMD_SET_MEM_REGION, &region)?;
+
+        // WriteFlashOP (Program 0x05), then upload the stub on the data endpoint.
+        let _ = self.command_u8(CMD_PROGRAM, &[0x05])?;
+        self.write_data_padded(params.stub, params.data_packet_size)?;
+
+        // Confirm (Program 0x07) — must echo 0x07.
+        let n = self.command_u8(CMD_PROGRAM, &[0x07])?;
+        if n != 0x07 {
+            return Err(WchLinkError::UnexpectedResponse(vec![n]));
+        }
+
+        // WriteFlash (Program 0x02), then stream data chunks, checking each ack.
+        let _ = self.command_u8(CMD_PROGRAM, &[0x02])?;
+        let mut done = 0u64;
+        for chunk in data.chunks(params.write_pack_size) {
+            self.write_data_padded(chunk, params.data_packet_size)?;
+            let mut ack = [0u8; 4];
+            let got = self.iface.read_data(&mut ack, self.timeout)?;
+            // Ack looks like `41 01 01 04`; byte 3 == 0x04 means the chunk landed.
+            if got < 4 || ack[3] != 0x04 {
+                return Err(WchLinkError::UnexpectedResponse(ack[..got].to_vec()));
+            }
+            done += chunk.len() as u64;
+            progress(done);
+        }
+
+        let _ = self.command_u8(CMD_PROGRAM, &[0x08])?; // End
+        Ok(())
+    }
+
+    /// Write `data` to the data endpoint, padding the final packet to `packet_size` with 0xff.
+    fn write_data_padded(&mut self, data: &[u8], packet_size: usize) -> Result<(), WchLinkError> {
+        for chunk in data.chunks(packet_size) {
+            if chunk.len() == packet_size {
+                self.iface.write_data(chunk, self.timeout)?;
+            } else {
+                let mut padded = vec![0xffu8; packet_size];
+                padded[..chunk.len()].copy_from_slice(chunk);
+                self.iface.write_data(&padded, self.timeout)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// en: Soft reset and run (Reset 0x01). This is `wlink reset` / the run-after-flash reset.
+    /// ja: soft reset して実行(Reset 0x01)。`wlink reset` 相当。
+    pub fn soft_reset(&mut self) -> Result<(), WchLinkError> {
+        let _ = self.command(CMD_RESET, &[0x01])?;
+        Ok(())
+    }
+
+    /// en: "Clear All Code Flash - By Power off" (EraseCodeFlash `0x0f`). Power-cycles the
+    /// target through the probe and erases in the boot window before the app can reconfigure
+    /// the debug pins - the recovery for a target whose SWDIO/SWCLK were repurposed. Requires
+    /// SetSpeed(family) first. The probe must power the target (LinkE/LinkW).
+    /// ja: 「Clear All Code Flash - By Power off」。probe が target を電源再投入し、app が
+    /// debug ピンを再構成する前の boot 窓で消去する。SWDIO/SWCLK を他用途に使った target の
+    /// 復旧手段。SetSpeed(family) が先に要る。target を probe 給電していること(LinkE/LinkW)。
+    pub fn erase_code_flash_by_power_off(&mut self, family_byte: u8) -> Result<(), WchLinkError> {
+        self.set_speed(family_byte, Speed::default())?;
+        let _ = self.command(CMD_CONTROL, &[0x0f, family_byte])?;
+        Ok(())
+    }
+
+    /// en: "Clear All Code Flash - By RST pin" (EraseCodeFlash `0x08`). Same idea but toggles
+    /// NRST instead of power; requires the RST pin wired.
+    /// ja: 「Clear All Code Flash - By RST pin」。電源でなく NRST を使う。RST 配線が要る。
+    pub fn erase_code_flash_by_rst(&mut self, family_byte: u8) -> Result<(), WchLinkError> {
+        self.set_speed(family_byte, Speed::default())?;
+        let _ = self.command(CMD_CONTROL, &[0x08, family_byte])?;
         Ok(())
     }
 
@@ -367,5 +579,48 @@ impl WchLink {
             protection_raw,
             chip_id_echo: u32::from_be_bytes([reply[16], reply[17], reply[18], reply[19]]),
         }))
+    }
+}
+
+/// en: [`WchLink`] speaks the DMI transport (docs/architecture.ja.md §2.1: the transport
+/// implements DtmAccess, the DM layer stays transport-agnostic). Retries on BUSY.
+/// ja: [`WchLink`] を DMI transport として使う。DM 層は transport 非依存のまま。BUSY は再試行。
+impl DtmAccess for WchLink {
+    fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
+        for _ in 0..8 {
+            let r = self
+                .dmi_op(addr, 0, 1)
+                .map_err(|e| DmiError::Transport(e.to_string()))?;
+            match r.status {
+                DmiStatus::Busy => continue,
+                DmiStatus::Failed => {
+                    return Err(DmiError::OperationFailed("dmi read failed".into()));
+                }
+                _ => return Ok(r.data),
+            }
+        }
+        Err(DmiError::Timeout)
+    }
+
+    fn dmi_write(&mut self, addr: u8, value: u32) -> Result<(), DmiError> {
+        for _ in 0..8 {
+            let r = self
+                .dmi_op(addr, value, 2)
+                .map_err(|e| DmiError::Transport(e.to_string()))?;
+            match r.status {
+                DmiStatus::Busy => continue,
+                DmiStatus::Failed => {
+                    return Err(DmiError::OperationFailed("dmi write failed".into()));
+                }
+                _ => return Ok(()),
+            }
+        }
+        Err(DmiError::Timeout)
+    }
+
+    fn dmi_nop(&mut self) -> Result<(), DmiError> {
+        self.dmi_op(0, 0, 0)
+            .map(|_| ())
+            .map_err(|e| DmiError::Transport(e.to_string()))
     }
 }

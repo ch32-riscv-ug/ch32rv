@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- (EN) Implement `flash`: erase, program through the flash loader stub (data endpoint 0x02/0x82, per-family packet sizes), readback verify, reset-to-run, and `--confirm-run` (status or PC-in-flash check). Verified live end to end: an Arduino-built blink flashed to CH32V203 (LinkE) and CH32V103 (CH549), readback byte-identical to the .bin, `running: yes`. Interim flash stubs (CH32V307/CH32V103) are transcribed from wlink with provenance until built from source.
+- (JA) `flash` を実装: 消去、flash loader stub 経由の書き込み(data EP 0x02/0x82、family 別 packet size)、readback verify、reset-run、`--confirm-run`(status / PC-in-flash 判定)。実機で end-to-end 検証: Arduino ビルドの blink を CH32V203(LinkE)・CH32V103(CH549)へ flash、readback は .bin とバイト一致、`running: yes`。暫定 flash stub は wlink から provenance 付きで転記(将来 source から build)。
+- (EN) Implement `recover --method power-off|nrst`: the "Clear All Code Flash" recovery for a target whose SWDIO/SWCLK were repurposed (power-cycles or toggles NRST and erases in the boot window; power-off needs a LinkE/LinkW that powers the target). The power-off command is verified accepted on real hardware; note that a debug read right after it returns a placeholder pattern identical to what `wlink` returns, and a normal flash immediately recovers the chip.
+- (JA) `recover --method power-off|nrst` を実装: SWDIO/SWCLK を他用途に使った target の「Clear All Code Flash」復旧(電源/NRST 再起動して boot 窓で消去。power-off は target を給電する LinkE/LinkW が必要)。power-off の受理を実機確認。直後の debug read は `wlink` と同一の placeholder を返し、通常 flash で即復旧する。
+- (EN) Add a second bulk data-endpoint pair to the USB layer and a CLI progress sink (`--progress bar|ndjson|none`).
+- (JA) USB 層に 2 つ目の bulk data endpoint 組、CLI に進捗シンク(`--progress bar|ndjson|none`)を追加。
+
+- (EN) Add the RISC-V Debug Module layer (`ch32rv-dmi`): the DmiOp transport command wired through the `DtmAccess` boundary, plus halt, abstract-register reads (GPR/CSR/PC), and program-buffer memory reads. Implement `dbg regs` and `read` (range dump in bin/hex/Intel-HEX, blank check). Verified live on CH32V203 and CH32V103; the flash readback matches `wlink dump` byte for byte.
+- (JA) RISC-V Debug Module 層(`ch32rv-dmi`)を追加: DmiOp transport を `DtmAccess` 境界に通し、halt・abstract register 読み(GPR/CSR/PC)・program buffer メモリ読みを実装。`dbg regs` と `read`(範囲 dump を bin/hex/Intel-HEX、blank check)を実装。CH32V203/V103 で実機検証し、flash 読み値は `wlink dump` とバイト一致。
+- (EN) Extract a shared attach `Session` (open + attach + ChipInfo, always detaches on drop, recovers the LinkE corrupted readback) and shared arg parsing (speed, address, range); `target info` now builds on them.
+- (JA) 共通の attach `Session`(open+attach+ChipInfo、drop 時に必ず detach、LinkE 壊れ読み値を復旧)と共通の引数パース(speed/address/range)を切り出し、`target info` をその上に再構成。
+
 - (EN) Implement `target info`: attach, read the chip signature (family + chip ID), factory UUID, and flash size, then always release the core. Detects and recovers the known LinkE corrupted-readback state via RedetectChip (ported from board-identify's measured workaround). Verified live: CH32V203C8T6 (0x20310500, 64 KiB) via LinkE and CH32V103R8T6 (0x2500410f) via Link-CH549, with UUIDs matching board-identify's independent readings.
 - (JA) `target info` を実装: attach → chip 署名(family + chip ID)・工場 UUID・flash 容量の読み取り → 常に core を解放。LinkE の壊れ読み値状態を検出し RedetectChip で復旧(board-identify の実測ワークアラウンドを移植)。実機検証: LinkE 経由 CH32V203C8T6(0x20310500、64KiB)、Link-CH549 経由 CH32V103R8T6(0x2500410f)。UUID は board-identify の独立読取と一致。
 - (EN) Show the serial ports belonging to each probe (`ports` in `probe list` / `probe info`, Linux sysfs), and the firmware mode byte (riscv/arm) from the 4-byte GetProbeInfo payload.
