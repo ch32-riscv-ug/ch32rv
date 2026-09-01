@@ -51,6 +51,29 @@ fn parse_image(
     }
 }
 
+/// en: The set of flash pages (page-aligned start addresses) that the given `(addr, len)`
+/// segments touch, for a `page`-byte page size. `--erase sector` erases exactly these pages, so
+/// it never wipes flash outside the image. A segment that starts mid-page pulls in its whole
+/// page; segments that share a page collapse to one entry.
+/// ja: `(addr, len)` セグメント群が触れる flash page(page 境界の開始番地)の集合。`--erase sector`
+/// はこの page だけを消すので image 外の flash を消さない。page 途中開始はその page 全体を含む。
+fn covered_pages(
+    segments: impl IntoIterator<Item = (u32, u32)>,
+    page: u32,
+) -> std::collections::BTreeSet<u32> {
+    let mut pages = std::collections::BTreeSet::new();
+    for (addr, len) in segments {
+        let first = addr - (addr % page);
+        let end = addr.saturating_add(len); // exclusive
+        let mut p = first;
+        while p < end {
+            pages.insert(p);
+            p = p.saturating_add(page);
+        }
+    }
+    pages
+}
+
 pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
     const CMD: &str = "flash";
     let bytes = match std::fs::read(&args.file) {
@@ -153,20 +176,89 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
 
     let sink = crate::progress::sink(cli);
 
-    // Erase (once for the whole chip).
-    if !matches!(args.erase, EraseMode::None) {
-        sink.event(&Event::Phase {
-            name: "erase".into(),
-            total: None,
-        });
-        if let Err(e) = session.link().erase_flash() {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::TransportTimeout,
-                format!("erase failed: {e}"),
-                None,
+    // Erase per policy. `chip` and `auto` do a whole-chip erase (fast; the natural choice for a
+    // full-image flash, which is the common case). `sector` erases only the flash pages the image
+    // actually covers, via the direct FLASH controller - so it never wipes flash outside the image
+    // (e.g. a bootloader or calibration data in high flash). `none` skips erase entirely.
+    // en: `sector` was previously an alias for a whole-chip erase (a silent data-loss footgun);
+    // it now erases surgically. `auto` stays whole-chip so the default flashing path is unchanged.
+    match args.erase {
+        EraseMode::None => {}
+        EraseMode::Chip | EraseMode::Auto => {
+            sink.event(&Event::Phase {
+                name: "erase".into(),
+                total: None,
+            });
+            if let Err(e) = session.link().erase_flash() {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransportTimeout,
+                    format!("erase failed: {e}"),
+                    None,
+                );
+            }
+        }
+        EraseMode::Sector => {
+            // Sector erase needs a verified FLASH-controller profile (page size + mechanism).
+            let Some(cprofile) = ch32rv_flash::flash_controller_profile(family) else {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::CapabilityUnsupported,
+                    format!(
+                        "--erase sector is not supported for {} (0x{family:02x}) yet",
+                        session.family()
+                    ),
+                    Some("use --erase chip to erase the whole chip"),
+                );
+            };
+            let page = cprofile.page_size;
+            // Every flash page any segment touches (dedup + sorted, page-aligned). Erase them all
+            // before programming so segments that share a page never wipe each other.
+            let pages = covered_pages(
+                image.segments.iter().map(|s| (s.addr, s.data.len() as u32)),
+                page,
             );
+            let total_pages = pages.len() as u64;
+            sink.event(&Event::Phase {
+                name: "erase".into(),
+                total: Some(total_pages),
+            });
+            if let Err(e) = session.dm().halt() {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::AttachFailed,
+                    format!("halt for sector erase failed: {e}"),
+                    None,
+                );
+            }
+            {
+                let mode = cprofile.mode;
+                let mut dm = session.dm();
+                for (i, pg) in pages.iter().enumerate() {
+                    if let Err(e) = dm.flash_page_erase(*pg, mode) {
+                        return fail(
+                            cli,
+                            CMD,
+                            ErrorKind::TransportTimeout,
+                            format!("sector erase failed at 0x{pg:08x}: {e}"),
+                            None,
+                        );
+                    }
+                    sink.event(&Event::Progress {
+                        phase: "erase".into(),
+                        done: (i + 1) as u64,
+                        total: Some(total_pages),
+                    });
+                }
+            }
+            // Reset the link/target debug state so the stub loader programs from a clean slate
+            // (mirrors the detach/reattach the verify step does below; verified to program
+            // correctly into page-erased - not chip-erased - flash).
+            session.link().detach_chip().ok();
+            let _ = session.link().attach_chip();
         }
     }
 
@@ -928,5 +1020,68 @@ fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
                 "check target wiring/power/BOOT; if debug pins were repurposed try `ch32rv recover --method power-off --chip <family>`",
             ),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::covered_pages;
+
+    // en: The pages a sector erase must clear for a given image layout.
+    fn pages(segs: &[(u32, u32)], page: u32) -> Vec<u32> {
+        covered_pages(segs.iter().copied(), page)
+            .into_iter()
+            .collect()
+    }
+
+    #[test]
+    fn single_aligned_segment_one_page() {
+        // A 256-byte segment exactly on a page boundary touches exactly one 256-byte page.
+        assert_eq!(pages(&[(0x0800_ff00, 256)], 256), vec![0x0800_ff00]);
+    }
+
+    #[test]
+    fn segment_spanning_two_pages() {
+        // 260 bytes at a page start spills 4 bytes into the next page -> two pages.
+        assert_eq!(
+            pages(&[(0x0800_0000, 260)], 256),
+            vec![0x0800_0000, 0x0800_0100]
+        );
+    }
+
+    #[test]
+    fn unaligned_start_pulls_in_whole_first_page() {
+        // Starting mid-page erases from that page's base, not the segment's address.
+        assert_eq!(
+            pages(&[(0x0800_0080, 256)], 256),
+            vec![0x0800_0000, 0x0800_0100]
+        );
+    }
+
+    #[test]
+    fn segments_sharing_a_page_collapse() {
+        // Two segments in the same page must not produce a duplicate erase of that page.
+        assert_eq!(
+            pages(&[(0x0800_0000, 16), (0x0800_0040, 16)], 256),
+            vec![0x0800_0000]
+        );
+    }
+
+    #[test]
+    fn full_image_covers_every_page() {
+        // A 1 KiB image at the code base covers four 256-byte pages, contiguous and sorted.
+        assert_eq!(
+            pages(&[(0x0800_0000, 1024)], 256),
+            vec![0x0800_0000, 0x0800_0100, 0x0800_0200, 0x0800_0300]
+        );
+    }
+
+    #[test]
+    fn honours_a_128_byte_page_size() {
+        // V103 uses 128-byte pages; a 256-byte segment then spans two pages.
+        assert_eq!(
+            pages(&[(0x0800_0000, 256)], 128),
+            vec![0x0800_0000, 0x0800_0080]
+        );
     }
 }
