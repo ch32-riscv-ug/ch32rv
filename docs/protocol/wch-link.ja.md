@@ -109,6 +109,29 @@ family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0
 
 **1線 SWIO と 2線 RVSWD の差は USB protocol 層には現れない**: attach / DMI / flash のコマンドは同一で、物理配線の差(1線 QingKe V2A の V003 と 2線 の V103/V203)は LinkE firmware が吸収する。ただし 1線 target は LinkE/LinkW のみ対応(旧 CH549 Link は不可)。V003 の attach 応答は family `0x09`・chip_id `0x00300500`(= CH32V003F4P6)を実機確認。
 
+#### 4.2.1 直接 FLASH controller 経路(DMI 経由。page 単位。verified 2026-09-01)
+
+**stub write 経路は部分書き込み不可**: `write_flash`(SetWriteMemoryRegion + stub + chunk)で chip erase 無しに mid-flash の 1 page(256B @0x08000400)を書くと probe が `81 55 01 02`(Protocol reason 0x55)で拒否する。stub 経路は full-region programming(chip erase 後、region=全 image)専用。
+
+そこで **memory-mapped FLASH controller(0x4002_2000)を DMI(progbuf の `read_mem32`/`write_mem32`)で直接叩く** page 単位経路を実装(`DebugModule::flash_page_erase`/`flash_program_page`)。QingKe manual / wlink 参照ブロックの手順:
+
+| reg | 番地 | 用途 |
+|---|---|---|
+| FLASH_KEYR | `0x40022004` | KEY1=`0x45670123`, KEY2=`0xCDEF89AB` で LOCK 解除 |
+| FLASH_STATR | `0x4002200C` | bit0 BUSY / bit1 WRBUSY / bit4 WPRERR |
+| FLASH_CTLR | `0x40022010` | bit6 STRT / bit7 LOCK / bit15 FLOCK / bit16 FTPG / bit17 FTER / bit21 PGSTART |
+| FLASH_ADDR | `0x40022014` | 消去 page アドレス |
+| FLASH_MODEKEYR | `0x40022024` | KEY1,KEY2 で FLOCK(fast mode)解除 |
+
+- **unlock**: CTLR&(LOCK\|FLOCK)==0 ならスキップ。else KEYR に KEY1,KEY2 → MODEKEYR に KEY1,KEY2。
+- **page erase**: unlock → CTLR\|=FTER → FLASH_ADDR=addr → CTLR\|=STRT → STATR BUSY クリア待ち → CTLR&=~FTER → STATR 書き戻し(EOP クリア)→ lock。WPRERR で write-protect エラー。
+- **page program**(消去済み前提): unlock → CTLR\|=FTPG → 4B ずつ write_mem32 して各 word 後 STATR WRBUSY 待ち → CTLR\|=PGSTART → STATR BUSY 待ち → CTLR&=~FTPG → lock。
+- **hart は halt 済みが前提**(progbuf を使うため)。stub 不要=probe 側の 0x55 拒否を回避。
+
+実機検証(2026-09-01、V203/V307/X035): page erase+program を 3 cycle read-modify-write して surgical かつ可逆を確認。V307 で page1 だけ消去し page0(reset vector)/page2 が無傷。対応 family は **256B fast page の 0x05/0x06/0x0c/0x0d/0x0e**(V003 0x09/0x49 の 64B buffered mode・V103 0x01 は手順が異なり後続)。
+
+**重要: 消去済みセルは LinkE 経由の debug read で `0xe339e339` を返す**(実測: erase→read=e339、program A0A1..→read=a0a1..、erase→read=e339)。実セルは 0xff だが LinkE がこの placeholder を返す(power-off erase 後・ChipInfo protection_raw と同じ値)。→ **erase の成否判定は read の 0xff でなく controller STATR(BUSY クリア + WPRERR 無し)で行う**。この経路は今後 flash SW breakpoint(trigger 無し core)・option byte 書き込みの土台。
+
 ### 4.3 特殊消去(SWD ピン共用 target の復旧。verified 2026-09-01)
 
 「Clear All Code Flash」(WCH-LinkUtility の Target タブ相当)。SWDIO/SWCLK を GPIO 等に使うと通常 attach ができなくなるが、これは target を電源/RST で再起動し、app が pin を再構成する前の boot 窓で消去する。**attach しない**(できない target が対象)。
