@@ -186,6 +186,11 @@ fn run_uart(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Ok(e) => e,
         Err(c) => return c,
     };
+    // Hold the per-probe lock while streaming so a concurrent flash/attach waits (docs §3.7).
+    let _lock = match crate::cmd_probe::lock_probe(cli, CMD, &entry) {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
     let port = match resolve_port(cli, CMD, &entry, &args.port) {
         Ok(p) => p,
         Err(c) => return c,
@@ -213,6 +218,11 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
             None,
         );
     }
+    // Hold the per-probe lock while streaming so a concurrent flash/attach waits (docs §3.7).
+    let _lock = match crate::cmd_probe::lock_probe(cli, CMD, &entry) {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
     let (speed, mut warnings) = match parse::speed(&cli.speed) {
         Ok(v) => v,
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
@@ -323,6 +333,7 @@ fn run_dmdata(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
         &entry,
         speed,
         Duration::from_millis(1000),
+        Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
         &mut warnings,
     ) {

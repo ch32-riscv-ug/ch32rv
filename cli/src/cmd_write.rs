@@ -78,11 +78,17 @@ pub fn write(cli: &Cli, args: &WriteArgs) -> ExitCode {
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    let mut session =
-        match Session::attach(&entry, speed, timeout, cli.chip.as_deref(), &mut warnings) {
-            Ok(s) => s,
-            Err(e) => return crate::cmd_target::session_error(cli, CMD, e),
-        };
+    let mut session = match Session::attach(
+        &entry,
+        speed,
+        timeout,
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        &mut warnings,
+    ) {
+        Ok(s) => s,
+        Err(e) => return crate::cmd_target::session_error(cli, CMD, e),
+    };
 
     let is_flash = (FLASH_BASE..FLASH_END).contains(&addr);
     if !is_flash && addr < 0x0010_0000 {

@@ -43,6 +43,14 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
 
+    // Hold the per-probe advisory lock for the whole gdb session (docs/cli.ja.md §3.7): the server
+    // owns the probe until it exits, so a concurrent flash/monitor on the same probe must wait
+    // rather than collide. `_lock` is released when this function returns.
+    let _lock = match crate::cmd_probe::lock_probe(cli, CMD, &entry) {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+
     // Open a raw link and attach so the gdb target OWNS the transport (no lifetime on the
     // target type, which BlockingEventLoop::Target requires). We detach on the way out.
     let mut link = match WchLink::open(&entry.dev) {

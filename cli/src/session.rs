@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use ch32rv_contract::Warning;
 use ch32rv_dmi::DebugModule;
+use ch32rv_usb::{DeviceLock, LockError};
 use ch32rv_wchlink::{
     AttachInfo, ChipInfo, ChipInfoStatus, ProbeInfo, Speed, WchLink, WchLinkError, family_name,
 };
@@ -22,6 +23,8 @@ pub struct Session {
     pub probe_info: ProbeInfo,
     /// ChipInfo readback (flash size / UUID), when the target answered it.
     pub chip: Option<ChipInfo>,
+    /// Per-probe advisory lock, held for the session's lifetime (released on drop).
+    _lock: DeviceLock,
 }
 
 /// What went wrong, so the CLI can pick the right exit code.
@@ -31,6 +34,8 @@ pub enum SessionError {
     Attach(String),
     /// `--chip` conflicts with the detected target (exit 23).
     ChipMismatch(String),
+    /// The per-probe advisory lock could not be taken in time (exit 13).
+    Busy(LockError),
 }
 
 impl Session {
@@ -42,9 +47,21 @@ impl Session {
         entry: &Entry,
         speed: Speed,
         timeout: Duration,
+        lock_timeout: Duration,
         chip: Option<&str>,
         warnings: &mut Vec<Warning>,
     ) -> Result<Self, SessionError> {
+        // en: Take the per-probe advisory lock before opening so concurrent ch32rv processes on
+        // the same probe serialize instead of colliding (docs/cli.ja.md §3.7). Key by serial, or
+        // by bus topology when the probe reports no serial. Held for the whole session.
+        // ja: open 前に probe 単位の advisory lock を取り、同一 probe への並行アクセスを直列化する。
+        let lock_key = entry
+            .dev
+            .serial()
+            .map(str::to_owned)
+            .unwrap_or_else(|| entry.dev.topology());
+        let lock = DeviceLock::acquire(&lock_key, lock_timeout).map_err(SessionError::Busy)?;
+
         let mut link = open_with_retry(entry).map_err(SessionError::Open)?;
         link.set_timeout(timeout);
         // Clear any leftover state a previous session left holding the target.
@@ -119,6 +136,7 @@ impl Session {
             attach,
             probe_info,
             chip,
+            _lock: lock,
         })
     }
 

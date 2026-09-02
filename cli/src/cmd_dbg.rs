@@ -50,7 +50,15 @@ fn open_session(
     warnings: &mut Vec<Warning>,
 ) -> Result<Session, ExitCode> {
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    Session::attach(entry, speed, timeout, cli.chip.as_deref(), warnings).map_err(|e| match e {
+    Session::attach(
+        entry,
+        speed,
+        timeout,
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        warnings,
+    )
+    .map_err(|e| match e {
         SessionError::ChipMismatch(msg) => fail(
             cli,
             cmd,
@@ -77,6 +85,13 @@ fn open_session(
             ErrorKind::AttachFailed,
             msg,
             Some("check target wiring/power/BOOT; a protected target needs `ch32rv recover`"),
+        ),
+        SessionError::Busy(err) => fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceBusy,
+            err.to_string(),
+            Some("another ch32rv is using this probe; wait for it, or raise --lock-timeout"),
         ),
     })
 }

@@ -44,8 +44,14 @@ pub fn info(cli: &Cli) -> ExitCode {
     };
 
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    let session = match Session::attach(&entry, speed, timeout, cli.chip.as_deref(), &mut warnings)
-    {
+    let session = match Session::attach(
+        &entry,
+        speed,
+        timeout,
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        &mut warnings,
+    ) {
         Ok(s) => s,
         Err(e) => return session_error(cli, CMD, e),
     };
@@ -205,11 +211,17 @@ pub fn option_get(cli: &Cli) -> ExitCode {
         Err(msg) => return fail(cli, CMD, ErrorKind::Usage, msg, None),
     };
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    let mut session =
-        match Session::attach(&entry, speed, timeout, cli.chip.as_deref(), &mut warnings) {
-            Ok(s) => s,
-            Err(e) => return session_error(cli, CMD, e),
-        };
+    let mut session = match Session::attach(
+        &entry,
+        speed,
+        timeout,
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        &mut warnings,
+    ) {
+        Ok(s) => s,
+        Err(e) => return session_error(cli, CMD, e),
+    };
 
     let family = session.family();
     // Resolve the DB family from the live chip_id (e.g. family_byte 0x06 -> "CH32V30x", but the DB
@@ -369,6 +381,13 @@ pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
                 "check target wiring/power/BOOT; for a protected or bricked target see `ch32rv recover`",
             ),
         ),
+        SessionError::Busy(err) => fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceBusy,
+            err.to_string(),
+            Some("another ch32rv is using this probe; wait for it, or raise --lock-timeout"),
+        ),
     }
 }
 
@@ -397,8 +416,15 @@ fn option_session(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
     let (speed, mut warnings) =
         parse::speed(&cli.speed).map_err(|msg| fail(cli, cmd, ErrorKind::Usage, msg, None))?;
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    Session::attach(&entry, speed, timeout, cli.chip.as_deref(), &mut warnings)
-        .map_err(|e| session_error(cli, cmd, e))
+    Session::attach(
+        &entry,
+        speed,
+        timeout,
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        &mut warnings,
+    )
+    .map_err(|e| session_error(cli, cmd, e))
 }
 
 /// Confirm a destructive option-byte write: `--yes` skips it, `--non-interactive` without `--yes`
