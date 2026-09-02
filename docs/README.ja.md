@@ -7,6 +7,7 @@
 
 | 文書 | 内容 |
 |---|---|
+| [development.ja.md](development.ja.md) | 開発ルール(言語ポリシー・ワークフロー規約・ビルド/チェック・リリース) |
 | [requirements.ja.md](requirements.ja.md) | 巻き取り対象ツールの全機能インベントリと吸収マップ。2026-09-01 の一次資料再調査結果 |
 | [cli.ja.md](cli.ja.md) | コマンド体系仕様。全機能を最終的に実装する前提の完成形ツリーと共通契約(JSON、exit code、selector) |
 | [architecture.ja.md](architecture.ja.md) | 実装言語の検証(Rust 採用判断)と crate 分割、library API 規約、target DB 生成、配布 |
@@ -15,7 +16,7 @@
 | [protocol/wch-link.ja.md](protocol/wch-link.ja.md) | WCH-Link USB protocol ノート(骨組み。capture で verified 化する) |
 | [data-requests/](data-requests/README.ja.md) | ch32-device-data への CSV 作成依頼書(ファイル単位で依頼に使う) |
 | [direction-review-2026-09-01.ja.md](direction-review-2026-09-01.ja.md) | ArduinoCore-CH32 側からの方向性レビュー記録。リリース方針(probe-rs 非同梱・ch32rv 一本化・Linux 先行ドッグフーディング)とギャップ・開始条件 |
-| [release-plan.ja.md](release-plan.ja.md) | v0.1.0 リリース計画。線引き(IN/OUT)・crates.io 依存順 publish・全OSバイナリ(cargo-dist)・リリース前チェック |
+| [release-plan.ja.md](release-plan.ja.md) | リリース計画・手順。線引き(IN/OUT)・crates.io 依存順 publish(9 crate)・全OSバイナリ・リリース実行順(初回=済 / 次回) |
 | [windows-wch-driver.ja.md](windows-wch-driver.ja.md) | Windows で WCH 標準ドライバ経由アクセス(WinUSB 非依存、CH375 IOCTL)の作業引き継ぎ。依頼 B-2。**検討中** |
 
 ## 前提資料
@@ -27,7 +28,7 @@
 
 ## 言語ポリシー
 
-[CLAUDE.md](../CLAUDE.md) の言語ルールに従う。
+開発ルールの一次ソースは [development.ja.md](development.ja.md)。言語ポリシーはその §1(要約):
 
 - 文書は英語を主とし、`.ja.md` の日本語版と相互リンクする。**ただし内容が変わりうる検討中の文書は日本語のみ**とし、固まった時点で英語主版を追加する。本ディレクトリの仕様群は現在この「検討中」段階にある。
 - ソースコードは英語のみ、または `// en:` / `// ja:` マーカー付きの英語+日本語。
