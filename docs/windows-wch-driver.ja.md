@@ -1,7 +1,8 @@
 # Windows で WCH 標準ドライバ経由アクセス(WinUSB 非依存)— 作業引き継ぎ
 
-- 状態: **検討中(2026-09-02)**。**§5 の最小スパイクは同日 Windows 実機で成功**(5/5 probe、§5.1)。
-  実装方針が固まったら英語 main + `.ja` twin に整える。
+- 状態: **実装済み(2026-09-02)**。スパイク成功(§5.1)→ `ch32rv-usb-wch-win` crate 化 →
+  `ch32rv-usb` へのフォールバック統合まで完了(§4.2)。残: flash 実書込での data EP 検証(§5.1 末尾)、
+  安定後の英語 main + `.ja` twin 化。
 - 対象読者: Windows ネイティブ(Rust 導入済み)で VSCode を開いて続きを実装・検証する人。
 - 目的: **ユーザーが既に入れている WCH 標準ドライバ(`WCHLink_A64`)のまま、Zadig/WinUSB 置換なしで** ch32rv が WCH-Link と通信できる経路を追加する。ArduinoCore-CH32 依頼 B-2 の Windows 対応の核。
 
@@ -130,6 +131,22 @@ WCH-Link 専用ではなく「**WCH 標準ドライバ(CH375 系 IOCTL)で USB d
   publish 依存順には `ch32rv-usb` より前に追加。
 - **cfg**: crate 自体を Windows 専用とし(他 OS ではコンパイル対象外)、利用側が
   `[target.'cfg(windows)'.dependencies]` で gate する。
+
+### 4.2 統合結果(2026-09-02、実装・実機検証済み)
+
+- `crates/usb-wch-win` = `ch32rv-usb-wch-win`(§4.1 の API どおり)+ `crates/usb` の
+  `UsbInterface` を enum backend 化(`Nusb`(Box)/ `Ch375`、後者は cfg(windows) のみ)。
+  capture 記録は enum の外側で従来どおり両経路に効く。
+- フォールバック条件: `open_interface` で **nusb open が失敗したら**(「incompatible driver」
+  メッセージ文字列は安定 API でないため failure 全般で)、CH375 側を列挙し
+  `parent_instance_id()` の serial 一致で同一 device を特定して open。不成立なら nusb の
+  一次エラーをそのまま返す。interface 0(MI_00)以外はフォールバック対象外。
+- CH375 経路は timeout 制御なし(ブロッキング)。呼び出し元は全て request/reply パターン
+  なので許容(`UsbInterface` の doc に明記)。
+- **実機検証(WCH 純正ドライバのまま、Zadig なし)**: `probe list`(firmware 列まで取得)、
+  `probe info`(CH549 + LinkE)、**`target info` がフルスタックで成功**
+  (attach → DMI → ChipInfo: CH32V307VCT6、UID・flash 容量・配線まで正常)。
+- 未検証は flash 実書込(data EP の 64B 超転送)のみ。
 
 ## 5. 最小スパイク(まずここだけ、Windows ネイティブ)
 

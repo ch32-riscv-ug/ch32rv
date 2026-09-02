@@ -17,5 +17,10 @@ nusb = { workspace = true }
 thiserror = { workspace = true }
 fs4 = { workspace = true }
 
+# en: Windows fallback backend — WCH stock vendor driver (docs/windows-wch-driver.ja.md §4)
+# ja: Windows フォールバック backend — WCH 純正ドライバ経路
+[target.'cfg(windows)'.dependencies]
+ch32rv-usb-wch-win = { workspace = true }
+
 [lints]
 workspace = true

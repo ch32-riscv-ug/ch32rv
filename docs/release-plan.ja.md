@@ -9,13 +9,14 @@
 version は workspace 一括 `0.1.0`、license MIT。**publish 順は依存順**(先に出したものが index に載ってから次):
 
 1. `ch32rv-contract`(exit code / JSON envelope / policy 語彙)
-2. `ch32rv-usb`(USB 列挙 / selector / lock / capture、nusb 非漏洩)
-3. `ch32rv-dmi`(RISC-V Debug Module + 直接 FLASH controller)★再利用の目玉
-4. `ch32rv-target`(生成 device DB。`generated/*.csv` を include_str! で同梱)
-5. `ch32rv-wchlink`(WCH-Link protocol)★目玉
-6. `ch32rv-flash`(erase/program/verify orchestration)
-7. `ch32rv-debug`(run control / gdb server)
-8. `ch32rv`(CLI バイナリ。`cargo install ch32rv` 可)
+2. `ch32rv-usb-wch-win`(Windows の WCH 純正ドライバ経路。0.2 で追加、`ch32rv-usb` より先)
+3. `ch32rv-usb`(USB 列挙 / selector / lock / capture、backend 型非漏洩)
+4. `ch32rv-dmi`(RISC-V Debug Module + 直接 FLASH controller)★再利用の目玉
+5. `ch32rv-target`(生成 device DB。`generated/*.csv` を include_str! で同梱)
+6. `ch32rv-wchlink`(WCH-Link protocol)★目玉
+7. `ch32rv-flash`(erase/program/verify orchestration)
+8. `ch32rv-debug`(run control / gdb server)
+9. `ch32rv`(CLI バイナリ。`cargo install ch32rv` 可)
 
 各 library に keywords / categories / README を付与済み。`ch32rv-contract` は `cargo publish --dry-run` 成功済み(他は contract が index に載れば通る)。
 
