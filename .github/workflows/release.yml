@@ -149,7 +149,12 @@ jobs:
       - name: Install libudev (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      # `-D warnings` here (not just in the host clippy) fails the release on a per-target warning -
+      # e.g. a variable used only under `cfg(unix)` is unused on Windows. Registry deps are
+      # `--cap-lints allow`, so only our workspace crates are held to it.
       - name: Build
+        env:
+          RUSTFLAGS: "-D warnings"
         run: cargo build --release --locked --bin ch32rv --target ${{ matrix.target }}
 
       # Smoke test: run the freshly built binary and assert it reports the release version. Catches a
