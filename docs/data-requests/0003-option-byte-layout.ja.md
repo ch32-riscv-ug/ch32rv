@@ -1,6 +1,6 @@
 # 依頼 0003: option bytes の書き込みレイアウトと工場出荷値
 
-- 状態: 依頼済(2026-09-01)
+- 状態: **納品受け入れ済(2026-09-02)**。`evidence/option_byte_fields.csv`(106行、12 family×byte×bit×default、RM 由来 confirmed)納品。`xtask db-gen` が `generated/option_fields.csv`(USER byte 43 fields)を生成、`target option get` の USER decode を family-aware 化(L103 の CFGCANM 等 RM 準拠、interim warning 解消)。構造化 `option set`(kv)は後続
 - 依頼元: ch32rv
 - 優先度: 中(M2。`target option get/set`(構造化 read-modify-write)と `recover unbrick`(工場値書き戻し)で必要)
 - 作成日: 2026-09-01

@@ -62,18 +62,65 @@ pub fn info(cli: &Cli) -> ExitCode {
             ),
         });
     }
-    warnings.push(Warning {
-        code: "db-empty".to_owned(),
-        msg: "SKU resolution unavailable: the target DB is not generated yet (data request 0001 pending)".to_owned(),
-    });
+    // Resolve the SKU from the live chip_id against the generated DB (device_ids join, rev [7:4]
+    // masked). Fail-closed: an unknown or cross-family-ambiguous id shows no SKU rather than a guess.
+    let db = ch32rv_target::Db::builtin();
+    let resolution = db.resolve_by_chip_id(session.attach.chip_id);
+    let (sku, sku_verified, sku_line): (Option<String>, Option<bool>, String) = match &resolution {
+        ch32rv_target::Resolution::Sku(s) => (
+            Some(s.sku.clone()),
+            Some(s.verified),
+            format!(
+                "{} ({})",
+                s.sku,
+                if s.verified {
+                    "verified on silicon"
+                } else {
+                    "generated DB, datasheet reference"
+                }
+            ),
+        ),
+        ch32rv_target::Resolution::Family(fam, cands) => {
+            let names: Vec<&str> = cands.iter().map(|c| c.sku.as_str()).collect();
+            warnings.push(Warning {
+                code: "sku-ambiguous".to_owned(),
+                msg: format!(
+                    "chip_id matches {} SKUs in family {fam}: {} - pass --chip to disambiguate",
+                    cands.len(),
+                    names.join(", ")
+                ),
+            });
+            (
+                None,
+                None,
+                format!("- ({} candidates in {fam})", cands.len()),
+            )
+        }
+        ch32rv_target::Resolution::Unknown => {
+            warnings.push(Warning {
+                code: "sku-unknown".to_owned(),
+                msg: format!(
+                    "chip_id 0x{:08x} is not in the generated DB (a gap-series or new part) - worth recording for data request 0001",
+                    session.attach.chip_id
+                ),
+            });
+            (None, None, "- (chip_id not in DB)".to_owned())
+        }
+    };
+
+    // Debug wiring (1-wire SWIO vs 2-wire RVSWD) for the resolved series (data request 0002).
+    let wiring = match &resolution {
+        ch32rv_target::Resolution::Sku(s) => ch32rv_target::debug_wiring(&s.series),
+        _ => None,
+    };
 
     let chip = session.chip;
     let target = TargetReport {
-        sku: None,
+        sku,
         family: Some(family),
         chip_id: Some(format!("0x{:08x}", session.attach.chip_id)),
         uid: chip.as_ref().map(|c| hex(&c.uuid)),
-        verified: None,
+        verified: sku_verified,
         provisional: None,
         protected: None,
         flash_kb: chip.as_ref().map(|c| u32::from(c.flash_kb)),
@@ -82,12 +129,13 @@ pub fn info(cli: &Cli) -> ExitCode {
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.probe = Some(probe_report);
-        if let Some(c) = &chip {
-            env.result = Some(serde_json::json!({
-                "protection_raw": hex(&c.protection_raw),
-                "chip_id_echo": format!("0x{:08x}", c.chip_id_echo),
-            }));
-        }
+        env.result = Some(serde_json::json!({
+            "protection_raw": chip.as_ref().map(|c| hex(&c.protection_raw)),
+            "chip_id_echo": chip.as_ref().map(|c| format!("0x{:08x}", c.chip_id_echo)),
+            "debug_wiring": wiring.as_ref().map(|w| serde_json::json!({
+                "wire": w.wire, "swdio": w.swdio, "swclk": w.swclk,
+            })),
+        }));
         env.target = Some(target);
         env.warnings = warnings;
         crate::print_envelope(&env)
@@ -104,7 +152,19 @@ pub fn info(cli: &Cli) -> ExitCode {
             Some(kb) => println!("flash:    {kb} KiB"),
             None => println!("flash:    -"),
         }
-        println!("sku:      - (target DB not generated yet)");
+        println!("sku:      {sku_line}");
+        if let Some(w) = &wiring {
+            println!(
+                "debug:    {} (SWDIO/DAT={}{})",
+                w.wire,
+                w.swdio,
+                if w.swclk == "-" {
+                    String::new()
+                } else {
+                    format!(", SWCLK={}", w.swclk)
+                }
+            );
+        }
         for w in &warnings {
             eprintln!("warning[{}]: {}", w.code, w.msg);
         }
@@ -150,6 +210,15 @@ pub fn option_get(cli: &Cli) -> ExitCode {
     };
 
     let family = session.family();
+    // Resolve the DB family from the live chip_id (e.g. family_byte 0x06 -> "CH32V30x", but the DB
+    // and option-field tables key on "CH32V307"): use the DB family when a SKU resolves.
+    let db = ch32rv_target::Db::builtin();
+    let db_family = match db.resolve_by_chip_id(session.attach.chip_id) {
+        ch32rv_target::Resolution::Sku(s) => s.family.clone(),
+        ch32rv_target::Resolution::Family(fam, _) => fam,
+        ch32rv_target::Resolution::Unknown => family.clone(),
+    };
+    let user_fields = ch32rv_target::option_user_fields(&db_family);
     let mut dm = session.dm();
     if let Err(e) = dm.halt() {
         return fail(
@@ -185,27 +254,48 @@ pub fn option_get(cli: &Cli) -> ExitCode {
         | u32::from(raw[14]) << 24;
     // RDPR == 0xA5 means read-out protection disabled (the factory/unprotected value).
     let unprotected = rdpr == 0xA5;
-    // Common USER bits (family-specific bits above bit2 need the DB).
-    let iwdg_sw = user & 0x01 != 0; // 1 = software IWDG, 0 = hardware (starts at reset)
-    let nrst_stop = user & 0x02 != 0; // 0 = reset generated on entering STOP
-    let nrst_stdby = user & 0x04 != 0; // 0 = reset generated on entering STANDBY
 
-    warnings.push(Warning {
-        code: "option-decode-interim".to_owned(),
-        msg: "structured decode is interim: only the common RDP/USER/Data/WRP fields are decoded; family-specific USER bits arrive with the target DB (data request 0003)".to_owned(),
-    });
+    // USER byte: decode per the family's named bits from the generated DB (request 0003). When the
+    // family is not in the DB, fall back to the common STM32F1-style bits and flag it interim.
+    let user_bits: Vec<(String, u8)> = if user_fields.is_empty() {
+        [(0u8, "IWDGSW"), (1, "nRST_STOP"), (2, "nRST_STDBY")]
+            .iter()
+            .map(|(bit, name)| ((*name).to_owned(), (user >> bit) & 1))
+            .collect()
+    } else {
+        user_fields
+            .iter()
+            .map(|f| (f.field.clone(), (user >> f.bit) & 1))
+            .collect()
+    };
+    if user_fields.is_empty() {
+        warnings.push(Warning {
+            code: "option-decode-interim".to_owned(),
+            msg: format!(
+                "USER-byte fields for {db_family} are not in the DB; decoded with the common STM32F1-style bits only (data request 0003)"
+            ),
+        });
+    }
+    let user_str = user_bits
+        .iter()
+        .map(|(name, v)| format!("{name}={v}"))
+        .collect::<Vec<_>>()
+        .join("  ");
 
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
+        let user_json: serde_json::Map<String, serde_json::Value> = user_bits
+            .iter()
+            .map(|(name, v)| (name.clone(), serde_json::json!(*v == 1)))
+            .collect();
         env.result = Some(serde_json::json!({
             "family": family,
+            "db_family": db_family,
             "raw": hex(&raw),
             "read_protection": if unprotected { "off" } else { "on" },
             "rdpr": format!("0x{rdpr:02x}"),
             "user": format!("0x{user:02x}"),
-            "iwdg": if iwdg_sw { "software" } else { "hardware" },
-            "nrst_stop": nrst_stop,
-            "nrst_standby": nrst_stdby,
+            "user_bits": user_json,
             "data0": format!("0x{data0:02x}"),
             "data1": format!("0x{data1:02x}"),
             "wrpr": format!("0x{wrpr:08x}"),
@@ -225,12 +315,7 @@ pub fn option_get(cli: &Cli) -> ExitCode {
                 ""
             }
         );
-        println!(
-            "user (0x{user:02x}):     IWDG={}  nRST_STOP={}  nRST_STDBY={}",
-            if iwdg_sw { "software" } else { "hardware" },
-            u8::from(nrst_stop),
-            u8::from(nrst_stdby),
-        );
+        println!("user (0x{user:02x}):     {user_str}");
         println!("data0/data1:     0x{data0:02x} / 0x{data1:02x}");
         println!(
             "write protect:   0x{wrpr:08x}  ({})",

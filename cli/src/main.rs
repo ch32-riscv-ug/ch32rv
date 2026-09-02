@@ -7,6 +7,7 @@
 //! 他は exit 70(unimplemented)を返す。
 
 mod args;
+mod cmd_db;
 mod cmd_dbg;
 mod cmd_doctor;
 mod cmd_flash;
@@ -50,6 +51,11 @@ fn main() -> std::process::ExitCode {
         Command::Doctor(args) => cmd_doctor::doctor(&cli, args),
         Command::Monitor(args) => cmd_monitor::monitor(&cli, args),
         Command::Gdb(args) => cmd_gdb::gdb(&cli, args),
+        Command::Db(DbCmd::List {
+            family,
+            verified_only,
+        }) => cmd_db::list(&cli, family.as_deref(), *verified_only),
+        Command::Db(DbCmd::Info { sku }) => cmd_db::info(&cli, sku),
         other => unimplemented_cmd(&cli, canonical_name(other)),
     }
 }

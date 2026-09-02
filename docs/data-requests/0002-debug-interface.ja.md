@@ -1,6 +1,6 @@
 # 依頼 0002: debug interface 種別(1線 SWIO / 2線 RVSWD)の明示列
 
-- 状態: 依頼済(2026-09-01)
+- 状態: **納品受け入れ・消費済(2026-09-02)**。`evidence/debug_wiring.csv`(27行、series×swdio/swclk pad×dual_support)納品。`xtask db-gen` が `generated/debug_wiring.csv`(26 series、wire=1-wire/2-wire/1-or-2-wire を導出: swclk 空→1-wire、dual=yes→両対応、他→2-wire)を生成。`target info` と `db info` が debug 配線行を表示。実機検証: V003=`1-wire (PD1)`、L103=`2-wire (PA13/PA14)`
 - 依頼元: ch32rv
 - 優先度: 中(M1-M2。当面は core 名・pinout からの導出で代替できるが、導出は例外に弱い)
 - 作成日: 2026-09-01
