@@ -119,6 +119,10 @@ nusb が WebUSB(wasm)backend を持つため、**ブラウザ版 flasher(wch-web
 | 源泉 | flash geometry・memory map・option 分割・DM レジスタ番地 = `ch32-device-data`(stable 表、provenance 付き)。chip ID(device_id)値と flash mode 付き memory 定義 = `ch32-data`。**gap の 7 series(V205/V407/V467/X305/X315/M030/M103)の device_id は `ch32-device-data` に evidence 表の新設を依頼する**(実測手順は `ch32-data/docs/device-ids.md`、実測 basis の前例は `curated/debug-data-measured.json`)。probe firmware の hash→版対応も既存の `evidence/link_firmware.csv` を使い、不足分は依頼で埋める |
 | 暫定 overlay | 依頼中データの一時置き場(`provisional/`)。生成 pipeline を必ず通し、生成物と CLI 出力に `provisional` flag を出す(verified と同列の可視性) |
 | 生成 | `xtask db-gen` が入力 repo の pinned revision から `ch32rv-target/generated/` を生成して **commit する**(hermetic build。build.rs でネットワークや隣接 repo に依存しない)。CI が再生成一致を検査 |
+
+**実装状況(2026-09-02)**: `cargo xtask db-gen [DATA_DIR]`(既定 `$CH32_DEVICE_DATA` or `../ch32-device-data`)を実装。ch32-device-data の `evidence/device_ids.csv` + `index/parts.csv` を part_number で join して `crates/target/generated/skus.csv`(65 SKU)、`evidence/option_byte_fields.csv` の USER byte から `option_fields.csv`(43 fields)を生成し commit。`ch32rv-target` は両者を `include_str!` で埋め込むので build は隣接 repo 非依存。生成時に (a) don't-care bits が [7:4] でなければ拒否、(b) masked device_id(0xFFFFFF0F)が実衝突すれば拒否、で fail-closed。`verified` 列は本プロジェクトが実機測定した 6 SKU のみ true(`MEASURED` 定数、docs/data-requests/measured/ 由来)。**CI の再生成一致検査は未導入**(生成物は手動 commit)。geometry は現状 flash/sram のみ。
+
+- 依頼 0001(device_id)/0002(debug wiring)/0003(option byte layout)は 2026-09-02 に納品受け入れ。実測6台と rev [7:4] don't-care で全一致を確認済み。gap 7 series(V205/V407/V467/X305/X315/M030/M103)は未発売でデータ側も未収載。
 | 再現性 | 入力 rev と sha256 を生成物に埋め、`version --json` に出す |
 | verified | SKU ごとに「実機確認済み」flag と根拠(いつ・どの probe・どの操作)を持ち、CLI 出力に出す |
 | flash stub | 事前 build blob を持たず、in-repo の source から CI で build して hash を `version --json` に出す(データではなくコードなので ch32rv 内で持つ) |

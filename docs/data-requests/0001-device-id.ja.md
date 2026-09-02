@@ -1,6 +1,6 @@
 # 依頼 0001: chip ID(device_id)の evidence 表新設
 
-- 状態: 依頼済(2026-09-01)
+- 状態: **納品受け入れ済(2026-09-02)**。`evidence/device_ids.csv`(72行)+`device_id_addresses.csv` 納品。実測6台(V003/V103/V203/V307/L103/X035)と突き合わせ、rev bits [7:4] don't-care で全一致。`xtask db-gen` が `crates/target/generated/skus.csv` を生成、`target info` の chip_id→SKU 解決を実装(全5接続台で実機動作)。gap 7 series は未発売でデータ側も未収載(接続でき次第 measured 追記)
 - 依頼元: ch32rv(CH32 RISC-V 書き込みツール)
 - 優先度: **高**。ch32rv の target 自動検出(chip ID → family/SKU 判定、fail-closed)の一次データであり、M2 のブロッカ
 - 作成日: 2026-09-01
