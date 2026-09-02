@@ -291,8 +291,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
             total: Some(total),
         });
         let already_matches = {
-            let mut dm = session.dm();
-            if let Err(e) = dm.halt() {
+            if let Err(e) = session.dm().halt() {
                 return fail(
                     cli,
                     CMD,
@@ -303,22 +302,25 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
             }
             let mut all = true;
             for seg in &image.segments {
-                match dm.read_mem(seg.addr, seg.data.len() as u32) {
-                    Ok(readback) => {
-                        if readback != seg.data {
-                            all = false;
-                            break;
+                // Fast bulk read via the WCH-Link; fall back to DMI word reads on error.
+                let readback = match session.link().read_memory(seg.addr, seg.data.len() as u32) {
+                    Ok(d) => d,
+                    Err(_) => match session.dm().read_mem(seg.addr, seg.data.len() as u32) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            return fail(
+                                cli,
+                                CMD,
+                                ErrorKind::TransportTimeout,
+                                format!("preverify read failed at {:#010x}: {e}", seg.addr),
+                                None,
+                            );
                         }
-                    }
-                    Err(e) => {
-                        return fail(
-                            cli,
-                            CMD,
-                            ErrorKind::TransportTimeout,
-                            format!("preverify read failed at {:#010x}: {e}", seg.addr),
-                            None,
-                        );
-                    }
+                    },
+                };
+                if readback != seg.data {
+                    all = false;
+                    break;
                 }
             }
             all
@@ -546,8 +548,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         });
         session.link().detach_chip().ok();
         let _ = session.link().attach_chip();
-        let mut dm = session.dm();
-        if let Err(e) = dm.halt() {
+        if let Err(e) = session.dm().halt() {
             return fail(
                 cli,
                 CMD,
@@ -557,32 +558,35 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
             );
         }
         for seg in &image.segments {
-            match dm.read_mem(seg.addr, seg.data.len() as u32) {
-                Ok(readback) => {
-                    if readback != seg.data {
-                        let at = readback
-                            .iter()
-                            .zip(&seg.data)
-                            .position(|(a, b)| a != b)
-                            .unwrap_or(0);
+            // Fast bulk readback via the WCH-Link; fall back to DMI word reads on error.
+            let readback = match session.link().read_memory(seg.addr, seg.data.len() as u32) {
+                Ok(d) => d,
+                Err(_) => match session.dm().read_mem(seg.addr, seg.data.len() as u32) {
+                    Ok(d) => d,
+                    Err(e) => {
                         return fail(
                             cli,
                             CMD,
-                            ErrorKind::VerifyMismatch,
-                            format!("verify mismatch at {:#010x}", seg.addr as usize + at),
+                            ErrorKind::TransportTimeout,
+                            format!("readback failed: {e}"),
                             None,
                         );
                     }
-                }
-                Err(e) => {
-                    return fail(
-                        cli,
-                        CMD,
-                        ErrorKind::TransportTimeout,
-                        format!("readback failed: {e}"),
-                        None,
-                    );
-                }
+                },
+            };
+            if readback != seg.data {
+                let at = readback
+                    .iter()
+                    .zip(&seg.data)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(0);
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::VerifyMismatch,
+                    format!("verify mismatch at {:#010x}", seg.addr as usize + at),
+                    None,
+                );
             }
         }
         verified = Some(true);
@@ -1138,8 +1142,7 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
         Ok(i) => i,
         Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
     };
-    let mut dm = session.dm();
-    if let Err(e) = dm.halt() {
+    if let Err(e) = session.dm().halt() {
         return fail(
             cli,
             CMD,
@@ -1149,7 +1152,12 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
         );
     }
     for seg in &image.segments {
-        match dm.read_mem(seg.addr, seg.data.len() as u32) {
+        // Fast bulk read via the WCH-Link; fall back to DMI word reads on error.
+        let read = match session.link().read_memory(seg.addr, seg.data.len() as u32) {
+            Ok(d) => Ok(d),
+            Err(_) => session.dm().read_mem(seg.addr, seg.data.len() as u32),
+        };
+        match read {
             Ok(readback) => {
                 if readback != seg.data {
                     let at = readback
