@@ -88,6 +88,7 @@ pub fn info(cli: &Cli, sku_name: &str) -> ExitCode {
         );
     };
     let wiring = ch32rv_target::debug_wiring(&s.series);
+    let geo = ch32rv_target::flash_geometry(&s.family);
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
@@ -101,6 +102,10 @@ pub fn info(cli: &Cli, sku_name: &str) -> ExitCode {
             "provisional": s.provisional,
             "debug_wiring": wiring.as_ref().map(|w| serde_json::json!({
                 "wire": w.wire, "swdio": w.swdio, "swclk": w.swclk,
+            })),
+            "flash_geometry": geo.map(|g| serde_json::json!({
+                "page_erase": g.page_erase, "fast_erase": g.fast_erase,
+                "fast_program": g.fast_program, "block_erase": g.block_erase,
             })),
         }));
         crate::print_envelope(&env)
@@ -116,6 +121,17 @@ pub fn info(cli: &Cli, sku_name: &str) -> ExitCode {
         );
         println!("flash:      {} KiB", s.flash_bytes / 1024);
         println!("sram:       {} KiB", s.sram_bytes / 1024);
+        if let Some(g) = &geo {
+            let blk = if g.block_erase == 0 {
+                "-".to_owned()
+            } else {
+                format!("{}B", g.block_erase)
+            };
+            println!(
+                "flash geom: page-erase={}B  fast-erase={}B  fast-program={}B  block-erase={blk}",
+                g.page_erase, g.fast_erase, g.fast_program
+            );
+        }
         if let Some(w) = &wiring {
             println!(
                 "debug:      {} (SWDIO/DAT={}{})",
@@ -137,5 +153,35 @@ pub fn info(cli: &Cli, sku_name: &str) -> ExitCode {
             }
         );
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    /// The hard-coded flash-controller page size (the FTER fast-erase granularity) must equal the
+    /// DB's `fast_erase_bytes` for every family we drive - catches a divergence between the manual
+    /// `flash_controller_profile` table and the RM/EVT-sourced geometry.
+    #[test]
+    fn controller_page_size_matches_db_fast_erase() {
+        // (family_byte, DB family string)
+        let cases = [
+            (0x05u8, "CH32V20x"),
+            (0x06, "CH32V307"),
+            (0x09, "CH32V003"),
+            (0x0D, "CH32X035"),
+            (0x0E, "CH32L103"),
+            (0x01, "CH32V103"),
+        ];
+        for (fb, fam) in cases {
+            let profile =
+                ch32rv_flash::flash_controller_profile(fb).expect("controller profile for family");
+            let geo = ch32rv_target::flash_geometry(fam).expect("flash geometry for family");
+            assert_eq!(
+                profile.page_size, geo.fast_erase,
+                "family_byte 0x{fb:02x} / {fam}: hard-coded page_size != DB fast_erase"
+            );
+        }
     }
 }

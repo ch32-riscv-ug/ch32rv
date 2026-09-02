@@ -23,6 +23,48 @@ const GENERATED_OPTION_FIELDS: &str = include_str!("../generated/option_fields.c
 /// The embedded generated per-series debug-wiring table (produced by `cargo xtask db-gen`).
 const GENERATED_DEBUG_WIRING: &str = include_str!("../generated/debug_wiring.csv");
 
+/// The embedded generated per-family flash geometry (produced by `cargo xtask db-gen`).
+const GENERATED_FLASH_GEOMETRY: &str = include_str!("../generated/flash_geometry.csv");
+
+/// en: Flash erase/program granularities for a family (bytes; 0 = not applicable). ja: family の
+/// flash 消去/書込粒度(byte、0=非該当)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlashGeometry {
+    /// Standard page erase (the slow PER path).
+    pub page_erase: u32,
+    /// Fast page erase (FTER) - the granularity `erase --range` / flash breakpoints use.
+    pub fast_erase: u32,
+    /// Fast program chunk.
+    pub fast_program: u32,
+    /// Block erase (0 when the family has none).
+    pub block_erase: u32,
+}
+
+/// en: The flash geometry for a DB `family` string (e.g. `CH32L103`, `CH32V307`). None when the
+/// family is not in the DB. ja: DB family の flash geometry。DB に無ければ None。
+pub fn flash_geometry(family: &str) -> Option<FlashGeometry> {
+    GENERATED_FLASH_GEOMETRY.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+        // family,page_erase,fast_erase,fast_program,block_erase
+        let f: Vec<&str> = line.split(',').collect();
+        let [fam, page, fast_e, fast_p, block] = f.as_slice() else {
+            return None;
+        };
+        if !fam.eq_ignore_ascii_case(family) {
+            return None;
+        }
+        Some(FlashGeometry {
+            page_erase: page.parse().unwrap_or(0),
+            fast_erase: fast_e.parse().unwrap_or(0),
+            fast_program: fast_p.parse().unwrap_or(0),
+            block_erase: block.parse().unwrap_or(0),
+        })
+    })
+}
+
 /// en: The SWD/SWIO debug wiring for a part series. ja: series の debug 配線。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DebugWiring {
