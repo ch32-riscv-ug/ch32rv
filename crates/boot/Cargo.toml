@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "ch32rv-boot"
 description = "Custom bootloader clients (DFU, UF2, UART/RS-485, HID) for the ch32rv tool suite"
 version.workspace = true

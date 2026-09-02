@@ -15,6 +15,7 @@
 | [protocol/wch-link.ja.md](protocol/wch-link.ja.md) | WCH-Link USB protocol ノート(骨組み。capture で verified 化する) |
 | [data-requests/](data-requests/README.ja.md) | ch32-device-data への CSV 作成依頼書(ファイル単位で依頼に使う) |
 | [direction-review-2026-09-01.ja.md](direction-review-2026-09-01.ja.md) | ArduinoCore-CH32 側からの方向性レビュー記録。リリース方針(probe-rs 非同梱・ch32rv 一本化・Linux 先行ドッグフーディング)とギャップ・開始条件 |
+| [release-plan.ja.md](release-plan.ja.md) | v0.1.0 リリース計画。線引き(IN/OUT)・crates.io 依存順 publish・全OSバイナリ(cargo-dist)・リリース前チェック |
 
 ## 前提資料
 

@@ -427,6 +427,8 @@ ch32rv arduino monitor         Pluggable Monitor protocol(stdio JSON)。--source
 
 Arduino 専用の書き込みロジックは持たない。recipe は §5 の通常 command を呼ぶ。
 
+- **実装状況(2026-09-02)**: cmd_arduino.rs。`discovery` は HELLO/START/LIST/START_SYNC/STOP/QUIT に応答、probe を `wchlink://<serial>` port(protocol=`wchlink`、properties に serial/vid/pid/mode)として列挙。**USB descriptor だけから列挙**し AttachChip しないので、同一 probe への upload/monitor 実行中でも乱さない(A-2 lock 前提)。START_SYNC は現在 port を `add` で一度出す(USB hotplug 監視は後続、IDE の再 LIST に委ねる)。`monitor` は HELLO/DESCRIBE/CONFIGURE/OPEN/CLOSE/QUIT、**OPEN で IDE 指定の `<host:port>` へ TCP client 接続**し、別スレッドで source を pipe(現状 `dmdata` を配線=probe 非依存で確実。uart/sdi/rtt は DESCRIBE で advertise、配線は後続)。実機検証: discovery が接続5 probe を JSON port として LIST、monitor が全ハンドシェイク完了し L103 の SerialDMDATA を local TCP へ pipe。ISP device・CDC port の列挙は ISP/uart 実装と合わせて後続。
+
 ## 5. 呼び出し例
 
 Arduino recipe(platform.txt)。probe selector は空にできる 1 変数に畳む(現行 probe-rs recipe と同じ制約):

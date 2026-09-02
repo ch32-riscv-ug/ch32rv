@@ -7,6 +7,7 @@
 //! 他は exit 70(unimplemented)を返す。
 
 mod args;
+mod cmd_arduino;
 mod cmd_capabilities;
 mod cmd_db;
 mod cmd_dbg;
@@ -33,6 +34,7 @@ fn main() -> std::process::ExitCode {
         Command::Version => cmd_version(&cli),
         Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(&cli, *watch),
         Command::Probe(ProbeCmd::Info) => cmd_probe::info(&cli),
+        Command::Probe(ProbeCmd::Mode(ModeCmd::Get)) => cmd_probe::mode_get(&cli),
         Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Info)) => cmd_probe::firmware_info(&cli),
         Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Check { min })) => {
             cmd_probe::firmware_check(&cli, min.as_deref())
@@ -67,6 +69,8 @@ fn main() -> std::process::ExitCode {
         Command::Db(DbCmd::Info { sku }) => cmd_db::info(&cli, sku),
         Command::Capabilities => cmd_capabilities::capabilities(&cli),
         Command::Write(args) => cmd_write::write(&cli, args),
+        Command::Arduino(ArduinoCmd::Discovery) => cmd_arduino::discovery(&cli),
+        Command::Arduino(ArduinoCmd::Monitor) => cmd_arduino::monitor(&cli),
         Command::Complete(a) => cmd_complete(a.shell),
         other => unimplemented_cmd(&cli, canonical_name(other)),
     }

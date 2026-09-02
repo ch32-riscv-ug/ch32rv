@@ -16,9 +16,6 @@ ch32rv-dmi = { workspace = true }
 ch32rv-target = { workspace = true }
 ch32rv-flash = { workspace = true }
 ch32rv-debug = { workspace = true }
-ch32rv-monitor = { workspace = true }
-ch32rv-isp = { workspace = true }
-ch32rv-boot = { workspace = true }
 clap = { workspace = true }
 clap_complete = { workspace = true }
 gdbstub = { workspace = true }

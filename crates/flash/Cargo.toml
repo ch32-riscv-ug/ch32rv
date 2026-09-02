@@ -1,6 +1,9 @@
 [package]
 name = "ch32rv-flash"
 description = "Flash programming orchestration (erase/program/verify/confirm-run) for the ch32rv tool suite"
+keywords = ["ch32", "riscv", "wch", "flash", "programmer"]
+categories = ["embedded", "hardware-support"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,9 @@
 [package]
 name = "ch32rv-debug"
 description = "Run control, breakpoints, and GDB server for the ch32rv tool suite"
+keywords = ["ch32", "riscv", "gdb", "debug", "embedded"]
+categories = ["embedded", "development-tools::debugging"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

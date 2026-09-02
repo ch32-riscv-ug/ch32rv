@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "ch32rv-monitor"
 description = "Runtime I/O monitor (physical UART, WCH SDI print, ch32fun DMDATA mailbox, RTT) for the ch32rv tool suite"
 version.workspace = true
