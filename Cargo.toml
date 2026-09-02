@@ -16,7 +16,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
@@ -25,16 +25,16 @@ authors = ["CH32 RISC-V User Group"]
 
 [workspace.dependencies]
 # 内部 crate
-ch32rv-contract = { path = "crates/contract", version = "0.1.0" }
-ch32rv-usb = { path = "crates/usb", version = "0.1.0" }
-ch32rv-wchlink = { path = "crates/wchlink", version = "0.1.0" }
-ch32rv-dmi = { path = "crates/dmi", version = "0.1.0" }
-ch32rv-target = { path = "crates/target", version = "0.1.0" }
-ch32rv-flash = { path = "crates/flash", version = "0.1.0" }
-ch32rv-debug = { path = "crates/debug", version = "0.1.0" }
-ch32rv-monitor = { path = "crates/monitor", version = "0.1.0" }
-ch32rv-isp = { path = "crates/isp", version = "0.1.0" }
-ch32rv-boot = { path = "crates/boot", version = "0.1.0" }
+ch32rv-contract = { path = "crates/contract", version = "0.1.1" }
+ch32rv-usb = { path = "crates/usb", version = "0.1.1" }
+ch32rv-wchlink = { path = "crates/wchlink", version = "0.1.1" }
+ch32rv-dmi = { path = "crates/dmi", version = "0.1.1" }
+ch32rv-target = { path = "crates/target", version = "0.1.1" }
+ch32rv-flash = { path = "crates/flash", version = "0.1.1" }
+ch32rv-debug = { path = "crates/debug", version = "0.1.1" }
+ch32rv-monitor = { path = "crates/monitor", version = "0.1.1" }
+ch32rv-isp = { path = "crates/isp", version = "0.1.1" }
+ch32rv-boot = { path = "crates/boot", version = "0.1.1" }
 
 # 外部 crate(方針: architecture.ja.md §1.3。gdbstub は exact pin)
 serde = { version = "1", features = ["derive"] }
