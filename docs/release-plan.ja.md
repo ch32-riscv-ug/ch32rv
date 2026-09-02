@@ -1,7 +1,8 @@
 # リリース計画(v0.1.0)
 
 - 状態: **策定中(2026-09-02)**。安定したら英語 main + `.ja` twin に整える。
-- 方針: 「**WCH-LinkE 経路で、6台ベンチで実機検証済みのもの**」を v0.1.0 とする。crates.io に library crate を正式配布、全対象 OS のバイナリを配布、Arduino 対応込み。重い/未検証/非LinkE経路/電源系は v0.2 以降。
+- 方針: 「**WCH-LinkE 経路で、6台ベンチで実機検証済みのもの**」を v0.1.0 とする。crates.io に library crate を配布、全対象 OS のバイナリを配布、Arduino 対応込み。重い/未検証/非LinkE経路/電源系は v0.2 以降。
+- **0.x はβ位置づけ**: 依存プロジェクト(ArduinoCore-CH32 等)に先行利用してもらい、要望・不足機能を取り込んでから **1.0 で正式リリース**。CHANGELOG は初回だけ差分でなく「何が入っているか」のスナップショットにする。
 
 ## 1. 配布する crate(crates.io、依存順に publish)
 
@@ -42,7 +43,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 | job | 内容 |
 |---|---|
-| `prepare` | **version bump(`./scripts/release.sh <level>` フック)** → fmt/clippy/test/deny/db-check → commit + tag + push → GitHub Release 作成。bump 後の version は `cargo metadata` から読む(スクリプト出力形式に非依存)。 |
+| `prepare` | **version bump(`./scripts/release.sh <level>` フック)** → fmt/clippy/test/deny → commit + tag + push → GitHub Release 作成。bump 後の version は `cargo metadata` から読む(スクリプト出力形式に非依存)。db-check は隣接 data repo が要るので CI では回さない(生成物は commit 済みで hermetic、ローカルのドリフト検査に留める)。 |
 | `crates-io` | tag を checkout → `rust-lang/crates-io-auth-action`(OIDC 短命トークン)→ 依存順に `cargo publish`。`inputs.publish_crates=false` で無効化可。 |
 | `binaries` | matrix(下表)で `cargo build --release --locked` → tar.gz(Unix)/ zip(Windows)+ `.sha256` → 同じ Release に `gh release upload`。 |
 
@@ -111,3 +112,15 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - [ ] CHANGELOG の `Unreleased` を新 version に切る(= release.sh がやる)
 - [ ] README(repo)に crates.io バッジ / インストール手順 / verified OS 明記
 - [ ] Actions「Release」を UI 起動 → crates.io publish と全 OS バイナリ添付を確認
+
+## 7. 初回リリース(0.1.0)の実行順
+
+初回だけ crates.io の制約(新規 crate の初回はトークン必須・Trusted Publisher は crate 存在後にしか登録できない)で手順が特殊。2 回目以降は「Actions を起動するだけ」。
+
+1. **本ブランチの未コミット分をコミット & push**(修正済みの `release.yml` / `scripts/` / CHANGELOG が `main` に載っていること。ワークフローは `main` の release.yml を使う)。
+2. **crate 名を確保**: `cargo login <token>` → `scripts/first-publish.sh`。8 crate を 0.1.0 で依存順に publish。
+3. **Trusted Publisher 登録**: 各 crate の crates.io Settings で owner `ch32-riscv-ug` / repo `ch32rv` / `release.yml` を登録(§1 手順 2)。
+4. **バイナリ + GitHub Release**: Actions「Release」を **`version=0.1.0` / `publish_crates=false`** で起動。CHANGELOG を 0.1.0 に切って commit・tag `v0.1.0`・Release 作成し、全 OS バイナリを添付する(crates は手順 2 で済んでいるので skip)。
+5. 以降(0.1.1〜)は **`level=patch|minor|major` / `publish_crates=true`** で起動 = 完全トークンレス(bump → publish → binaries)。
+
+> メモ: 手順 4 で `version` を明示するのは、初回だけ「bump せず 0.1.0 のまま」出したいため。通常リリースは `level` を選ぶ(`version` 空欄)。
