@@ -13,16 +13,10 @@ use ch32rv_wchlink::{self as wchlink, WchLink};
 use crate::args::{Cli, DoctorArgs};
 use crate::cmd_probe::{mode_str, wch_devices};
 
-/// The udev rule that grants non-root access to WCH probes and ISP devices.
-const UDEV_RULE: &str = r#"# ch32rv: WCH-Link probes and WCH ISP/IAP devices (non-root access)
-# Install: sudo ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules
-# then: sudo udevadm control --reload-rules && sudo udevadm trigger
-SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="8010", MODE="0660", GROUP="plugdev", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="8011", MODE="0660", GROUP="plugdev", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="8012", MODE="0660", GROUP="plugdev", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="4348", ATTR{idProduct}=="55e0", MODE="0660", GROUP="plugdev", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTR{idVendor}=="1a86", ATTR{idProduct}=="55e0", MODE="0660", GROUP="plugdev", TAG+="uaccess"
-"#;
+/// The udev rule that grants non-root access to WCH-Link probes. Single source of truth: this same
+/// file is bundled into the Linux release tarball, and `doctor --emit-udev` prints it verbatim, so
+/// the two never drift (ArduinoCore-CH32 request B-6).
+const UDEV_RULE: &str = include_str!("../60-ch32rv.rules");
 
 struct Check {
     name: &'static str,

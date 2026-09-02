@@ -29,10 +29,17 @@ cargo install ch32rv
 
 ### Linux: USB 権限(udev)
 
-WCH-Link(および WCH ISP/IAP デバイス)への非 root アクセスには udev ルールが要る。`ch32rv` が出力できる:
+WCH-Link への非 root アクセスには udev ルールが要る。配布 tar には `60-ch32rv.rules` を同梱:
 
 ```sh
-sudo ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules
+sudo cp 60-ch32rv.rules /etc/udev/rules.d/            # 展開した tar 内から
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+`cargo install`(tar 無し)なら、同じルールをバイナリから出力:
+
+```sh
+ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
