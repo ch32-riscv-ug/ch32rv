@@ -126,14 +126,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,     target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-24.04-arm,  target: aarch64-unknown-linux-gnu }
+          # `smoke: true` = the built binary runs natively on this runner, so we run `--version` to
+          # smoke-test it before packaging. The x86_64 macOS row is cross-built on Apple Silicon and
+          # cannot be run here, so it has no smoke flag (the step is skipped for it).
+          - { os: ubuntu-latest,     target: x86_64-unknown-linux-gnu,  smoke: true }
+          - { os: ubuntu-24.04-arm,  target: aarch64-unknown-linux-gnu, smoke: true }
           # Apple dropped the Intel (macos-13) hosted runner; build both macOS targets on the
           # Apple Silicon runner - aarch64 natively, x86_64 by cross-compiling (the macOS SDK is
           # universal, so linking the x86_64 slice works; the binary just isn't run here).
-          - { os: macos-14,          target: aarch64-apple-darwin }
+          - { os: macos-14,          target: aarch64-apple-darwin,      smoke: true }
           - { os: macos-14,          target: x86_64-apple-darwin }
-          - { os: windows-latest,    target: x86_64-pc-windows-msvc }
+          - { os: windows-latest,    target: x86_64-pc-windows-msvc,    smoke: true }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -148,6 +151,28 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       - name: Build
         run: cargo build --release --locked --bin ch32rv --target ${{ matrix.target }}
+
+      # Smoke test: run the freshly built binary and assert it reports the release version. Catches a
+      # binary that will not start (bad link, wrong runtime) and a version/lockfile mismatch.
+      - name: Smoke test (--version)
+        if: matrix.smoke && runner.os != 'Windows'
+        run: |
+          OUT=$("target/${{ matrix.target }}/release/ch32rv" --version)
+          echo "$OUT"
+          case "$OUT" in
+            *"${{ needs.prepare.outputs.version }}"*) ;;
+            *) echo "::error::version mismatch: expected ${{ needs.prepare.outputs.version }}, got '$OUT'"; exit 1 ;;
+          esac
+      - name: Smoke test (--version, Windows)
+        if: matrix.smoke && runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $out = & "target/${{ matrix.target }}/release/ch32rv.exe" --version
+          Write-Output $out
+          if ($out -notmatch [regex]::Escape("${{ needs.prepare.outputs.version }}")) {
+            Write-Output "::error::version mismatch: expected ${{ needs.prepare.outputs.version }}, got '$out'"
+            exit 1
+          }
 
       # Package + upload per OS with explicit filenames (no glob): each runner produces only one
       # archive kind, so a single cross-OS glob would fail on the kind it did not build.
