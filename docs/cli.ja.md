@@ -195,6 +195,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 - **open 再試行**: 挿抜直後は CDC interface が vendor interface より先に見える(実測)。open 失敗は 1 秒間隔で計 3 回まで再試行してから exit する。
 - **転送再試行**: chunk 単位の timeout→再試行(既定 3 回)。再試行が起きた事実は NDJSON event と JSON 結果(`retries`)に必ず出す。
 - **固まり検出**: 再試行が尽きて probe が応答しなくなったら、`USBDEVFS_RESET` は使わず、再接続手順(usbipd / 物理挿抜)を提示して exit 41。
+- **capture(`--capture <file>`)実装(2026-09-02、依頼 A-3)**: `ch32rv-usb::capture`。`main` が `--capture` 時に一度 sink を設定し、`UsbInterface` の全 bulk 転送(cmd EP 0x01/0x81・data EP 0x02/0x82)を NDJSON 1 行ずつ追記する。行: `{seq,t_us,chan(cmd|data),dir(out|in),len,ok,data(hex)}`、先頭に `{"_meta":{"format":1,"unit":"us"}}`。行ごと flush(途中クラッシュでもそこまで残る)。flag 無しは no-op。replay(fixture 再生)は後続。実機検証: `target info --capture` が GetProbeInfo/SetSpeed/AttachChip を有効 NDJSON で記録。
 
 ## 4. コマンド詳細
 

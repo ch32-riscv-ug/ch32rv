@@ -2,13 +2,14 @@
 //! capture via nusb, and never leaks nusb types to other crates (docs/architecture.ja.md §1.3:
 //! a replaceable boundary).
 //! Implemented: selector grammar and resolution, enumeration, blocking bulk transfers,
-//! per-device advisory lock ([`lock`]). Not yet: transaction capture/replay.
+//! per-device advisory lock ([`lock`]), transaction capture ([`capture`]). Not yet: replay.
 //!
 //! ja: USB 境界層。nusb による列挙・open・lock・transaction capture を担い、
 //! nusb の型を他 crate へ漏らさない(差し替え可能な境界)。
-//! 実装済み: selector 文法と解決、列挙、ブロッキング bulk 転送、per-device advisory lock。
-//! 未実装: transaction capture/replay。
+//! 実装済み: selector 文法と解決、列挙、ブロッキング bulk 転送、per-device advisory lock、
+//! transaction capture。未実装: replay。
 
+pub mod capture;
 pub mod device;
 pub mod lock;
 pub mod selector;
