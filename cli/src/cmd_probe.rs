@@ -706,3 +706,71 @@ pub fn mode_set(cli: &Cli, mode: crate::args::ProbeModeSet) -> ExitCode {
         ExitCode::SUCCESS
     }
 }
+
+/// `probe power 3v3|5v <on|off>` / `probe power cycle` — control the WCH-LinkE target-power output.
+/// WCH-LinkE only (the CH549 Link has no power output, fails closed).
+pub fn power(cli: &Cli, cmd: &crate::args::PowerCmd) -> ExitCode {
+    use crate::args::{PowerCmd, SwitchState};
+    const CMD: &str = "probe.power";
+    let entry = match select_entry(cli, CMD) {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    let mut link = match WchLink::open(&entry.dev) {
+        Ok(l) => l,
+        Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+    };
+    match link.probe_info() {
+        Ok(info) if info.variant == wchlink::Variant::LinkE => {}
+        Ok(_) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::CapabilityUnsupported,
+                "power output is only available on a WCH-LinkE",
+                None,
+            );
+        }
+        Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+    }
+    let (desc, result) = match cmd {
+        PowerCmd::V3v3 { state } => {
+            let on = matches!(state, SwitchState::On);
+            (
+                format!("3v3 {}", if on { "on" } else { "off" }),
+                link.set_power(false, on),
+            )
+        }
+        PowerCmd::V5 { state } => {
+            let on = matches!(state, SwitchState::On);
+            (
+                format!("5v {}", if on { "on" } else { "off" }),
+                link.set_power(true, on),
+            )
+        }
+        PowerCmd::Cycle { off_ms } => {
+            // Cycle the 3.3V rail: off, wait, on.
+            let r = match link.set_power(false, false) {
+                Ok(()) => {
+                    std::thread::sleep(Duration::from_millis(*off_ms));
+                    link.set_power(false, true)
+                }
+                Err(e) => Err(e),
+            };
+            (format!("cycle 3v3 (off {off_ms}ms)"), r)
+        }
+    };
+    match result {
+        Ok(()) => {
+            if cli.json {
+                let mut env = ResultEnvelope::success(CMD);
+                env.result = Some(serde_json::json!({ "power": desc }));
+                crate::print_envelope(&env)
+            } else {
+                println!("power: {desc}");
+                ExitCode::SUCCESS
+            }
+        }
+        Err(e) => fail(cli, CMD, ErrorKind::TransportTimeout, e.to_string(), None),
+    }
+}
