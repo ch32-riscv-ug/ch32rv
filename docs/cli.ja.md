@@ -397,7 +397,7 @@ ch32rv db list [--family <f>] [--verified-only]
 ch32rv db info <SKU>            geometry(page/fast/block)、領域、option layout、chip ID、生成元 revision、verified 根拠
 ```
 
-- **実装状況(2026-09-02)**: `db list` / `db info` を実装(cmd_db.rs、デバイス不要)。生成済み DB(`crates/target/generated/skus.csv` を `include_str!` で埋め込み)を列挙/表示。`db list --family <f>` は family/SKU prefix で絞り込み、`--verified-only` は実機確認済み(実測6台)のみ。`db info <SKU>` は family/device_id/flash/sram/verified を表示。JSON 可(arduino B-3=`db list --json` 対応)。DB は `cargo xtask db-gen` が ch32-device-data(pinned)から生成し commit する(§4.3 target info の chip_id→SKU 解決、§4.3 option get の family-aware USER decode もこの DB を使う)。現状 geometry は flash/sram のみ(page/fast/block・option layout は flash_geometry / register 系 CSV 取り込みで後続)。
+- **実装状況(2026-09-02)**: `db list` / `db info` を実装(cmd_db.rs、デバイス不要)。生成済み DB(`crates/target/generated/skus.csv` を `include_str!` で埋め込み)を列挙/表示。`db list --family <f>` は family/SKU prefix で絞り込み、`--verified-only` は実機確認済み(実測6台)のみ。`db info <SKU>` は family/device_id/flash/sram/verified を表示。JSON 可(arduino B-3=`db list --json` 対応)。DB は `cargo xtask db-gen` が ch32-device-data(pinned)から生成し commit する(§4.3 target info の chip_id→SKU 解決、§4.3 option get の family-aware USER decode もこの DB を使う)。geometry は flash/sram に加え **page/fast erase・fast program・block erase**(`flash_geometry.csv`、`db info` で表示)。cli テストが DB の `fast_erase_bytes` と `flash_controller_profile.page_size`(手写し)を6 family で突き合わせて乖離をガードする。option layout は register 系 CSV 取り込みで後続。
 
 DB は ch32-device-data / ch32-data からの生成物で手書き YAML を持たない(architecture.ja.md §4)。`--db <path>` overlay で新 SKU を再ビルドなしに試せる。
 
