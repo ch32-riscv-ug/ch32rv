@@ -4,10 +4,16 @@
 //!   - DMI (`dmdata`, `rtt`): the host reads the target's debug registers directly while the
 //!     core runs. `dmdata` polls the ch32fun/minichlink data0/data1 mailbox (SerialDMDATA).
 //!
-//! `rtt` is not implemented yet. The loop runs until Ctrl-C or, in tests, a bounded run via
-//! the global `--timeout`.
+//! `rtt` finds a SEGGER-format control block in RAM (by scanning for its magic), then drains the
+//! up (target->host) ring buffer. Reading arbitrary RAM and writing back the read offset both go
+//! over the Debug Module, which needs the hart halted, so this backend briefly halts the core once
+//! per poll (unlike probe-rs's background access, so the target's timers drift a little while a
+//! monitor is attached). The loop runs until Ctrl-C or, in tests, a bounded run via `--timeout`.
 //!
 //! ja: `monitor`。CDC serial(uart/sdi)と DMI(dmdata/rtt)の 2 backend。設計は cli.ja.md §4.5。
+//! `rtt` は RAM 内の SEGGER 形式 control block を magic 走査で見つけ up(target→host)リングを
+//! 汲む。RAM 読みと read offset 書戻しは DM 経由=hart halt 要なので poll ごとに一瞬 halt する
+//! (probe-rs の background access と違い target のタイマが僅かにドリフトする)。
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -22,7 +28,6 @@ use crate::parse;
 use crate::session::Session;
 
 pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
-    const CMD: &str = "monitor";
     match &args.cmd {
         Some(MonitorCmd::List) => return list(cli),
         Some(MonitorCmd::Sdi { state }) => return sdi_toggle(cli, *state),
@@ -32,13 +37,7 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         MonitorSource::Uart => run_uart(cli, args),
         MonitorSource::Sdi => run_sdi(cli, args),
         MonitorSource::Dmdata => run_dmdata(cli, args),
-        MonitorSource::Rtt => fail(
-            cli,
-            CMD,
-            ErrorKind::CapabilityUnsupported,
-            "rtt monitor is not implemented yet",
-            Some("uart / sdi / dmdata are available; rtt (RAM ring buffer) comes next"),
-        ),
+        MonitorSource::Rtt => run_rtt(cli, args),
     }
 }
 
@@ -375,6 +374,207 @@ fn run_dmdata(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+// ---- DMI backend (rtt / SEGGER-format RAM ring buffer) ----
+
+/// All CH32 parts map SRAM at this base.
+const RTT_RAM_BASE: u32 = 0x2000_0000;
+/// The control-block id string the target publishes once its RTT channel is up.
+const RTT_MAGIC: &[u8] = b"SEGGER RTT";
+/// Sanity cap on a ring-buffer size read out of RAM (reject a half-initialized / garbage block).
+const RTT_MAX_BUF: u32 = 0x1_0000;
+/// Scan length when the target's SRAM size is unknown (the `_SEGGER_RTT` block lives in early .bss).
+const RTT_DEFAULT_SCAN: u32 = 8 * 1024;
+
+/// The WCH-Link's bulk read rejects/times-out on a very large single region, so read the scan
+/// window in transfers this size (8 KiB is proven to work well within the transport timeout).
+const RTT_READ_CHUNK: u32 = 8192;
+
+fn le32(b: &[u8], off: usize) -> u32 {
+    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
+}
+
+/// Read `len` bytes of target memory into one buffer, chunked so each transfer stays small. Stops
+/// early (returning what it has) if a chunk fails, so a short read still lets the scan try.
+fn read_region(session: &mut Session, base: u32, len: u32) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(len as usize);
+    let mut off = 0u32;
+    while off < len {
+        let want = RTT_READ_CHUNK.min(len - off);
+        match session.link().read_memory(base + off, want) {
+            Ok(mut chunk) => {
+                buf.append(&mut chunk);
+                off += want;
+            }
+            Err(_) => break,
+        }
+    }
+    buf
+}
+
+/// Find the byte offset, within a RAM snapshot, of a SEGGER RTT control block whose up[0]
+/// descriptor validates (buffer pointer in RAM, sane size, offsets in range). Validating rejects a
+/// stray copy of the magic that lives in a ring buffer's own contents, not in a real block.
+fn find_control_block(snap: &[u8]) -> Option<usize> {
+    let mut from = 0usize;
+    while let Some(rel) = snap[from..]
+        .windows(RTT_MAGIC.len())
+        .position(|w| w == RTT_MAGIC)
+    {
+        let pos = from + rel;
+        // up[0] descriptor sits right after id[16] + max_up(4) + max_down(4).
+        let d = pos + 24;
+        if d + 24 <= snap.len() {
+            let buffer = le32(snap, d + 4);
+            let size = le32(snap, d + 8);
+            let wr = le32(snap, d + 12);
+            let rd = le32(snap, d + 16);
+            if size > 0 && size <= RTT_MAX_BUF && wr < size && rd < size && buffer >= RTT_RAM_BASE {
+                return Some(pos);
+            }
+        }
+        from = pos + 1;
+    }
+    None
+}
+
+fn run_rtt(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
+    const CMD: &str = "monitor";
+    let entry = match select_entry(cli, CMD) {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    if entry.mode != ch32rv_contract::ProbeMode::Riscv {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "rtt monitor needs a RISC-V-mode probe (this is {})",
+                mode_str(entry.mode)
+            ),
+            None,
+        );
+    }
+    let (speed, mut warnings) = match parse::speed(&cli.speed) {
+        Ok(v) => v,
+        Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+    };
+    let mut session = match Session::attach(
+        &entry,
+        speed,
+        Duration::from_millis(1000),
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        &mut warnings,
+    ) {
+        Ok(s) => s,
+        Err(_) => return fail(cli, CMD, ErrorKind::AttachFailed, "attach failed", None),
+    };
+
+    // How much RAM to scan for the control block: the target's SRAM (from the DB) or a default.
+    let scan_len = {
+        let db = ch32rv_target::Db::builtin();
+        match db.resolve_by_chip_id(session.attach.chip_id) {
+            ch32rv_target::Resolution::Sku(s) if s.sram_bytes > 0 => {
+                (s.sram_bytes as u32).min(64 * 1024)
+            }
+            _ => RTT_DEFAULT_SCAN,
+        }
+    };
+
+    // Find the control block. The target has been running its sketch since power-on, so begin()
+    // has already published the block; retry a few times in case we attached very early.
+    let cb_base = 'find: {
+        for _ in 0..10 {
+            let _ = session.dm().halt();
+            let snap = read_region(&mut session, RTT_RAM_BASE, scan_len);
+            if let Some(cb) = find_control_block(&snap) {
+                break 'find Some(RTT_RAM_BASE + cb as u32);
+            }
+            let _ = session.dm().resume();
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        None
+    };
+    let cb_base = match cb_base {
+        Some(b) => b,
+        None => {
+            let _ = session.dm().resume();
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::CapabilityUnsupported,
+                format!(
+                    "no SEGGER RTT control block in the first {scan_len} bytes of RAM (from 0x{RTT_RAM_BASE:08x})"
+                ),
+                Some("flash a SerialRTT/RTT sketch first; the block only appears after begin()"),
+            );
+        }
+    };
+
+    if !cli.json {
+        eprintln!(
+            "monitor: rtt (RAM ring @ 0x{cb_base:08x}, core briefly halts per poll) via {} (Ctrl-C to stop)",
+            entry.dev.serial().unwrap_or("?")
+        );
+    }
+
+    // up[0] descriptor: control block is id[16] + max_up(4) + max_down(4), then up[0].
+    let up = cb_base + 24;
+    let deadline = run_duration(cli).map(|d| Instant::now() + d);
+    let mut out = std::io::stdout().lock();
+    loop {
+        if let Some(dl) = deadline
+            && Instant::now() >= dl
+        {
+            break;
+        }
+        let _ = session.dm().halt();
+        // up[0]: name(+0), buffer(+4), size(+8), write_off(+12), read_off(+16), flags(+20).
+        let desc = match session.link().read_memory(up, 24) {
+            Ok(d) if d.len() >= 24 => d,
+            _ => {
+                let _ = session.dm().resume();
+                break;
+            }
+        };
+        let buffer = le32(&desc, 4);
+        let size = le32(&desc, 8);
+        let wr = le32(&desc, 12);
+        let rd = le32(&desc, 16);
+        if size == 0 || size > RTT_MAX_BUF || wr >= size || rd >= size || buffer < RTT_RAM_BASE {
+            // Not ready or garbage; let it run and retry.
+            let _ = session.dm().resume();
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        if wr != rd {
+            let bytes = if wr > rd {
+                session.link().read_memory(buffer + rd, wr - rd).ok()
+            } else {
+                // Wrapped: [rd, size) then [0, wr).
+                let mut v = Vec::new();
+                if let Ok(a) = session.link().read_memory(buffer + rd, size - rd) {
+                    v.extend_from_slice(&a);
+                }
+                if let Ok(b) = session.link().read_memory(buffer, wr) {
+                    v.extend_from_slice(&b);
+                }
+                Some(v)
+            };
+            if let Some(bytes) = bytes {
+                let _ = out.write_all(&bytes);
+                let _ = out.flush();
+            }
+            // Tell the target we drained: up[0].read_off (at up + 16) = write_off.
+            let _ = session.dm().write_mem32(up + 16, wr);
+        }
+        let _ = session.dm().resume();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    ExitCode::SUCCESS
+}
+
 // ---- monitor list / sdi on|off ----
 
 fn list(cli: &Cli) -> ExitCode {
@@ -456,5 +656,46 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
             if on { "enabled" } else { "disabled" }
         );
         ExitCode::SUCCESS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a RAM snapshot with a valid control block whose magic starts at `at`.
+    fn snapshot_with_cb(at: usize, buffer: u32, size: u32, wr: u32, rd: u32) -> Vec<u8> {
+        let mut ram = vec![0u8; at + 24 + 24 + 8];
+        ram[at..at + RTT_MAGIC.len()].copy_from_slice(RTT_MAGIC);
+        let d = at + 24; // up[0] descriptor
+        ram[d + 4..d + 8].copy_from_slice(&buffer.to_le_bytes());
+        ram[d + 8..d + 12].copy_from_slice(&size.to_le_bytes());
+        ram[d + 12..d + 16].copy_from_slice(&wr.to_le_bytes());
+        ram[d + 16..d + 20].copy_from_slice(&rd.to_le_bytes());
+        ram
+    }
+
+    #[test]
+    fn finds_valid_control_block() {
+        let ram = snapshot_with_cb(64, RTT_RAM_BASE + 0x100, 256, 10, 0);
+        assert_eq!(find_control_block(&ram), Some(64));
+    }
+
+    #[test]
+    fn skips_magic_with_bogus_descriptor() {
+        // A stray "SEGGER RTT" in buffer contents: the descriptor after it is garbage (size huge),
+        // so it must not be mistaken for a real block.
+        let ram = snapshot_with_cb(64, 0, 0xFFFF_FFFF, 0, 0);
+        assert_eq!(find_control_block(&ram), None);
+    }
+
+    #[test]
+    fn no_magic_returns_none() {
+        assert_eq!(find_control_block(&[0u8; 64]), None);
+    }
+
+    #[test]
+    fn le32_reads_little_endian() {
+        assert_eq!(le32(&[0x78, 0x56, 0x34, 0x12], 0), 0x1234_5678);
     }
 }

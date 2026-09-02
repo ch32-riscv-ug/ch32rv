@@ -41,6 +41,25 @@ ch32rv run tests/fixtures/semihosting.bin --probe serial:<SN> --exit-on semihost
 # 終了コード: 42
 ```
 
+## RTT 走行テスト(`monitor --source rtt`、実機検証済み)
+
+SerialRTT(RAM リングバッファ)の受信検証用。`SerialRTT.begin()` が RAM に SEGGER 形式の
+control block を置き、`loop()` が 1 秒ごとに `uptime N s` を出力する。host は RAM を走査して
+control block を見つけ up リングを汲む。
+
+| ファイル | 内容 | V307 実機 |
+|---|---|---|
+| `rtt-ch32v307.bin` | `hello from RAM` + 毎秒 `uptime N s`(SerialRTT) | OK |
+
+```sh
+ch32rv flash tests/fixtures/rtt-ch32v307.bin --probe serial:<SN>
+ch32rv monitor --source rtt --probe serial:<SN>
+# hello from RAM / uptime 0 s / uptime 1 s ...
+```
+
+sketch は [`tests/fixtures/rtt/rtt.ino`](rtt/rtt.ino)(core の SerialRTT/HelloRTT 例)。他 family は
+`arduino-cli compile -b ch32-riscv-ug:ch32v:<board> tests/fixtures/rtt` でビルドして追加できる。
+
 ## 再生成
 
 ```sh
@@ -68,4 +87,5 @@ c8f5d0341d54d951a71b136e6e2afcb14d11ed8489a7ae126a8fee0df6ecf193  pattern-4k.bin
 2171910d36ecb57cba92daf34860b87b3908de039ab5c90812333337ffbb6e10  runtest-ch32v307.bin
 e8a5fe50025788572a06c74e1abbd0c8a20d816030815426fa5da354dfa3a538  runtest-ch32l103.bin
 c6049320d46adad08a3902ddc6883f66489f0d3fec06f5c0d8eec75efa4dab92  semihosting.bin
+916f3a3e207b704528f26f38b1d40799c5147d928b84569e710dbe052b456da8  rtt-ch32v307.bin
 ```
