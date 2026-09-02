@@ -334,7 +334,7 @@ pub fn option_get(cli: &Cli) -> ExitCode {
     }
 }
 
-fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
+pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
     match e {
         SessionError::ChipMismatch(msg) => fail(
             cli,

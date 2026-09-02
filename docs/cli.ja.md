@@ -413,6 +413,8 @@ ch32rv complete <bash|zsh|fish|powershell>
 
 すべての操作 command は実行前に capabilities と同じ判定を通り、不可なら exit 24 で同じ構造の理由を返す。`tool supports LinkE` の boolean は存在しない。
 
+- **`capabilities` 実装(2026-09-02)**: cmd_capabilities.rs。attach して **probe variant(LinkE/CH549/…)+ FW + target family/SKU/配線(DB)** を読み、operation ごとに可否+理由を出す(human 表 + JSON)。判定(`build_matrix`、単体テストあり): `connect`(**1線 target × CH549 = 不可**。CH549 は 1線 SWIO 非対応、`Variant` + debug_wiring から)、`flash`(family stub 有無)、`erase --range / flash-bp`(FLASH-controller profile 有無。page サイズ+方式を理由に表示)、`gdb HW breakpoints`(attach 時に動的検出=V4C/V4F は 4)、`monitor sdi`(**LinkE 限定**)、`monitor dmdata`(任意 probe)、`recover power-off`(**LinkE/LinkW 限定**=target 電源制御)。実機検証: L103(LinkE)全 yes、**V103(CH549 probe)は sdi/power-off が NO**、V003(LinkE,1線)は connect yes。今は attach 前提(target 未接続の静的 `--chip` のみ判定は後続)。各操作 command 側の統一 gating(exit 24)への配線も後続。
+
 ### 4.11 arduino
 
 ```text
