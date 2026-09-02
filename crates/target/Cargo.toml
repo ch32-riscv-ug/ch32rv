@@ -1,6 +1,9 @@
 [package]
 name = "ch32rv-target"
 description = "Generated CH32 RISC-V device database (chip detection, flash geometry, option byte layouts) for the ch32rv tool suite"
+keywords = ["ch32", "riscv", "wch", "database", "embedded"]
+categories = ["embedded", "hardware-support"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

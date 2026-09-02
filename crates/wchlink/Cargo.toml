@@ -1,6 +1,9 @@
 [package]
 name = "ch32rv-wchlink"
 description = "WCH-Link USB protocol implementation (bulk protocol + IAP) for the ch32rv tool suite"
+keywords = ["ch32", "riscv", "wch", "wch-link", "debug"]
+categories = ["embedded", "hardware-support"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

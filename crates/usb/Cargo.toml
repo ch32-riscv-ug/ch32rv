@@ -1,6 +1,9 @@
 [package]
 name = "ch32rv-usb"
 description = "USB device enumeration, probe selectors, per-device locking, and transaction capture for the ch32rv tool suite (nusb wrapper)"
+keywords = ["ch32", "wch", "usb", "embedded", "probe"]
+categories = ["embedded", "hardware-support"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

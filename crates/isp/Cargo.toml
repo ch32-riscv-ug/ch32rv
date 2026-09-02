@@ -1,4 +1,5 @@
 [package]
+publish = false
 name = "ch32rv-isp"
 description = "WCH factory ISP protocol (USB/UART bootloader) client for the ch32rv tool suite"
 version.workspace = true

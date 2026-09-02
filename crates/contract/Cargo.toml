@@ -1,6 +1,9 @@
 [package]
 name = "ch32rv-contract"
 description = "Shared vocabulary for the ch32rv tool suite: exit codes, JSON result envelope, NDJSON progress events, operation policies"
+keywords = ["ch32", "riscv", "wch", "embedded", "cli"]
+categories = ["embedded", "command-line-interface"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

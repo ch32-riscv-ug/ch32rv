@@ -520,3 +520,38 @@ fn parse_version(s: &str) -> Option<(u8, u8)> {
     let (a, b) = s.trim().split_once('.')?;
     Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
 }
+
+/// `probe mode get`: the probe's current mode (RISC-V vs DAP/ARM), from VID:PID and the firmware.
+pub fn mode_get(cli: &Cli) -> ExitCode {
+    const CMD: &str = "probe.mode.get";
+    let entry = match select_entry(cli, CMD) {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    let usb_mode = mode_str(entry.mode);
+    let fw_mode = WchLink::open(&entry.dev)
+        .and_then(|mut l| l.probe_info())
+        .ok()
+        .and_then(|i| i.fw_mode.map(|m| m.as_str().to_owned()));
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "mode": usb_mode,
+            "vid": format!("0x{:04x}", entry.dev.vid()),
+            "pid": format!("0x{:04x}", entry.dev.pid()),
+            "firmware_mode": fw_mode,
+        }));
+        crate::print_envelope(&env)
+    } else {
+        println!(
+            "mode:  {usb_mode}  (USB {:04x}:{:04x}{})",
+            entry.dev.vid(),
+            entry.dev.pid(),
+            fw_mode
+                .as_deref()
+                .map(|m| format!("; firmware reports {m}"))
+                .unwrap_or_default()
+        );
+        ExitCode::SUCCESS
+    }
+}

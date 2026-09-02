@@ -1193,13 +1193,71 @@ pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
     const CMD: &str = "recover";
     match args.method {
         RecoverMethod::PowerOff | RecoverMethod::Nrst => recover_special_erase(cli, args.method),
+        RecoverMethod::Unprotect => recover_unprotect(cli),
         other => fail(
             cli,
             CMD,
             ErrorKind::CapabilityUnsupported,
             format!("recover --method {} is not implemented yet", other.as_str()),
-            Some("power-off and nrst are implemented; unprotect/unbrick come next"),
+            Some("power-off, nrst, and unprotect are implemented; unbrick comes next"),
         ),
+    }
+}
+
+/// en: `recover --method unprotect`: clear read protection by writing factory-default option bytes
+/// (RDPR=0xA5). On a read-protected target this triggers the chip's mass erase, unbricking it. The
+/// target must still attach over DMI (a fully-dead target needs power-off/nrst/unbrick instead).
+/// ja: `recover --method unprotect`: 工場 option bytes(RDPR=0xA5)を書いて読み出し保護を解除。保護
+/// 済み target ではこれが chip の mass erase を誘発して復旧する。attach は要る(完全死は power-off 等)。
+fn recover_unprotect(cli: &Cli) -> ExitCode {
+    const CMD: &str = "recover";
+    // Factory defaults: RDPR=0xA5 (unprotected), USER/Data/WRPR = 0xff, each with its complement.
+    const FACTORY: [u8; 16] = [
+        0xA5, 0x5A, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF,
+        0x00,
+    ];
+    if !cli.yes
+        && !cli.non_interactive
+        && !confirm("Remove read protection? This ERASES ALL FLASH on a protected target.")
+    {
+        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    }
+    let mut session = match attach_for(cli, CMD) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    let family = session.family();
+    let mut dm = session.dm();
+    if let Err(e) = dm.halt() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::AttachFailed,
+            format!("halt failed: {e}"),
+            None,
+        );
+    }
+    if let Err(e) = dm.flash_program_option_bytes(&FACTORY) {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::TransportTimeout,
+            format!("writing factory option bytes failed: {e}"),
+            None,
+        );
+    }
+    // Apply the option change with a system reset.
+    let _ = session.link().soft_reset();
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "method": "unprotect", "family": family, "note": "read protection cleared (RDPR=0xA5); applies after reset",
+        }));
+        crate::print_envelope(&env)
+    } else {
+        println!("recover unprotect: read protection cleared (RDPR=0xA5) on {family}");
+        println!("note: a protected target is mass-erased; re-flash your firmware");
+        ExitCode::SUCCESS
     }
 }
 
