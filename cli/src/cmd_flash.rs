@@ -1300,7 +1300,7 @@ fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCode {
 
 /// en: Map a --chip name to its AttachChip family byte (interim; the DB will replace this).
 /// ja: --chip 名を AttachChip family byte へ(暫定。将来は DB)。
-fn family_byte_from_name(name: &str) -> Option<u8> {
+pub(crate) fn family_byte_from_name(name: &str) -> Option<u8> {
     let n = name.to_ascii_uppercase();
     let n = n.strip_prefix("CH32").unwrap_or(&n);
     Some(match n {
