@@ -18,6 +18,7 @@
 | [direction-review-2026-09-01.ja.md](direction-review-2026-09-01.ja.md) | ArduinoCore-CH32 側からの方向性レビュー記録。リリース方針(probe-rs 非同梱・ch32rv 一本化・Linux 先行ドッグフーディング)とギャップ・開始条件 |
 | [release-plan.ja.md](release-plan.ja.md) | リリース計画・手順。線引き(IN/OUT)・crates.io 依存順 publish(9 crate)・全OSバイナリ・リリース実行順(初回=済 / 次回) |
 | [windows-wch-driver.ja.md](windows-wch-driver.ja.md) | Windows で WCH 標準ドライバ経由アクセス(WinUSB 非依存、CH375 IOCTL)の作業引き継ぎ。依頼 B-2。**検討中** |
+| [testing-non-linux.ja.md](testing-non-linux.ja.md) | Windows / macOS の実機テスト手順(バイナリ入手・probe 接続・read-only/flash 往復/走行の 3 tier)。転送用 fixture は `tests/fixtures/` |
 
 ## 前提資料
 
