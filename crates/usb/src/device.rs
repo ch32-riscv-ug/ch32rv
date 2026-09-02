@@ -183,11 +183,26 @@ pub struct UsbInterface {
 
 impl UsbInterface {
     pub fn write(&mut self, data: &[u8], timeout: Duration) -> Result<usize, UsbError> {
-        write_ep(&mut self.out, data, timeout)
+        let r = write_ep(&mut self.out, data, timeout);
+        crate::capture::record(
+            crate::capture::Chan::Cmd,
+            crate::capture::Dir::Out,
+            data,
+            r.is_ok(),
+        );
+        r
     }
 
     pub fn read(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize, UsbError> {
-        read_ep(&mut self.inp, buf, timeout)
+        let r = read_ep(&mut self.inp, buf, timeout);
+        let n = *r.as_ref().unwrap_or(&0);
+        crate::capture::record(
+            crate::capture::Chan::Cmd,
+            crate::capture::Dir::In,
+            &buf[..n],
+            r.is_ok(),
+        );
+        r
     }
 
     /// en: Open a second bulk endpoint pair (the WCH-Link flash data path, EP 0x02/0x82) on
@@ -215,13 +230,28 @@ impl UsbInterface {
     /// Write to the data endpoint. Call [`open_data_endpoints`] first.
     pub fn write_data(&mut self, data: &[u8], timeout: Duration) -> Result<usize, UsbError> {
         let ep = self.data_out.as_mut().ok_or(UsbError::Endpoint(0x02))?;
-        write_ep(ep, data, timeout)
+        let r = write_ep(ep, data, timeout);
+        crate::capture::record(
+            crate::capture::Chan::Data,
+            crate::capture::Dir::Out,
+            data,
+            r.is_ok(),
+        );
+        r
     }
 
     /// Read from the data endpoint. Call [`open_data_endpoints`] first.
     pub fn read_data(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize, UsbError> {
         let ep = self.data_in.as_mut().ok_or(UsbError::Endpoint(0x82))?;
-        read_ep(ep, buf, timeout)
+        let r = read_ep(ep, buf, timeout);
+        let n = *r.as_ref().unwrap_or(&0);
+        crate::capture::record(
+            crate::capture::Chan::Data,
+            crate::capture::Dir::In,
+            &buf[..n],
+            r.is_ok(),
+        );
+        r
     }
 }
 

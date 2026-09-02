@@ -1,10 +1,11 @@
 //! en: ch32rv CLI. A thin layer that only composes the library crates (docs/architecture.ja.md §2).
-//! Scaffold status: the whole command tree (docs/cli.ja.md) is defined, `version` works,
-//! everything else exits 70 (unimplemented).
+//! The WCH-LinkE-route surface is implemented (flash/verify/read/write/erase/reset/recover, dbg +
+//! gdb, monitor, target/probe/db/capabilities, arduino); a few routes (run/isp/boot/dap) still
+//! return exit 70 (unimplemented).
 //!
 //! ja: ch32rv CLI。library crate 群を組み合わせるだけの薄い層(docs/architecture.ja.md §2)。
-//! 現状は scaffold: コマンド体系(docs/cli.ja.md)は全定義済み、`version` のみ動作し、
-//! 他は exit 70(unimplemented)を返す。
+//! WCH-LinkE 経路の機能は実装済み(flash/verify/read/write/erase/reset/recover、dbg+gdb、monitor、
+//! target/probe/db/capabilities、arduino)。一部経路(run/isp/boot/dap)は exit 70(unimplemented)。
 
 mod args;
 mod cmd_arduino;
@@ -30,6 +31,15 @@ use ch32rv_contract::{self as contract, ErrorKind, ResultEnvelope};
 
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    // Start USB transaction capture if requested (diagnostic; a failure to open the file only warns).
+    if let Some(path) = cli.capture.as_deref()
+        && let Err(e) = ch32rv_usb::capture::start(path)
+    {
+        eprintln!(
+            "warning: --capture disabled: cannot write {}: {e}",
+            path.display()
+        );
+    }
     match &cli.command {
         Command::Version => cmd_version(&cli),
         Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(&cli, *watch),
