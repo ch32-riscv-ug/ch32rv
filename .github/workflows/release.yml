@@ -44,8 +44,9 @@ jobs:
         with:
           tool: cargo-deny
 
-      # HOOK: your release script bumps the [workspace.package] version + the internal dependency
-      # version pins in Cargo.toml, and cuts the CHANGELOG "Unreleased" section to the new version.
+      # Bumps the [workspace.package] version + the internal dependency pins in Cargo.toml + the
+      # lockfile, and cuts the CHANGELOG "Unreleased" section to the new version. See scripts/release.sh.
+      # (The one-time crates.io name-claim bootstrap is a separate script: scripts/first-publish.sh.)
       - name: Bump version + CHANGELOG
         run: ./scripts/release.sh "${{ inputs.level }}"
 
