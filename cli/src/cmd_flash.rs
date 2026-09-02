@@ -24,7 +24,7 @@ use std::path::Path;
 use crate::args::{Cli, FlashArgs, RecoverArgs, SwitchState};
 use crate::cmd_probe::{fail, mode_str, select_entry};
 use crate::parse;
-use crate::session::{Session, SessionError};
+use crate::session::Session;
 
 /// en: Parse an image, treating a magic-less `.bin`/extensionless file as raw bin under
 /// `--format auto` (ELF/HEX/UF2 are still detected by magic; anything else still errors).
@@ -218,7 +218,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         &mut warnings,
     ) {
         Ok(s) => s,
-        Err(e) => return session_error(cli, CMD, e),
+        Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
 
     let family = session.attach.family_byte;
@@ -804,43 +804,13 @@ fn finish(
     }
 }
 
-/// en: Attach helper shared by erase/reset/verify: select a RISC-V probe and attach.
-/// ja: erase/reset/verify 共通の attach。RISC-V probe を選んで attach する。
-fn attach_for(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
-    let entry = select_entry(cli, cmd)?;
-    if entry.mode != ch32rv_contract::ProbeMode::Riscv {
-        return Err(fail(
-            cli,
-            cmd,
-            ErrorKind::CapabilityUnsupported,
-            format!(
-                "probe is in {} mode; this needs RISC-V mode",
-                mode_str(entry.mode)
-            ),
-            None,
-        ));
-    }
-    let (speed, mut warnings) =
-        parse::speed(&cli.speed).map_err(|m| fail(cli, cmd, ErrorKind::Usage, m, None))?;
-    let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    Session::attach(
-        &entry,
-        speed,
-        timeout,
-        Duration::from_secs(cli.lock_timeout),
-        cli.chip.as_deref(),
-        &mut warnings,
-    )
-    .map_err(|e| session_error(cli, cmd, e))
-}
-
 pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
     const CMD: &str = "erase";
     if args.region.is_some() || args.range.is_some() {
         return erase_range(cli, args);
     }
     // --all: whole-chip erase.
-    let mut session = match attach_for(cli, CMD) {
+    let mut session = match crate::cmd_probe::attach(cli, CMD) {
         Ok(s) => s,
         Err(c) => return c,
     };
@@ -872,7 +842,7 @@ pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
 /// ja: `erase --range/--region` を FLASH controller の page 単位消去で実装。page 境界必須。
 fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
     const CMD: &str = "erase";
-    let mut session = match attach_for(cli, CMD) {
+    let mut session = match crate::cmd_probe::attach(cli, CMD) {
         Ok(s) => s,
         Err(c) => return c,
     };
@@ -1012,7 +982,7 @@ fn resolve_region(spec: &str, session: &Session) -> Result<(u32, u32), String> {
 
 pub fn reset(cli: &Cli, args: &crate::args::ResetArgs) -> ExitCode {
     const CMD: &str = "reset";
-    let mut session = match attach_for(cli, CMD) {
+    let mut session = match crate::cmd_probe::attach(cli, CMD) {
         Ok(s) => s,
         Err(c) => return c,
     };
@@ -1119,7 +1089,7 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
         },
         None => None,
     };
-    let mut session = match attach_for(cli, CMD) {
+    let mut session = match crate::cmd_probe::attach(cli, CMD) {
         Ok(s) => s,
         Err(c) => return c,
     };
@@ -1236,7 +1206,7 @@ fn recover_unprotect(cli: &Cli) -> ExitCode {
     {
         return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
     }
-    let mut session = match attach_for(cli, CMD) {
+    let mut session = match crate::cmd_probe::attach(cli, CMD) {
         Ok(s) => s,
         Err(c) => return c,
     };
@@ -1516,45 +1486,6 @@ pub(crate) fn family_byte_from_name(name: &str) -> Option<u8> {
         s if s.starts_with("H4") => 0xC6,
         _ => return None,
     })
-}
-
-fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
-    match e {
-        SessionError::ChipMismatch(msg) => fail(
-            cli,
-            cmd,
-            ErrorKind::TargetAmbiguous,
-            msg,
-            Some("pass the correct --chip, or omit it to use auto-detection"),
-        ),
-        SessionError::Open(err) | SessionError::ProbeInfo(err) => {
-            let s = err.to_string();
-            let kind = if s.contains("access denied") {
-                ErrorKind::DeviceOpenFailed
-            } else if s.contains("busy") {
-                ErrorKind::DeviceBusy
-            } else {
-                ErrorKind::DeviceOpenFailed
-            };
-            fail(cli, cmd, kind, s, None)
-        }
-        SessionError::Attach(msg) => fail(
-            cli,
-            cmd,
-            ErrorKind::AttachFailed,
-            msg,
-            Some(
-                "check target wiring/power/BOOT; if debug pins were repurposed try `ch32rv recover --method power-off --chip <family>`",
-            ),
-        ),
-        SessionError::Busy(err) => fail(
-            cli,
-            cmd,
-            ErrorKind::DeviceBusy,
-            err.to_string(),
-            Some("another ch32rv is using this probe; wait for it, or raise --lock-timeout"),
-        ),
-    }
 }
 
 #[cfg(test)]

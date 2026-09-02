@@ -87,7 +87,7 @@ pub fn write(cli: &Cli, args: &WriteArgs) -> ExitCode {
         &mut warnings,
     ) {
         Ok(s) => s,
-        Err(e) => return crate::cmd_target::session_error(cli, CMD, e),
+        Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
 
     let is_flash = (FLASH_BASE..FLASH_END).contains(&addr);

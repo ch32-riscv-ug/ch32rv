@@ -14,6 +14,8 @@ use ch32rv_usb::{ResolveError, Selector, UsbDeviceInfo, UsbError};
 use ch32rv_wchlink::{self as wchlink, WchLink, known_bad_firmware};
 
 use crate::args::Cli;
+use crate::parse;
+use crate::session::{Session, SessionError};
 
 /// A WCH device relevant to `probe` commands, with its mode derived from VID:PID.
 pub(crate) struct Entry {
@@ -439,6 +441,86 @@ pub(crate) fn fail_with_candidates(
         }
     }
     kind.exit_code().into()
+}
+
+/// en: Shared attach boilerplate for every probe-routed command that talks to a target: select the
+/// probe, require RISC-V mode, parse `--speed`, and attach (locking the probe, honoring `--chip`).
+/// Errors are already rendered (via [`fail`] / [`session_error`]); callers just propagate the code.
+/// ja: target と会話する probe 経路コマンド共通の attach。probe 選択→RISC-V mode 要求→`--speed`
+/// 解釈→attach(lock + `--chip` 突合)。エラーは描画済みなので呼び出し側は code を返すだけ。
+pub(crate) fn attach(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
+    let entry = select_entry(cli, cmd)?;
+    if entry.mode != ProbeMode::Riscv {
+        return Err(fail(
+            cli,
+            cmd,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "probe is in {} mode; attaching to a target requires RISC-V mode",
+                mode_str(entry.mode)
+            ),
+            None,
+        ));
+    }
+    let (speed, mut warnings) =
+        parse::speed(&cli.speed).map_err(|m| fail(cli, cmd, ErrorKind::Usage, m, None))?;
+    let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
+    Session::attach(
+        &entry,
+        speed,
+        timeout,
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        &mut warnings,
+    )
+    .map_err(|e| session_error(cli, cmd, e))
+}
+
+/// en: Render a [`SessionError`] as the CLI failure envelope with an actionable hint. The single
+/// home for this mapping so the wording cannot drift between commands.
+/// ja: `SessionError` を CLI 失敗 envelope + 実用的な hint として描画。コマンド間で文言がぶれない
+/// よう一箇所に集約。
+pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
+    match e {
+        SessionError::ChipMismatch(msg) => fail(
+            cli,
+            cmd,
+            ErrorKind::TargetAmbiguous,
+            msg,
+            Some("pass the correct --chip, or omit it to use auto-detection"),
+        ),
+        SessionError::Open(err) | SessionError::ProbeInfo(err) => {
+            let s = err.to_string();
+            let kind = if s.contains("busy") {
+                ErrorKind::DeviceBusy
+            } else {
+                ErrorKind::DeviceOpenFailed
+            };
+            fail(
+                cli,
+                cmd,
+                kind,
+                s,
+                Some("check permissions/driver binding, or whether another tool holds the probe"),
+            )
+        }
+        SessionError::Attach(msg) => fail(
+            cli,
+            cmd,
+            ErrorKind::AttachFailed,
+            msg,
+            Some(
+                "check target wiring/power/BOOT; for a protected or bricked target see `ch32rv recover`",
+            ),
+        ),
+        SessionError::Busy(err) => fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceBusy,
+            err.to_string(),
+            Some("another ch32rv is using this probe; wait for it, or raise --lock-timeout"),
+        ),
+    }
 }
 
 /// Open the probe and read its firmware major/minor + mode (for `probe firmware ...`).

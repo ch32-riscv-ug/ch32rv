@@ -130,7 +130,7 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
         &mut warnings,
     ) {
         Ok(s) => s,
-        Err(_) => return fail(cli, CMD, ErrorKind::AttachFailed, "attach failed", None),
+        Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
 
     // Program the image (unless --no-flash).
