@@ -337,7 +337,7 @@ fn run_dmdata(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
         &mut warnings,
     ) {
         Ok(s) => s,
-        Err(_) => return fail(cli, CMD, ErrorKind::AttachFailed, "attach failed", None),
+        Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
 
     if !cli.json {
@@ -468,7 +468,7 @@ fn run_rtt(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
         &mut warnings,
     ) {
         Ok(s) => s,
-        Err(_) => return fail(cli, CMD, ErrorKind::AttachFailed, "attach failed", None),
+        Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
 
     // How much RAM to scan for the control block: the target's SRAM (from the DB) or a default.

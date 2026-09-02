@@ -83,7 +83,7 @@ fn live_capabilities(cli: &Cli, cmd: &str, entry: &crate::cmd_probe::Entry) -> E
         &mut warnings,
     ) {
         Ok(s) => s,
-        Err(e) => return crate::cmd_target::session_error(cli, cmd, e),
+        Err(e) => return crate::cmd_probe::session_error(cli, cmd, e),
     };
     let fw = format!(
         "{}.{:02}",

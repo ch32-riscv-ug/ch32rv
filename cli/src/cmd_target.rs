@@ -15,7 +15,7 @@ use crate::cmd_probe::{
     apply_probe_info, base_report, fail, mode_str, print_probe_human, select_entry,
 };
 use crate::parse;
-use crate::session::{Session, SessionError};
+use crate::session::Session;
 
 const CMD: &str = "target.info";
 
@@ -33,9 +33,7 @@ pub fn info(cli: &Cli) -> ExitCode {
                 "probe is in {} mode; attaching to a target requires RISC-V mode",
                 mode_str(entry.mode)
             ),
-            Some(
-                "switch modes with WCH-LinkUtility (`ch32rv probe mode set` is not implemented yet)",
-            ),
+            Some("switch to RISC-V mode with `ch32rv probe mode set riscv` (WCH-LinkE only)"),
         );
     }
     let (speed, mut warnings) = match parse::speed(&cli.speed) {
@@ -53,7 +51,7 @@ pub fn info(cli: &Cli) -> ExitCode {
         &mut warnings,
     ) {
         Ok(s) => s,
-        Err(e) => return session_error(cli, CMD, e),
+        Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
 
     let mut probe_report = base_report(&entry);
@@ -220,7 +218,7 @@ pub fn option_get(cli: &Cli) -> ExitCode {
         &mut warnings,
     ) {
         Ok(s) => s,
-        Err(e) => return session_error(cli, CMD, e),
+        Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
 
     let family = session.family();
@@ -346,86 +344,11 @@ pub fn option_get(cli: &Cli) -> ExitCode {
     }
 }
 
-pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
-    match e {
-        SessionError::ChipMismatch(msg) => fail(
-            cli,
-            cmd,
-            ErrorKind::TargetAmbiguous,
-            msg,
-            Some("pass the correct --chip, or omit it to use auto-detection"),
-        ),
-        SessionError::Open(err) | SessionError::ProbeInfo(err) => {
-            let s = err.to_string();
-            let kind = if s.contains("access denied") {
-                ErrorKind::DeviceOpenFailed
-            } else if s.contains("busy") {
-                ErrorKind::DeviceBusy
-            } else {
-                ErrorKind::DeviceOpenFailed
-            };
-            fail(
-                cli,
-                cmd,
-                kind,
-                s,
-                Some("check permissions/driver binding, or whether another tool holds the probe"),
-            )
-        }
-        SessionError::Attach(msg) => fail(
-            cli,
-            cmd,
-            ErrorKind::AttachFailed,
-            msg,
-            Some(
-                "check target wiring/power/BOOT; for a protected or bricked target see `ch32rv recover`",
-            ),
-        ),
-        SessionError::Busy(err) => fail(
-            cli,
-            cmd,
-            ErrorKind::DeviceBusy,
-            err.to_string(),
-            Some("another ch32rv is using this probe; wait for it, or raise --lock-timeout"),
-        ),
-    }
-}
-
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 const OPTION_BASE: u32 = 0x1FFF_F800;
-
-/// en: Attach a RISC-V session for an option-byte command (shared boilerplate). ja: option 系の
-/// 共通 attach。
-fn option_session(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
-    let entry = select_entry(cli, cmd)?;
-    if entry.mode != ProbeMode::Riscv {
-        return Err(fail(
-            cli,
-            cmd,
-            ErrorKind::CapabilityUnsupported,
-            format!(
-                "probe is in {} mode; attaching to a target requires RISC-V mode",
-                mode_str(entry.mode)
-            ),
-            None,
-        ));
-    }
-    let (speed, mut warnings) =
-        parse::speed(&cli.speed).map_err(|msg| fail(cli, cmd, ErrorKind::Usage, msg, None))?;
-    let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    Session::attach(
-        &entry,
-        speed,
-        timeout,
-        Duration::from_secs(cli.lock_timeout),
-        cli.chip.as_deref(),
-        &mut warnings,
-    )
-    .map_err(|e| session_error(cli, cmd, e))
-}
 
 /// Confirm a destructive option-byte write: `--yes` skips it, `--non-interactive` without `--yes`
 /// refuses, otherwise prompt on the terminal.
@@ -466,7 +389,7 @@ fn parse_hex16(s: &str) -> Result<[u8; 16], String> {
 /// en: Read the 16 option bytes plus the DB family string (for USER-field names) - attach, halt,
 /// read, detach. ja: 16 byte の option bytes と DB family(USER field 名用)を読む。
 fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<(String, [u8; 16]), ExitCode> {
-    let mut session = option_session(cli, cmd)?;
+    let mut session = crate::cmd_probe::attach(cli, cmd)?;
     let db = ch32rv_target::Db::builtin();
     let db_family = match db.resolve_by_chip_id(session.attach.chip_id) {
         ch32rv_target::Resolution::Sku(s) => s.family.clone(),
@@ -502,7 +425,7 @@ fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<(String, [u8; 16]), ExitCod
 /// re-established immediately. The bytes take effect after a system reset. ja: option bytes を
 /// `new` へ erase+program し read-back で検証。RDPR を最初に書く。反映は system reset 後。
 fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
-    let mut session = match option_session(cli, cmd) {
+    let mut session = match crate::cmd_probe::attach(cli, cmd) {
         Ok(s) => s,
         Err(c) => return c,
     };
