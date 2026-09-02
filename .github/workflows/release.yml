@@ -176,13 +176,19 @@ jobs:
 
       # Package + upload per OS with explicit filenames (no glob): each runner produces only one
       # archive kind, so a single cross-OS glob would fail on the kind it did not build.
+      # Every archive has a single root directory `ch32rv-<version>-<target>/` (arduino-cli requires
+      # it, and a correctly-rooted upstream lets mirror-ch32rv pass the bytes through unchanged so its
+      # ADR-0011 upstreamChecksum still matches). LICENSE + README + CHANGELOG ride along (MIT bundling).
       - name: Package + upload (Unix)
         if: runner.os != 'Windows'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           NAME="ch32rv-${{ needs.prepare.outputs.version }}-${{ matrix.target }}"
-          tar czf "$NAME.tar.gz" -C "target/${{ matrix.target }}/release" ch32rv
+          mkdir "$NAME"
+          cp "target/${{ matrix.target }}/release/ch32rv" "$NAME/"
+          cp LICENSE README.md CHANGELOG.md "$NAME/"
+          tar czf "$NAME.tar.gz" "$NAME"
           shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
           gh release upload "${{ needs.prepare.outputs.tag }}" "$NAME.tar.gz" "$NAME.tar.gz.sha256" --clobber
       - name: Package + upload (Windows)
@@ -192,6 +198,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           $Name = "ch32rv-${{ needs.prepare.outputs.version }}-${{ matrix.target }}"
-          Compress-Archive -Path "target/${{ matrix.target }}/release/ch32rv.exe" -DestinationPath "$Name.zip"
+          New-Item -ItemType Directory -Path $Name | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/ch32rv.exe" -Destination $Name
+          Copy-Item LICENSE, README.md, CHANGELOG.md -Destination $Name
+          Compress-Archive -Path $Name -DestinationPath "$Name.zip"
           (Get-FileHash "$Name.zip" -Algorithm SHA256).Hash.ToLower() + "  $Name.zip" | Out-File -Encoding ascii "$Name.zip.sha256"
           gh release upload "${{ needs.prepare.outputs.tag }}" "$Name.zip" "$Name.zip.sha256" --clobber
