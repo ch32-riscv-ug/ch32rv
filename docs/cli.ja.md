@@ -191,6 +191,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 ### 3.7 排他制御と再試行
 
 - **lock**: USB serial(無ければ topology)単位の advisory lock を OS の runtime dir に置く。`--lock-timeout` 待って取れなければ exit 13。異常終了した保持者の stale lock は起動時に回収する。
+  - **実装(2026-09-02、依頼 A-2)**: `ch32rv-usb::DeviceLock`。`$XDG_RUNTIME_DIR/ch32rv/<key>.lock`(無ければ temp dir)に `flock` を取り、probe を使う間だけ保持する。key は probe serial、無ければ bus topology。取れなければ `--lock-timeout` 待って exit 13(`device-busy`)。**stale は flock の性質で自動回収**(保持者が終了すれば OS が解放するので「起動時回収」の別処理は不要)。対象: attach 経路(`Session::attach` = flash/target/dbg/write/monitor dmdata/capabilities/arduino)、`gdb` server、`monitor --source uart`/`sdi`(`cmd_probe::lock_probe`)。同一プロセスで二重取得しないよう、直接 open 経路(gdb/uart/sdi)は `Session::attach` を経由しない。recover・probe list/info・`--repeat` の poll は非対象(read-only か短時間)。
 - **open 再試行**: 挿抜直後は CDC interface が vendor interface より先に見える(実測)。open 失敗は 1 秒間隔で計 3 回まで再試行してから exit する。
 - **転送再試行**: chunk 単位の timeout→再試行(既定 3 回)。再試行が起きた事実は NDJSON event と JSON 結果(`retries`)に必ず出す。
 - **固まり検出**: 再試行が尽きて probe が応答しなくなったら、`USBDEVFS_RESET` は使わず、再接続手順(usbipd / 物理挿抜)を提示して exit 41。

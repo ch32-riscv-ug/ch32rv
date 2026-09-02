@@ -208,6 +208,7 @@ fn pipe_dmdata(serial: &str, mut sock: TcpStream, stop: Arc<AtomicBool>) {
         &entry,
         ch32rv_wchlink::Speed::High,
         Duration::from_millis(1000),
+        Duration::from_secs(10),
         None,
         &mut warnings,
     ) {

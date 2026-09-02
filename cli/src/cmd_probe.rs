@@ -376,6 +376,31 @@ fn parse_selector(cli: &Cli, cmd: &str) -> Result<Option<Selector>, ExitCode> {
     Ok(Some(sel))
 }
 
+/// en: Take the per-probe advisory lock (docs/cli.ja.md §3.7) for a direct-open command (gdb,
+/// monitor uart/sdi) - `Session::attach` locks its own path. Keyed by the probe serial, or bus
+/// topology when there is none. On timeout the exit-13 (device-busy) code is already emitted.
+/// ja: 直接 open するコマンド(gdb・monitor uart/sdi)用に probe 単位 advisory lock を取る。
+pub(crate) fn lock_probe(
+    cli: &Cli,
+    cmd: &str,
+    entry: &Entry,
+) -> Result<ch32rv_usb::DeviceLock, ExitCode> {
+    let key = entry
+        .dev
+        .serial()
+        .map(str::to_owned)
+        .unwrap_or_else(|| entry.dev.topology());
+    ch32rv_usb::DeviceLock::acquire(&key, Duration::from_secs(cli.lock_timeout)).map_err(|e| {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceBusy,
+            e.to_string(),
+            Some("another ch32rv is using this probe; wait for it, or raise --lock-timeout"),
+        )
+    })
+}
+
 pub(crate) fn fail(
     cli: &Cli,
     cmd: &str,

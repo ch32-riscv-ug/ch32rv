@@ -209,11 +209,17 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    let mut session =
-        match Session::attach(&entry, speed, timeout, cli.chip.as_deref(), &mut warnings) {
-            Ok(s) => s,
-            Err(e) => return session_error(cli, CMD, e),
-        };
+    let mut session = match Session::attach(
+        &entry,
+        speed,
+        timeout,
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        &mut warnings,
+    ) {
+        Ok(s) => s,
+        Err(e) => return session_error(cli, CMD, e),
+    };
 
     let family = session.attach.family_byte;
     let Some(fp) = params_for_family(family) else {
@@ -813,8 +819,15 @@ fn attach_for(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
     let (speed, mut warnings) =
         parse::speed(&cli.speed).map_err(|m| fail(cli, cmd, ErrorKind::Usage, m, None))?;
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    Session::attach(&entry, speed, timeout, cli.chip.as_deref(), &mut warnings)
-        .map_err(|e| session_error(cli, cmd, e))
+    Session::attach(
+        &entry,
+        speed,
+        timeout,
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        &mut warnings,
+    )
+    .map_err(|e| session_error(cli, cmd, e))
 }
 
 pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
@@ -1404,6 +1417,13 @@ fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
             Some(
                 "check target wiring/power/BOOT; if debug pins were repurposed try `ch32rv recover --method power-off --chip <family>`",
             ),
+        ),
+        SessionError::Busy(err) => fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceBusy,
+            err.to_string(),
+            Some("another ch32rv is using this probe; wait for it, or raise --lock-timeout"),
         ),
     }
 }
