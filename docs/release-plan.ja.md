@@ -20,28 +20,57 @@ version は workspace 一括 `0.1.0`、license MIT。**publish 順は依存順**
 
 **publish しない**(空スタブ、`publish = false`): `ch32rv-monitor` / `ch32rv-isp` / `ch32rv-boot`。monitor の実体は現状 cli 側。v0.2 で crate 化する際に publish 検討。
 
-### publish 実行(ユーザー依頼)
+### publish のやり方(3段階)
 
-```sh
-# 事前に crates.io トークン設定: cargo login <token>
-for c in contract usb dmi target wchlink flash debug; do
-  cargo publish -p ch32rv-$c   # 前の crate が index 反映されるまで数十秒待つ
-done
-cargo publish -p ch32rv        # CLI
-```
+Rust/crates.io は、あなたの他プロジェクトの分類にこう対応する:
 
-## 2. 全 OS バイナリ配布(cargo-dist / `dist`)
+- **「公開リポジトリから許可 GitHub を登録するだけ」= Trusted Publishing(OIDC)**。GitHub 側にトークンを埋めず、Actions が実行時に crates.io から 30 分の短命トークンを OIDC で受け取る(`rust-lang/crates-io-auth-action`)。設定は crates.io 側で crate ごとに「この owner/repo の release.yml からの publish を許可」を登録するだけ。
+- **「認証トークンが必要なので CLI から明示リリース」= 初回だけ必要**。**新規 crate の初回 publish はトークンが要る**(crates.io に pending/事前予約が無いため、Trusted Publisher を後付けするにも一度 crate を存在させる必要がある)。JS でブラウザ+パスキーに当たるのがこれ。
 
-`dist` は未インストール。ユーザー側で:
+手順:
 
-```sh
-cargo install cargo-dist            # or: 各 OS の配布物 tooling
-dist init                           # targets に Linux(x64/arm64)・macOS(x64/arm64)・Windows(x64) を選択、
-                                    # installers=shell,powershell、ci=github を選ぶ
-dist generate                       # .github/workflows/release.yml を生成 → commit
-```
+1. **(初回一度きり・ユーザー、CLI)** crates.io で API トークンを発行 → `cargo login <token>` → 依存順に 8 crate を publish して crate 名を確保する。
 
-- **注意**: 手元実機は Linux(WSL2)のみ。**Linux x64 = verified、macOS/Windows = experimental** とリリースノートに明記する(Windows は WinUSB / driver binding、macOS は権限を実機確認後に verified 昇格)。ArduinoCore-CH32 の依頼 B-2(Windows 実機検証)は v0.1 後に。
+   ```sh
+   for c in contract usb dmi target wchlink flash debug; do
+     cargo publish -p ch32rv-$c   # 前の crate が index に載るまで cargo が自動で待つ
+   done
+   cargo publish -p ch32rv        # CLI
+   ```
+
+2. **(初回一度きり・ユーザー、Web UI)** 各 crate の Settings → Trusted Publishing で GitHub を登録:
+   owner=`ch32-riscv-ug` / repo=`ch32rv` / workflow=`release.yml`(environment は任意)。8 crate 分登録する。
+
+3. **(以降・毎回)** Actions の「Release」ワークフローを **画面から起動**(workflow_dispatch)。中で version bump → 検証 → commit/tag → OIDC で crates.io publish、までトークン埋め込み無しで走る。詳細は §2。
+
+## 2. リリースワークフロー(`.github/workflows/release.yml`)
+
+あなたの「画面から明示起動 → 内部で version を bump → build → release」に合わせた **単一の workflow_dispatch ワークフロー**を用意済み。タグ起点ではなく UI 起点。`permissions: id-token: write`(OIDC)+ `contents: write`(bump commit / tag / Release 作成)。ジョブ構成:
+
+| job | 内容 |
+|---|---|
+| `prepare` | **version bump(`./scripts/release.sh <level>` フック)** → fmt/clippy/test/deny/db-check → commit + tag + push → GitHub Release 作成。bump 後の version は `cargo metadata` から読む(スクリプト出力形式に非依存)。 |
+| `crates-io` | tag を checkout → `rust-lang/crates-io-auth-action`(OIDC 短命トークン)→ 依存順に `cargo publish`。`inputs.publish_crates=false` で無効化可。 |
+| `binaries` | matrix(下表)で `cargo build --release --locked` → tar.gz(Unix)/ zip(Windows)+ `.sha256` → 同じ Release に `gh release upload`。 |
+
+バイナリ matrix(すべて **ネイティブ**ビルド。cross 不使用):
+
+| runner | target |
+|---|---|
+| ubuntu-latest | x86_64-unknown-linux-gnu |
+| ubuntu-24.04-arm | aarch64-unknown-linux-gnu |
+| macos-13 | x86_64-apple-darwin |
+| macos-14 | aarch64-apple-darwin |
+| windows-latest | x86_64-pc-windows-msvc |
+
+要対応(ユーザー):
+
+- **`./scripts/release.sh <level>` を用意**する(フック)。やること: workspace `version` と Cargo.toml の内部依存 pin を bump、CHANGELOG の `Unreleased` を新 version に切る。他プロジェクトの bump スクリプトを Rust 向けに移植する形。
+- **初回の crate 確保 + Trusted Publisher 登録**(§1 の手順 1・2)を済ませないと `crates-io` job は通らない。
+- `ubuntu-24.04-arm`(GitHub の arm64 ランナー)が使えない環境なら、その行を外すか cross に差し替える。
+- main が **branch protection** だと Actions からの bump commit push がブロックされうる。bot に例外を許すか、専用リリースブランチ運用にする。
+- **cargo-dist は不採用**(タグ起点で UI-bump フローに噛み合わないため手書きにした)。将来インストーラ(shell/powershell one-liner)や自動更新が欲しくなったら dist へ移行を再検討。
+- **注意**: 手元実機は Linux(WSL2)のみ。**Linux x64 = verified、macOS/Windows/arm = experimental** と Release ノートに明記(Windows は WinUSB / driver binding、macOS は権限を実機確認後に verified 昇格)。ArduinoCore-CH32 の依頼 B-2(Windows 実機検証)は v0.1 後に。
 
 ## 3. v0.1.0 に入れる機能(全て実機検証済み)
 
@@ -73,8 +102,17 @@ dist generate                       # .github/workflows/release.yml を生成 �
 
 ## 6. リリース前チェック
 
+初回ブートストラップ(一度きり):
+
+- [ ] 8 crate を CLI トークンで初回 publish(名前確保、§1 手順 1)
+- [ ] 各 crate に Trusted Publisher 登録(owner/repo/`release.yml`、§1 手順 2)
+- [ ] `./scripts/release.sh <level>` を用意(bump + CHANGELOG 切り出し)
+
+毎回:
+
 - [ ] `cargo fmt --check` / `cargo clippy --all-targets --all-features`(warning 0)/ `cargo test` / `cargo deny check`
 - [ ] `cargo xtask db-check`(生成物が pinned data と一致)
 - [ ] 6台ベンチで代表フロー(flash→verify→run、gdb、monitor、target info、capabilities)を再確認
-- [ ] CHANGELOG の `Unreleased` を `0.1.0 - <date>` に切る
+- [ ] CHANGELOG の `Unreleased` を新 version に切る(= release.sh がやる)
 - [ ] README(repo)に crates.io バッジ / インストール手順 / verified OS 明記
+- [ ] Actions「Release」を UI 起動 → crates.io publish と全 OS バイナリ添付を確認

@@ -1,0 +1,154 @@
+# Release: triggered explicitly from the Actions UI (workflow_dispatch).
+#
+# Flow: bump the version (your release script) -> verify -> commit + tag ->
+#   (a) publish the library crates to crates.io via Trusted Publishing (OIDC, no stored secret), and
+#   (b) build the all-OS binaries and attach them to a GitHub Release.
+#
+# crates.io auth: uses `rust-lang/crates-io-auth-action` (OIDC -> a 30-min token), so NO crates.io
+# token is stored in GitHub. This requires each crate to already exist on crates.io with a Trusted
+# Publisher configured for (owner=ch32-riscv-ug, repo, workflow=release.yml). The very first publish
+# of each new crate must be done once from the CLI with a token (see docs/release-plan.ja.md §2).
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: "Version bump level (passed to the release script)"
+        type: choice
+        options: [patch, minor, major]
+        default: patch
+      publish_crates:
+        description: "Publish the library crates to crates.io"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write # commit the version bump, push the tag, create the GitHub Release
+  id-token: write # OIDC for crates.io Trusted Publishing
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+
+      # HOOK: your release script bumps the [workspace.package] version + the internal dependency
+      # version pins in Cargo.toml, and cuts the CHANGELOG "Unreleased" section to the new version.
+      - name: Bump version + CHANGELOG
+        run: ./scripts/release.sh "${{ inputs.level }}"
+
+      - name: Read the bumped version
+        id: ver
+        run: |
+          V=$(cargo metadata --no-deps --format-version 1 \
+                | python3 -c 'import json,sys; print(next(p["version"] for p in json.load(sys.stdin)["packages"] if p["name"]=="ch32rv"))')
+          echo "version=$V"    >> "$GITHUB_OUTPUT"
+          echo "tag=v$V"       >> "$GITHUB_OUTPUT"
+
+      - name: Verify (fmt / clippy / test / deny / db-check)
+        run: |
+          cargo fmt --all --check
+          cargo clippy --all-targets --all-features -- -D warnings
+          cargo test --workspace
+          cargo deny check
+          cargo run -q -p xtask -- db-check
+
+      - name: Commit, tag, push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "release ${{ steps.ver.outputs.version }}"
+          git tag "${{ steps.ver.outputs.tag }}"
+          git push origin HEAD --tags
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --title "${{ steps.ver.outputs.tag }}" \
+            --notes "See CHANGELOG.md. Verified on Linux x86_64; macOS/Windows binaries are experimental."
+
+  crates-io:
+    needs: prepare
+    if: ${{ inputs.publish_crates }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+      # OIDC -> short-lived crates.io token, auto-revoked at job end. No secret stored in GitHub.
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+      - name: Publish in dependency order
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: |
+          # contract -> usb/dmi/target -> wchlink/flash -> debug -> cli.
+          # NOTE: crates.io needs a published dependency in its index before a dependent can build,
+          # so `cargo publish` waits for the index by default. If a run fails partway, the crates
+          # already published at this version cannot be re-published; re-run with those removed from
+          # the list, or switch to `cargo workspaces publish` (skips already-published crates).
+          for c in contract usb dmi target wchlink flash debug; do
+            cargo publish -p "ch32rv-$c"
+          done
+          cargo publish -p ch32rv
+
+  binaries:
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,     target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm,  target: aarch64-unknown-linux-gnu }
+          - { os: macos-13,          target: x86_64-apple-darwin }
+          - { os: macos-14,          target: aarch64-apple-darwin }
+          - { os: windows-latest,    target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # Linux needs libudev for the USB (nusb) transport.
+      - name: Install libudev (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - name: Build
+        run: cargo build --release --locked --bin ch32rv --target ${{ matrix.target }}
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          NAME="ch32rv-${{ needs.prepare.outputs.version }}-${{ matrix.target }}"
+          tar czf "$NAME.tar.gz" -C "target/${{ matrix.target }}/release" ch32rv
+          shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $Name = "ch32rv-${{ needs.prepare.outputs.version }}-${{ matrix.target }}"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/ch32rv.exe" -DestinationPath "$Name.zip"
+          (Get-FileHash "$Name.zip" -Algorithm SHA256).Hash.ToLower() + "  $Name.zip" | Out-File -Encoding ascii "$Name.zip.sha256"
+
+      - name: Upload to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: gh release upload "${{ needs.prepare.outputs.tag }}" ch32rv-*.tar.gz* ch32rv-*.zip* --clobber
