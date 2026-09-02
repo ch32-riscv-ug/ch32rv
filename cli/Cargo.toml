@@ -1,6 +1,9 @@
 [package]
 name = "ch32rv"
 description = "Flashing and debugging tool for WCH CH32 RISC-V microcontrollers"
+keywords = ["ch32", "riscv", "wch", "wch-link", "flash"]
+categories = ["embedded", "command-line-utilities", "hardware-support"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
