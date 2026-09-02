@@ -2,8 +2,6 @@
 
 ## Unreleased
 
-## 0.1.3 - 2026-09-02
-
 - (EN) Initial release. `ch32rv` flashes and debugs WCH CH32 RISC-V MCUs over WCH-Link / WCH-LinkE, shipped as a CLI (`cargo install ch32rv`) and as reusable library crates. The 0.x line is a beta for downstream projects (e.g. ArduinoCore-CH32) to integrate against; the API and CLI may still change before the 1.0 formal release. Verified on a six-board bench (CH32V003 / V103 / V203 / V307 / X035 / L103). Prebuilt binaries for Linux / macOS / Windows - Linux x86_64 is verified, the others are experimental.
 - (JA) 初回リリース。`ch32rv` は WCH-Link / WCH-LinkE 経由で WCH CH32 RISC-V MCU を書き込み・デバッグするツール。CLI(`cargo install ch32rv`)と再利用可能な library crate として配布。0.x は下流プロジェクト(ArduinoCore-CH32 等)が統合するためのβで、1.0 の正式リリースまでに API/CLI は変わりうる。6台ベンチ(CH32V003 / V103 / V203 / V307 / X035 / L103)で実機検証。Linux / macOS / Windows のバイナリを配布 - Linux x86_64 = verified、他は experimental。
 - (EN) Release artifacts unpack into a single `ch32rv-<version>-<target>/` directory bundling the binary + LICENSE + README + CHANGELOG - arduino-cli requires the root directory, and a correctly-rooted upstream lets downstream mirrors pass the bytes through byte-identical (their provenance checksum still matches). `version --json` now reports the embedded device-DB provenance under `target_db` (`source_rev` = the `ch32-device-data` revision, plus an fnv1a64 `digest` of the embedded rows, same fingerprint convention as `flash_stub_digest`), wiring the docs/architecture.ja.md §3 reproducibility contract.
