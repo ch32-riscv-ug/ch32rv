@@ -14,12 +14,16 @@ on:
   workflow_dispatch:
     inputs:
       level:
-        description: "Version bump level (passed to the release script)"
+        description: "Version bump level (ignored if 'version' is set)"
         type: choice
         options: [patch, minor, major]
         default: patch
+      version:
+        description: "Explicit X.Y.Z (overrides 'level'; use for the first release to pin 0.1.0)"
+        type: string
+        default: ""
       publish_crates:
-        description: "Publish the library crates to crates.io"
+        description: "Publish the library crates to crates.io (turn OFF for the first release - the crates are bootstrapped once from the CLI)"
         type: boolean
         default: true
 
@@ -43,12 +47,15 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
+      # serialport (via the CLI/monitor) links libudev on Linux; the gates compile the whole workspace.
+      - name: Install libudev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
 
       # Bumps the [workspace.package] version + the internal dependency pins in Cargo.toml + the
       # lockfile, and cuts the CHANGELOG "Unreleased" section to the new version. See scripts/release.sh.
       # (The one-time crates.io name-claim bootstrap is a separate script: scripts/first-publish.sh.)
       - name: Bump version + CHANGELOG
-        run: ./scripts/release.sh "${{ inputs.level }}"
+        run: ./scripts/release.sh "${{ inputs.version || inputs.level }}"
 
       - name: Read the bumped version
         id: ver
@@ -58,13 +65,15 @@ jobs:
           echo "version=$V"    >> "$GITHUB_OUTPUT"
           echo "tag=v$V"       >> "$GITHUB_OUTPUT"
 
-      - name: Verify (fmt / clippy / test / deny / db-check)
+      # db-check is intentionally NOT here: it regenerates from the sibling ch32-device-data checkout,
+      # which CI does not have. The generated CSVs are committed + embedded, so this build is hermetic;
+      # run `cargo xtask db-check` locally (or in a data-repo-aware CI) as the drift guard.
+      - name: Verify (fmt / clippy / test / deny)
         run: |
           cargo fmt --all --check
           cargo clippy --all-targets --all-features -- -D warnings
           cargo test --workspace
           cargo deny check
-          cargo run -q -p xtask -- db-check
 
       - name: Commit, tag, push
         run: |
@@ -91,6 +100,9 @@ jobs:
         with:
           ref: ${{ needs.prepare.outputs.tag }}
       - uses: dtolnay/rust-toolchain@stable
+      # `cargo publish` verify-builds each crate; the CLI links libudev (serialport) on Linux.
+      - name: Install libudev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       # OIDC -> short-lived crates.io token, auto-revoked at job end. No secret stored in GitHub.
       - uses: rust-lang/crates-io-auth-action@v1
         id: auth
