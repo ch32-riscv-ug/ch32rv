@@ -86,7 +86,7 @@ ch32rv
 | flag | 値 | 既定 | 説明 |
 |---|---|---|---|
 | `--probe <selector>` | §3.4 | (一意なら自動) | probe の選択。複数一致は exit 14 |
-| `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed) |
+| `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed)。**実装済(2026-09-02)**: `Session::attach` が chip_id と `--chip` 名を DB family へ解決し、要求名が DB にあり検出 family と不一致なら `target-ambiguous`(23)。SKU/family/series/型番 prefix 一致は通過、DB 外の未知名は検証不能で受理 |
 | `--core <n>` | 0.. | 0 | dual-core(H41x)の core 選択 |
 | `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn |
 | `--connect-under-reset` | | off | NRST を assert して attach |

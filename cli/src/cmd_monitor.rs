@@ -313,11 +313,16 @@ fn run_dmdata(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
     // Attach WITHOUT halting - the target must keep running for the mailbox to move.
-    let mut session =
-        match Session::attach(&entry, speed, Duration::from_millis(1000), &mut warnings) {
-            Ok(s) => s,
-            Err(_) => return fail(cli, CMD, ErrorKind::AttachFailed, "attach failed", None),
-        };
+    let mut session = match Session::attach(
+        &entry,
+        speed,
+        Duration::from_millis(1000),
+        cli.chip.as_deref(),
+        &mut warnings,
+    ) {
+        Ok(s) => s,
+        Err(_) => return fail(cli, CMD, ErrorKind::AttachFailed, "attach failed", None),
+    };
 
     if !cli.json {
         eprintln!(

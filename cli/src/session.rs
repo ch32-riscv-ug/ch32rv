@@ -29,16 +29,20 @@ pub enum SessionError {
     Open(WchLinkError),
     ProbeInfo(WchLinkError),
     Attach(String),
+    /// `--chip` conflicts with the detected target (exit 23).
+    ChipMismatch(String),
 }
 
 impl Session {
     /// en: Open + clear state + attach. `warnings` accumulates non-fatal notes (corrupted
-    /// readback recovery, etc.). Retries the open per docs/cli.ja.md §3.7.
-    /// ja: open + 状態クリア + attach。`warnings` に非致命の注記を積む。open は再試行する。
+    /// readback recovery, etc.). Retries the open per docs/cli.ja.md §3.7. When `chip` (`--chip`)
+    /// is given, it is validated against the detected chip and a conflict fails closed (exit 23).
+    /// ja: open + 状態クリア + attach。`--chip` 指定時は検出と突き合わせ、矛盾なら fail-closed(exit 23)。
     pub fn attach(
         entry: &Entry,
         speed: Speed,
         timeout: Duration,
+        chip: Option<&str>,
         warnings: &mut Vec<Warning>,
     ) -> Result<Self, SessionError> {
         let mut link = open_with_retry(entry).map_err(SessionError::Open)?;
@@ -48,6 +52,35 @@ impl Session {
 
         let probe_info = link.probe_info().map_err(SessionError::ProbeInfo)?;
         let attach = attach_once(&mut link, speed).map_err(SessionError::Attach)?;
+
+        // Validate an explicit --chip against the detected target (fail-closed on a family conflict).
+        if let Some(requested) = chip {
+            let db = ch32rv_target::Db::builtin();
+            let req_fams = db.families_for_chip_name(requested);
+            let detected_fam = match db.resolve_by_chip_id(attach.chip_id) {
+                ch32rv_target::Resolution::Sku(s) => s.family.clone(),
+                ch32rv_target::Resolution::Family(f, _) => f,
+                ch32rv_target::Resolution::Unknown => {
+                    family_name(attach.family_byte).unwrap_or("").to_owned()
+                }
+            };
+            // Only reject a *clear* conflict: the requested name is in the DB and none of its
+            // families match the detected family. An unknown --chip (empty req_fams, e.g. a
+            // gap-series part) cannot be checked here, so it is accepted.
+            if !req_fams.is_empty()
+                && !detected_fam.is_empty()
+                && !req_fams
+                    .iter()
+                    .any(|f| f.eq_ignore_ascii_case(&detected_fam))
+            {
+                let _ = link.detach_chip();
+                return Err(SessionError::ChipMismatch(format!(
+                    "--chip {requested} (family {}) conflicts with the detected {detected_fam} (chip_id 0x{:08x})",
+                    req_fams.join("/"),
+                    attach.chip_id
+                )));
+            }
+        }
 
         // en: Read ChipInfo, recovering once from the known LinkE corrupted-readback state.
         // ja: ChipInfo を読み、LinkE の壊れ読み値からは 1 度だけ復旧する。
