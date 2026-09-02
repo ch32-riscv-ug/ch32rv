@@ -10,34 +10,92 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+const OUT_DIR: &str = "crates/target/generated";
+
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
-        Some("db-gen") => {
-            // Data repo path: arg, else CH32_DEVICE_DATA env, else the sibling checkout.
-            let data = args
-                .next()
-                .map(PathBuf::from)
-                .or_else(|| std::env::var_os("CH32_DEVICE_DATA").map(PathBuf::from))
-                .unwrap_or_else(|| PathBuf::from("../ch32-device-data"));
-            match db_gen(&data) {
-                Ok(msg) => {
-                    println!("{msg}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("xtask db-gen: {e}");
-                    ExitCode::from(1)
-                }
-            }
-        }
+    let task = args.next();
+    // Data repo path: arg, else CH32_DEVICE_DATA env, else the sibling checkout.
+    let data = args
+        .next()
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("CH32_DEVICE_DATA").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("../ch32-device-data"));
+    match task.as_deref() {
+        Some("db-gen") => run(db_write(&data)),
+        Some("db-check") => run(db_check(&data)),
         _ => {
             eprintln!(
-                "usage: cargo xtask <task>\n\ntasks:\n  db-gen [DATA_DIR]   generate crates/target/generated/ from ch32-device-data\n                      (DATA_DIR default: $CH32_DEVICE_DATA or ../ch32-device-data)"
+                "usage: cargo xtask <task> [DATA_DIR]\n\ntasks:\n  db-gen     generate crates/target/generated/ from ch32-device-data\n  db-check   verify the committed generated files match a fresh generation (CI)\n\n(DATA_DIR default: $CH32_DEVICE_DATA or ../ch32-device-data)"
             );
             ExitCode::from(2)
         }
     }
+}
+
+fn run(r: Result<String, String>) -> ExitCode {
+    match r {
+        Ok(msg) => {
+            println!("{msg}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("xtask: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+/// `db-gen`: generate and write the files.
+fn db_write(data: &Path) -> Result<String, String> {
+    let files = generate(data)?;
+    let out_dir = Path::new(OUT_DIR);
+    std::fs::create_dir_all(out_dir).map_err(|e| format!("create {out_dir:?}: {e}"))?;
+    for (name, content) in &files {
+        let path = out_dir.join(name);
+        std::fs::write(&path, content).map_err(|e| format!("write {path:?}: {e}"))?;
+    }
+    Ok(format!(
+        "wrote {} files to {OUT_DIR}: {}",
+        files.len(),
+        files.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", ")
+    ))
+}
+
+/// `db-check`: regenerate in memory and compare the DATA against the committed files (fail-closed on
+/// drift). The `#`-comment provenance header (which carries the data-repo rev) is ignored, so an
+/// unrelated bump of ch32-device-data's HEAD with identical data does not trip the check.
+fn db_check(data: &Path) -> Result<String, String> {
+    let files = generate(data)?;
+    let out_dir = Path::new(OUT_DIR);
+    let mut stale = Vec::new();
+    for (name, content) in &files {
+        let path = out_dir.join(name);
+        match std::fs::read_to_string(&path) {
+            Ok(on_disk) if data_rows(&on_disk) == data_rows(content) => {}
+            Ok(_) => stale.push(format!("{name} (differs)")),
+            Err(_) => stale.push(format!("{name} (missing)")),
+        }
+    }
+    if stale.is_empty() {
+        Ok(format!(
+            "up to date: {} generated files' data match ch32-device-data",
+            files.len()
+        ))
+    } else {
+        Err(format!(
+            "generated files are stale - run `cargo xtask db-gen`: {}",
+            stale.join(", ")
+        ))
+    }
+}
+
+/// The data (non-comment, non-blank) lines of a generated file.
+fn data_rows(s: &str) -> Vec<&str> {
+    s.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
 }
 
 /// One SKU's identity + geometry, joined from device_ids and parts.
@@ -50,7 +108,8 @@ struct Sku {
     sram_bytes: u64,
 }
 
-fn db_gen(data: &Path) -> Result<String, String> {
+/// Build the generated files' contents (no writes): a list of `(filename, content)`.
+fn generate(data: &Path) -> Result<Vec<(&'static str, String)>, String> {
     let ids_path = data.join("evidence/device_ids.csv");
     let parts_path = data.join("index/parts.csv");
     let ids = read_csv(&ids_path)?;
@@ -143,30 +202,13 @@ fn db_gen(data: &Path) -> Result<String, String> {
         ));
     }
 
-    let out_dir = Path::new("crates/target/generated");
-    std::fs::create_dir_all(out_dir).map_err(|e| format!("create {out_dir:?}: {e}"))?;
-    let out_path = out_dir.join("skus.csv");
-    std::fs::write(&out_path, &out).map_err(|e| format!("write {out_path:?}: {e}"))?;
-
-    let (opt_out, n_opt) = gen_option_fields(data, &rev)?;
-    let opt_path = out_dir.join("option_fields.csv");
-    std::fs::write(&opt_path, &opt_out).map_err(|e| format!("write {opt_path:?}: {e}"))?;
-
-    let (wire_out, n_wire) = gen_debug_wiring(data, &rev)?;
-    let wire_path = out_dir.join("debug_wiring.csv");
-    std::fs::write(&wire_path, &wire_out).map_err(|e| format!("write {wire_path:?}: {e}"))?;
-
-    let (geo_out, n_geo) = gen_flash_geometry(data, &rev)?;
-    let geo_path = out_dir.join("flash_geometry.csv");
-    std::fs::write(&geo_path, &geo_out).map_err(|e| format!("write {geo_path:?}: {e}"))?;
-
-    Ok(format!(
-        "wrote {} ({n} SKUs), {} ({n_opt} USER fields), {} ({n_wire} series), {} ({n_geo} families) from ch32-device-data@{rev}",
-        out_path.display(),
-        opt_path.display(),
-        wire_path.display(),
-        geo_path.display()
-    ))
+    let _ = n; // (SKU count is reflected in the file itself)
+    Ok(vec![
+        ("skus.csv", out),
+        ("option_fields.csv", gen_option_fields(data, &rev)?.0),
+        ("debug_wiring.csv", gen_debug_wiring(data, &rev)?.0),
+        ("flash_geometry.csv", gen_flash_geometry(data, &rev)?.0),
+    ])
 }
 
 /// Generate the per-family flash geometry (erase/program granularities) from
