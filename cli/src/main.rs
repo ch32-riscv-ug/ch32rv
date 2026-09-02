@@ -94,14 +94,19 @@ fn cmd_complete(shell: Shell) -> std::process::ExitCode {
 fn cmd_version(cli: &Cli) -> std::process::ExitCode {
     let git_rev = env!("CH32RV_GIT_REV");
     let stub_digest = ch32rv_flash::stub::stub_digest();
+    // en: Embedded device-DB provenance (source rev + fingerprint) - docs/architecture.ja.md §3.
+    // ja: 埋め込み device DB の来歴(source rev + 指紋)。architecture.ja.md §3 の再現性契約。
+    let db = ch32rv_target::provenance();
     let mut env = ResultEnvelope::success("version");
     env.result = Some(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "git_rev": git_rev,
         "contract": contract::CONTRACT_VERSION,
-        // en: target DB is not generated yet (data request 0001 pending).
-        // ja: target DB は未生成(依頼 0001 待ち)。
-        "target_db": serde_json::Value::Null,
+        "target_db": {
+            "source": "ch32-device-data",
+            "source_rev": db.source_rev,
+            "digest": db.digest,
+        },
         "flash_stub_digest": stub_digest,
         "build": {
             "os": std::env::consts::OS,
@@ -113,6 +118,11 @@ fn cmd_version(cli: &Cli) -> std::process::ExitCode {
     } else {
         println!("ch32rv {} ({git_rev})", env!("CARGO_PKG_VERSION"));
         println!("contract:   {}", contract::CONTRACT_VERSION);
+        println!(
+            "target db:  ch32-device-data@{} ({})",
+            db.source_rev.as_deref().unwrap_or("unknown"),
+            db.digest
+        );
         println!("flash stub: {stub_digest}");
         println!(
             "build:      {}-{}",
