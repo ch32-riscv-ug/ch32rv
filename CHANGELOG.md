@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.1.1 - 2026-09-02
+
 - (EN) Initial release. `ch32rv` flashes and debugs WCH CH32 RISC-V MCUs over WCH-Link / WCH-LinkE, shipped as a CLI (`cargo install ch32rv`) and as reusable library crates. The 0.x line is a beta for downstream projects (e.g. ArduinoCore-CH32) to integrate against; the API and CLI may still change before the 1.0 formal release. Verified on a six-board bench (CH32V003 / V103 / V203 / V307 / X035 / L103). Prebuilt binaries for Linux / macOS / Windows - Linux x86_64 is verified, the others are experimental.
 - (JA) 初回リリース。`ch32rv` は WCH-Link / WCH-LinkE 経由で WCH CH32 RISC-V MCU を書き込み・デバッグするツール。CLI(`cargo install ch32rv`)と再利用可能な library crate として配布。0.x は下流プロジェクト(ArduinoCore-CH32 等)が統合するためのβで、1.0 の正式リリースまでに API/CLI は変わりうる。6台ベンチ(CH32V003 / V103 / V203 / V307 / X035 / L103)で実機検証。Linux / macOS / Windows のバイナリを配布 - Linux x86_64 = verified、他は experimental。
 - (EN) flash: `flash` (program + verify) with erase modes (auto / sector / chip / none; sector is page-granular), `--restore-unwritten`, `--preverify`, `--repeat`, and a post-flash `--sdi` / `--monitor` handoff; plus `verify`, `read`, `write` (raw memory / flash), `erase` (all / range / region), and `reset`.
