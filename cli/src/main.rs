@@ -33,6 +33,10 @@ fn main() -> std::process::ExitCode {
         Command::Version => cmd_version(&cli),
         Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(&cli, *watch),
         Command::Probe(ProbeCmd::Info) => cmd_probe::info(&cli),
+        Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Info)) => cmd_probe::firmware_info(&cli),
+        Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Check { min })) => {
+            cmd_probe::firmware_check(&cli, min.as_deref())
+        }
         Command::Target(TargetCmd::Info) => cmd_target::info(&cli),
         Command::Target(TargetCmd::Opt(OptionCmd::Get)) => cmd_target::option_get(&cli),
         Command::Target(TargetCmd::Opt(OptionCmd::WriteRaw { hex })) => {

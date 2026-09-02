@@ -415,3 +415,108 @@ pub(crate) fn fail_with_candidates(
     }
     kind.exit_code().into()
 }
+
+/// Open the probe and read its firmware major/minor + mode (for `probe firmware ...`).
+fn read_firmware(cli: &Cli, cmd: &str) -> Result<(u8, u8, Option<String>), ExitCode> {
+    let entry = select_entry(cli, cmd)?;
+    let mut link = WchLink::open(&entry.dev)
+        .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
+    let info = link
+        .probe_info()
+        .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
+    Ok((
+        info.fw_major,
+        info.fw_minor,
+        info.fw_mode.map(|m| m.as_str().to_owned()),
+    ))
+}
+
+/// `probe firmware info`: the probe's firmware version (raw / WCH notation), mode, known-bad status.
+pub fn firmware_info(cli: &Cli) -> ExitCode {
+    const CMD: &str = "probe.firmware.info";
+    let (maj, min, mode) = match read_firmware(cli, CMD) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    let fw = FirmwareVersion::from_major_minor(maj, min);
+    let bad = known_bad_firmware(maj, min);
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "version": format!("{maj}.{min:02}"),
+            "raw": fw.raw,
+            "wch": fw.wch,
+            "mode": mode,
+            "known_bad": bad.is_some(),
+            "known_bad_reason": bad,
+        }));
+        crate::print_envelope(&env)
+    } else {
+        println!("firmware:  {maj}.{min:02} (WCH {}, raw {})", fw.wch, fw.raw);
+        if let Some(m) = &mode {
+            println!("mode:      {m}");
+        }
+        match bad {
+            Some(reason) => println!("known-bad: YES - {reason}"),
+            None => println!("known-bad: no"),
+        }
+        ExitCode::SUCCESS
+    }
+}
+
+/// `probe firmware check [--min <major.minor>]`: for CI. Exit 12 when the firmware is known-bad or
+/// below `--min`; exit 0 otherwise.
+pub fn firmware_check(cli: &Cli, min: Option<&str>) -> ExitCode {
+    const CMD: &str = "probe.firmware.check";
+    let (maj, mn, _mode) = match read_firmware(cli, CMD) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    if let Some(reason) = known_bad_firmware(maj, mn) {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::DeviceFirmwareKnownBad,
+            format!("probe firmware {maj}.{mn:02} is known-bad: {reason}"),
+            Some("update the probe firmware (WCH-LinkUtility / `probe firmware update`)"),
+        );
+    }
+    if let Some(m) = min {
+        let Some((rmaj, rmin)) = parse_version(m) else {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                format!("bad --min {m:?} (use major.minor, e.g. 2.20)"),
+                None,
+            );
+        };
+        if (maj, mn) < (rmaj, rmin) {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::DeviceFirmwareUnsupported,
+                format!("probe firmware {maj}.{mn:02} is below the required {rmaj}.{rmin:02}"),
+                Some("update the probe firmware"),
+            );
+        }
+    }
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "firmware": format!("{maj}.{mn:02}"),
+            "min": min,
+            "ok": true,
+        }));
+        crate::print_envelope(&env)
+    } else {
+        println!("probe firmware {maj}.{mn:02}: OK");
+        ExitCode::SUCCESS
+    }
+}
+
+/// Parse a `major.minor` version.
+fn parse_version(s: &str) -> Option<(u8, u8)> {
+    let (a, b) = s.trim().split_once('.')?;
+    Some((a.trim().parse().ok()?, b.trim().parse().ok()?))
+}
