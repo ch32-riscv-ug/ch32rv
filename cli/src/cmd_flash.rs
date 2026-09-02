@@ -29,7 +29,7 @@ use crate::session::{Session, SessionError};
 /// en: Parse an image, treating a magic-less `.bin`/extensionless file as raw bin under
 /// `--format auto` (ELF/HEX/UF2 are still detected by magic; anything else still errors).
 /// ja: `--format auto` で magic の無い `.bin`/拡張子無しは raw bin 扱いにする。
-fn parse_image(
+pub(crate) fn parse_image(
     bytes: &[u8],
     format: ch32rv_contract::policy::ImageFormat,
     path: &Path,
