@@ -552,6 +552,17 @@ impl WchLink {
         Ok(buf)
     }
 
+    /// en: Switch a WCH-LinkE from RISC-V mode to DAP/ARM mode (`81 ff 01 41`). The probe
+    /// re-enumerates as PID 0x8012, so this is fire-and-forget (no response is read). LinkE only -
+    /// the caller must check the variant first. To switch back, send `81 ff 01 52` to the 0x8012
+    /// device's OUT endpoint 0x02. Ref: wlink `switch_from_rv_to_dap` / cjacker/wchlinke-mode-switch.
+    /// ja: WCH-LinkE を RISC-V→DAP に切替(`81 ff 01 41`)。probe は PID 0x8012 へ再列挙するので
+    /// 応答は読まない。LinkE 限定(呼び出し側で variant 確認)。戻すのは 0x8012 の EP0x02 へ `81 ff 01 52`。
+    pub fn switch_to_dap(&mut self) -> Result<(), WchLinkError> {
+        let _ = self.iface.write(&[0x81, 0xff, 0x01, 0x41], self.timeout);
+        Ok(())
+    }
+
     /// en: Soft reset and run (Reset 0x01). This is `wlink reset` / the run-after-flash reset.
     /// ja: soft reset して実行(Reset 0x01)。`wlink reset` 相当。
     pub fn soft_reset(&mut self) -> Result<(), WchLinkError> {

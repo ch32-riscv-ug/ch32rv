@@ -580,3 +580,129 @@ pub fn mode_get(cli: &Cli) -> ExitCode {
         ExitCode::SUCCESS
     }
 }
+
+/// Confirm a mode switch on the terminal (fail-closed under `--non-interactive`).
+fn confirm_mode(prompt: &str) -> bool {
+    eprint!("{prompt} [y/N] ");
+    use std::io::Write as _;
+    let _ = std::io::stderr().flush();
+    let mut s = String::new();
+    let _ = std::io::stdin().read_line(&mut s);
+    matches!(s.trim(), "y" | "Y" | "yes")
+}
+
+/// `probe mode set <riscv|dap>` — switch a WCH-LinkE between RISC-V and DAP/ARM mode. The probe
+/// re-enumerates (its USB PID changes), so this fails closed on the CH549 (no switch support) and
+/// reports the re-enumeration. RISC-V->DAP sends `81 ff 01 41`; DAP->RISC-V sends `81 ff 01 52`
+/// to the 0x8012 device's OUT endpoint.
+pub fn mode_set(cli: &Cli, mode: crate::args::ProbeModeSet) -> ExitCode {
+    use crate::args::ProbeModeSet;
+    const CMD: &str = "probe.mode.set";
+    let entry = match select_entry(cli, CMD) {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    let (target, target_str) = match mode {
+        ProbeModeSet::Riscv => (ProbeMode::Riscv, "riscv"),
+        ProbeModeSet::Dap => (ProbeMode::Dap, "dap"),
+    };
+    if entry.mode == target {
+        if cli.json {
+            let mut env = ResultEnvelope::success(CMD);
+            env.result = Some(serde_json::json!({ "mode": target_str, "changed": false }));
+            return crate::print_envelope(&env);
+        }
+        println!("already in {target_str} mode");
+        return ExitCode::SUCCESS;
+    }
+    if !cli.yes
+        && !cli.non_interactive
+        && !confirm_mode(&format!(
+            "Switch probe {} to {target_str} mode? It re-enumerates (USB PID changes).",
+            entry.dev.serial().unwrap_or("?")
+        ))
+    {
+        return fail(cli, CMD, ErrorKind::Usage, "aborted", None);
+    }
+    let serial = entry.dev.serial().map(str::to_owned);
+    match (entry.mode, target) {
+        (ProbeMode::Riscv, ProbeMode::Dap) => {
+            let mut link = match WchLink::open(&entry.dev) {
+                Ok(l) => l,
+                Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+            };
+            match link.probe_info() {
+                Ok(info) if info.variant == wchlink::Variant::LinkE => {}
+                Ok(_) => {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::CapabilityUnsupported,
+                        "mode switch is only supported on a WCH-LinkE",
+                        None,
+                    );
+                }
+                Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+            }
+            let _ = link.switch_to_dap();
+        }
+        (ProbeMode::Dap, ProbeMode::Riscv) => {
+            // The DAP-mode device (PID 0x8012) takes `81 ff 01 52` on interface 0's OUT endpoint
+            // 0x02 (its bulk IN is 0x83).
+            let mut iface = match entry.dev.open_interface(0, 0x02, 0x83) {
+                Ok(i) => i,
+                Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+            };
+            let _ = iface.write(&[0x81, 0xff, 0x01, 0x52], Duration::from_millis(1000));
+        }
+        _ => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::CapabilityUnsupported,
+                "unsupported mode transition",
+                None,
+            );
+        }
+    }
+    // Wait for the probe to re-enumerate in the new mode (same serial, new PID). Under usbipd the
+    // new PID is not auto-forwarded to the VM, so not reappearing here is not necessarily a failure.
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    let mut seen = None;
+    while std::time::Instant::now() < deadline {
+        if let Ok(devs) = wch_devices()
+            && let Some(e) = devs
+                .iter()
+                .find(|e| e.dev.serial().map(str::to_owned) == serial)
+        {
+            seen = Some(e.mode);
+            if e.mode == target {
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(150));
+    }
+    if seen == Some(target) {
+        if cli.json {
+            let mut env = ResultEnvelope::success(CMD);
+            env.result = Some(serde_json::json!({ "mode": target_str, "changed": true }));
+            return crate::print_envelope(&env);
+        }
+        println!("switched to {target_str} mode");
+        return ExitCode::SUCCESS;
+    }
+    // Switch command sent and the device left; it is re-enumerating but not visible here yet.
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "mode": target_str, "changed": true, "reenumerating": true,
+        }));
+        crate::print_envelope(&env)
+    } else {
+        eprintln!(
+            "sent mode switch to {target_str}; the probe is re-enumerating (new USB PID). \
+             If it does not reappear, re-plug it (under usbipd, attach the new PID to the VM)."
+        );
+        ExitCode::SUCCESS
+    }
+}
