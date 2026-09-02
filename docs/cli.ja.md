@@ -262,8 +262,8 @@ ch32rv probe power <3v3|5v> <on|off>
 ch32rv probe power cycle [--off-ms 300]
 ch32rv probe mode get
 ch32rv probe mode set <riscv|dap> [--yes]
-ch32rv probe firmware info                        版と hash。既知不良版 DB と照合して判定を出す
-ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12
+ch32rv probe firmware info                        版と hash。既知不良版 DB と照合して判定を出す(2026-09-02 実装: `2.22 (WCH v42, raw 0216)`+mode+known-bad)
+ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12(実装済。実機: LinkE 2.22 は --min 2.20 通過/2.30 で exit12、CH549 2.12 は --min 2.20 で exit12)
 ch32rv probe firmware update --image <FILE> [--yes]
 ch32rv probe vendor <hex...>                      隠し。backend 固有 command の escape hatch
 ```
