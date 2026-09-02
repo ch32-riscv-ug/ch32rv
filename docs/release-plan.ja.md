@@ -1,12 +1,13 @@
-# リリース計画(v0.1.0)
+# リリース計画・手順
 
-- 状態: **策定中(2026-09-02)**。安定したら英語 main + `.ja` twin に整える。
-- 方針: 「**WCH-LinkE 経路で、6台ベンチで実機検証済みのもの**」を v0.1.0 とする。crates.io に library crate を配布、全対象 OS のバイナリを配布、Arduino 対応込み。重い/未検証/非LinkE経路/電源系は v0.2 以降。
-- **0.x はβ位置づけ**: 依存プロジェクト(ArduinoCore-CH32 等)に先行利用してもらい、要望・不足機能を取り込んでから **1.0 で正式リリース**。CHANGELOG は初回だけ差分でなく「何が入っているか」のスナップショットにする。
+- 状態: **運用中(2026-09-02)**。初回 **0.2.0 出荷済み**。安定したら英語 main + `.ja` twin に整える。
+- 方針: 「WCH-LinkE 経路で 6台ベンチ実機検証済みのもの」を軸に、crates.io へ library crate、全対象 OS のバイナリ、Arduino 対応込みで配布。重い/未検証/非LinkE/電源系は後続。
+- **経緯**: 0.2.0 が初回リリース(0.1.x はテスト専用)。以降 **A-2 lock / A-3 capture / Windows の WCH 純正ドライバ対応(`ch32rv-usb-wch-win`、依頼 B-2、Zadig 不要)** を実装済み → 次リリースに含める。
+- **0.x はβ位置づけ**: 依存プロジェクト(ArduinoCore-CH32 等)に先行利用してもらい、要望・不足機能を取り込んでから **1.0 で正式リリース**。CHANGELOG は初回だけスナップショット、以降は差分。
 
 ## 1. 配布する crate(crates.io、依存順に publish)
 
-version は workspace 一括 `0.1.0`、license MIT。**publish 順は依存順**(先に出したものが index に載ってから次):
+version は workspace 一括(現在 `0.2.0`、リリースごとに `release.sh` が bump)、license MIT。**9 crate、publish 順は依存順**(先に出したものが index に載ってから次。`ch32rv-usb-wch-win` は `ch32rv-usb` の cfg(windows) 依存なので usb より前):
 
 1. `ch32rv-contract`(exit code / JSON envelope / policy 語彙)
 2. `ch32rv-usb-wch-win`(Windows の WCH 純正ドライバ経路。0.2 で追加、`ch32rv-usb` より先)
@@ -31,10 +32,10 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 手順:
 
-1. **(初回一度きり・ユーザー、CLI)** crates.io で API トークンを発行 → `cargo login <token>` → **`scripts/first-publish.sh`** を実行して 8 crate を依存順に publish・crate 名を確保する(既に存在する crate は自動 skip、最後に手順 2 の登録先を表示)。
+1. **(新規 crate ごとに一度きり・ユーザー、CLI)** crates.io で API トークンを発行 → `cargo login <token>` → **`scripts/first-publish.sh`**(依存順に publish、**既に存在する crate は自動 skip**、最後に手順 2 の登録先を表示)。**現況: 0.2.0 で 8 crate は済。0.2 で追加した `ch32rv-usb-wch-win` が未 publish なので、次リリース前にこれを1回だけトークンで初回 publish する**(スクリプトが他8をskipしこれだけ出す)。
 
 2. **(初回一度きり・ユーザー、Web UI)** 各 crate の Settings → Trusted Publishing で GitHub を登録:
-   owner=`ch32-riscv-ug` / repo=`ch32rv` / workflow=`release.yml`(environment は任意)。8 crate 分登録する。
+   owner=`ch32-riscv-ug` / repo=`ch32rv` / workflow=`release.yml`(environment は任意)。**全 9 crate 分**(0.2.0 の 8 は登録済み → 次は `ch32rv-usb-wch-win` の 1 個を追加登録)。
 
 3. **(以降・毎回)** Actions の「Release」ワークフローを **画面から起動**(workflow_dispatch)。中で version bump → 検証 → commit/tag → OIDC で crates.io publish、までトークン埋め込み無しで走る。詳細は §2。
 
@@ -67,9 +68,9 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - `ubuntu-24.04-arm`(GitHub の arm64 ランナー)が使えない環境なら、その行を外すか cross に差し替える。
 - main が **branch protection** だと Actions からの bump commit push がブロックされうる。bot に例外を許すか、専用リリースブランチ運用にする。
 - **cargo-dist は不採用**(タグ起点で UI-bump フローに噛み合わないため手書きにした)。将来インストーラ(shell/powershell one-liner)や自動更新が欲しくなったら dist へ移行を再検討。
-- **注意**: 手元実機は Linux(WSL2)のみ。**Linux x64 = verified、macOS/Windows/arm = experimental** と Release ノートに明記(Windows は WinUSB / driver binding、macOS は権限を実機確認後に verified 昇格)。ArduinoCore-CH32 の依頼 B-2(Windows 実機検証)は v0.1 後に。
+- **注意**: 開発機は Linux(WSL2)+ usbipd 越しの Windows ネイティブ。**Linux x64 = verified**。**Windows x64 = verified**(2026-09-02、WCH 純正ドライバ経路 `ch32rv-usb-wch-win` で全5 probe の flash 往復まで実機確認。Zadig 不要。依頼 B-2 完了)。**macOS / arm = experimental**(未実機)。Release ノートにこの verified 状況を明記する。
 
-## 3. v0.1.0 に入れる機能(全て実機検証済み)
+## 3. 出荷済みの機能(0.2.0、全て実機検証済み)
 
 | 系統 | コマンド |
 |---|---|
@@ -81,13 +82,19 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 | DB/診断 | db list・info / capabilities(live+static)/ doctor / version / complete |
 | **arduino** | **discovery / monitor**(Pluggable、upload は flash) |
 
-## 4. v0.1.0 に「小さいので入れる」もの
+## 4. 0.2.0 に入れた小機能 / 0.2.0 後に追加(次リリース対象)
 
+0.2.0 の小機能:
 - ✅ `recover unprotect`(工場 option 書込=RDP off。protected は mass erase で復旧。実機検証済)
 - ✅ `probe mode get`(現在 mode を VID:PID+firmware から表示。実機検証済)
-- 検討中: `option set` の別名(`rdp=`/`nrst=` 等)— DB の single-bit RM 名は済。別名 map は family 固有なので慎重に(重ければ v0.2)。`probe mode set` は再列挙対応が要るので v0.2
 
-## 5. v0.2 以降(重い/未検証/非LinkE/電源系)
+0.2.0 後に実装済み(= **次リリースに含める**、CHANGELOG Unreleased 参照):
+- ✅ **A-2 per-probe advisory lock**(`--lock-timeout`、exit 13。実機検証済)
+- ✅ **A-3 `--capture`**(USB transaction を NDJSON 記録=replay fixture。実機検証済)
+- ✅ **Windows の WCH 純正ドライバ対応**(`ch32rv-usb-wch-win`、Zadig 不要、依頼 B-2。実機検証済)
+- 検討中: `option set` の別名(`rdp=`/`nrst=` 等)、`probe mode set`(再列挙対応要)
+
+## 5. 後続(未実装/重い/未検証/電源系)
 
 - `run`(HIL、semihosting exit-code)、`monitor rtt`、`recover unbrick`
 - `probe firmware update`(IAP 再書込)、`probe mode set`
@@ -95,33 +102,38 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - `probe power`(3v3/5v/cycle)← **電源系はユーザー指示で保留**
 - gap 7 series(V205/V407/V467/X305/X315/M030/M103)device 対応 ← データ側未発売でブロック
 - option layout(register CSV)、multi-bit option、V4F FPU レジスタ、vFlash(load)
-- Windows/macOS の実機 verified 昇格(依頼 B-2)、arduino discovery の USB hotplug 追随
+- macOS の実機 verified 昇格、arduino discovery の USB hotplug 追随、capture の replay(fixture 再生)。**Windows は WCH 純正ドライバ経路で verified 済み(依頼 B-2 完了)**
 
 ## 6. リリース前チェック
 
-初回ブートストラップ(一度きり):
+ブートストラップ(新規 crate ごと一度きり):
 
-- [ ] `cargo login <token>` → `scripts/first-publish.sh` で 8 crate を名前確保(§1 手順 1)
-- [ ] 各 crate に Trusted Publisher 登録(owner/repo/`release.yml`、§1 手順 2)
-- [ ] `scripts/release.sh` の bump 挙動が自プロジェクト慣習に合うか確認(実装済み。必要なら調整)
+- [x] 0.2.0 で 8 crate を名前確保 + Trusted Publisher 登録済み
+- [ ] **`ch32rv-usb-wch-win`(0.2 追加の新規)を初回トークン publish + TP 登録**(§1 手順 1・2。次リリース前に必須。first-publish.sh は既存8を skip しこれだけ出す)
+- [x] `scripts/release.sh` 動作確認済み
 
 毎回:
 
 - [ ] `cargo fmt --check` / `cargo clippy --all-targets --all-features`(warning 0)/ `cargo test` / `cargo deny check`
 - [ ] `cargo xtask db-check`(生成物が pinned data と一致)
-- [ ] 6台ベンチで代表フロー(flash→verify→run、gdb、monitor、target info、capabilities)を再確認
+- [ ] 6台ベンチで代表フロー(flash→verify、gdb、monitor、target info、capabilities)を再確認
+- [ ] **Windows(WCH 純正ドライバ経路)で probe list / target info / flash 往復を再確認**(依頼 B-2 の回帰)
 - [ ] CHANGELOG の `Unreleased` を新 version に切る(= release.sh がやる)
 - [ ] README(repo)に crates.io バッジ / インストール手順 / verified OS 明記
-- [ ] Actions「Release」を UI 起動 → crates.io publish と全 OS バイナリ添付を確認
+- [ ] Actions「Release」を UI 起動 → crates.io publish(9 crate)と全 OS バイナリ添付を確認
 
-## 7. 初回リリース(0.1.0)の実行順
+## 7. リリース実行順
 
-初回だけ crates.io の制約(新規 crate の初回はトークン必須・Trusted Publisher は crate 存在後にしか登録できない)で手順が特殊。2 回目以降は「Actions を起動するだけ」。
+### 7.1 初回リリース(0.2.0)= 実施済み(2026-09-02)
+初回は crates.io 制約(新規 crate の初回はトークン必須・TP は crate 存在後にしか登録できない)で特殊だった。8 crate をトークンで初回 publish → TP 登録 → Actions を `version=0.2.0` / `publish_crates=false` でバイナリ+Release、という順で完了。**記録として残す**。
 
-1. **本ブランチの未コミット分をコミット & push**(修正済みの `release.yml` / `scripts/` / CHANGELOG が `main` に載っていること。ワークフローは `main` の release.yml を使う)。
-2. **crate 名を確保**: `cargo login <token>` → `scripts/first-publish.sh`。8 crate を 0.1.0 で依存順に publish。
-3. **Trusted Publisher 登録**: 各 crate の crates.io Settings で owner `ch32-riscv-ug` / repo `ch32rv` / `release.yml` を登録(§1 手順 2)。
-4. **バイナリ + GitHub Release**: Actions「Release」を **`version=0.1.0` / `publish_crates=false`** で起動。CHANGELOG を 0.1.0 に切って commit・tag `v0.1.0`・Release 作成し、全 OS バイナリを添付する(crates は手順 2 で済んでいるので skip)。
-5. 以降(0.1.1〜)は **`level=patch|minor|major` / `publish_crates=true`** で起動 = 完全トークンレス(bump → publish → binaries)。
+### 7.2 次リリース(Windows 対応込み)の実行順
+0.2.0 後に **`ch32rv-usb-wch-win` を新規追加**したので、その 1 crate だけ初回 bootstrap が要る。それ以外は通常フロー。
 
-> メモ: 手順 4 で `version` を明示するのは、初回だけ「bump せず 0.1.0 のまま」出したいため。通常リリースは `level` を選ぶ(`version` 空欄)。
+1. **未コミット分をコミット & push**(Windows crate / 自動化修正 / docs が `main` に載ること。ワークフローは `main` の release.yml を使う)。
+2. **新規 crate を bootstrap**: `cargo login <token>` → `scripts/first-publish.sh`(既存 8 は skip、**`ch32rv-usb-wch-win` だけ現行 version でトークン publish**)。
+3. **その crate の Trusted Publisher 登録**(§1 手順 2、`ch32rv-usb-wch-win` の 1 個)。
+4. **リリース起動**: Actions「Release」を **`level=minor`(新機能なので)/ `publish_crates=true`** で起動 → version bump → 9 crate をトークンレス publish → 全 OS バイナリ添付。
+5. これ以降は新規 crate を足さない限り **手順 4 だけ**(bootstrap 不要)。
+
+> メモ: 新規 crate を追加した回だけ手順 2・3 が要る(crates.io は新規 crate の初回 publish にトークンが要り、TP は後付けだから)。既存 crate の版上げは常にトークンレス。
