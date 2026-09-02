@@ -45,6 +45,7 @@ fn main() -> std::process::ExitCode {
         Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(&cli, *watch),
         Command::Probe(ProbeCmd::Info) => cmd_probe::info(&cli),
         Command::Probe(ProbeCmd::Mode(ModeCmd::Get)) => cmd_probe::mode_get(&cli),
+        Command::Probe(ProbeCmd::Mode(ModeCmd::Set { mode })) => cmd_probe::mode_set(&cli, *mode),
         Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Info)) => cmd_probe::firmware_info(&cli),
         Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Check { min })) => {
             cmd_probe::firmware_check(&cli, min.as_deref())
