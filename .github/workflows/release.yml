@@ -115,7 +115,9 @@ jobs:
           # so `cargo publish` waits for the index by default. If a run fails partway, the crates
           # already published at this version cannot be re-published; re-run with those removed from
           # the list, or switch to `cargo workspaces publish` (skips already-published crates).
-          for c in contract usb dmi target wchlink flash debug; do
+          # usb-wch-win before usb: ch32rv-usb has a cfg(windows) dependency on it, and cargo
+          # publish requires every dependency (target-specific included) to be on the index first.
+          for c in contract usb-wch-win usb dmi target wchlink flash debug; do
             cargo publish -p "ch32rv-$c"
           done
           cargo publish -p ch32rv
