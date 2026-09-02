@@ -17,6 +17,7 @@ mod cmd_flash;
 mod cmd_gdb;
 mod cmd_monitor;
 mod cmd_probe;
+mod cmd_run;
 mod cmd_target;
 mod cmd_write;
 mod config;
@@ -83,6 +84,7 @@ fn main() -> std::process::ExitCode {
         Command::Write(args) => cmd_write::write(&cli, args),
         Command::Arduino(ArduinoCmd::Discovery) => cmd_arduino::discovery(&cli),
         Command::Arduino(ArduinoCmd::Monitor) => cmd_arduino::monitor(&cli),
+        Command::Run(args) => cmd_run::run(&cli, args),
         Command::Complete(a) => cmd_complete(a.shell),
         other => unimplemented_cmd(&cli, canonical_name(other)),
     }

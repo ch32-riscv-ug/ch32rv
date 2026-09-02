@@ -67,6 +67,16 @@ ch32rv flash tests/fixtures/runtest-<family>.bin --confirm-run pc --probe serial
 ```
 `--confirm-run pc` = reset 後に PC をサンプルし flash 内で実行中かを確認(失敗は exit 50)。**実 LED を見たい/自作ファームを試すなら** ELF/HEX/bin をそのまま `flash` に渡す。
 
+### Tier 3b: semihosting 走行(`run` HIL、exit コード伝搬)
+```sh
+ch32rv run tests/fixtures/semihosting.bin --probe serial:<SN> --exit-on semihosting
+# stdout: hello from semihosting  /  プロセス終了コード: 42
+```
+`run` は 書込→reset 実行→runtime 出力→終了 を 1 コマンドで行う。`--exit-on semihosting` は
+target の `SYS_WRITE0` 出力を中継し、`SYS_EXIT`/`SYS_EXIT_EXTENDED` の値をプロセス終了コードに
+伝搬する(fixture は 42)。`--exit-on timeout=<s>` は s 秒だけ dmdata 出力を流して exit 0。
+`--no-flash` で書込を省略。**CH32V307 実機検証済み**(family 非依存の base-ISA コード)。
+
 ### 補助
 ```sh
 ch32rv gdb --probe serial:<SN>                               # 別端末で gdb 接続(HW/flash BP)
@@ -86,6 +96,7 @@ ch32rv --capture cap.ndjson probe info --probe serial:<SN>   # 問題時に添�
 | Tier1 read-only | OK / NG |
 | Tier2 flash 往復(verify) | OK / NG |
 | Tier3 走行(confirm-run pc) | OK / NG / 未実施 |
+| Tier3b run(semihosting exit) | OK / NG / 未実施 |
 | 備考(所要時間・エラー・`--capture` 添付) | |
 
 ## 6. 既知の注意
