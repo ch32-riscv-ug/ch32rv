@@ -29,14 +29,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 手順:
 
-1. **(初回一度きり・ユーザー、CLI)** crates.io で API トークンを発行 → `cargo login <token>` → 依存順に 8 crate を publish して crate 名を確保する。
-
-   ```sh
-   for c in contract usb dmi target wchlink flash debug; do
-     cargo publish -p ch32rv-$c   # 前の crate が index に載るまで cargo が自動で待つ
-   done
-   cargo publish -p ch32rv        # CLI
-   ```
+1. **(初回一度きり・ユーザー、CLI)** crates.io で API トークンを発行 → `cargo login <token>` → **`scripts/first-publish.sh`** を実行して 8 crate を依存順に publish・crate 名を確保する(既に存在する crate は自動 skip、最後に手順 2 の登録先を表示)。
 
 2. **(初回一度きり・ユーザー、Web UI)** 各 crate の Settings → Trusted Publishing で GitHub を登録:
    owner=`ch32-riscv-ug` / repo=`ch32rv` / workflow=`release.yml`(environment は任意)。8 crate 分登録する。
@@ -65,7 +58,9 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 要対応(ユーザー):
 
-- **`./scripts/release.sh <level>` を用意**する(フック)。やること: workspace `version` と Cargo.toml の内部依存 pin を bump、CHANGELOG の `Unreleased` を新 version に切る。他プロジェクトの bump スクリプトを Rust 向けに移植する形。
+- **スクリプトは 2 本**(役割が別):
+  - `scripts/release.sh <patch|minor|major|X.Y.Z>` = **毎回**の bump フック。workspace `version` と Cargo.toml 内部 pin(全メンバーは `version.workspace=true` 継承なのでルートのみ)+ Cargo.lock を bump、CHANGELOG の `Unreleased` を新 version に切る。実装済み。他プロジェクトの慣習に合わせて調整可。
+  - `scripts/first-publish.sh` = **初回一度きり**の crates.io ブートストラップ(名前のとおり初回専用)。§1 手順 1 の crate 確保を実行。以後は使わない。
 - **初回の crate 確保 + Trusted Publisher 登録**(§1 の手順 1・2)を済ませないと `crates-io` job は通らない。
 - `ubuntu-24.04-arm`(GitHub の arm64 ランナー)が使えない環境なら、その行を外すか cross に差し替える。
 - main が **branch protection** だと Actions からの bump commit push がブロックされうる。bot に例外を許すか、専用リリースブランチ運用にする。
@@ -104,9 +99,9 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 初回ブートストラップ(一度きり):
 
-- [ ] 8 crate を CLI トークンで初回 publish(名前確保、§1 手順 1)
+- [ ] `cargo login <token>` → `scripts/first-publish.sh` で 8 crate を名前確保(§1 手順 1)
 - [ ] 各 crate に Trusted Publisher 登録(owner/repo/`release.yml`、§1 手順 2)
-- [ ] `./scripts/release.sh <level>` を用意(bump + CHANGELOG 切り出し)
+- [ ] `scripts/release.sh` の bump 挙動が自プロジェクト慣習に合うか確認(実装済み。必要なら調整)
 
 毎回:
 
