@@ -552,6 +552,20 @@ impl WchLink {
         Ok(buf)
     }
 
+    /// en: Control the WCH-LinkE target-power output (SetPower, cmd 0x0d): 3.3V on=`09`/off=`0a`,
+    /// 5V on=`0b`/off=`0c`. WCH-LinkE only - the caller must check the variant (the CH549 Link has
+    /// no power output). ja: WCH-LinkE の target 給電出力を制御(SetPower)。LinkE 限定。
+    pub fn set_power(&mut self, rail_5v: bool, on: bool) -> Result<(), WchLinkError> {
+        let payload: u8 = match (rail_5v, on) {
+            (false, true) => 0x09,
+            (false, false) => 0x0a,
+            (true, true) => 0x0b,
+            (true, false) => 0x0c,
+        };
+        let _ = self.command(CMD_CONTROL, &[payload])?;
+        Ok(())
+    }
+
     /// en: Switch a WCH-LinkE from RISC-V mode to DAP/ARM mode (`81 ff 01 41`). The probe
     /// re-enumerates as PID 0x8012, so this is fire-and-forget (no response is read). LinkE only -
     /// the caller must check the variant first. To switch back, send `81 ff 01 52` to the 0x8012
