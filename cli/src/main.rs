@@ -16,6 +16,7 @@ mod cmd_gdb;
 mod cmd_monitor;
 mod cmd_probe;
 mod cmd_target;
+mod cmd_write;
 mod config;
 mod parse;
 mod progress;
@@ -44,6 +45,8 @@ fn main() -> std::process::ExitCode {
         Command::Dbg(DbgCmd::Halt { reset }) => cmd_dbg::halt(&cli, *reset),
         Command::Dbg(DbgCmd::Resume) => cmd_dbg::resume(&cli),
         Command::Dbg(DbgCmd::Step { n }) => cmd_dbg::step(&cli, *n),
+        Command::Dbg(DbgCmd::Reg(sub)) => cmd_dbg::reg(&cli, sub),
+        Command::Dbg(DbgCmd::Dmi(sub)) => cmd_dbg::dmi(&cli, sub),
         Command::Read(args) => cmd_dbg::read(&cli, args),
         Command::Flash(args) => cmd_flash::flash(&cli, args),
         Command::Verify(args) => cmd_flash::verify(&cli, args),
@@ -59,8 +62,25 @@ fn main() -> std::process::ExitCode {
         }) => cmd_db::list(&cli, family.as_deref(), *verified_only),
         Command::Db(DbCmd::Info { sku }) => cmd_db::info(&cli, sku),
         Command::Capabilities => cmd_capabilities::capabilities(&cli),
+        Command::Write(args) => cmd_write::write(&cli, args),
+        Command::Complete(a) => cmd_complete(a.shell),
         other => unimplemented_cmd(&cli, canonical_name(other)),
     }
+}
+
+/// `complete <shell>`: print a shell completion script to stdout (redirect it into your shell's
+/// completion dir). Generated from the clap command tree, so it always matches the CLI.
+fn cmd_complete(shell: Shell) -> std::process::ExitCode {
+    use clap::CommandFactory;
+    let target = match shell {
+        Shell::Bash => clap_complete::Shell::Bash,
+        Shell::Zsh => clap_complete::Shell::Zsh,
+        Shell::Fish => clap_complete::Shell::Fish,
+        Shell::Powershell => clap_complete::Shell::PowerShell,
+    };
+    let mut cmd = Cli::command();
+    clap_complete::generate(target, &mut cmd, "ch32rv", &mut std::io::stdout());
+    std::process::ExitCode::SUCCESS
 }
 
 fn cmd_version(cli: &Cli) -> std::process::ExitCode {
