@@ -1,6 +1,7 @@
 # Windows で WCH 標準ドライバ経由アクセス(WinUSB 非依存)— 作業引き継ぎ
 
-- 状態: **検討中(2026-09-02)**。実機で固まったら英語 main + `.ja` twin に整える。
+- 状態: **検討中(2026-09-02)**。**§5 の最小スパイクは同日 Windows 実機で成功**(5/5 probe、§5.1)。
+  実装方針が固まったら英語 main + `.ja` twin に整える。
 - 対象読者: Windows ネイティブ(Rust 導入済み)で VSCode を開いて続きを実装・検証する人。
 - 目的: **ユーザーが既に入れている WCH 標準ドライバ(`WCHLink_A64`)のまま、Zadig/WinUSB 置換なしで** ch32rv が WCH-Link と通信できる経路を追加する。ArduinoCore-CH32 依頼 B-2 の Windows 対応の核。
 
@@ -37,6 +38,11 @@
 
 判断材料: **64bit のまま出したいなら B、WCH の supported API に乗るなら A(要 32bit or 64bit DLL 確認)**。まず A の DLL の bitness と 64bit 版有無を実機で確認するのが早い。
 
+**→ 確認済み(2026-09-02、実機)**: `WCHLinkDLL.DLL` は
+`C:\WINDOWS\System32\DriverStore\FileRepository\wchlinkwdm.inf_amd64_28c146f8d6c53b69\`(ドライバパッケージ同梱)と
+`C:\WINDOWS\SysWOW64\`(= 32bit 配置)の 2 箇所にあり、**PE ヘッダはどちらも x86(32bit)。64bit 版は存在しない**
+(amd64 パッケージでもカーネルドライバ `WCHLinkW64.SYS` だけが 64bit で、DLL は 32bit のまま)。→ **B(IOCTL 直叩き)を採用**。
+
 ### wlink の DLL API(A を採る場合の参照)
 `WCHLinkDLL.dll`(全て `extern "stdcall"`):
 - `CH375OpenDevice(iIndex: u32) -> handle(u32)` / `CH375CloseDevice(iIndex)`
@@ -50,7 +56,10 @@
 ## 3. アプローチ B の詳細(IOCTL 直叩き、DLL 不要・64bit 可)
 
 ### 3.1 デバイスを開く(SetupAPI + CreateFile)
-- device interface GUID: **`{F8D5EDCA-B647-4E9C-9BD3-A5BD2328D55C}`**(WCH CH375 系の interface。**実機で `WCHLink_A64` がこの GUID を出すか要確認** — 出なければ Device Manager / `pnputil /enum-devices` で正しい GUID を特定する)。
+- device interface GUID: **`{F8D5EDCA-B647-4E9C-9BD3-A5BD2328D55C}`**(WCH CH375 系の interface)。
+  **→ 実機確認済み(2026-09-02)**: `pnputil /enum-interfaces` で、接続中の全 WCH-Link MI_00 にこの GUID の
+  interface が Enabled で存在(5 台分)。なお INF(`wchlinkwdm.inf`)はレジストリ経由で第 2 の GUID
+  `{CDB3B5AD-293B-4663-AA36-1AAE46463776}`(`DeviceInterfaceGUIDs`)も登録するが、F8D5EDCA 側で動作する。
 - `SetupDiGetClassDevs(&GUID, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)`
   → `SetupDiEnumDeviceInterfaces(..., index, ...)`(index=0,1,... で複数 probe)
   → `SetupDiGetDeviceInterfaceDetail`(DevicePath 取得)
@@ -77,12 +86,13 @@
   | data out(0x02) | pipe 2 | `0x20001` |
   | data in (0x82) | pipe 2 | `0x10001` |
 - **Write**: `mLength=len; memcpy(mBuffer, data, len);` → `DeviceIoControl(h, IOCTL, pCmd, mLength+8, pCmd, 64, &ret, NULL)`
+  (事例の出力バッファ長 `64` は構造体 72B と不整合に見えるが、**スパイクでは `64+8` を渡して動作確認済み**。write の `ret` は 12 = ヘッダ 8 + 送信 4 だった)
 - **Read**:  `mLength=64;` → `DeviceIoControl(h, IOCTL, pCmd, 8, pCmd, 64+8, &ret, NULL)`; `ret>8 && mLength` なら受信 = `mBuffer[..mLength]`
 - **64byte packet 制約**: WCH-Link の data EP は 1 転送最大 4096B。IOCTL は 64B/回なので **64B 単位に chunk 分割**が要る(cmd EP は元々 ~小さいので影響小、data EP=flash 書込で要対応)。要実測(1 IOCTL で 64 超を扱えるか確認)。
 
 ## 4. ch32rv への実装方針
 
-- **参照実装 = wlink**(Rust、同じ EP ベース)。`USBDeviceBackend { open_nth, read_endpoint(ep,buf), write_endpoint(ep,buf), .. }` trait 構成をほぼ踏襲できる。まず **A(DLL)/B(IOCTL)を §2 で選ぶ**(ch32rv は x86_64 配布なので、DLL が 32bit のみなら B、64bit DLL があるなら A も可)。以下は B(IOCTL)前提でも A(DLL)でも境界は同じ。
+- **参照実装 = wlink**(Rust、同じ EP ベース)。`USBDeviceBackend { open_nth, read_endpoint(ep,buf), write_endpoint(ep,buf), .. }` trait 構成をほぼ踏襲できる。**A/B は B(IOCTL)に確定**(DLL は 32bit のみ、§2。feasibility は §5.1 で実証済み)。
 - **上位(`ch32rv-wchlink` / `ch32rv-dmi` / `ch32rv-flash`)は無改変**。差し替えるのは USB bulk トランスポートだけ。
 - **`ch32rv-usb::UsbInterface` を enum 化**して 2 経路を dispatch(最小改修):
   ```
@@ -95,14 +105,37 @@
 ## 5. 最小スパイク(まずここだけ、Windows ネイティブ)
 
 目的: 「WCH 標準ドライバ経由で WCH-Link と 1 往復できる」を実機で確定する(統合前の feasibility)。
+**→ 完了(2026-09-02)。結果は §5.1。**
 
 0. **A/B を決める**: `WCHLinkDLL.dll` の有無と bitness を確認(`where WCHLinkDLL.dll`、`dumpbin /headers <dll> | findstr machine`。WCH-LinkUtility 導入で入る)。**32bit のみなら B(IOCTL、64bit ch32rv でそのまま可)**、64bit DLL もあるなら A(wlink 実装をほぼ移植)。A なら wlink `src/usb_device.rs` の `ch375_driver` を Rust でそのまま参考にできる(ただし 32bit ビルドが要る)。以下は B(IOCTL)での最小確認手順。
+   **→ 済: 32bit のみ(§2)= B 採用。**
 1. 単体の小プログラム(examples/ か別 bin)で:
    - GUID `{F8D5EDCA-...}` を `SetupDiGetClassDevs` で列挙 → 見つかった DevicePath を print(見つからなければ GUID 特定からやり直し)。
    - `CreateFileW` で open。
-   - **GetProbeInfo を 1 往復**: cmd out(pipe1 write)で `81 0d 01 01`(SetSpeed/ProbeInfo 相当の既知シーケンス。実際の WCH-Link ハンドシェイクは `ch32rv-wchlink` の `probe_info()` 参照)→ cmd in(pipe1 read)で応答 `82 0d 04 ..` が返るか。
+   - **GetProbeInfo を 1 往復**: cmd out(pipe1 write)で `81 0d 01 01`(= GetProbeInfo。`ch32rv-wchlink` の `probe_info()` と同一バイト列。crates/wchlink/src/probe.rs 参照)→ cmd in(pipe1 read)で応答 `82 0d 04 ..` が返るか。
    - 返れば OK。応答バイトを hex で出す。
 2. 返らない/開けない場合の切り分け: GUID 違い / IOCTL 値 / pipe 番号 / 64B 制約 / 事例の `-5`(この事例自体 WIP)。
+
+### 5.1 スパイク結果(2026-09-02、Windows 11 実機)
+
+**成功。接続中 5 probe すべてで、WCH 標準ドライバ(`WCHLinkW64.SYS`)経由の GetProbeInfo 1 往復が成立した。**
+64bit(x86_64-pc-windows-msvc)プロセス・WinUSB 置換なし・DLL なし・管理者権限なし。
+
+| probe | 応答(hex) | firmware |
+|---|---|---|
+| WCH-Link(CH549)×1 | `82 0d 04 02 0c 01 00` | v2.12(variant 0x01) |
+| WCH-LinkE ×4 | `82 0d 04 02 16 12 00` | v2.22(variant 0x12) |
+
+確定した事実(§3 の「要確認」への回答):
+- GUID `{F8D5EDCA-...}` で列挙・`CreateFileW` open とも成功(全台)。列挙は SetupDi ではなく
+  cfgmgr32 の `CM_Get_Device_Interface_ListW` でも同等に動く(コード量が少ない。実装時はどちらでも可)。
+- `IOCTL_CH375_COMMAND = 0x223CDC`、`mFunction`(write=`0x20000`/read=`0x10000`、pipe-1 加算)、
+  ヘッダ 8B の構造体レイアウトは §3.2 のとおりで正しい。
+- write の DeviceIoControl は `ret = 8 + 送信長` を返す。read は `ret = 8 + mLength` で
+  `mBuffer[..mLength]` が応答フレームそのもの。
+- probe は usbipd `Shared` 状態(WSL 未 attach)なら WCH ドライバが所有しており、detach 操作は不要だった。
+- 未確認のまま残る項目: **data EP(pipe2)の 64B 超転送**(flash 書込で必要。1 IOCTL で 64B 超を
+  扱えるか、chunk 分割が要るか)。attach + flash 実書込を伴うため統合実装時に確認する。
 
 ## 6. 検証手順(usbipd の状態が肝)
 
@@ -130,4 +163,4 @@
 - 事例: cw2/ch32v003fun `experimental/minichlink-wchlinkdll-driver` `minichlink/pgm-wch-linke.c`
 - ch32rv 既存トランスポート: `crates/usb/src/device.rs`(`UsbInterface::{write,read,write_data,read_data}`、EP 0x01/0x81・0x02/0x82)
 - WCH-Link ハンドシェイク: `crates/wchlink/src/probe.rs`(`probe_info`/`attach` の実バイト列)
-- architecture §2(別バックエンド crate 方針)、B-2(docs/ch32rv-requests.ja.md 側)
+- architecture §2(別バックエンド crate 方針)、B-2(`../../ArduinoCore-CH32/docs/ch32rv-requests.ja.md` — ArduinoCore-CH32 repo 側の依頼文書)
