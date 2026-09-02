@@ -427,9 +427,16 @@ fn parse_hex16(s: &str) -> Result<[u8; 16], String> {
     Ok(out)
 }
 
-/// en: Read the 16 option bytes (attach, halt, read, detach). ja: 16 byte の option bytes を読む。
-fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<[u8; 16], ExitCode> {
+/// en: Read the 16 option bytes plus the DB family string (for USER-field names) - attach, halt,
+/// read, detach. ja: 16 byte の option bytes と DB family(USER field 名用)を読む。
+fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<(String, [u8; 16]), ExitCode> {
     let mut session = option_session(cli, cmd)?;
+    let db = ch32rv_target::Db::builtin();
+    let db_family = match db.resolve_by_chip_id(session.attach.chip_id) {
+        ch32rv_target::Resolution::Sku(s) => s.family.clone(),
+        ch32rv_target::Resolution::Family(fam, _) => fam,
+        ch32rv_target::Resolution::Unknown => session.family(),
+    };
     let mut dm = session.dm();
     dm.halt().map_err(|e| {
         fail(
@@ -451,7 +458,7 @@ fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<[u8; 16], ExitCode> {
     })?;
     let mut a = [0u8; 16];
     a.copy_from_slice(&v[..16]);
-    Ok(a)
+    Ok((db_family, a))
 }
 
 /// en: Erase + program the 16 option bytes to `new` (value+complement pairs, as `option get`
@@ -593,12 +600,158 @@ pub fn option_reset(cli: &Cli) -> ExitCode {
     program_option(cli, CMD, &defaults)
 }
 
+/// en: `target option set <key=value ...>`: read-modify-write named option fields. Keys: a USER
+/// bit field name from the DB (per family, e.g. `IWDGSW=0`), `rdp=on|off`, `data0=<hex>`,
+/// `data1=<hex>`. Complement bytes are recomputed. `rdp=off` triggers a full mass erase.
+/// ja: `target option set <key=value ...>`。DB の USER bit 名(family 別)/`rdp`/`data0`/`data1` を
+/// read-modify-write。補数は再計算。`rdp=off` は全消去を伴う。
+pub fn option_set(cli: &Cli, kv: &[String]) -> ExitCode {
+    const CMD: &str = "target.option.set";
+    let (db_family, mut ob) = match read_option_bytes(cli, CMD) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    let fields = ch32rv_target::option_user_fields(&db_family);
+    let mut changes: Vec<String> = Vec::new();
+    let mut mass_erase = false;
+    let mut protect_on = false;
+
+    for pair in kv {
+        let Some((key, val)) = pair.split_once('=') else {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                format!("expected key=value, got {pair:?}"),
+                Some("e.g. IWDGSW=0 rdp=off data0=0x42"),
+            );
+        };
+        let key_l = key.to_ascii_lowercase();
+        match key_l.as_str() {
+            "rdp" | "protect" => match val.to_ascii_lowercase().as_str() {
+                "off" | "0" | "none" => {
+                    if ob[0] != 0xA5 {
+                        mass_erase = true;
+                    }
+                    ob[0] = 0xA5;
+                    changes.push("rdp=off".to_owned());
+                }
+                "on" | "1" => {
+                    ob[0] = 0xFF;
+                    protect_on = true;
+                    changes.push("rdp=on".to_owned());
+                }
+                other => {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        format!("rdp must be on/off, got {other:?}"),
+                        None,
+                    );
+                }
+            },
+            "data0" | "data1" => {
+                let Some(byte) = parse_u8(val) else {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        format!("{key}: expected a byte 0..255 (e.g. 0x42), got {val:?}"),
+                        None,
+                    );
+                };
+                let idx = if key_l == "data0" { 4 } else { 6 };
+                ob[idx] = byte;
+                changes.push(format!("{key_l}=0x{byte:02x}"));
+            }
+            _ => {
+                // A named USER-byte bit for this family.
+                let Some(f) = fields.iter().find(|f| f.field.eq_ignore_ascii_case(key)) else {
+                    let names: Vec<&str> = fields.iter().map(|f| f.field.as_str()).collect();
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        format!("unknown option field {key:?} for {db_family}"),
+                        Some(&format!(
+                            "known USER fields: {} (plus rdp, data0, data1)",
+                            names.join(", ")
+                        )),
+                    );
+                };
+                let bit = match val {
+                    "0" => 0u8,
+                    "1" => 1,
+                    other => {
+                        return fail(
+                            cli,
+                            CMD,
+                            ErrorKind::Usage,
+                            format!("{key}: expected 0 or 1, got {other:?}"),
+                            None,
+                        );
+                    }
+                };
+                if bit == 1 {
+                    ob[2] |= 1 << f.bit;
+                } else {
+                    ob[2] &= !(1 << f.bit);
+                }
+                changes.push(format!("{}={bit}", f.field));
+            }
+        }
+    }
+
+    if changes.is_empty() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            "no key=value pairs given".to_owned(),
+            None,
+        );
+    }
+    // Recompute every complement byte so the halfwords are valid regardless of what we touched.
+    for i in (0..16).step_by(2) {
+        ob[i + 1] = 0xFF ^ ob[i];
+    }
+
+    let prompt = if mass_erase {
+        format!(
+            "Apply option changes [{}]? rdp=off ERASES ALL FLASH (mass erase).",
+            changes.join(", ")
+        )
+    } else if protect_on {
+        format!(
+            "Apply option changes [{}]? rdp=on makes the flash unreadable/undebuggable.",
+            changes.join(", ")
+        )
+    } else {
+        format!("Apply option changes [{}]?", changes.join(", "))
+    };
+    if !ob_confirm(cli, &prompt) {
+        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    }
+    program_option(cli, CMD, &ob)
+}
+
+/// Parse a byte as decimal or `0x`-hex.
+fn parse_u8(s: &str) -> Option<u8> {
+    let s = s.trim();
+    if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u8::from_str_radix(h, 16).ok()
+    } else {
+        s.parse().ok()
+    }
+}
+
 /// `target protect on|off`: enable/disable flash read protection (RDPR). Turning it OFF triggers a
 /// full mass erase of the target's flash.
 pub fn protect(cli: &Cli, state: SwitchState) -> ExitCode {
     const CMD: &str = "target.protect";
     let mut ob = match read_option_bytes(cli, CMD) {
-        Ok(b) => b,
+        Ok((_family, b)) => b,
         Err(c) => return c,
     };
     match state {

@@ -36,6 +36,7 @@ fn main() -> std::process::ExitCode {
         Command::Target(TargetCmd::Opt(OptionCmd::WriteRaw { hex })) => {
             cmd_target::option_write_raw(&cli, hex)
         }
+        Command::Target(TargetCmd::Opt(OptionCmd::Set { kv })) => cmd_target::option_set(&cli, kv),
         Command::Target(TargetCmd::Opt(OptionCmd::Reset)) => cmd_target::option_reset(&cli),
         Command::Target(TargetCmd::Protect { state }) => cmd_target::protect(&cli, *state),
         Command::Dbg(DbgCmd::Regs) => cmd_dbg::regs(&cli),
