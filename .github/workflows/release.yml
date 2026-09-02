@@ -188,6 +188,8 @@ jobs:
           mkdir "$NAME"
           cp "target/${{ matrix.target }}/release/ch32rv" "$NAME/"
           cp LICENSE README.md CHANGELOG.md "$NAME/"
+          # Bundle the udev rule in the Linux tar only (ArduinoCore-CH32 B-6); macOS has no udev.
+          if [ "$RUNNER_OS" = Linux ]; then cp cli/60-ch32rv.rules "$NAME/"; fi
           tar czf "$NAME.tar.gz" "$NAME"
           shasum -a 256 "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
           gh release upload "${{ needs.prepare.outputs.tag }}" "$NAME.tar.gz" "$NAME.tar.gz.sha256" --clobber

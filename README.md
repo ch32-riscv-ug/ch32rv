@@ -33,10 +33,17 @@ Each archive ships with a `.sha256` checksum.
 
 ### Linux: USB permissions (udev)
 
-Non-root access to the WCH-Link (and WCH ISP/IAP devices) needs a udev rule. `ch32rv` can emit one:
+Non-root access to the WCH-Link needs a udev rule. The prebuilt tarball bundles `60-ch32rv.rules`:
 
 ```sh
-sudo ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules
+sudo cp 60-ch32rv.rules /etc/udev/rules.d/            # from the extracted tarball
+sudo udevadm control --reload-rules && sudo udevadm trigger
+```
+
+Installed via `cargo install` (no tarball)? Emit the same rule from the binary:
+
+```sh
+ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules
 sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
