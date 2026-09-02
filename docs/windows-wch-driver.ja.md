@@ -16,14 +16,38 @@
 - `probe list` = 列挙は成功(serial/topology 出る)。
 - `probe info` / `target info` = `incompatible driver ... for this interface` で失敗(上記のとおり)。
 
-## 2. 先行事例(方式の根拠)
+## 2. 先行事例サーベイ(2026-09-02、実ソース確認)
 
-cw2/ch32v003fun, branch `experimental/minichlink-wchlinkdll-driver`, `minichlink/pgm-wch-linke.c`
-(コミット「[WIP] Experimental communication via WCH custom driver (Windows only WCHLinkDll.dll)」)。
-- <https://github.com/cw2/ch32v003fun/tree/experimental/minichlink-wchlinkdll-driver>
-- **[WIP]/experimental** で完動実績は薄い(`UNDONE` コメントあり)。方式の参考として使う。
+**「有名ツールは WCH 標準ドライバ非対応」は誤りだった。wlink は対応済み。** まとめ:
 
-## 3. 方式の詳細(そのまま実装できる粒度)
+| ツール | 言語 | WCH 標準ドライバ経路 | 方式 |
+|---|---|---|---|
+| **wlink**(ch32-rs/wlink) | **Rust** | **対応済み** | **`WCHLinkDLL.dll`(WCH の DLL)を libloading で読み込み、CH375* stdcall API。`USBDeviceBackend` trait で nusb 系と切替。`cfg(target_os="windows", target_arch="x86")`= 32bit 限定** |
+| minichlink fork(cw2/ch32v003fun `experimental/...`) | C | 対応(WIP) | **DLL 不要**。WCH ドライバの **IOCTL を DeviceIoControl 直叩き**(§4) |
+| minichlink 上流(cnlohr/ch32fun) | C | ✕ | libusb のみ(`CH375`/`DeviceIoControl` 参照 0、`libusb_open` のみ) |
+| probe-rs | Rust | ✕ | nusb=WinUSB のみ(公式ドライバでは動かず Zadig 必須と明記) |
+| wchisp | Rust | ✕ | WinUSB/libusb |
+
+- wlink #37「Official Windows Driver support」(ユーザー要望「libusb/winusb のインストールは受け入れられない」)→ maintainer が **「The basic Windows driver is done.」で実装・close**。→ **ch32rv は Rust なので wlink が直接の参照実装**になる。
+- 生態系の共通認識:**WCH 純正ドライバと WinUSB は排他**(片方を Zadig で入れると WCH-LinkUtility 側が使えなくなる)。だから「標準ドライバのまま使いたい」需要が実在し、wlink がそれに応えた。
+
+### 2 つの実装アプローチ
+- **A) WCH の DLL(`WCHLinkDLL.dll`)経由**(= wlink)。API は明快・WCH 提供で安定。**ただし DLL が 32bit stdcall = 呼ぶ側も 32bit(x86)でないとロード不可**(64bit プロセスは 32bit DLL を読めない)。ch32rv は x86_64 配布なので、この経路のために 32bit ビルドを別途出すか、**64bit の WCHLinkDLL が提供されているか要確認**。
+- **B) IOCTL 直叩き(`DeviceIoControl`)**(= minichlink fork)。**DLL 不要・arch 非依存(64bit で動く)**。ただし IOCTL 定数は WCH ドライバのリバース(§4)。**ch32rv の 64bit 配布と相性が良いのはこちら。**
+
+判断材料: **64bit のまま出したいなら B、WCH の supported API に乗るなら A(要 32bit or 64bit DLL 確認)**。まず A の DLL の bitness と 64bit 版有無を実機で確認するのが早い。
+
+### wlink の DLL API(A を採る場合の参照)
+`WCHLinkDLL.dll`(全て `extern "stdcall"`):
+- `CH375OpenDevice(iIndex: u32) -> handle(u32)` / `CH375CloseDevice(iIndex)`
+- `CH375GetDeviceDescr(iIndex, *UsbDeviceDescriptor, *len) -> bool`(VID/PID で選別)
+- `CH375ReadEndP(iIndex, ep: u32, *buf, *len) -> bool` / `CH375WriteEndP(iIndex, ep: u32, *buf, *len) -> bool`(ep に 0x81/0x01/0x82/0x02 を渡す)
+- `CH375SetTimeoutEx(...)` / `CH375GetVersion()` / `CH375GetDrvVersion()`
+- wlink 実装: `src/usb_device.rs` の `mod ch375_driver`(<https://github.com/ch32-rs/wlink/blob/main/src/usb_device.rs>)。`USBDeviceBackend { open_nth, read_endpoint(ep,buf), write_endpoint(ep,buf), ... }` trait で nusb backend と統一。
+
+**注**: `CH375*` は WCH の CH375 汎用 USB ドライバ API。EP 番号ベースなので ch32rv の `UsbInterface`(EP 0x01/0x81/0x02/0x82)にほぼ 1:1 で対応する。
+
+## 3. アプローチ B の詳細(IOCTL 直叩き、DLL 不要・64bit 可)
 
 ### 3.1 デバイスを開く(SetupAPI + CreateFile)
 - device interface GUID: **`{F8D5EDCA-B647-4E9C-9BD3-A5BD2328D55C}`**(WCH CH375 系の interface。**実機で `WCHLink_A64` がこの GUID を出すか要確認** — 出なければ Device Manager / `pnputil /enum-devices` で正しい GUID を特定する)。
@@ -58,6 +82,7 @@ cw2/ch32v003fun, branch `experimental/minichlink-wchlinkdll-driver`, `minichlink
 
 ## 4. ch32rv への実装方針
 
+- **参照実装 = wlink**(Rust、同じ EP ベース)。`USBDeviceBackend { open_nth, read_endpoint(ep,buf), write_endpoint(ep,buf), .. }` trait 構成をほぼ踏襲できる。まず **A(DLL)/B(IOCTL)を §2 で選ぶ**(ch32rv は x86_64 配布なので、DLL が 32bit のみなら B、64bit DLL があるなら A も可)。以下は B(IOCTL)前提でも A(DLL)でも境界は同じ。
 - **上位(`ch32rv-wchlink` / `ch32rv-dmi` / `ch32rv-flash`)は無改変**。差し替えるのは USB bulk トランスポートだけ。
 - **`ch32rv-usb::UsbInterface` を enum 化**して 2 経路を dispatch(最小改修):
   ```
@@ -69,8 +94,9 @@ cw2/ch32v003fun, branch `experimental/minichlink-wchlinkdll-driver`, `minichlink
 
 ## 5. 最小スパイク(まずここだけ、Windows ネイティブ)
 
-目的: 「CH375 IOCTL で WCH-Link と 1 往復できる」を実機で確定する(統合前の feasibility)。
+目的: 「WCH 標準ドライバ経由で WCH-Link と 1 往復できる」を実機で確定する(統合前の feasibility)。
 
+0. **A/B を決める**: `WCHLinkDLL.dll` の有無と bitness を確認(`where WCHLinkDLL.dll`、`dumpbin /headers <dll> | findstr machine`。WCH-LinkUtility 導入で入る)。**32bit のみなら B(IOCTL、64bit ch32rv でそのまま可)**、64bit DLL もあるなら A(wlink 実装をほぼ移植)。A なら wlink `src/usb_device.rs` の `ch375_driver` を Rust でそのまま参考にできる(ただし 32bit ビルドが要る)。以下は B(IOCTL)での最小確認手順。
 1. 単体の小プログラム(examples/ か別 bin)で:
    - GUID `{F8D5EDCA-...}` を `SetupDiGetClassDevs` で列挙 → 見つかった DevicePath を print(見つからなければ GUID 特定からやり直し)。
    - `CreateFileW` で open。
