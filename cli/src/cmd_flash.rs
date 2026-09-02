@@ -59,7 +59,7 @@ fn parse_image(
 /// page; segments that share a page collapse to one entry.
 /// ja: `(addr, len)` セグメント群が触れる flash page(page 境界の開始番地)の集合。`--erase sector`
 /// はこの page だけを消すので image 外の flash を消さない。page 途中開始はその page 全体を含む。
-fn covered_pages(
+pub(crate) fn covered_pages(
     segments: impl IntoIterator<Item = (u32, u32)>,
     page: u32,
 ) -> std::collections::BTreeSet<u32> {
@@ -108,7 +108,7 @@ fn resolve_erase(
 /// ja: `content`(page 先頭 `page_addr`、長さ=page サイズ)に `segments` を上書き合成する。segment
 /// が覆う byte はその値、他は元の `content` のまま。`--restore-unwritten` で page 全体を再 program
 /// するのに使う。
-fn overlay_page(page_addr: u32, content: &mut [u8], segments: &[Segment]) {
+pub(crate) fn overlay_page(page_addr: u32, content: &mut [u8], segments: &[Segment]) {
     let page_end = page_addr + content.len() as u32;
     for seg in segments {
         let lo = seg.addr.max(page_addr);

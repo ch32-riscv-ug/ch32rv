@@ -8,9 +8,9 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use ch32rv_contract::{ErrorKind, ResultEnvelope, Warning};
-use ch32rv_dmi::RegName;
+use ch32rv_dmi::{DtmAccess, RegName};
 
-use crate::args::{Cli, ReadArgs, ReadFormat};
+use crate::args::{Cli, DmiCmd, ReadArgs, ReadFormat, RegCmd};
 use crate::cmd_probe::{Entry, fail, select_entry};
 use crate::parse;
 use crate::session::{Session, SessionError};
@@ -500,4 +500,235 @@ fn ihex_record(addr: u16, rtype: u8, data: &[u8]) -> String {
         .map(|b| format!("{b:02X}"))
         .collect();
     format!(":{body}\n")
+}
+
+/// en: Parse a register name for `dbg reg`: `x0`..`x31`, `pc`/`dpc`, `csr:<addr>`, or a few common
+/// CSR aliases (misa/mstatus/mcause/mepc/mtval/dcsr/mvendorid/marchid).
+/// ja: `dbg reg` のレジスタ名を解析。
+fn parse_reg_name(name: &str) -> Option<RegName> {
+    let n = name.trim().to_ascii_lowercase();
+    if n == "pc" || n == "dpc" {
+        return Some(RegName::Pc);
+    }
+    if let Some(x) = n.strip_prefix('x') {
+        return x.parse::<u8>().ok().filter(|v| *v < 32).map(RegName::Gpr);
+    }
+    if let Some(c) = n.strip_prefix("csr:") {
+        return parse_u32(c)
+            .and_then(|v| u16::try_from(v).ok())
+            .map(RegName::Csr);
+    }
+    let csr: u16 = match n.as_str() {
+        "mstatus" => 0x300,
+        "misa" => 0x301,
+        "mepc" => 0x341,
+        "mcause" => 0x342,
+        "mtval" => 0x343,
+        "dcsr" => 0x7b0,
+        "mvendorid" => 0xf11,
+        "marchid" => 0xf12,
+        _ => return None,
+    };
+    Some(RegName::Csr(csr))
+}
+
+/// Parse a `0x`-hex or decimal u32.
+fn parse_u32(s: &str) -> Option<u32> {
+    let s = s.trim();
+    if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u32::from_str_radix(h, 16).ok()
+    } else {
+        s.parse().ok()
+    }
+}
+
+/// `dbg reg read|write <name> [value]`: read or write one core register (GPR / pc / CSR). The core
+/// is halted for the access. Writing a register (expert) can disturb the running program.
+pub fn reg(cli: &Cli, sub: &RegCmd) -> ExitCode {
+    const CMD: &str = "dbg.reg";
+    let mut warnings = Vec::new();
+    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    let mut dm = session.dm();
+    if let Err(e) = dm.halt() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::AttachFailed,
+            format!("halt failed: {e}"),
+            None,
+        );
+    }
+    match sub {
+        RegCmd::Read { name } => {
+            let Some(reg) = parse_reg_name(name) else {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    format!("unknown register {name:?}"),
+                    Some("use x0..x31, pc, csr:<addr>, or misa/mstatus/mcause/mepc/mtval/dcsr"),
+                );
+            };
+            match dm.read_reg(reg) {
+                Ok(v) => {
+                    if cli.json {
+                        let mut env = ResultEnvelope::success(CMD);
+                        env.result = Some(serde_json::json!({
+                            "reg": name, "value": format!("0x{v:08x}"),
+                        }));
+                        crate::print_envelope(&env)
+                    } else {
+                        println!("{name} = 0x{v:08x}");
+                        ExitCode::SUCCESS
+                    }
+                }
+                Err(e) => fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransportTimeout,
+                    format!("read {name} failed: {e}"),
+                    None,
+                ),
+            }
+        }
+        RegCmd::Write { name, value } => {
+            let Some(reg) = parse_reg_name(name) else {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    format!("unknown register {name:?}"),
+                    None,
+                );
+            };
+            let Some(val) = parse_u32(value) else {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    format!("bad value {value:?} (use 0x.. or decimal)"),
+                    None,
+                );
+            };
+            match dm.write_reg(reg, val) {
+                Ok(()) => {
+                    println!("{name} <- 0x{val:08x}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransportTimeout,
+                    format!("write {name} failed: {e}"),
+                    None,
+                ),
+            }
+        }
+    }
+}
+
+/// `dbg dmi read|write <addr> [value]`: raw Debug Module register access over DMI (expert). `addr`
+/// is a DM register address (e.g. 0x11 = DMSTATUS, 0x10 = DMCONTROL).
+pub fn dmi(cli: &Cli, sub: &DmiCmd) -> ExitCode {
+    const CMD: &str = "dbg.dmi";
+    let mut warnings = Vec::new();
+    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
+        Ok(s) => s,
+        Err(c) => return c,
+    };
+    let parse_addr = |a: &str| parse_u32(a).and_then(|v| u8::try_from(v).ok());
+    match sub {
+        DmiCmd::Read { addr } => {
+            let Some(a) = parse_addr(addr) else {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    format!("bad DM address {addr:?} (0x00..0x7f)"),
+                    None,
+                );
+            };
+            match session.link().dmi_read(a) {
+                Ok(v) => {
+                    if cli.json {
+                        let mut env = ResultEnvelope::success(CMD);
+                        env.result = Some(serde_json::json!({
+                            "addr": format!("0x{a:02x}"), "value": format!("0x{v:08x}"),
+                        }));
+                        crate::print_envelope(&env)
+                    } else {
+                        println!("dmi[0x{a:02x}] = 0x{v:08x}");
+                        ExitCode::SUCCESS
+                    }
+                }
+                Err(e) => fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransportTimeout,
+                    format!("dmi read 0x{a:02x} failed: {e}"),
+                    None,
+                ),
+            }
+        }
+        DmiCmd::Write { addr, value } => {
+            let (Some(a), Some(v)) = (parse_addr(addr), parse_u32(value)) else {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    "bad DM address or value".to_owned(),
+                    None,
+                );
+            };
+            match session.link().dmi_write(a, v) {
+                Ok(()) => {
+                    println!("dmi[0x{a:02x}] <- 0x{v:08x}");
+                    ExitCode::SUCCESS
+                }
+                Err(e) => fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransportTimeout,
+                    format!("dmi write 0x{a:02x} failed: {e}"),
+                    None,
+                ),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_reg_name, parse_u32};
+    use ch32rv_dmi::RegName;
+
+    #[test]
+    fn parses_register_names() {
+        assert_eq!(parse_reg_name("pc"), Some(RegName::Pc));
+        assert_eq!(parse_reg_name("x2"), Some(RegName::Gpr(2)));
+        assert_eq!(parse_reg_name("X31"), Some(RegName::Gpr(31)));
+        assert_eq!(parse_reg_name("x32"), None); // out of range
+        assert_eq!(parse_reg_name("misa"), Some(RegName::Csr(0x301)));
+        assert_eq!(parse_reg_name("csr:0x7b0"), Some(RegName::Csr(0x7b0)));
+        assert_eq!(parse_reg_name("csr:769"), Some(RegName::Csr(769)));
+        assert_eq!(parse_reg_name("nope"), None);
+    }
+
+    #[test]
+    fn parses_u32_hex_and_decimal() {
+        assert_eq!(parse_u32("0x40901105"), Some(0x4090_1105));
+        assert_eq!(parse_u32("42"), Some(42));
+        assert_eq!(parse_u32("zz"), None);
+    }
 }

@@ -232,7 +232,7 @@ ch32rv verify <FILE> [--format ...] [--offset ...] [--region ...]     不一致�
 ch32rv read  (--range <addr>[+len|..end] | --region <r>[+off][+len])
              [-o <file>|-] [--format bin|hex|ihex] [--blank-check]
 ch32rv write (<FILE> | hex:<bytes> | word:<u32>) --at <addr|region[+off]>
-             [--erase auto|none]                                       上級。flash 先で erase none は warn
+             [--erase auto|none]                                       上級(2026-09-02 実装)。RAM/peripheral=DM 直書き、flash=controller の page RMW(--erase auto で消去)。書込後 readback verify(不一致 exit30)。region: code/flash/ram/option。低位 flash alias は物理番地を案内して拒否
 ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指定は必須(暗黙の全消去をしない)。--all の名は global --chip <SKU> との衝突回避
 ```
 
@@ -297,6 +297,8 @@ ch32rv dbg regs                                     GPR + pc(dpc)一括
 ch32rv dbg reg read|write <x1..x31|pc|csr:<addr>> [<value>]
 ch32rv dbg dmi read|write <addr> [<value>]          DM レジスタ直接(expert)
 ```
+
+- **実装状況(2026-09-02)**: `dbg reg read|write` / `dbg dmi read|write` を実装(cmd_dbg.rs)。`reg` 名は `x0..x31`/`pc`/`dpc`/`csr:<addr>`/CSR 別名(misa/mstatus/mcause/mepc/mtval/dcsr/mvendorid/marchid)、アクセス時に halt。`dmi` は DtmAccess の生 DM レジスタ read/write(例 0x11 DMSTATUS、0x10 DMCONTROL)。実機(L103): `dbg reg read misa`=0x40901105(`csr:0x301` と一致)、`dbg dmi read 0x11`=0x00000382/`0x10`=0x80000001。write は expert(走行中プログラムを乱す)。パースは単体テスト。
 
 ### 4.5 monitor
 
@@ -408,7 +410,7 @@ ch32rv capabilities [--probe <sel>] [--chip <sku>]   probe 型番 × probe FW ×
 ch32rv doctor [--emit-udev]                          権限/udev、Windows driver binding、既知不良 FW、IAP 滞留、
                                                      target 電源/BOOT/配線の切り分けと次の一手。--fix は持たない(暗黙の sudo をしない)
 ch32rv version [--json]                              tool 版 / git rev / contract 版 / target DB rev+hash / flash stub hash / build target
-ch32rv complete <bash|zsh|fish|powershell>
+ch32rv complete <bash|zsh|fish|powershell>          補完スクリプトを stdout へ(clap_complete で clap tree から生成=CLI と常に一致。2026-09-02 実装)
 ```
 
 すべての操作 command は実行前に capabilities と同じ判定を通り、不可なら exit 24 で同じ構造の理由を返す。`tool supports LinkE` の boolean は存在しない。
