@@ -184,6 +184,7 @@ name = "ch32rv-usb"
 version = "0.2.0"
 dependencies = [
  "ch32rv-contract",
+ "ch32rv-usb-wch-win",
  "fs4",
  "nusb",
  "thiserror",

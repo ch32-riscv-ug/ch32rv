@@ -37,7 +37,7 @@
 
 | 部品 | 版・状況 | 対応方針 |
 |---|---|---|
-| nusb | 0.2.7(2026-08)。hotplug、backend は usbfs/WinUSB/IOKit/**WebUSB(wasm)**。0.1→0.2 で API 変動あり | `ch32rv-usb` に完全隔離し、他 crate に nusb 型を漏らさない。万一死んだら rusb/libusb へ差し替え可能な境界にする |
+| nusb | 0.2.7(2026-08)。hotplug、backend は usbfs/WinUSB/IOKit/**WebUSB(wasm)**。0.1→0.2 で API 変動あり | `ch32rv-usb` に完全隔離し、他 crate に nusb 型を漏らさない。万一死んだら rusb/libusb へ差し替え可能な境界にする。**Windows のみ例外**: WCH 純正ドライバが interface を所有していて WinUSB(nusb)で開けない場合、`ch32rv-usb-wch-win`(CH375 IOCTL 直叩き)へ device 単位でフォールバックする(2026-09-02 追加、docs/windows-wch-driver.ja.md) |
 | gdbstub | 0.7.10(2026-03)。no_std、実績多数。**gdbstub_arch の RISC-V は整数レジスタのみ** | V4F(V307/V317/H41x)の FPU レジスタは自前 Arch 定義で足す(作業量小)。probe-rs が `=0.7.8` に pin した前例に倣い exact pin |
 | serialport | 4.10.0(2026-08)。活発 | 採用 |
 | clap / serde / object | いずれも活発 | 採用。ELF は object を採用(goblin は不採用) |
@@ -53,7 +53,8 @@ workspace は機能単位の library crate 群 + 薄い CLI。**すべての lib
 | crate | 責務 | 主要公開 API | 依存 |
 |---|---|---|---|
 | `ch32rv-contract` | exit code・JSON/NDJSON event 型・capability 語彙・エラー分類。**CLI/GUI/CI の共通語彙** | `ExitCode`, `Event`, `CapabilityReport`, serde 型 | serde |
-| `ch32rv-usb` | nusb ラッパ: 列挙、selector 解決、advisory lock、transaction capture/replay | `enumerate()`, `Selector`, `DeviceLock`, `Capture` | nusb |
+| `ch32rv-usb` | USB 境界層: 列挙(nusb)、selector 解決、advisory lock、transaction capture/replay。転送 backend は nusb + Windows のみ CH375 フォールバック | `enumerate()`, `Selector`, `DeviceLock`, `Capture` | nusb, (win) usb-wch-win |
+| `ch32rv-usb-wch-win` | **Windows 専用・workspace 唯一の unsafe FFI 島**: WCH 純正ドライバ(CH375 系 IOCTL)経由の bulk 転送。protocol 非依存で他ツールからも部品利用可(docs/windows-wch-driver.ja.md §4.1) | `list_interfaces()`, `Ch375Device`(write/read_pipe), `GUID_CH375` | windows-sys |
 | `ch32rv-wchlink` | WCH-Link bulk protocol(`0x81 cmd len ...`)+ IAP。**protocol.md を repo の一級成果物として併設** | `WchLink`(open/attach/dmi/vendor cmd/power/mode/sdi/fw) | usb, contract |
 | `ch32rv-dmi` | RISC-V Debug Module(0.13.2/1.0)準拠層。**WCH 固有差分は quirk 層に隔離** | `DtmAccess` trait, `DebugModule`, `HaltControl` | contract |
 | `ch32rv-target` | 生成 device DB、chip 検出、option byte layout、verified flag | `Db`, `detect()`, `Sku`, `OptionLayout` | contract |

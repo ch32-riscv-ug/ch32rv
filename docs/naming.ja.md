@@ -44,6 +44,7 @@
 | `wchrv` | CH5xx まで射程に入れる将来対応 | CH5xx は non-goal 維持(requirements §4)。会社名を冠する判断も §8 のとおり不採用 |
 | `rvlink` 系 | probe 連想 | ISP/bootloader 経路を含む多経路 tool には §2-2 のとおり不適 |
 | protocol crate だけ説明的な独立名(`wch-link`) | 単独 publish 時の発見性 | 既存 crate `wlink` と紛らわしく、suite の prefix 一貫性が崩れる。`ch32rv-wchlink` に keywords(`wch-link`, `wch`)を付ければ crates.io 検索は足りる。**名前だけの placeholder 確保(squatting)はしない** |
+| Windows ドライバ経路 crate だけ独立名(`wch-ch375` 等) | 汎用部品としての発見性 | 同上の判断を踏襲し **`ch32rv-usb-wch-win` に確定(2026-09-02)**。汎用利用は keywords(`wch`, `ch375`, `wch-link`, `usb`, `windows`)と README で担保(候補 `wch-ch375` / `ch375` / `ch375-driver` は当時 crates.io 空きを確認の上で不採用) |
 
 ## 5. M0 での確保作業
 
