@@ -44,7 +44,8 @@ pub fn info(cli: &Cli) -> ExitCode {
     };
 
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    let session = match Session::attach(&entry, speed, timeout, &mut warnings) {
+    let session = match Session::attach(&entry, speed, timeout, cli.chip.as_deref(), &mut warnings)
+    {
         Ok(s) => s,
         Err(e) => return session_error(cli, CMD, e),
     };
@@ -204,10 +205,11 @@ pub fn option_get(cli: &Cli) -> ExitCode {
         Err(msg) => return fail(cli, CMD, ErrorKind::Usage, msg, None),
     };
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    let mut session = match Session::attach(&entry, speed, timeout, &mut warnings) {
-        Ok(s) => s,
-        Err(e) => return session_error(cli, CMD, e),
-    };
+    let mut session =
+        match Session::attach(&entry, speed, timeout, cli.chip.as_deref(), &mut warnings) {
+            Ok(s) => s,
+            Err(e) => return session_error(cli, CMD, e),
+        };
 
     let family = session.family();
     // Resolve the DB family from the live chip_id (e.g. family_byte 0x06 -> "CH32V30x", but the DB
@@ -334,6 +336,13 @@ pub fn option_get(cli: &Cli) -> ExitCode {
 
 fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
     match e {
+        SessionError::ChipMismatch(msg) => fail(
+            cli,
+            cmd,
+            ErrorKind::TargetAmbiguous,
+            msg,
+            Some("pass the correct --chip, or omit it to use auto-detection"),
+        ),
         SessionError::Open(err) | SessionError::ProbeInfo(err) => {
             let s = err.to_string();
             let kind = if s.contains("access denied") {
@@ -388,7 +397,8 @@ fn option_session(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
     let (speed, mut warnings) =
         parse::speed(&cli.speed).map_err(|msg| fail(cli, cmd, ErrorKind::Usage, msg, None))?;
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    Session::attach(&entry, speed, timeout, &mut warnings).map_err(|e| session_error(cli, cmd, e))
+    Session::attach(&entry, speed, timeout, cli.chip.as_deref(), &mut warnings)
+        .map_err(|e| session_error(cli, cmd, e))
 }
 
 /// Confirm a destructive option-byte write: `--yes` skips it, `--non-interactive` without `--yes`

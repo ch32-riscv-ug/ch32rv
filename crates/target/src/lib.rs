@@ -211,6 +211,29 @@ impl Db {
         &self.skus
     }
 
+    /// en: The distinct DB families a `--chip` name could mean (a SKU, a family, a series, or a
+    /// part-number prefix), for validating `--chip` against the detected chip. Empty when the name
+    /// is not in the DB (e.g. a gap-series part), so callers should not treat empty as a conflict.
+    /// ja: `--chip` 名(SKU/family/series/型番 prefix)が指しうる DB family 群。検出との突き合わせ用。
+    /// DB に無ければ空(未収載 part 等)なので、空を矛盾扱いしないこと。
+    pub fn families_for_chip_name(&self, name: &str) -> Vec<String> {
+        let up = name.to_ascii_uppercase();
+        let mut fams: Vec<String> = self
+            .skus
+            .iter()
+            .filter(|s| {
+                s.sku.eq_ignore_ascii_case(name)
+                    || s.family.eq_ignore_ascii_case(name)
+                    || s.series.eq_ignore_ascii_case(name)
+                    || s.sku.to_ascii_uppercase().starts_with(&up)
+            })
+            .map(|s| s.family.clone())
+            .collect();
+        fams.sort();
+        fams.dedup();
+        fams
+    }
+
     /// en: Resolve a live `chip_id` (AttachChip response) to a SKU. Silicon-revision bits [7:4] are
     /// masked out. Fail-closed: an ambiguous multi-family match returns `Unknown` rather than a
     /// guess; a same-family ambiguity returns `Family` with the candidates.
@@ -308,6 +331,21 @@ mod tests {
     #[test]
     fn option_user_fields_unknown_family_is_empty() {
         assert!(option_user_fields("CH32NOPE").is_empty());
+    }
+
+    #[test]
+    fn families_for_chip_name_matches_sku_family_series_prefix() {
+        let db = Db::builtin();
+        // Exact SKU, family, series, and part-number prefix all resolve to the same family.
+        assert_eq!(db.families_for_chip_name("CH32L103C8T6"), vec!["CH32L103"]);
+        assert_eq!(db.families_for_chip_name("CH32L103"), vec!["CH32L103"]);
+        assert_eq!(db.families_for_chip_name("ch32l103c8t6"), vec!["CH32L103"]); // case-insensitive
+        // A different family does not appear.
+        let v307 = db.families_for_chip_name("CH32V307VCT6");
+        assert_eq!(v307, vec!["CH32V307"]);
+        assert!(!v307.iter().any(|f| f == "CH32L103"));
+        // Unknown name -> empty (callers must not treat as a conflict).
+        assert!(db.families_for_chip_name("CH32V999ZZ").is_empty());
     }
 
     #[test]

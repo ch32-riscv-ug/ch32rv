@@ -50,7 +50,14 @@ fn open_session(
     warnings: &mut Vec<Warning>,
 ) -> Result<Session, ExitCode> {
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    Session::attach(entry, speed, timeout, warnings).map_err(|e| match e {
+    Session::attach(entry, speed, timeout, cli.chip.as_deref(), warnings).map_err(|e| match e {
+        SessionError::ChipMismatch(msg) => fail(
+            cli,
+            cmd,
+            ErrorKind::TargetAmbiguous,
+            msg,
+            Some("pass the correct --chip, or omit it to use auto-detection"),
+        ),
         SessionError::Open(err) => {
             let kind = if err.to_string().contains("access denied") {
                 ErrorKind::DeviceOpenFailed
