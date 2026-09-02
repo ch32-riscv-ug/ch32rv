@@ -13,7 +13,9 @@ probe-rs / wlink / minichlink / WCH OpenOCD / WCH-LinkUtility / wchisp などに
 > **β版。** `0.x` は下流プロジェクト(例: ArduinoCore-CH32)が統合するためのβで、`1.0` の正式リリースまでに CLI/ライブラリ API は変わりうる。
 >
 > **検証範囲。** 6台ベンチ(CH32V003 / V103 / V203 / V307 / X035 / L103)で end-to-end 検証済み。
-> Linux / macOS / Windows のバイナリを配布するが、**Linux x86_64 = verified**、他は **experimental**(実機未検証)。
+> Linux / macOS / Windows のバイナリを配布。**Linux x86_64 と Windows x86_64 = verified**、
+> macOS と arm は **experimental**(実機未検証)。Windows は WCH-LinkUtility が入れる **WCH 純正ドライバのまま動く**
+> (**Zadig / WinUSB 置換は不要**。[Windows](#windows-usb-ドライバ) 参照)。
 
 ## インストール
 
@@ -44,6 +46,17 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 `ch32rv doctor` は列挙・権限・firmware・probe mode を診断し、次の一手を提案する。
+
+### Windows: USB ドライバ
+
+ドライバの入れ替えは不要。`ch32rv` は次のどちらでも動く:
+
+- **WCH 純正ドライバ**(WCH-LinkUtility が入れるもの)— `ch32rv` がそのドライバ越しに直接 probe を叩くので、
+  WCH-LinkUtility と共存でき **Zadig 不要**。この経路は Windows x86_64 限定で、WinUSB よりやや遅い。
+- **WinUSB** — probe が既に WinUSB デバイスとして見えていれば(クリーン機では自動 install されることが多い)それを使う。
+  使えるドライバが全く無い時だけ Zadig を検討。
+
+`ch32rv` は WinUSB を先に試し、ダメなら WCH 純正ドライバへ自動フォールバックする。probe が見つからなければ `ch32rv doctor` を実行。
 
 ## クイックスタート
 

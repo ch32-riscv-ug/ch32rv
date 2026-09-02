@@ -15,8 +15,10 @@ management, a built-in device database, and the Arduino IDE integration protocol
 > against; the CLI and library APIs may still change before the `1.0` formal release.
 >
 > **Verified scope.** Exercised end-to-end on a six-board bench — CH32V003, V103, V203, V307, X035,
-> and L103. Prebuilt binaries are provided for Linux / macOS / Windows; **Linux x86_64 is verified**,
-> the others are **experimental** (not yet validated on real hardware).
+> and L103. Prebuilt binaries are provided for Linux / macOS / Windows; **Linux x86_64 and Windows
+> x86_64 are verified**, macOS and the arm targets are **experimental** (not yet validated on real
+> hardware). On Windows it works with WCH's stock driver as installed by WCH-LinkUtility — **no Zadig
+> / WinUSB swap needed** (see [Windows](#windows-usb-driver)).
 
 ## Install
 
@@ -48,6 +50,19 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ```
 
 `ch32rv doctor` diagnoses enumeration, permissions, firmware, and probe mode, and suggests the next step.
+
+### Windows: USB driver
+
+No driver swap is needed. `ch32rv` works with either:
+
+- **WCH's stock driver** (the one WCH-LinkUtility installs) — `ch32rv` reaches the probe through it
+  directly, so `ch32rv` and WCH-LinkUtility coexist and **you do not need Zadig**. This path is
+  Windows x86_64 only and somewhat slower than WinUSB.
+- **WinUSB** — if the probe already presents as a WinUSB device (a clean machine often auto-installs
+  it), `ch32rv` uses that. Only reach for Zadig if the probe shows up with no usable driver at all.
+
+`ch32rv` tries WinUSB first and falls back to the stock WCH driver automatically. Run `ch32rv doctor`
+if a probe is not found.
 
 ## Quick start
 
