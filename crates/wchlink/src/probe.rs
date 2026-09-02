@@ -20,6 +20,7 @@ const CMD_CONTROL: u8 = 0x0d;
 const CMD_SET_SPEED: u8 = 0x0c;
 const CMD_DMI_OP: u8 = 0x08;
 const CMD_SET_MEM_REGION: u8 = 0x01;
+const CMD_SET_READ_MEM_REGION: u8 = 0x03;
 const CMD_PROGRAM: u8 = 0x02;
 const CMD_CONFIG_CHIP: u8 = 0x06;
 const CMD_RESET: u8 = 0x0b;
@@ -512,6 +513,43 @@ impl WchLink {
             }
         }
         Ok(())
+    }
+
+    /// en: Fast bulk memory read via the WCH-Link (SetReadMemoryRegion + Program ReadMemory +
+    /// bulk from the data endpoint) - the read counterpart of [`write_flash`], far faster than
+    /// word-by-word DMI reads over a high-latency link (usbipd, the Windows WCH-driver ioctl path).
+    /// `len` is rounded up to 4 bytes. Works for any readable address (flash / system / RAM). The
+    /// chip must be attached. The link returns each 32-bit word byte-reversed; this restores LE.
+    /// ja: WCH-Link の高速バルク read(SetReadMemoryRegion + ReadMemory + data EP からバルク)。
+    /// word 単位 DMI read より桁違いに速い(usbipd / Windows の ioctl 経路で顕著)。len は 4 に切上げ。
+    pub fn read_memory(&mut self, address: u32, len: u32) -> Result<Vec<u8>, WchLinkError> {
+        let len4 = len.div_ceil(4) * 4;
+        self.iface.open_data_endpoints(DATA_EP_OUT, DATA_EP_IN)?;
+        // SetReadMemoryRegion (cmd 0x03): start_addr BE32 + len BE32.
+        let mut region = Vec::with_capacity(8);
+        region.extend_from_slice(&address.to_be_bytes());
+        region.extend_from_slice(&len4.to_be_bytes());
+        let _ = self.command(CMD_SET_READ_MEM_REGION, &region)?;
+        // Program ReadMemory (0x0c), then stream len4 bytes from the data endpoint.
+        let _ = self.command(CMD_PROGRAM, &[0x0c])?;
+        let mut buf = vec![0u8; len4 as usize];
+        let mut got = 0usize;
+        while got < buf.len() {
+            let n = self.iface.read_data(&mut buf[got..], self.timeout)?;
+            if n == 0 {
+                return Err(WchLinkError::UnexpectedResponse(Vec::new()));
+            }
+            got += n;
+        }
+        // Each 32-bit word comes back byte-reversed; swap to little-endian in place.
+        let mut i = 0;
+        while i + 4 <= buf.len() {
+            buf.swap(i, i + 3);
+            buf.swap(i + 1, i + 2);
+            i += 4;
+        }
+        buf.truncate(len as usize);
+        Ok(buf)
     }
 
     /// en: Soft reset and run (Reset 0x01). This is `wlink reset` / the run-after-flash reset.

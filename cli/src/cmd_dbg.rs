@@ -335,8 +335,7 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
-    let mut dm = session.dm();
-    if let Err(e) = dm.halt() {
+    if let Err(e) = session.dm().halt() {
         return fail(
             cli,
             CMD,
@@ -345,17 +344,23 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
             None,
         );
     }
-    let data = match dm.read_mem(start, len) {
+    // en: Fast bulk read via the WCH-Link (SetReadMemoryRegion + ReadMemory + data endpoint);
+    // fall back to word-by-word DMI reads if the probe rejects the region.
+    // ja: WCH-Link の高速バルク read を使い、領域が弾かれたら DMI word 読みへ fallback。
+    let data = match session.link().read_memory(start, len) {
         Ok(d) => d,
-        Err(e) => {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::TransportTimeout,
-                format!("read failed: {e}"),
-                None,
-            );
-        }
+        Err(_) => match session.dm().read_mem(start, len) {
+            Ok(d) => d,
+            Err(e) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransportTimeout,
+                    format!("read failed: {e}"),
+                    None,
+                );
+            }
+        },
     };
 
     if args.blank_check {
