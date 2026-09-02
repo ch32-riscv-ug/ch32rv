@@ -80,7 +80,8 @@ target の `SYS_WRITE0` 出力を中継し、`SYS_EXIT`/`SYS_EXIT_EXTENDED` の�
 ### 補助
 ```sh
 ch32rv gdb --probe serial:<SN>                               # 別端末で gdb 接続(HW/flash BP)
-ch32rv monitor --source dmdata --probe serial:<SN>           # runtime 出力
+ch32rv monitor --source dmdata --probe serial:<SN>           # runtime 出力(DM mailbox、非 halt)
+ch32rv monitor --source rtt --probe serial:<SN>              # SerialRTT(RAM リング、poll ごと一瞬 halt。fixture=rtt-ch32v307.bin)
 ch32rv --capture cap.ndjson probe info --probe serial:<SN>   # 問題時に添付する transaction 記録
 ```
 

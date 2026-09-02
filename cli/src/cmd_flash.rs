@@ -1211,17 +1211,10 @@ fn confirm(prompt: &str) -> bool {
 }
 
 pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
-    const CMD: &str = "recover";
     match args.method {
         RecoverMethod::PowerOff | RecoverMethod::Nrst => recover_special_erase(cli, args.method),
         RecoverMethod::Unprotect => recover_unprotect(cli),
-        other => fail(
-            cli,
-            CMD,
-            ErrorKind::CapabilityUnsupported,
-            format!("recover --method {} is not implemented yet", other.as_str()),
-            Some("power-off, nrst, and unprotect are implemented; unbrick comes next"),
-        ),
+        RecoverMethod::Unbrick => recover_unbrick(cli),
     }
 }
 
@@ -1278,6 +1271,134 @@ fn recover_unprotect(cli: &Cli) -> ExitCode {
     } else {
         println!("recover unprotect: read protection cleared (RDPR=0xA5) on {family}");
         println!("note: a protected target is mass-erased; re-flash your firmware");
+        ExitCode::SUCCESS
+    }
+}
+
+/// en: `recover --method unbrick`: attach-based escalation. Attaches the target, then clears
+/// whatever keeps it from a normal flash - read protection (write factory option bytes, which
+/// triggers the chip's mass erase) if set, otherwise a whole-chip erase - and applies it with a
+/// reset. A target that cannot attach at all (its app repurposed SWDIO/SWCLK) is beyond this:
+/// point the user at the no-attach `--method power-off --chip <family>` instead.
+/// ja: `recover --method unbrick`: attach ベースのエスカレーション復旧。attach して、通常 flash を
+/// 妨げているもの(保護 ON なら工場 option bytes 書込=mass erase、そうでなければ chip erase)を
+/// クリアし reset で反映。全く attach できない target(app が SWD ピンを転用)は対象外で、非 attach の
+/// `--method power-off --chip <family>` を案内する。
+fn recover_unbrick(cli: &Cli) -> ExitCode {
+    const CMD: &str = "recover";
+    // Factory defaults: RDPR=0xA5 (unprotected), USER/Data/WRPR = 0xff, each with its complement.
+    const FACTORY: [u8; 16] = [
+        0xA5, 0x5A, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF,
+        0x00,
+    ];
+    if !cli.yes
+        && !cli.non_interactive
+        && !confirm(
+            "Unbrick this target? This ERASES ALL FLASH (and clears read protection if set).",
+        )
+    {
+        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    }
+    // Quiet attach: on failure give the tailored "use power-off" hint rather than a generic error.
+    let entry = match select_entry(cli, CMD) {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    if entry.mode != ch32rv_contract::ProbeMode::Riscv {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "probe is in {} mode; this needs RISC-V mode",
+                mode_str(entry.mode)
+            ),
+            None,
+        );
+    }
+    let (speed, mut warnings) = match parse::speed(&cli.speed) {
+        Ok(v) => v,
+        Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+    };
+    let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
+    let mut session = match Session::attach(
+        &entry,
+        speed,
+        timeout,
+        Duration::from_secs(cli.lock_timeout),
+        cli.chip.as_deref(),
+        &mut warnings,
+    ) {
+        Ok(s) => s,
+        Err(_) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::AttachFailed,
+                "unbrick needs the target to attach over DMI, but attach failed",
+                Some(
+                    "if the app repurposed SWDIO/SWCLK, use: recover --method power-off --chip <family>",
+                ),
+            );
+        }
+    };
+    let family = session.family();
+
+    // Decide and apply under a halted hart: read protection off -> chip erase; on -> factory
+    // option bytes (mass erase). Scope the DM borrow so we can reach the probe afterwards.
+    let protected;
+    {
+        let mut dm = session.dm();
+        if let Err(e) = dm.halt() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::AttachFailed,
+                format!("halt failed: {e}"),
+                None,
+            );
+        }
+        // Option byte 0 (RDPR) at 0x1FFF_F800; 0xA5 = read protection disabled.
+        protected = match dm.read_mem(0x1FFF_F800, 1) {
+            Ok(b) => b.first().copied() != Some(0xA5),
+            Err(_) => false,
+        };
+        if protected && let Err(e) = dm.flash_program_option_bytes(&FACTORY) {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::TransportTimeout,
+                format!("clearing read protection failed: {e}"),
+                None,
+            );
+        }
+    }
+    let action = if protected {
+        "read protection cleared (RDPR=0xA5, mass erase)"
+    } else {
+        if let Err(e) = session.link().erase_flash() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::TransportTimeout,
+                format!("chip erase failed: {e}"),
+                None,
+            );
+        }
+        "whole-chip erase"
+    };
+    // Apply (a protection change needs a system reset; a plain erase just re-runs blank flash).
+    let _ = session.link().soft_reset();
+
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "method": "unbrick", "family": family, "protected": protected, "action": action,
+        }));
+        crate::print_envelope(&env)
+    } else {
+        println!("recover unbrick: {action} on {family}");
+        println!("note: flash is now blank; re-flash your firmware");
         ExitCode::SUCCESS
     }
 }
