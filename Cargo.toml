@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/contract",
     "crates/usb",
+    "crates/usb-wch-win",
     "crates/wchlink",
     "crates/dmi",
     "crates/target",
@@ -27,6 +28,7 @@ authors = ["CH32 RISC-V User Group"]
 # 内部 crate
 ch32rv-contract = { path = "crates/contract", version = "0.2.0" }
 ch32rv-usb = { path = "crates/usb", version = "0.2.0" }
+ch32rv-usb-wch-win = { path = "crates/usb-wch-win", version = "0.2.0" }
 ch32rv-wchlink = { path = "crates/wchlink", version = "0.2.0" }
 ch32rv-dmi = { path = "crates/dmi", version = "0.2.0" }
 ch32rv-target = { path = "crates/target", version = "0.2.0" }

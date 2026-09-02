@@ -1,0 +1,43 @@
+[package]
+name = "ch32rv-usb-wch-win"
+version.workspace = true
+description = "Access USB devices bound to WCH's stock Windows vendor driver (CH375-family DeviceIoControl) from 64-bit Rust — no WinUSB replacement, no WCHLinkDLL.dll"
+keywords = ["wch", "ch375", "wch-link", "usb", "windows"]
+categories = ["hardware-support", "os::windows-apis"]
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[target.'cfg(windows)'.dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Properties",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_Security",
+]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-pc-windows-msvc"
+targets = ["x86_64-pc-windows-msvc"]
+
+# en: The one deliberate exception to the workspace-wide `unsafe_code = forbid`:
+# this crate is the isolated FFI island (architecture.ja.md §2, windows-wch-driver.ja.md §4).
+# The clippy quality bar is kept identical to the workspace lints by hand.
+# ja: workspace 全体の `unsafe_code = forbid` に対する唯一の意図的な例外。
+# FFI をこの crate に隔離する(architecture.ja.md §2、windows-wch-driver.ja.md §4)。
+# clippy の品質基準は workspace lints と同一のものを手書きで維持する。
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+panic = "deny"
