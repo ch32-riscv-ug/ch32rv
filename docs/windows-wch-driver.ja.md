@@ -1,8 +1,8 @@
 # Windows で WCH 標準ドライバ経由アクセス(WinUSB 非依存)— 作業引き継ぎ
 
-- 状態: **実装済み(2026-09-02)**。スパイク成功(§5.1)→ `ch32rv-usb-wch-win` crate 化 →
-  `ch32rv-usb` へのフォールバック統合まで完了(§4.2)。残: flash 実書込での data EP 検証(§5.1 末尾)、
-  安定後の英語 main + `.ja` twin 化。
+- 状態: **実装・実機検証完了(2026-09-02)**。スパイク成功(§5.1)→ `ch32rv-usb-wch-win` crate 化 →
+  `ch32rv-usb` へのフォールバック統合(§4.2)→ **全 5 target で backup / chip erase / flash /
+  readback verify 成功(§4.3)**。残: 安定後の英語 main + `.ja` twin 化。
 - 対象読者: Windows ネイティブ(Rust 導入済み)で VSCode を開いて続きを実装・検証する人。
 - 目的: **ユーザーが既に入れている WCH 標準ドライバ(`WCHLink_A64`)のまま、Zadig/WinUSB 置換なしで** ch32rv が WCH-Link と通信できる経路を追加する。ArduinoCore-CH32 依頼 B-2 の Windows 対応の核。
 
@@ -146,7 +146,26 @@ WCH-Link 専用ではなく「**WCH 標準ドライバ(CH375 系 IOCTL)で USB d
 - **実機検証(WCH 純正ドライバのまま、Zadig なし)**: `probe list`(firmware 列まで取得)、
   `probe info`(CH549 + LinkE)、**`target info` がフルスタックで成功**
   (attach → DMI → ChipInfo: CH32V307VCT6、UID・flash 容量・配線まで正常)。
-- 未検証は flash 実書込(data EP の 64B 超転送)のみ。
+
+### 4.3 flash 実書込の検証(2026-09-02、全 5 target 成功)
+
+各 target を「read ×2(ハッシュ一致確認)→ chip erase → 書き戻し(verify=readback)」で往復。
+**Link(CH549)と LinkE の差は出なかった。**
+
+| target | probe | flash | read 1 回 | flash(erase+program+verify) |
+|---|---|---|---|---|
+| CH32V003F4P6 | LinkE | 16 KiB | 数秒 | 数秒 |
+| CH32V103R8T6 | **Link(CH549)fw2.12** | 64 KiB | 38s | 50s |
+| CH32L103C8T6 | LinkE | 64 KiB | 28s | 36s |
+| CH32V203C8T6 | LinkE | 64 KiB | 28s | 34s |
+| CH32V307VCT6 | LinkE | 288 KiB | 125s | 152s |
+
+- **64B 超の data EP 転送は解決済み**: capture 実測で `write_data` 呼び出しは V103=最大 128B、
+  V307=最大 256B(family の data_packet_size)。CH375 backend が 64B/ioctl に chunk 分割し、
+  readback verify が全台一致 = 分割転送は正しく機能する(§3.2 の「要実測」は解消)。
+- **既知の特性: 転送が遅い**(read ~2.3 KiB/s)。1 ioctl = 最大 64B の駆動なので DMI 読みの
+  往復回数がそのまま効く。まず動くこと優先。高速化(まとめ読み等)は必要になったら別途。
+- capture 証跡: `--capture` の NDJSON(cmd+data 全転送)を取得済み(V003/V103/V307)。
 
 ## 5. 最小スパイク(まずここだけ、Windows ネイティブ)
 
@@ -180,8 +199,8 @@ WCH-Link 専用ではなく「**WCH 標準ドライバ(CH375 系 IOCTL)で USB d
 - write の DeviceIoControl は `ret = 8 + 送信長` を返す。read は `ret = 8 + mLength` で
   `mBuffer[..mLength]` が応答フレームそのもの。
 - probe は usbipd `Shared` 状態(WSL 未 attach)なら WCH ドライバが所有しており、detach 操作は不要だった。
-- 未確認のまま残る項目: **data EP(pipe2)の 64B 超転送**(flash 書込で必要。1 IOCTL で 64B 超を
-  扱えるか、chunk 分割が要るか)。attach + flash 実書込を伴うため統合実装時に確認する。
+- ~~未確認のまま残る項目: data EP(pipe2)の 64B 超転送~~ → **解消(同日)**: §4.3 のとおり
+  全 5 target の flash 往復で検証済み。64B 超は crate 内の 64B chunk 分割で正しく動く。
 
 ## 6. 検証手順(usbipd の状態が肝)
 
