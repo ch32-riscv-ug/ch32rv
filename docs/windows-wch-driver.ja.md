@@ -98,9 +98,38 @@
   ```
   enum UsbInterface { Nusb(NusbInterface), Ch375(Ch375Device) }   // write/read/write_data/read_data を分岐
   ```
-- **unsafe FFI の隔離**: CH375 コードは `unsafe` 必須。workspace lint は `unsafe_code = forbid`(inner `#[allow]` では外せない)。→ **Windows 専用の別 crate**(例 `crates/usb-wch-win`、`cfg(windows)` のみ、その crate の `[lints]` で `unsafe_code` を許可、`windows-sys` を使う)に閉じ込め、`ch32rv-usb` が cfg(windows) で依存する。architecture §2 の「別バックエンド crate は core 依存を増やさず隔離」枠に合致(旧「nusb のみ/libusb 不採用」規定は新条件で更新可、とユーザー合意済み)。
+- **unsafe FFI の隔離**: CH375 コードは `unsafe` 必須。workspace lint は `unsafe_code = forbid`(inner `#[allow]` では外せない)。→ **Windows 専用の別 crate** に閉じ込め、`ch32rv-usb` が cfg(windows) で依存する。architecture §2 の「別バックエンド crate は core 依存を増やさず隔離」枠に合致(旧「nusb のみ/libusb 不採用」規定は新条件で更新可、とユーザー合意済み)。
+  **この crate は ch32rv 専用にせず、他の Rust 製ツールからも使える汎用粒度で公開する(2026-09-02 ユーザー決定)** — 詳細は §4.1。
 - **ランタイム選択(Windows)**: まず nusb(WinUSB)で open を試し、`incompatible driver` かつ CH375 GUID で当該 serial が見つかるなら CH375 経路にフォールバック。Linux/macOS は従来どおり nusb のみ。
 - 依存: `windows-sys`(SetupAPI / ioapiset DeviceIoControl / fileapi CreateFileW / handleapi CloseHandle。features を追加)。既に依存ツリーに `windows-sys` あり。
+
+### 4.1 汎用 crate として公開(検討中 → 方針決定 2026-09-02)
+
+WCH-Link 専用ではなく「**WCH 標準ドライバ(CH375 系 IOCTL)で USB device を叩く汎用 crate**」として
+切り出し、crates.io に公開する。wlink / wchisp / minichlink 系など、同じ「Zadig 非依存で Windows 対応
+したい」需要を持つツールが 64bit のまま使える(= `WCHLinkDLL.dll` の 64bit Rust 代替)。
+
+- **crate 名(確定 2026-09-02、ユーザー決定)**: **`ch32rv-usb-wch-win`**(directory `crates/usb-wch-win`)。
+  suite prefix の一貫性(naming.ja.md)を優先し、汎用利用の発見性は keywords(`wch`, `ch375`,
+  `wch-link`, `usb`, `windows`)と README で確保する。独立名候補(`wch-ch375` / `ch375` /
+  `ch375-driver`、いずれも 2026-09-02 時点で crates.io 空き)は不採用。naming.ja.md への追記は統合時。
+- **API 粒度**(WCH-Link 固有の知識を持たない層):
+  - interface GUID 定数(`{F8D5EDCA-...}` と INF 登録の `{CDB3B5AD-...}`)+ 任意 GUID での列挙
+    (`CM_Get_Device_Interface_ListW`)。
+  - `open(path)` / `open_nth(guid, n)` → `Ch375Device`(RAII で CloseHandle)。
+  - `write_pipe(ep: u8, data)` / `read_pipe(ep: u8, buf)`(EP 番号 → pipe 変換と §3.2 の
+    WIN32_COMMAND/IOCTL を内包。64B 超は crate 内で chunk 処理 — 上限挙動は §5.1 の残項目)。
+  - **serial との対応付け**: interface path の instance ID(`6&27b6deca&0&0000` 等)には serial が
+    含まれない(composite 親が持つ)ため、`CM_Locate_DevNodeW` → `CM_Get_Parent` → `CM_Get_Device_IDW`
+    で親の `USB\VID_xxxx&PID_xxxx\<SERIAL>` を引くヘルパを crate 側に置く。ch32rv 側はこれで
+    nusb 列挙(serial 基準)と突き合わせる。
+  - protocol(WCH-Link フレーム等)は一切持たない。wlink 的 trait 統合も利用側の仕事。
+- **配置と版**: 当面この repo の workspace member(`crates/usb-wch-win`)。`[lints]` は workspace を
+  継承せず crate 独自(`unsafe` 許可)。**version は workspace 共有(2026-09-02 ユーザー決定)** —
+  suite として統一し、他ツールからは単に部品として使えればよい。release-plan §1 の
+  publish 依存順には `ch32rv-usb` より前に追加。
+- **cfg**: crate 自体を Windows 専用とし(他 OS ではコンパイル対象外)、利用側が
+  `[target.'cfg(windows)'.dependencies]` で gate する。
 
 ## 5. 最小スパイク(まずここだけ、Windows ネイティブ)
 

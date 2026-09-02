@@ -190,6 +190,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ch32rv-usb-wch-win"
+version = "0.2.0"
+dependencies = [
+ "thiserror",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "ch32rv-wchlink"
 version = "0.2.0"
 dependencies = [
