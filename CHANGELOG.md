@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-09-03
+
 - (EN) Fix: `flash --verify readback` no longer reports a false `verify-mismatch` (exit 30) on the CH549 Link (WCH-Link, fw 2.12). Its fast bulk read can return a stale, pre-program view of flash (0xff or a garbage ramp) in the moment right after the loader stub runs - the write actually landed, but the in-flash readback disagreed (~2-3 of every ~7 flashes on the CH549; never seen on a WCH-LinkE). The readback now re-checks any fast-read disagreement against the authoritative DMI read (progbuf word reads, through the real bus), so a stale fast read is corrected while a genuine mismatch is still caught. A pre-0.4.0-behaviour regression introduced with the 0.4.0 fast bulk read; reproduced and fixed on a real CH549 (15/15 flashes clean, ~2/12 stale fast reads silently corrected). LinkE flashing is unaffected.
 - (JA) 修正: CH549 Link(WCH-Link、fw 2.12)で `flash --verify readback` が偽の `verify-mismatch`(exit 30)を報告しなくなった。CH549 の fast bulk read は loader stub 実行直後の一瞬、program 前の stale な flash view(0xff やゴミの ramp)を返すことがあり、書込は成功しているのに in-flash readback が食い違っていた(CH549 で ~7 回中 2-3 回、WCH-LinkE では未発生)。readback は fast read の不一致を権威ある DMI 読み(progbuf の word 読み、実バス経由)で再確認するようにし、stale な fast read は訂正、真の不一致は従来どおり検出する。0.4.0 の fast bulk read 導入で入った回帰。実 CH549 で再現・修正(15/15 clean、~2/12 の stale fast read を無言で訂正)。LinkE の書込は影響なし。
 
