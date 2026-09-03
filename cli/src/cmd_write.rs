@@ -234,23 +234,9 @@ fn parse_source(s: &str) -> Result<Vec<u8>, String> {
     std::fs::read(s).map_err(|e| format!("read {s}: {e}"))
 }
 
-/// Parse `--at`: a raw address, or `code[+off]` / `ram[+off]`.
+/// Parse `--at`: a raw address, or `<region>[+off]` (shared region base map in `parse`).
 fn parse_at(s: &str) -> Result<u32, String> {
-    let (base, off) = match s.split_once('+') {
-        Some((b, o)) => (b, Some(o)),
-        None => (s, None),
-    };
-    let base_addr = match base.trim() {
-        "code" | "flash" => FLASH_BASE,
-        "ram" => 0x2000_0000,
-        "option" => 0x1FFF_F800,
-        other => parse_u32(other).ok_or_else(|| format!("bad address {other:?}"))?,
-    };
-    let off = match off {
-        Some(o) => parse_u32(o).ok_or_else(|| format!("bad offset {o:?}"))?,
-        None => 0,
-    };
-    Ok(base_addr.wrapping_add(off))
+    crate::parse::region_or_addr(s)
 }
 
 fn parse_u32(s: &str) -> Option<u32> {

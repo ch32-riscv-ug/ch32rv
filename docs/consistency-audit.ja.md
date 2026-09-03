@@ -135,7 +135,7 @@ crates.io 公開ライブラリ・CLI・JSON contract の仕様を横断点検�
 
 **据え置き(理由あり)**:
 - 死蔵 exit 21/41: 番号は凍結契約なので削除せず「予約(未発行)」と明記(protected 検出・wedged 検出は実機検証困難のため未配線)。
-- Region enum 統一(read/erase/write): `region[+off[+len]]` サフィックスがあり ValueEnum 化不可。String のまま(将来 `RegionSpec` FromStr 型で対応可)。
+- Region 統一(read/erase/write): **実施済(非破壊、Unreleased)** — `region[+off[+len]]` は ValueEnum 化不可だが、3 コマンドで重複していた base 番地ロジックを `parse::{region_base, resolve_region, region_or_addr}` の共有 1 つに集約(base 番地の唯一の出所)。`read --region` を実装、`erase --region` は flash 限定で明快化。flash/verify の `--region <Region enum>`(サフィックス無し)は据え置き(破壊になるため。実害小)。
 - policy enum クローン(`WriteErase`/`IspErase` 等): コマンド別 subset は clap 検証を保つため妥当と判断。
 - `flash --monitor` vs `--source`: 「flash 後に monitor」の意図が読めるので現状維持。
 - isp/boot/dap のフラグ整形: 未実装(stub)のため実装時に確定(まだ live 契約でない)。

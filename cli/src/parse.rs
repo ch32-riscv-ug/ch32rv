@@ -67,6 +67,72 @@ pub fn byte_len(s: &str) -> Result<u32, String> {
         .ok_or_else(|| format!("length `{s}` overflows u32"))
 }
 
+/// en: Base address of a named memory region (the single source of truth, shared by
+/// `read` / `erase` / `write`). `code`/`flash` = flash base, `ram` = SRAM base, `option` = the
+/// option-byte window. `system`/`eeprom` are family-specific and have no fixed base here.
+/// ja: 名前付き領域の base 番地(read/erase/write 共有の唯一の出所)。`code`/`flash`=flash 先頭、
+/// `ram`=SRAM 先頭、`option`=option byte 窓。`system`/`eeprom` は family 依存で固定 base 無し。
+pub fn region_base(name: &str) -> Result<u32, String> {
+    match name {
+        "code" | "flash" => Ok(0x0800_0000),
+        "ram" => Ok(0x2000_0000),
+        "option" => Ok(0x1FFF_F800),
+        "system" | "eeprom" => Err(format!(
+            "region `{name}` is family-specific; use --range <addr>+<len>"
+        )),
+        other => Err(format!(
+            "unknown region `{other}` (code|ram|option; system/eeprom need --range)"
+        )),
+    }
+}
+
+/// en: Resolve `--region <name>[+off[+len]]` to `(start, len)`. The default length is the whole
+/// region: the probe's `flash_bytes` for `code`, the DB `sram_bytes` for `ram`, 16 for `option`.
+/// ja: `--region <名前>[+off[+len]]` を `(start, len)` に解決。既定長は領域全体(code=probe 報告
+/// flash、ram=DB SRAM、option=16)。
+pub fn resolve_region(spec: &str, flash_bytes: u32, sram_bytes: u32) -> Result<(u32, u32), String> {
+    let mut it = spec.split('+');
+    let name = it.next().unwrap_or("");
+    let base = region_base(name)?;
+    let default_len = match name {
+        "code" | "flash" => flash_bytes,
+        "ram" => sram_bytes,
+        "option" => 16,
+        _ => 0,
+    };
+    let off = match it.next() {
+        Some(s) => u32_addr(s)?,
+        None => 0,
+    };
+    let len = match it.next() {
+        Some(s) => byte_len(s)?,
+        None => default_len.saturating_sub(off),
+    };
+    if len == 0 {
+        return Err(format!(
+            "region `{name}` size is unknown for this target; specify a length: --region {name}+0+<len>"
+        ));
+    }
+    Ok((base.saturating_add(off), len))
+}
+
+/// en: Resolve a `<name>[+off]` region spec (or a raw `0x..`/decimal address) to a single address,
+/// for commands that write to a point (`write --at`). Length is not implied.
+/// ja: `<名前>[+off]`(または生番地)を単一番地に解決。length は含まない(`write --at` 用)。
+pub fn region_or_addr(spec: &str) -> Result<u32, String> {
+    // A bare number is an address; otherwise it is `<region>[+off]`.
+    if let Ok(addr) = u32_addr(spec) {
+        return Ok(addr);
+    }
+    let mut it = spec.split('+');
+    let base = region_base(it.next().unwrap_or(""))?;
+    let off = match it.next() {
+        Some(s) => u32_addr(s)?,
+        None => 0,
+    };
+    Ok(base.saturating_add(off))
+}
+
 /// en: Parse a range `<addr>[+len|..end]`. Returns (start, len).
 /// ja: 範囲 `<addr>[+len|..end]` をパースする。(start, len) を返す。
 pub fn range(s: &str) -> Result<(u32, u32), String> {
@@ -142,5 +208,42 @@ mod tests {
         // end before start, and missing delimiter, are errors.
         assert!(range("0x20..0x10").is_err());
         assert!(range("0x100").is_err());
+    }
+
+    #[test]
+    fn region_resolution() {
+        // code: flash base, default length = the probe's flash size.
+        assert_eq!(
+            resolve_region("code", 0x4_8000, 0x1_0000),
+            Ok((0x0800_0000, 0x4_8000))
+        );
+        assert_eq!(resolve_region("flash", 1024, 0), Ok((0x0800_0000, 1024)));
+        // ram: SRAM base + explicit offset/length.
+        assert_eq!(
+            resolve_region("ram+0+64", 0, 0x1_0000),
+            Ok((0x2000_0000, 64))
+        );
+        assert_eq!(
+            resolve_region("ram+0x100", 0, 0x8000),
+            Ok((0x2000_0100, 0x8000 - 0x100))
+        );
+        // option: fixed 16 bytes.
+        assert_eq!(resolve_region("option", 0, 0), Ok((0x1FFF_F800, 16)));
+        // family-specific / unknown are rejected; code with no size and no length errors.
+        assert!(resolve_region("system", 0x1000, 0x1000).is_err());
+        assert!(resolve_region("bogus", 0x1000, 0x1000).is_err());
+        assert!(resolve_region("code", 0, 0).is_err());
+    }
+
+    #[test]
+    fn region_or_addr_forms() {
+        assert_eq!(
+            region_or_addr("0x2000_0010".replace('_', "").as_str()),
+            Ok(0x2000_0010)
+        );
+        assert_eq!(region_or_addr("code+0x100"), Ok(0x0800_0100));
+        assert_eq!(region_or_addr("ram+16"), Ok(0x2000_0010));
+        assert_eq!(region_or_addr("option"), Ok(0x1FFF_F800));
+        assert!(region_or_addr("system").is_err());
     }
 }
