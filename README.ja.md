@@ -68,7 +68,7 @@ ch32rv flash firmware.elf               # 書き込み(format 自動、erase + v
 ch32rv flash app.bin --offset 0x08000000
 ch32rv verify firmware.elf              # 書かずに比較(不一致: exit 30)
 
-ch32rv read --range 0x08000000+256 --format hex
+ch32rv read --range 0x08000000+256 --format hex-dump
 ch32rv erase --all
 ch32rv reset
 

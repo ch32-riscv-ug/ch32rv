@@ -34,3 +34,16 @@ cargo deny check
 ## 4. リリース
 
 - 版・CHANGELOG の bump は `scripts/release.sh`、初回 crate 確保は `scripts/first-publish.sh`、公開は `.github/workflows/release.yml`(workflow_dispatch)。手順の詳細は [release-plan.ja.md](release-plan.ja.md)。
+
+## 5. ライブラリ API 規約
+
+公開 crate は crates.io の安定契約。破壊的変更は 0.x の minor でまとめて行い([consistency-audit.ja.md](consistency-audit.ja.md))、以下の規約に従う。
+
+- **エラー型**: 1 crate 1 エラー enum(`〜Error` 接尾辞)+ `thiserror` + `#[non_exhaustive]`。分類は Display 文字列でなく**型付き variant** で行う(部分文字列マッチ禁止)。`ch32rv-usb` だけは境界の性質上 4 エラー型(`UsbError`/`LockError`/`ResolveError`/`SelectorParseError`)を意図的に持つ。CLI 側の exit code 分類は `cmd_probe::session_error` に集約。
+- **戻り値**: 到達可否・欠損が「データ」なら status enum(`ChipInfoStatus`/`DmiStatus`/`target::Resolution`)、失敗が「エラー」なら `Result`。public 経路に `unwrap`/`expect`/`panic` を置かない。
+- **命名**: target 番地は `u32`、host 長は `usize`。番地引数は `addr`、byte 範囲読みは `read_mem(addr, len)`、書きは `write_*(addr, data, …)`(addr 先)。単語/半語アクセスは `read_mem32`/`write_mem16` 等と別名にする。enum→文字列は `as_str(&self) -> &'static str`(data を持つ enum は `name()->String` 可)。
+- **単位**: サイズは **bytes**(`flash_bytes`/`sram_bytes`)。KiB は表示境界でのみ導出する。
+- **constructor 動詞**: HW を掴むものは `open`、lock は `acquire`、純粋/借用は `new`、名前付き生成は `builtin`/`parse`。
+- **pub フィールド**: plain data 構造体はフィールド公開でよいが、不変条件を持ちうる型(`FlashParams`/`FlashCtrlProfile` 等)は将来 accessor 化が破壊になる点に注意。UsbDeviceInfo 等 backend を包む型は accessor。
+- **timeout モデル**: `WchLink` はセッションに timeout を持つ(`set_timeout`)。`--timeout` は transport(1 転送)専用、`--duration` は streaming コマンドの実行長。
+- **contract**: JSON の envelope/キー/exit code は `ch32rv-contract`。`result` のキーは snake_case、同一概念は同名(`addr`/`family`/`scope`/`verified`/`firmware`/`firmware_mode`/`flash_bytes`)、二値は bool。exit code 数値は凍結(`exit.rs` の test が固定)。破壊時のみ `CONTRACT_VERSION` を上げる。

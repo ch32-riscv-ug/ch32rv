@@ -46,7 +46,7 @@ ch32rv を実機でテストする手順。**まず Linux で通し、次に Win
 ch32rv probe list
 ch32rv probe info    --probe serial:<SN>
 ch32rv target info   --probe serial:<SN>            # SKU / family / 容量 / UID
-ch32rv read --range 0x08000000+256 --format hex     # 先頭 256B dump
+ch32rv read --range 0x08000000+256 --format hex-dump  # 先頭 256B dump
 ch32rv capabilities  --probe serial:<SN>
 ch32rv doctor
 ```

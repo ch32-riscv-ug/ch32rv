@@ -706,3 +706,34 @@ const FLASH_PGSTART: u32 = 1 << 21; // start fast page program (PgStart mode)
 const FLASH_BUSY: u32 = 1 << 0;
 const FLASH_WRBUSY: u32 = 1 << 1;
 const FLASH_WPRERR: u32 = 1 << 4;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reg_abstract_numbers() {
+        // GPRs are abstract regno 0x1000 + n.
+        assert_eq!(RegName::Gpr(0).abstract_regno(), 0x1000);
+        assert_eq!(RegName::Gpr(10).abstract_regno(), 0x100a); // a0
+        assert_eq!(RegName::Gpr(31).abstract_regno(), 0x101f);
+        // PC is read as CSR dpc.
+        assert_eq!(RegName::Pc.abstract_regno(), 0x7b1);
+        // A plain CSR passes through.
+        assert_eq!(RegName::Csr(0x300).abstract_regno(), 0x300); // mstatus
+    }
+
+    #[test]
+    fn host_input_frame_encoding() {
+        // Empty: count 0, no data, no bit7 (host->target).
+        assert_eq!(encode_host_input(&[]), 0);
+        // One byte sits at <<8; the low byte is the count.
+        assert_eq!(encode_host_input(&[0xaa]), 0x0000_aa01);
+        // Three bytes fill bytes 1..4; count 3.
+        assert_eq!(encode_host_input(&[0x11, 0x22, 0x33]), 0x3322_1103);
+        // Never sets bit7 in the count byte.
+        assert_eq!(encode_host_input(&[0xff; 3]) & 0x80, 0);
+        // More than 3 bytes: only 3 carried, count saturates at 3.
+        assert_eq!(encode_host_input(&[1, 2, 3, 4, 5]) & 0xff, 3);
+    }
+}

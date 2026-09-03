@@ -233,7 +233,7 @@ ch32rv flash <FILE>
 ```text
 ch32rv verify <FILE> [--format ...] [--at ...] [--region ...]     不一致は exit 30
 ch32rv read  (--range <addr>[+len|..end] | --region <r>[+off][+len])
-             [-o <file>|-] [--format bin|hex|ihex] [--blank-check]
+             [-o <file>|-] [--format bin|hex-dump|ihex] [--blank-check]
 ch32rv write (<FILE> | hex:<bytes> | word:<u32>) --at <addr|region[+off]>
              [--erase auto|none]                                       上級(2026-09-02 実装)。RAM/peripheral=DM 直書き、flash=controller の page RMW(--erase auto で消去)。書込後 readback verify(不一致 exit30)。region: code/flash/ram/option。低位 flash alias は物理番地を案内して拒否
 ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指定は必須(暗黙の全消去をしない)。--all の名は global --chip <SKU> との衝突回避
