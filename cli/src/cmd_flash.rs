@@ -52,12 +52,6 @@ pub(crate) fn parse_image(
     }
 }
 
-/// en: The set of flash pages (page-aligned start addresses) that the given `(addr, len)`
-/// segments touch, for a `page`-byte page size. `--erase sector` erases exactly these pages, so
-/// it never wipes flash outside the image. A segment that starts mid-page pulls in its whole
-/// page; segments that share a page collapse to one entry.
-/// ja: `(addr, len)` セグメント群が触れる flash page(page 境界の開始番地)の集合。`--erase sector`
-/// はこの page だけを消すので image 外の flash を消さない。page 途中開始はその page 全体を含む。
 /// en: Read `expected.len()` bytes at `addr` for verification. Uses the fast WCH-Link bulk read,
 /// but when that disagrees with `expected` (or errors) it re-reads via the authoritative DMI path
 /// and returns that instead. The fast read can return stale/garbage right after stub execution on
@@ -80,6 +74,12 @@ fn verify_read(session: &mut Session, addr: u32, expected: &[u8]) -> Result<Vec<
     }
 }
 
+/// en: The set of flash pages (page-aligned start addresses) that the given `(addr, len)`
+/// segments touch, for a `page`-byte page size. `--erase sector` erases exactly these pages, so
+/// it never wipes flash outside the image. A segment that starts mid-page pulls in its whole
+/// page; segments that share a page collapse to one entry.
+/// ja: `(addr, len)` セグメント群が触れる flash page(page 境界の開始番地)の集合。`--erase sector`
+/// はこの page だけを消すので image 外の flash を消さない。page 途中開始はその page 全体を含む。
 pub(crate) fn covered_pages(
     segments: impl IntoIterator<Item = (u32, u32)>,
     page: u32,
@@ -877,7 +877,20 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
             Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
         }
     } else if let Some(region) = &args.region {
-        match resolve_region(region, &session) {
+        let flash_bytes = session.chip.as_ref().map(|c| c.flash_bytes).unwrap_or(0);
+        // erase is flash-only; pass flash_bytes for the SRAM size too so a `ram` spec still resolves
+        // to a non-empty range and is then caught by the flash-window check below with a clear error.
+        match parse::resolve_region(region, flash_bytes, flash_bytes) {
+            // erase operates on flash pages only, so reject a non-flash region (e.g. ram/option).
+            Ok((start, _)) if !(CODE_FLASH_START..0x1000_0000).contains(&start) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    "erase operates on the flash (code) region only",
+                    Some("to erase a sub-range use --region code+<off>+<len> or --range"),
+                );
+            }
             Ok(v) => v,
             Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
         }
@@ -952,39 +965,6 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         );
         ExitCode::SUCCESS
     }
-}
-
-/// en: Resolve a `--region` spec into (start, len). Supports `code[+off[+len]]` for now; the
-/// bare name means the whole code-flash window (probe-reported size). Other named regions
-/// arrive with the generated target DB.
-/// ja: `--region` を (start, len) に解決。今は `code[+off[+len]]` に対応(bare は code flash 全体)。
-fn resolve_region(spec: &str, session: &Session) -> Result<(u32, u32), String> {
-    let mut it = spec.split('+');
-    let name = it.next().unwrap_or("");
-    if name != "code" {
-        return Err(format!(
-            "region `{name}` is not supported yet (only `code`); use --range for an explicit range"
-        ));
-    }
-    let base = 0x0800_0000u32;
-    let Some(chip) = &session.chip else {
-        return Err("code region needs the flash size, which the probe did not report".to_owned());
-    };
-    let flash_len = chip.flash_bytes;
-    let off = match it.next() {
-        Some(s) => parse::byte_len(s)?,
-        None => 0,
-    };
-    let len = match it.next() {
-        Some(s) => parse::byte_len(s)?,
-        None => flash_len.saturating_sub(off),
-    };
-    if off.saturating_add(len) > flash_len {
-        return Err(format!(
-            "region extends past the {flash_len}-byte code flash"
-        ));
-    }
-    Ok((base + off, len))
 }
 
 pub fn reset(cli: &Cli, args: &crate::args::ResetArgs) -> ExitCode {

@@ -380,51 +380,10 @@ fn resolve_range(args: &ReadArgs, flash_bytes: u32, sram_bytes: u32) -> Result<(
     if let Some(r) = &args.range {
         parse::range(r)
     } else if let Some(region) = &args.region {
-        resolve_region(region, flash_bytes, sram_bytes)
+        parse::resolve_region(region, flash_bytes, sram_bytes)
     } else {
         Err("read needs --range or --region".to_owned())
     }
-}
-
-/// en: Resolve a `--region <name>[+off[+len]]` to `(start, len)`. The base and default length come
-/// from well-known CH32 memory windows: `code` = flash base 0x0800_0000 (length = the probe's flash
-/// size), `ram` = 0x2000_0000 (length = the DB SRAM size), `option` = 0x1FFF_F800 (16 bytes).
-/// `system`/`eeprom` are family-specific, so they require an explicit `--range`.
-/// ja: `--region <名前>[+off[+len]]` を `(start, len)` に解決。base と既定長は CH32 の既知窓から:
-/// `code`=0x0800_0000(長さ=probe 報告 flash)、`ram`=0x2000_0000(長さ=DB SRAM)、
-/// `option`=0x1FFF_F800(16)。`system`/`eeprom` は family 依存なので `--range` を要求。
-fn resolve_region(spec: &str, flash_bytes: u32, sram_bytes: u32) -> Result<(u32, u32), String> {
-    let mut parts = spec.split('+');
-    let name = parts.next().unwrap_or("");
-    let (base, default_len) = match name {
-        "code" | "flash" => (0x0800_0000u32, flash_bytes),
-        "ram" => (0x2000_0000, sram_bytes),
-        "option" => (0x1FFF_F800, 16),
-        "system" | "eeprom" => {
-            return Err(format!(
-                "region `{name}` is family-specific; use --range <addr>+<len>"
-            ));
-        }
-        other => {
-            return Err(format!(
-                "unknown region `{other}` (code|ram|option; system/eeprom need --range)"
-            ));
-        }
-    };
-    let off = match parts.next() {
-        Some(s) => parse::u32_addr(s)?,
-        None => 0,
-    };
-    let len = match parts.next() {
-        Some(s) => parse::byte_len(s)?,
-        None => default_len.saturating_sub(off),
-    };
-    if len == 0 {
-        return Err(format!(
-            "region `{name}` size is unknown for this target; specify a length: --region {name}+0+<len>"
-        ));
-    }
-    Ok((base.saturating_add(off), len))
 }
 
 fn output_data(
@@ -767,33 +726,8 @@ pub fn dmi(cli: &Cli, sub: &DmiCmd) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_reg_name, parse_u32, resolve_region};
+    use super::{parse_reg_name, parse_u32};
     use ch32rv_dmi::RegName;
-
-    #[test]
-    fn region_resolution() {
-        // code: flash base, default length = the probe's flash size.
-        assert_eq!(
-            resolve_region("code", 0x4_8000, 0x1_0000),
-            Ok((0x0800_0000, 0x4_8000))
-        );
-        // ram: SRAM base + explicit offset/length.
-        assert_eq!(
-            resolve_region("ram+0+64", 0, 0x1_0000),
-            Ok((0x2000_0000, 64))
-        );
-        assert_eq!(
-            resolve_region("ram+0x100", 0, 0x8000),
-            Ok((0x2000_0100, 0x8000 - 0x100))
-        );
-        // option: fixed 16 bytes at 0x1FFF_F800.
-        assert_eq!(resolve_region("option", 0, 0), Ok((0x1FFF_F800, 16)));
-        // family-specific and unknown regions are rejected.
-        assert!(resolve_region("system", 0x1000, 0x1000).is_err());
-        assert!(resolve_region("bogus", 0x1000, 0x1000).is_err());
-        // code with no known flash size and no explicit length -> error.
-        assert!(resolve_region("code", 0, 0).is_err());
-    }
 
     #[test]
     fn parses_register_names() {
