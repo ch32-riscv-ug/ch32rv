@@ -400,4 +400,63 @@ mod tests {
         assert_eq!(fix_flash_addr(0x0800_0000, 0x0800_0000), 0x0800_0000);
         assert_eq!(fix_flash_addr(0x2000_0000, 0x0800_0000), 0x2000_0000);
     }
+
+    #[test]
+    fn ihex_extended_linear_address() {
+        // Type-04 sets the upper 16 bits; a low data record then lands high in flash.
+        // :02000004 0800 F2  (upper = 0x0800) then 4 bytes at offset 0x0100.
+        let hex = ":020000040800F2\n:04010000AABBCCDDED\n:00000001FF\n";
+        let img = Image::parse(hex.as_bytes(), ImageFormat::Hex, None, 0x0800_0000).unwrap();
+        assert_eq!(img.segments.len(), 1);
+        assert_eq!(img.segments[0].addr, 0x0800_0100);
+        assert_eq!(img.segments[0].data, vec![0xAA, 0xBB, 0xCC, 0xDD]);
+    }
+
+    /// Build one 512-byte UF2 block at `target` carrying `payload` (<=476 bytes), with `flags`.
+    fn uf2_block(target: u32, payload: &[u8], flags: u32) -> Vec<u8> {
+        let mut b = vec![0u8; 512];
+        b[0..4].copy_from_slice(&0x0A32_4655u32.to_le_bytes());
+        b[4..8].copy_from_slice(&0x9E5D_5157u32.to_le_bytes());
+        b[8..12].copy_from_slice(&flags.to_le_bytes());
+        b[12..16].copy_from_slice(&target.to_le_bytes());
+        b[16..20].copy_from_slice(&(payload.len() as u32).to_le_bytes());
+        b[32..32 + payload.len()].copy_from_slice(payload);
+        b[508..512].copy_from_slice(&0x0AB1_6F30u32.to_le_bytes());
+        b
+    }
+
+    #[test]
+    fn uf2_two_contiguous_blocks_merge() {
+        let mut bytes = uf2_block(0x0800_0000, &[1, 2, 3, 4], 0);
+        bytes.extend(uf2_block(0x0800_0004, &[5, 6, 7, 8], 0));
+        let img = Image::parse(&bytes, ImageFormat::Uf2, None, 0x0800_0000).unwrap();
+        assert_eq!(img.segments.len(), 1); // contiguous -> one run
+        assert_eq!(img.segments[0].addr, 0x0800_0000);
+        assert_eq!(img.segments[0].data, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+    }
+
+    #[test]
+    fn uf2_skips_not_main_flash_and_rejects_bad_magic() {
+        // A block flagged "not main flash" (bit0) is skipped; with only that block the image is empty.
+        let skip = uf2_block(0x0800_0000, &[1, 2, 3, 4], 0x0000_0001);
+        assert!(Image::parse(&skip, ImageFormat::Uf2, None, 0x0800_0000).is_err());
+        // Corrupt the end magic -> malformed.
+        let mut bad = uf2_block(0x0800_0000, &[1, 2, 3, 4], 0);
+        bad[508] ^= 0xff;
+        assert!(matches!(
+            Image::parse(&bad, ImageFormat::Uf2, None, 0x0800_0000),
+            Err(ImageError::Malformed(_))
+        ));
+        // Not a multiple of 512.
+        assert!(Image::parse(&[0u8; 100], ImageFormat::Uf2, None, 0x0800_0000).is_err());
+    }
+
+    #[test]
+    fn check_within_flash_bounds() {
+        let img = Image::parse(&[0xaa; 16], ImageFormat::Bin, None, 0x0800_0000).unwrap();
+        // Fits in an 4 KiB flash.
+        assert!(img.check_within_flash(0x0800_0000, 4096).is_ok());
+        // A 8-byte flash is too small for the 16-byte image.
+        assert!(img.check_within_flash(0x0800_0000, 8).is_err());
+    }
 }

@@ -103,6 +103,7 @@ ch32rv --capture cap.ndjson probe info --probe serial:<SN>   # 問題時に添�
 
 ## 6. 既知の注意
 
+- **CH549 Link(WCH-Link 無印、fw 2.12)の read 癖**: 高速バルク read が stub(flash program)実行直後の一瞬、program 前の stale な flash view(`0xff` やゴミ)を返すことがある。0.4.1 で in-flash verify が不一致時に権威ある DMI 読みで再確認するようにして解消済み。**transport(read/write)経路を変えたら CH549 を含めて `flash … --erase auto` を 10 回以上反復**し、間欠的な偽 `verify-mismatch` が出ないことを Windows 引き継ぎ前に Linux で確認する(LinkE では出ないので LinkE だけの確認では漏れる)。
 - **Windows**: WCH 純正ドライバ経路は動くが遅い(64B ioctl)。WinUSB があればそちら。`ch32rv doctor` で判別。
 - **macOS**: 未検証(experimental)。このテストで verified 昇格を狙う。
 - 問題報告時は **`--capture <file>`** の NDJSON を添付すると Linux 側で replay 解析しやすい。
