@@ -192,9 +192,63 @@ pub(crate) fn report_with_retry(entry: &Entry) -> (ProbeReport, Vec<Warning>, Op
     last
 }
 
+/// en: `probe list --watch`: poll enumeration and print a `+`/`-` line as WCH devices are
+/// plugged/unplugged, until Ctrl-C. Human-only (a live stream is not a single JSON object).
+/// ja: `probe list --watch`。列挙を poll し、WCH device の挿抜を `+`/`-` 行で Ctrl-C まで表示。
+fn watch_probes(cli: &Cli) -> ExitCode {
+    if cli.json {
+        return fail(
+            cli,
+            "probe.list",
+            ErrorKind::Usage,
+            "--watch streams events and has no single-object JSON form",
+            Some("run `probe list --json` without --watch for a snapshot"),
+        );
+    }
+    eprintln!("watching for WCH-Link / ISP devices (Ctrl-C to stop) ...");
+    let mut present: Vec<(String, String)> = Vec::new(); // (key, description)
+    loop {
+        let entries = wch_devices().unwrap_or_default();
+        let current: Vec<(String, String)> = entries
+            .iter()
+            .map(|e| {
+                let key = e
+                    .dev
+                    .serial()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| e.dev.topology());
+                let desc = format!(
+                    "{:<5} {} {} {}",
+                    mode_str(e.mode),
+                    e.dev.usb_id(),
+                    e.dev.serial().unwrap_or("-"),
+                    e.dev.topology()
+                );
+                (key, desc)
+            })
+            .collect();
+        // Removed devices.
+        for (key, desc) in &present {
+            if !current.iter().any(|(k, _)| k == key) {
+                println!("- {desc}");
+            }
+        }
+        // Added devices.
+        for (key, desc) in &current {
+            if !present.iter().any(|(k, _)| k == key) {
+                println!("+ {desc}");
+            }
+        }
+        // Flush so events appear live even when stdout is a pipe/file (block-buffered).
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        present = current;
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 pub fn list(cli: &Cli, watch: bool) -> ExitCode {
     if watch {
-        return crate::unimplemented_cmd(cli, "probe.list");
+        return watch_probes(cli);
     }
     let entries = match wch_devices() {
         Ok(e) => e,
