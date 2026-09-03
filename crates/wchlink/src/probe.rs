@@ -123,12 +123,14 @@ pub struct AttachInfo {
 }
 
 /// en: ChipInfo (`0x81 0x11 0x01 0x05`) result. The reply is a raw 20-byte block with no
-/// frame header: `flash_kb(be16 at [2:4]) | uuid[4:12] | protection[12:16] | chip_id[16:20]`.
+/// frame header: `flash_kib(be16 at [2:4]) | uuid[4:12] | protection[12:16] | chip_id[16:20]`
+/// (the KiB value is widened to bytes in `flash_bytes`).
 /// Source: board-identify `wch_link.py` (measured) + wlink.
 /// ja: ChipInfo の結果。応答はフレームヘッダ無しの生 20 byte。出典は board-identify(実測)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChipInfo {
-    pub flash_kb: u16,
+    /// Flash size in bytes (the probe reports KiB; converted at the boundary for a uniform unit).
+    pub flash_bytes: u32,
     pub uuid: [u8; 8],
     /// Interpretation not yet established; exposed raw (docs/protocol/wch-link.ja.md).
     pub protection_raw: [u8; 4],
@@ -352,10 +354,10 @@ impl WchLink {
     }
 
     /// en: AttachChip (`0x81 0x0d 0x01 0x02`): response payload is
-    /// `[family, chip_id_be32]` (5 bytes). Bits [7:4] of the chip id are the silicon
+    /// `[family, chip_id_be32]` (5 bytes). Bits `[7:4]` of the chip id are the silicon
     /// revision (don't-care when matching).
     /// ja: AttachChip。応答 payload は `[family, chip_id_be32]` の 5 byte。chip id の
-    /// [7:4] は silicon revision(照合時 don't-care)。
+    /// `[7:4]` は silicon revision(照合時 don't-care)。
     pub fn attach_chip(&mut self) -> Result<AttachInfo, WchLinkError> {
         let payload = self.command(CMD_CONTROL, &[0x02])?;
         if payload.len() != 5 {
@@ -456,8 +458,8 @@ impl WchLink {
     /// ja: flash loader stub 経由で `data` を `address` へ書く(wlink `write_flash`)。
     pub fn write_flash(
         &mut self,
+        addr: u32,
         data: &[u8],
-        address: u32,
         params: &FlashParams,
         mut progress: impl FnMut(u64),
     ) -> Result<(), WchLinkError> {
@@ -468,7 +470,7 @@ impl WchLink {
 
         // SetWriteMemoryRegion (cmd 0x01): start_addr BE32 + len BE32.
         let mut region = Vec::with_capacity(8);
-        region.extend_from_slice(&address.to_be_bytes());
+        region.extend_from_slice(&addr.to_be_bytes());
         region.extend_from_slice(&(data.len() as u32).to_be_bytes());
         let _ = self.command(CMD_SET_MEM_REGION, &region)?;
 
@@ -516,18 +518,18 @@ impl WchLink {
     }
 
     /// en: Fast bulk memory read via the WCH-Link (SetReadMemoryRegion + Program ReadMemory +
-    /// bulk from the data endpoint) - the read counterpart of [`write_flash`], far faster than
+    /// bulk from the data endpoint) - the read counterpart of [`Self::write_flash`], far faster than
     /// word-by-word DMI reads over a high-latency link (usbipd, the Windows WCH-driver ioctl path).
     /// `len` is rounded up to 4 bytes. Works for any readable address (flash / system / RAM). The
     /// chip must be attached. The link returns each 32-bit word byte-reversed; this restores LE.
     /// ja: WCH-Link の高速バルク read(SetReadMemoryRegion + ReadMemory + data EP からバルク)。
     /// word 単位 DMI read より桁違いに速い(usbipd / Windows の ioctl 経路で顕著)。len は 4 に切上げ。
-    pub fn read_memory(&mut self, address: u32, len: u32) -> Result<Vec<u8>, WchLinkError> {
+    pub fn read_mem(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, WchLinkError> {
         let len4 = len.div_ceil(4) * 4;
         self.iface.open_data_endpoints(DATA_EP_OUT, DATA_EP_IN)?;
         // SetReadMemoryRegion (cmd 0x03): start_addr BE32 + len BE32.
         let mut region = Vec::with_capacity(8);
-        region.extend_from_slice(&address.to_be_bytes());
+        region.extend_from_slice(&addr.to_be_bytes());
         region.extend_from_slice(&len4.to_be_bytes());
         let _ = self.command(CMD_SET_READ_MEM_REGION, &region)?;
         // Program ReadMemory (0x0c), then stream len4 bytes from the data endpoint.
@@ -652,7 +654,7 @@ impl WchLink {
         let mut protection_raw = [0u8; 4];
         protection_raw.copy_from_slice(&reply[12..16]);
         Ok(ChipInfoStatus::Ok(ChipInfo {
-            flash_kb: u16::from_be_bytes([reply[2], reply[3]]),
+            flash_bytes: u32::from(u16::from_be_bytes([reply[2], reply[3]])) * 1024,
             uuid,
             protection_raw,
             chip_id_echo: u32::from_be_bytes([reply[16], reply[17], reply[18], reply[19]]),

@@ -56,9 +56,12 @@ pub struct Cli {
     /// Seconds to wait for the device lock
     #[arg(long, global = true, default_value_t = 10)]
     pub lock_timeout: u64,
-    /// Override the transport timeout (seconds)
+    /// Override the transport timeout: how long one USB transfer may take (seconds)
     #[arg(long, global = true)]
     pub timeout: Option<u64>,
+    /// How long a streaming command (`monitor`, `run`) runs before it stops (seconds); default: until Ctrl-C
+    #[arg(long, global = true)]
+    pub duration: Option<u64>,
     /// Target DB overlay (for trying new SKUs without rebuilding)
     #[arg(long, global = true, env = "CH32RV_DB")]
     pub db: Option<PathBuf>,
@@ -154,7 +157,7 @@ pub struct FlashArgs {
     pub format: ImageFormat,
     /// Load address for bin input (default: start of the code region)
     #[arg(long)]
-    pub offset: Option<String>,
+    pub at: Option<String>,
     /// Destination region (code|system; system only where the family supports it)
     #[arg(long, value_enum, default_value = "code")]
     pub region: Region,
@@ -189,8 +192,9 @@ pub struct VerifyArgs {
     pub file: PathBuf,
     #[arg(long, value_enum, default_value = "auto")]
     pub format: ImageFormat,
+    /// Load address for bin input (default: start of the code region)
     #[arg(long)]
-    pub offset: Option<String>,
+    pub at: Option<String>,
     #[arg(long, value_enum, default_value = "code")]
     pub region: Region,
 }
@@ -216,8 +220,11 @@ pub struct ReadArgs {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ReadFormat {
+    /// Raw bytes.
     Bin,
-    Hex,
+    /// Human hex + ASCII dump (renamed from `hex` to avoid clashing with Intel HEX).
+    HexDump,
+    /// Intel HEX (same format `flash --format ihex` reads).
     Ihex,
 }
 
@@ -272,9 +279,18 @@ pub struct RunArgs {
     pub no_flash: bool,
     #[arg(long, value_enum)]
     pub source: Option<MonitorSource>,
-    /// Exit condition: semihosting | timeout=<s>
-    #[arg(long)]
-    pub exit_on: Option<String>,
+    /// When to stop: `semihosting` (propagate the target's exit code) or `timeout` (stream for --duration). Default: timeout.
+    #[arg(long, value_enum)]
+    pub exit_on: Option<ExitOn>,
+}
+
+/// What ends a `run` (docs/cli.ja.md §4.1). The run length / safety cap comes from `--duration`.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum ExitOn {
+    /// Host RISC-V semihosting; propagate the target's SYS_EXIT code (bounded by --duration).
+    Semihosting,
+    /// Stream output for --duration seconds (or until Ctrl-C), then exit 0.
+    Timeout,
 }
 
 #[derive(Args)]

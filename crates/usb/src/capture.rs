@@ -18,7 +18,7 @@ use std::time::Instant;
 
 /// The transfer channel: the WCH-Link command endpoints vs the flash-data endpoints.
 #[derive(Clone, Copy, Debug)]
-pub enum Chan {
+pub(crate) enum Chan {
     /// Command channel (EP 0x01 out / 0x81 in).
     Cmd,
     /// Flash data channel (EP 0x02 out / 0x82 in).
@@ -36,7 +36,7 @@ impl Chan {
 
 /// The transfer direction (host's point of view).
 #[derive(Clone, Copy, Debug)]
-pub enum Dir {
+pub(crate) enum Dir {
     /// Host -> probe.
     Out,
     /// Probe -> host.
@@ -78,7 +78,7 @@ pub fn start(path: &Path) -> std::io::Result<()> {
 /// en: Record one bulk transfer. No-op when capture was not started. `data` is the bytes actually
 /// transferred (the slice written, or the received prefix); `ok` is whether the transfer succeeded.
 /// ja: bulk 転送を 1 件記録。capture 未開始なら no-op。`data` は実際に転送されたバイト、`ok` は成否。
-pub fn record(chan: Chan, dir: Dir, data: &[u8], ok: bool) {
+pub(crate) fn record(chan: Chan, dir: Dir, data: &[u8], ok: bool) {
     let Some(cell) = SINK.get() else {
         return;
     };

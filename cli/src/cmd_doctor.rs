@@ -138,7 +138,6 @@ pub fn doctor(cli: &Cli, args: &DoctorArgs) -> ExitCode {
             )
         };
         env.result = Some(serde_json::json!({
-            "ok": all_ok,
             "checks": checks.iter().map(|c| serde_json::json!({
                 "name": c.name, "ok": c.ok, "detail": c.detail, "hint": c.hint,
             })).collect::<Vec<_>>(),

@@ -351,7 +351,7 @@ impl UsbInterface {
         Ok(())
     }
 
-    /// Write to the data endpoint. Call [`open_data_endpoints`] first.
+    /// Write to the data endpoint. Call [`Self::open_data_endpoints`] first.
     pub fn write_data(&mut self, data: &[u8], timeout: Duration) -> Result<usize, UsbError> {
         let r = match &mut self.backend {
             Backend::Nusb(b) => {
@@ -376,7 +376,7 @@ impl UsbInterface {
         r
     }
 
-    /// Read from the data endpoint. Call [`open_data_endpoints`] first.
+    /// Read from the data endpoint. Call [`Self::open_data_endpoints`] first.
     pub fn read_data(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize, UsbError> {
         let r = match &mut self.backend {
             Backend::Nusb(b) => {

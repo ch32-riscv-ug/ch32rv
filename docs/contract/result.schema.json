@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ch32-riscv-ug/ch32rv/docs/contract/result.schema.json",
-  "title": "ch32rv result envelope (contract 1)",
+  "title": "ch32rv result envelope (contract 2)",
   "type": "object",
   "required": ["contract", "ok", "cmd"],
   "properties": {
     "contract": {
       "type": "string",
       "description": "契約版。破壊変更でのみ major を上げる",
-      "const": "1"
+      "const": "2"
     },
     "ok": { "type": "boolean" },
     "cmd": {
@@ -52,7 +52,7 @@
         "verified": { "type": "boolean", "description": "DB 上で実機確認済みの SKU か" },
         "provisional": { "type": "boolean", "description": "暫定 overlay 由来の DB entry か" },
         "protected": { "type": "boolean" },
-        "flash_kb": { "type": "integer", "description": "probe が報告する flash 容量 (KiB)" }
+        "flash_bytes": { "type": "integer", "description": "probe が報告する flash 容量 (bytes)" }
       }
     },
     "result": {
@@ -80,7 +80,7 @@
           "description": "exit code と同値 (cli.ja.md §3.6)",
           "enum": [2, 10, 11, 12, 13, 14, 20, 21, 22, 23, 24, 30, 40, 41, 50, 70]
         },
-        "kind": { "type": "string", "description": "安定した機械可読名 (例: probe-not-found, target-ambiguous)" },
+        "kind": { "type": "string", "description": "安定した機械可読名 (例: device-not-found, target-no-response, transfer-failed)" },
         "msg": { "type": "string" },
         "hint": { "type": "string", "description": "次の一手 (人間向け)" },
         "candidates": {

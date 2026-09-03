@@ -126,7 +126,7 @@ pub fn write(cli: &Cli, args: &WriteArgs) -> ExitCode {
         return fail(
             cli,
             CMD,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!("write failed: {e}"),
             None,
         );
@@ -139,7 +139,7 @@ pub fn write(cli: &Cli, args: &WriteArgs) -> ExitCode {
             return fail(
                 cli,
                 CMD,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("verify read failed: {e}"),
                 None,
             );

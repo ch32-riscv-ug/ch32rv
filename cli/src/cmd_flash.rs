@@ -16,8 +16,7 @@ use ch32rv_contract::policy::{
 };
 use ch32rv_contract::progress::ProgressSink;
 use ch32rv_contract::{ErrorKind, ResultEnvelope, Warning};
-use ch32rv_flash::{Image, Segment, params_for_family};
-use ch32rv_wchlink::FlashParams as WlFlashParams;
+use ch32rv_flash::{CODE_FLASH_START, Image, Segment, params_for_family};
 
 use std::path::Path;
 
@@ -236,7 +235,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
     };
 
     // Parse the input into flash segments (ELF / Intel HEX / UF2 / raw bin).
-    let bin_offset = match &args.offset {
+    let bin_offset = match &args.at {
         Some(s) => match parse::u32_addr(s) {
             Ok(a) => Some(a),
             Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
@@ -248,19 +247,15 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         args.format,
         &args.file,
         bin_offset,
-        fp.code_flash_start,
+        CODE_FLASH_START,
     ) {
         Ok(i) => i,
         Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
     };
     // The probe reports flash size; use it to reject out-of-range segments.
-    let flash_size = session
-        .chip
-        .as_ref()
-        .map(|c| u32::from(c.flash_kb) * 1024)
-        .unwrap_or(0);
+    let flash_size = session.chip.as_ref().map(|c| c.flash_bytes).unwrap_or(0);
     if flash_size > 0
-        && let Err(e) = image.check_within_flash(fp.code_flash_start, flash_size)
+        && let Err(e) = image.check_within_flash(CODE_FLASH_START, flash_size)
     {
         return fail(
             cli,
@@ -271,14 +266,6 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         );
     }
     let total = image.total_len() as u64;
-
-    let wl = WlFlashParams {
-        stub: fp.stub,
-        data_packet_size: fp.data_packet_size,
-        write_pack_size: fp.write_pack_size,
-        supports_protect: fp.supports_protect,
-        supports_special_erase: fp.supports_special_erase,
-    };
 
     let sink = crate::progress::sink(cli);
 
@@ -303,7 +290,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
             let mut all = true;
             for seg in &image.segments {
                 // Fast bulk read via the WCH-Link; fall back to DMI word reads on error.
-                let readback = match session.link().read_memory(seg.addr, seg.data.len() as u32) {
+                let readback = match session.link().read_mem(seg.addr, seg.data.len() as u32) {
                     Ok(d) => d,
                     Err(_) => match session.dm().read_mem(seg.addr, seg.data.len() as u32) {
                         Ok(d) => d,
@@ -311,7 +298,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
                             return fail(
                                 cli,
                                 CMD,
-                                ErrorKind::TransportTimeout,
+                                ErrorKind::TransferFailed,
                                 format!("preverify read failed at {:#010x}: {e}", seg.addr),
                                 None,
                             );
@@ -360,7 +347,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
     let erase = resolve_erase(
         args.erase,
         image.base_addr(),
-        fp.code_flash_start,
+        CODE_FLASH_START,
         args.restore_unwritten,
     );
     let erase_scope = match erase {
@@ -394,7 +381,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
                 return fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("erase failed: {e}"),
                     None,
                 );
@@ -461,7 +448,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
                             return fail(
                                 cli,
                                 CMD,
-                                ErrorKind::TransportTimeout,
+                                ErrorKind::TransferFailed,
                                 format!("restore-unwritten read of page 0x{pg:08x} failed: {e}"),
                                 None,
                             );
@@ -484,7 +471,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
                         return fail(
                             cli,
                             CMD,
-                            ErrorKind::TransportTimeout,
+                            ErrorKind::TransferFailed,
                             format!("sector erase failed at 0x{pg:08x}: {e}"),
                             None,
                         );
@@ -519,7 +506,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
             let seg_len = seg.data.len() as u64;
             if let Err(e) = session
                 .link()
-                .write_flash(&seg.data, seg.addr, &wl, |done| {
+                .write_flash(seg.addr, &seg.data, &fp, |done| {
                     s.event(&Event::Progress {
                         phase: "program".into(),
                         done: base + done,
@@ -530,7 +517,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
                 return fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("program failed at {:#010x}: {e}", seg.addr),
                     None,
                 );
@@ -559,7 +546,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         }
         for seg in &image.segments {
             // Fast bulk readback via the WCH-Link; fall back to DMI word reads on error.
-            let readback = match session.link().read_memory(seg.addr, seg.data.len() as u32) {
+            let readback = match session.link().read_mem(seg.addr, seg.data.len() as u32) {
                 Ok(d) => d,
                 Err(_) => match session.dm().read_mem(seg.addr, seg.data.len() as u32) {
                     Ok(d) => d,
@@ -567,7 +554,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
                         return fail(
                             cli,
                             CMD,
-                            ErrorKind::TransportTimeout,
+                            ErrorKind::TransferFailed,
                             format!("readback failed: {e}"),
                             None,
                         );
@@ -638,7 +625,7 @@ fn finish_flash(
                 return fail(
                     cli,
                     cmd,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("reset failed: {e}"),
                     None,
                 );
@@ -764,8 +751,8 @@ fn finish(
             "bytes": total_bytes,
             "family": session.family(),
             "skipped": skipped,
-            "erase": erase_scope,
-            "verify": verified,
+            "scope": erase_scope,
+            "verified": verified,
             "running": running,
         }));
         env.warnings = warnings;
@@ -821,7 +808,7 @@ pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         return fail(
             cli,
             CMD,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!("erase failed: {e}"),
             None,
         );
@@ -920,7 +907,7 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
             return fail(
                 cli,
                 CMD,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("page erase failed at 0x{addr:08x}: {e}"),
                 None,
             );
@@ -931,7 +918,7 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
             "scope": "range",
-            "start": format!("0x{start:08x}"),
+            "addr": format!("0x{start:08x}"),
             "len": len,
             "pages": pages,
             "page_size": page,
@@ -963,7 +950,7 @@ fn resolve_region(spec: &str, session: &Session) -> Result<(u32, u32), String> {
     let Some(chip) = &session.chip else {
         return Err("code region needs the flash size, which the probe did not report".to_owned());
     };
-    let flash_len = u32::from(chip.flash_kb) * 1024;
+    let flash_len = chip.flash_bytes;
     let off = match it.next() {
         Some(s) => parse::byte_len(s)?,
         None => 0,
@@ -998,7 +985,7 @@ pub fn reset(cli: &Cli, args: &crate::args::ResetArgs) -> ExitCode {
             return fail(
                 cli,
                 CMD,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("reset failed: {e}"),
                 None,
             );
@@ -1017,7 +1004,7 @@ pub fn reset(cli: &Cli, args: &crate::args::ResetArgs) -> ExitCode {
         return fail(
             cli,
             CMD,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!("reset failed: {e}"),
             None,
         );
@@ -1082,7 +1069,7 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
             );
         }
     };
-    let bin_offset = match &args.offset {
+    let bin_offset = match &args.at {
         Some(s) => match parse::u32_addr(s) {
             Ok(a) => Some(a),
             Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
@@ -1093,7 +1080,7 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
-    let Some(fp) = params_for_family(session.attach.family_byte) else {
+    if params_for_family(session.attach.family_byte).is_none() {
         return fail(
             cli,
             CMD,
@@ -1101,13 +1088,13 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
             "family not supported for verify",
             None,
         );
-    };
+    }
     let image = match parse_image(
         &bytes,
         args.format,
         &args.file,
         bin_offset,
-        fp.code_flash_start,
+        CODE_FLASH_START,
     ) {
         Ok(i) => i,
         Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
@@ -1123,7 +1110,7 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
     }
     for seg in &image.segments {
         // Fast bulk read via the WCH-Link; fall back to DMI word reads on error.
-        let read = match session.link().read_memory(seg.addr, seg.data.len() as u32) {
+        let read = match session.link().read_mem(seg.addr, seg.data.len() as u32) {
             Ok(d) => Ok(d),
             Err(_) => session.dm().read_mem(seg.addr, seg.data.len() as u32),
         };
@@ -1151,7 +1138,7 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
                 return fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("readback failed: {e}"),
                     None,
                 );
@@ -1160,7 +1147,7 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
     }
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
-        env.result = Some(serde_json::json!({ "bytes": image.total_len(), "match": true }));
+        env.result = Some(serde_json::json!({ "bytes": image.total_len(), "verified": true }));
         crate::print_envelope(&env)
     } else {
         println!("verify: OK ({} bytes match)", image.total_len());
@@ -1225,7 +1212,7 @@ fn recover_unprotect(cli: &Cli) -> ExitCode {
         return fail(
             cli,
             CMD,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!("writing factory option bytes failed: {e}"),
             None,
         );
@@ -1337,7 +1324,7 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
             return fail(
                 cli,
                 CMD,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("clearing read protection failed: {e}"),
                 None,
             );
@@ -1350,7 +1337,7 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
             return fail(
                 cli,
                 CMD,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("chip erase failed: {e}"),
                 None,
             );
@@ -1445,7 +1432,7 @@ fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCode {
         return fail(
             cli,
             CMD,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!("special erase failed: {e}"),
             None,
         );
@@ -1459,7 +1446,7 @@ fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCode {
 
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
-        env.result = Some(serde_json::json!({ "method": method.as_str(), "chip": chip }));
+        env.result = Some(serde_json::json!({ "method": method.as_str(), "family": chip }));
         crate::print_envelope(&env)
     } else {
         println!("special erase ({}) issued for {chip}", method.as_str());

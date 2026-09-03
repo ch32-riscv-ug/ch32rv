@@ -145,6 +145,7 @@ dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
  "ch32rv-target",
+ "ch32rv-wchlink",
  "object",
  "thiserror",
 ]

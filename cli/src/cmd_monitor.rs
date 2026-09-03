@@ -41,10 +41,10 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
     }
 }
 
-/// How long to run before returning (test knob); None = until Ctrl-C.
+/// How long to stream before returning; None = until Ctrl-C. From the global `--duration`
+/// (distinct from `--timeout`, which is the per-transfer transport timeout).
 fn run_duration(cli: &Cli) -> Option<Duration> {
-    // Reuse the global --timeout as a bounded run length for scripting/tests.
-    cli.timeout.map(Duration::from_secs)
+    cli.duration.map(Duration::from_secs)
 }
 
 // ---- CDC serial backend ----
@@ -275,7 +275,7 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
             return fail(
                 cli,
                 CMD,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("enable SDI failed: {e}"),
                 None,
             );
@@ -400,7 +400,7 @@ fn read_region(session: &mut Session, base: u32, len: u32) -> Vec<u8> {
     let mut off = 0u32;
     while off < len {
         let want = RTT_READ_CHUNK.min(len - off);
-        match session.link().read_memory(base + off, want) {
+        match session.link().read_mem(base + off, want) {
             Ok(mut chunk) => {
                 buf.append(&mut chunk);
                 off += want;
@@ -475,9 +475,7 @@ fn run_rtt(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
     let scan_len = {
         let db = ch32rv_target::Db::builtin();
         match db.resolve_by_chip_id(session.attach.chip_id) {
-            ch32rv_target::Resolution::Sku(s) if s.sram_bytes > 0 => {
-                (s.sram_bytes as u32).min(64 * 1024)
-            }
+            ch32rv_target::Resolution::Sku(s) if s.sram_bytes > 0 => s.sram_bytes.min(64 * 1024),
             _ => RTT_DEFAULT_SCAN,
         }
     };
@@ -531,7 +529,7 @@ fn run_rtt(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
         }
         let _ = session.dm().halt();
         // up[0]: name(+0), buffer(+4), size(+8), write_off(+12), read_off(+16), flags(+20).
-        let desc = match session.link().read_memory(up, 24) {
+        let desc = match session.link().read_mem(up, 24) {
             Ok(d) if d.len() >= 24 => d,
             _ => {
                 let _ = session.dm().resume();
@@ -550,14 +548,14 @@ fn run_rtt(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
         }
         if wr != rd {
             let bytes = if wr > rd {
-                session.link().read_memory(buffer + rd, wr - rd).ok()
+                session.link().read_mem(buffer + rd, wr - rd).ok()
             } else {
                 // Wrapped: [rd, size) then [0, wr).
                 let mut v = Vec::new();
-                if let Ok(a) = session.link().read_memory(buffer + rd, size - rd) {
+                if let Ok(a) = session.link().read_mem(buffer + rd, size - rd) {
                     v.extend_from_slice(&a);
                 }
-                if let Ok(b) = session.link().read_memory(buffer, wr) {
+                if let Ok(b) = session.link().read_mem(buffer, wr) {
                     v.extend_from_slice(&b);
                 }
                 Some(v)
@@ -641,7 +639,7 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
         return fail(
             cli,
             CMD,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!("set SDI failed: {e}"),
             None,
         );

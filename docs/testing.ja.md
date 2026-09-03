@@ -74,7 +74,7 @@ ch32rv run tests/fixtures/semihosting.bin --probe serial:<SN> --exit-on semihost
 ```
 `run` は 書込→reset 実行→runtime 出力→終了 を 1 コマンドで行う。`--exit-on semihosting` は
 target の `SYS_WRITE0` 出力を中継し、`SYS_EXIT`/`SYS_EXIT_EXTENDED` の値をプロセス終了コードに
-伝搬する(fixture は 42)。`--exit-on timeout=<s>` は s 秒だけ dmdata 出力を流して exit 0。
+伝搬する(fixture は 42)。`--exit-on timeout --duration <s>` は s 秒だけ dmdata 出力を流して exit 0。
 `--no-flash` で書込を省略。**CH32V307 実機検証済み**(family 非依存の base-ISA コード)。
 
 ### 補助

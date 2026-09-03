@@ -1,13 +1,34 @@
-//! en: RISC-V Debug Module layer. Implemented against the RISC-V Debug Spec (0.13.2 / 1.0),
-//! with WCH-specific deviations isolated in a quirk layer (docs/architecture.ja.md §2).
-//! Transports (WCH-Link / compatible probes) are reached only through the [`DtmAccess`] trait;
-//! this crate knows nothing about USB.
-//! Currently only the boundary trait is defined; Debug Module operations (halt / resume /
-//! abstract commands / progbuf) are not implemented yet.
+//! en: RISC-V Debug Module (DM) driver, per the RISC-V Debug Spec (0.13.2 / 1.0), with
+//! WCH-specific deviations isolated in a quirk layer (docs/architecture.ja.md §2). It reaches a
+//! probe only through the [`DtmAccess`] trait (DMI register read/write), so it knows nothing
+//! about USB - any transport implementing `DtmAccess` (e.g. `ch32rv_wchlink::WchLink`) can drive
+//! it.
 //!
-//! ja: RISC-V Debug Module 層。Debug Spec(0.13.2 / 1.0)に沿って実装し、WCH 固有の差分は
-//! quirk 層に隔離する。transport は [`DtmAccess`] trait 越しにのみ扱い、この crate は USB を知らない。
-//! 現状は境界 trait の定義のみ。
+//! [`DebugModule::new`] wraps a `DtmAccess` and provides hart control ([`DebugModule::halt`],
+//! [`DebugModule::resume`], [`DebugModule::step`], [`DebugModule::is_halted`]), register access
+//! ([`DebugModule::read_reg`] / [`DebugModule::write_reg`] over [`RegName`]), memory access
+//! ([`DebugModule::read_mem`], [`DebugModule::write_mem`] / `write_mem32` / `write_mem16`),
+//! the SerialDMDATA mailbox ([`DebugModule::dmdata_poll`]), hardware-trigger discovery, direct
+//! FLASH-controller page erase/program ([`DebugModule::flash_page_erase`],
+//! [`DebugModule::flash_program_page`], keyed by [`FlashProgMode`]), and option-byte writes.
+//!
+//! ```no_run
+//! use ch32rv_dmi::{DebugModule, RegName};
+//! # fn go(dtm: &mut impl ch32rv_dmi::DtmAccess) -> Result<(), ch32rv_dmi::DmiError> {
+//! let mut dm = DebugModule::new(dtm);
+//! dm.halt()?;
+//! let pc = dm.read_reg(RegName::Pc)?;
+//! let word = dm.read_mem32(0x2000_0000)?;   // first SRAM word
+//! dm.resume()?;
+//! # let _ = (pc, word); Ok(())
+//! # }
+//! ```
+//!
+//! ja: RISC-V Debug Module ドライバ。Debug Spec(0.13.2 / 1.0)準拠で WCH 固有差分は quirk 層に
+//! 隔離。probe へは [`DtmAccess`] trait(DMI read/write)越しにのみ触れ USB を知らない。
+//! [`DebugModule::new`] が `DtmAccess` を包み、hart 制御(halt/resume/step)・レジスタ・メモリ
+//! 読み書き・SerialDMDATA mailbox([`DebugModule::dmdata_poll`])・HW trigger 探索・直接
+//! FLASH controller の page erase/program・option byte 書込を提供する。
 
 pub mod dm;
 

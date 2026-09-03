@@ -128,7 +128,7 @@ pub fn info(cli: &Cli) -> ExitCode {
         verified: sku_verified,
         provisional: None,
         protected: None,
-        flash_kb: chip.as_ref().map(|c| u32::from(c.flash_kb)),
+        flash_bytes: chip.as_ref().map(|c| c.flash_bytes),
     };
 
     if cli.json {
@@ -153,8 +153,8 @@ pub fn info(cli: &Cli) -> ExitCode {
             target.chip_id.as_deref().unwrap_or("-")
         );
         println!("uid:      {}", target.uid.as_deref().unwrap_or("-"));
-        match target.flash_kb {
-            Some(kb) => println!("flash:    {kb} KiB"),
+        match target.flash_bytes {
+            Some(b) => println!("flash:    {} KiB", b / 1024),
             None => println!("flash:    -"),
         }
         println!("sku:      {sku_line}");
@@ -247,7 +247,7 @@ pub fn option_get(cli: &Cli) -> ExitCode {
             return fail(
                 cli,
                 CMD,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("reading option bytes failed: {e}"),
                 None,
             );
@@ -304,7 +304,7 @@ pub fn option_get(cli: &Cli) -> ExitCode {
             "family": family,
             "db_family": db_family,
             "raw": hex(&raw),
-            "read_protection": if unprotected { "off" } else { "on" },
+            "read_protected": !unprotected,
             "rdpr": format!("0x{rdpr:02x}"),
             "user": format!("0x{user:02x}"),
             "user_bits": user_json,
@@ -410,7 +410,7 @@ fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<(String, [u8; 16]), ExitCod
         fail(
             cli,
             cmd,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!("reading option bytes failed: {e}"),
             None,
         )
@@ -446,7 +446,7 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
             return fail(
                 cli,
                 cmd,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("reading option bytes failed: {e}"),
                 None,
             );
@@ -456,7 +456,7 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
         return fail(
             cli,
             cmd,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!(
                 "programming option bytes failed: {e} - the target may be left with erased (read-protected) option bytes; recover with `ch32rv recover`"
             ),
@@ -469,21 +469,37 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
             return fail(
                 cli,
                 cmd,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("verify read failed: {e}"),
                 None,
             );
         }
     };
-    // Verify the value bytes (even indices) we asked for actually landed.
-    let mismatch = (0..16).step_by(2).find(|&i| after[i] != new[i]);
+    // Verify the value bytes (even indices) we asked for actually landed. The flash write itself
+    // lands immediately (the values only *take effect* after a reset), so a readback mismatch is a
+    // genuine write failure - fail with verify-mismatch (exit 30), like flash/verify/write.
+    if let Some(i) = (0..16).step_by(2).find(|&i| after[i] != new[i]) {
+        return fail(
+            cli,
+            cmd,
+            ErrorKind::VerifyMismatch,
+            format!(
+                "option byte {i} reads back 0x{:02x}, not the requested 0x{:02x} (before={}, after={})",
+                after[i],
+                new[i],
+                hex(&before),
+                hex(&after)
+            ),
+            Some("the write did not take; check the target is not write-protected"),
+        );
+    }
     if cli.json {
         let mut env = ResultEnvelope::success(cmd);
         env.result = Some(serde_json::json!({
             "family": family,
             "before": hex(&before),
             "after": hex(&after),
-            "verified": mismatch.is_none(),
+            "verified": true,
             "note": "option bytes take effect after a power-on / system reset",
         }));
         crate::print_envelope(&env)
@@ -493,12 +509,6 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
             hex(&before),
             hex(&after)
         );
-        if let Some(i) = mismatch {
-            eprintln!(
-                "warning[option-verify]: value byte {i} reads back 0x{:02x}, not the requested 0x{:02x}",
-                after[i], new[i]
-            );
-        }
         println!("note: option bytes take effect after a power-on / system reset");
         ExitCode::SUCCESS
     }
@@ -707,6 +717,21 @@ fn parse_u8(s: &str) -> Option<u8> {
 
 /// `target protect on|off`: enable/disable flash read protection (RDPR). Turning it OFF triggers a
 /// full mass erase of the target's flash.
+/// Emit a no-op success ("read protection is already <state>") that still produces a JSON envelope.
+fn already_in_state(cli: &Cli, cmd: &str, protected: bool) -> ExitCode {
+    if cli.json {
+        let mut env = ResultEnvelope::success(cmd);
+        env.result = Some(serde_json::json!({ "changed": false, "read_protected": protected }));
+        crate::print_envelope(&env)
+    } else {
+        println!(
+            "read protection is already {}",
+            if protected { "ON" } else { "OFF" }
+        );
+        ExitCode::SUCCESS
+    }
+}
+
 pub fn protect(cli: &Cli, state: SwitchState) -> ExitCode {
     const CMD: &str = "target.protect";
     let mut ob = match read_option_bytes(cli, CMD) {
@@ -716,8 +741,7 @@ pub fn protect(cli: &Cli, state: SwitchState) -> ExitCode {
     match state {
         SwitchState::On => {
             if ob[0] != 0xA5 {
-                println!("read protection is already ON (RDPR=0x{:02x})", ob[0]);
-                return ExitCode::SUCCESS;
+                return already_in_state(cli, CMD, true);
             }
             if !ob_confirm(
                 cli,
@@ -730,8 +754,7 @@ pub fn protect(cli: &Cli, state: SwitchState) -> ExitCode {
         }
         SwitchState::Off => {
             if ob[0] == 0xA5 {
-                println!("read protection is already OFF (RDPR=0xA5)");
-                return ExitCode::SUCCESS;
+                return already_in_state(cli, CMD, false);
             }
             if !ob_confirm(
                 cli,

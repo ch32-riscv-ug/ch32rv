@@ -115,7 +115,6 @@ fn cmd_version(cli: &Cli) -> std::process::ExitCode {
     env.result = Some(serde_json::json!({
         "version": env!("CARGO_PKG_VERSION"),
         "git_rev": git_rev,
-        "contract": contract::CONTRACT_VERSION,
         "target_db": {
             "source": "ch32-device-data",
             "source_rev": db.source_rev,
@@ -203,9 +202,7 @@ fn canonical_name(cmd: &Command) -> &'static str {
         Command::Probe(p) => match p {
             ProbeCmd::List { .. } => "probe.list",
             ProbeCmd::Info => "probe.info",
-            ProbeCmd::Power(PowerCmd::V3v3 { .. }) => "probe.power.3v3",
-            ProbeCmd::Power(PowerCmd::V5 { .. }) => "probe.power.5v",
-            ProbeCmd::Power(PowerCmd::Cycle { .. }) => "probe.power.cycle",
+            ProbeCmd::Power(_) => "probe.power",
             ProbeCmd::Mode(ModeCmd::Get) => "probe.mode.get",
             ProbeCmd::Mode(ModeCmd::Set { .. }) => "probe.mode.set",
             ProbeCmd::Firmware(FirmwareCmd::Info) => "probe.firmware.info",
@@ -226,10 +223,8 @@ fn canonical_name(cmd: &Command) -> &'static str {
             DbgCmd::Resume => "dbg.resume",
             DbgCmd::Step { .. } => "dbg.step",
             DbgCmd::Regs => "dbg.regs",
-            DbgCmd::Reg(RegCmd::Read { .. }) => "dbg.reg.read",
-            DbgCmd::Reg(RegCmd::Write { .. }) => "dbg.reg.write",
-            DbgCmd::Dmi(DmiCmd::Read { .. }) => "dbg.dmi.read",
-            DbgCmd::Dmi(DmiCmd::Write { .. }) => "dbg.dmi.write",
+            DbgCmd::Reg(_) => "dbg.reg",
+            DbgCmd::Dmi(_) => "dbg.dmi",
         },
         Command::Monitor(m) => match &m.cmd {
             Some(MonitorCmd::List) => "monitor.list",
