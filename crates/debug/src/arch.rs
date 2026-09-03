@@ -89,3 +89,57 @@ impl Arch for Rv32 {
         Some(r#"<target version="1.0"><architecture>riscv:rv32</architecture></target>"#)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn core_regs_serialize_roundtrip() {
+        let mut regs = Rv32CoreRegs::default();
+        for (i, x) in regs.x.iter_mut().enumerate() {
+            *x = 0x1000_0000 + i as u32;
+        }
+        regs.pc = 0x0800_0000;
+
+        // Serialize: 33 registers x 4 bytes, little-endian, x0..x31 then pc.
+        let mut bytes = Vec::new();
+        regs.gdb_serialize(|b| {
+            if let Some(b) = b {
+                bytes.push(b);
+            }
+        });
+        assert_eq!(bytes.len(), 33 * 4);
+        assert_eq!(&bytes[0..4], &0x1000_0000u32.to_le_bytes()); // x0
+        assert_eq!(&bytes[128..132], &0x0800_0000u32.to_le_bytes()); // pc last
+
+        // Round-trip back.
+        let mut back = Rv32CoreRegs::default();
+        back.gdb_deserialize(&bytes).unwrap();
+        assert_eq!(back, regs);
+    }
+
+    #[test]
+    fn deserialize_rejects_short_input() {
+        let mut regs = Rv32CoreRegs::default();
+        assert!(regs.gdb_deserialize(&[0u8; 131]).is_err());
+    }
+
+    #[test]
+    fn reg_id_mapping() {
+        assert_eq!(
+            Rv32RegId::from_raw_id(0).map(|(r, _)| r),
+            Some(Rv32RegId::Gpr(0))
+        );
+        assert_eq!(
+            Rv32RegId::from_raw_id(31).map(|(r, _)| r),
+            Some(Rv32RegId::Gpr(31))
+        );
+        assert_eq!(
+            Rv32RegId::from_raw_id(32).map(|(r, _)| r),
+            Some(Rv32RegId::Pc)
+        );
+        assert!(Rv32RegId::from_raw_id(33).is_none());
+    }
+}

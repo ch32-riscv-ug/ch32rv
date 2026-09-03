@@ -140,3 +140,109 @@ impl ErrorKind {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The full set of every `ErrorKind`, so the mapping/naming tests are exhaustive. If a variant
+    /// is added, this array (and the assertions below) must be updated - that is the point.
+    const ALL_KINDS: &[ErrorKind] = &[
+        ErrorKind::Usage,
+        ErrorKind::DeviceNotFound,
+        ErrorKind::DeviceOpenFailed,
+        ErrorKind::DeviceFirmwareUnsupported,
+        ErrorKind::DeviceFirmwareKnownBad,
+        ErrorKind::DeviceBusy,
+        ErrorKind::DeviceAmbiguous,
+        ErrorKind::TargetNoResponse,
+        ErrorKind::TargetNotInDb,
+        ErrorKind::TargetProtected,
+        ErrorKind::AttachFailed,
+        ErrorKind::TargetAmbiguous,
+        ErrorKind::CapabilityUnsupported,
+        ErrorKind::VerifyMismatch,
+        ErrorKind::BlankCheckFailed,
+        ErrorKind::TransportTimeout,
+        ErrorKind::TransferFailed,
+        ErrorKind::ProbeWedged,
+        ErrorKind::NotRunningAfterWrite,
+        ErrorKind::Internal,
+        ErrorKind::Unimplemented,
+    ];
+
+    /// The frozen exit-code numbers (docs/cli.ja.md §3.6). These are a public contract and must
+    /// never change; this pins them so a refactor cannot silently renumber.
+    #[test]
+    fn exit_code_numbers_are_frozen() {
+        assert_eq!(ExitCode::Success.code(), 0);
+        assert_eq!(ExitCode::Usage.code(), 2);
+        assert_eq!(ExitCode::DeviceNotFound.code(), 10);
+        assert_eq!(ExitCode::DeviceOpenFailed.code(), 11);
+        assert_eq!(ExitCode::DeviceFirmware.code(), 12);
+        assert_eq!(ExitCode::DeviceBusy.code(), 13);
+        assert_eq!(ExitCode::DeviceAmbiguous.code(), 14);
+        assert_eq!(ExitCode::TargetUnidentified.code(), 20);
+        assert_eq!(ExitCode::TargetProtected.code(), 21);
+        assert_eq!(ExitCode::AttachFailed.code(), 22);
+        assert_eq!(ExitCode::TargetAmbiguous.code(), 23);
+        assert_eq!(ExitCode::CapabilityUnsupported.code(), 24);
+        assert_eq!(ExitCode::VerifyMismatch.code(), 30);
+        assert_eq!(ExitCode::TransferFailed.code(), 40);
+        assert_eq!(ExitCode::ProbeWedged.code(), 41);
+        assert_eq!(ExitCode::NotRunningAfterWrite.code(), 50);
+        assert_eq!(ExitCode::Internal.code(), 70);
+    }
+
+    /// Every kind maps to a code in the documented band set; `exit_code` is total (compile-checked)
+    /// and never yields a code outside the contract's table.
+    #[test]
+    fn every_kind_maps_into_the_documented_band() {
+        const VALID: &[u8] = &[
+            2, 10, 11, 12, 13, 14, 20, 21, 22, 23, 24, 30, 40, 41, 50, 70,
+        ];
+        for &k in ALL_KINDS {
+            assert!(
+                VALID.contains(&k.exit_code().code()),
+                "{k:?} maps to an undocumented exit code {}",
+                k.exit_code().code()
+            );
+        }
+    }
+
+    /// The intentional many-to-one groupings (a finer JSON `kind`, one coarse exit code).
+    #[test]
+    fn documented_many_to_one_groupings() {
+        assert_eq!(
+            ErrorKind::TransportTimeout.exit_code(),
+            ErrorKind::TransferFailed.exit_code()
+        );
+        assert_eq!(
+            ErrorKind::TargetNoResponse.exit_code(),
+            ErrorKind::TargetNotInDb.exit_code()
+        );
+        assert_eq!(
+            ErrorKind::VerifyMismatch.exit_code(),
+            ErrorKind::BlankCheckFailed.exit_code()
+        );
+        assert_eq!(
+            ErrorKind::DeviceFirmwareUnsupported.exit_code(),
+            ErrorKind::DeviceFirmwareKnownBad.exit_code()
+        );
+    }
+
+    /// `as_str` is kebab-case, non-empty, and unique across kinds (the stable JSON `error.kind`).
+    #[test]
+    fn as_str_is_kebab_and_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for &k in ALL_KINDS {
+            let s = k.as_str();
+            assert!(!s.is_empty());
+            assert!(
+                s.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
+                "{k:?} -> {s:?} is not kebab-case"
+            );
+            assert!(seen.insert(s), "duplicate as_str {s:?}");
+        }
+    }
+}

@@ -74,7 +74,7 @@ ch32rv flash firmware.elf               # program (auto format, erase + verify +
 ch32rv flash app.bin --offset 0x08000000
 ch32rv verify firmware.elf              # compare without writing (mismatch: exit 30)
 
-ch32rv read --range 0x08000000+256 --format hex
+ch32rv read --range 0x08000000+256 --format hex-dump
 ch32rv erase --all
 ch32rv reset
 

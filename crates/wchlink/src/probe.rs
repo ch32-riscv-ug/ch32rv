@@ -704,3 +704,51 @@ impl DtmAccess for WchLink {
             .map_err(|e| DmiError::Transport(e.to_string()))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn variant_from_u8() {
+        assert_eq!(Variant::from_u8(1), Variant::Ch549);
+        assert_eq!(Variant::from_u8(2), Variant::LinkE);
+        assert_eq!(Variant::from_u8(0x12), Variant::LinkE); // observed alias
+        assert_eq!(Variant::from_u8(3), Variant::LinkS);
+        assert_eq!(Variant::from_u8(4), Variant::DapLink);
+        assert_eq!(Variant::from_u8(5), Variant::LinkW);
+        assert_eq!(Variant::from_u8(0x85), Variant::LinkW); // observed alias
+        assert_eq!(Variant::from_u8(0x77), Variant::Unknown(0x77));
+    }
+
+    #[test]
+    fn variant_name_includes_unknown_byte() {
+        assert_eq!(Variant::LinkE.name(), "WCH-LinkE");
+        assert_eq!(Variant::Ch549.name(), "WCH-Link(CH549)");
+        assert!(Variant::Unknown(0x77).name().contains("0x77"));
+    }
+
+    #[test]
+    fn family_names() {
+        assert_eq!(family_name(0x06), Some("CH32V30x"));
+        assert_eq!(family_name(0x09), Some("CH32V003"));
+        assert_eq!(family_name(0x0E), Some("CH32L103"));
+        assert_eq!(family_name(0xFF), None);
+    }
+
+    #[test]
+    fn known_bad_is_only_2_11() {
+        assert!(known_bad_firmware(2, 11).is_some());
+        assert!(known_bad_firmware(2, 22).is_none());
+        assert!(known_bad_firmware(2, 12).is_none());
+    }
+
+    #[test]
+    fn fw_mode_from_u8() {
+        assert_eq!(FwMode::from_u8(0), FwMode::RiscV);
+        assert_eq!(FwMode::from_u8(1), FwMode::Arm);
+        assert_eq!(FwMode::from_u8(9), FwMode::Unknown(9));
+        assert_eq!(FwMode::RiscV.as_str(), "riscv");
+        assert_eq!(FwMode::Arm.as_str(), "arm");
+    }
+}
