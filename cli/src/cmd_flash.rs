@@ -58,6 +58,28 @@ pub(crate) fn parse_image(
 /// page; segments that share a page collapse to one entry.
 /// ja: `(addr, len)` セグメント群が触れる flash page(page 境界の開始番地)の集合。`--erase sector`
 /// はこの page だけを消すので image 外の flash を消さない。page 途中開始はその page 全体を含む。
+/// en: Read `expected.len()` bytes at `addr` for verification. Uses the fast WCH-Link bulk read,
+/// but when that disagrees with `expected` (or errors) it re-reads via the authoritative DMI path
+/// and returns that instead. The fast read can return stale/garbage right after stub execution on
+/// some probes - observed on the CH549 Link (fw 2.12): a false verify-mismatch even though the write
+/// landed (capture: the readback was a `00 01 02 ..` ramp, not flash). DMI word reads (progbuf) are
+/// the source of truth, so this makes verify robust without paying the DMI cost on the common match.
+/// The hart must already be halted.
+/// ja: verify 用に `addr` から `expected.len()` byte 読む。まず fast bulk read、`expected` と食い違う
+/// (またはエラー)なら権威ある DMI 読みで読み直して返す。fast read は stub 実行直後に一部 probe
+/// (CH549 Link fw2.12 で実測)で stale/ゴミを返し false verify-mismatch を起こす。DMI が真実。
+fn verify_read(session: &mut Session, addr: u32, expected: &[u8]) -> Result<Vec<u8>, String> {
+    let len = expected.len() as u32;
+    match session.link().read_mem(addr, len) {
+        Ok(d) if d == expected => Ok(d),
+        // Mismatch or transport error: re-read via the authoritative DMI path (progbuf word reads),
+        // which goes through the real bus and reflects the just-programmed flash. The fast bulk read
+        // is only an optimization, so silently preferring the authoritative source on disagreement is
+        // correct - a real mismatch is still caught (DMI confirms it), a stale one is corrected.
+        _ => session.dm().read_mem(addr, len).map_err(|e| e.to_string()),
+    }
+}
+
 pub(crate) fn covered_pages(
     segments: impl IntoIterator<Item = (u32, u32)>,
     page: u32,
@@ -545,21 +567,19 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
             );
         }
         for seg in &image.segments {
-            // Fast bulk readback via the WCH-Link; fall back to DMI word reads on error.
-            let readback = match session.link().read_mem(seg.addr, seg.data.len() as u32) {
+            // Fast bulk readback, re-checked via the authoritative DMI read on mismatch/error
+            // (fast read can return stale data right after stub execution on the CH549 Link).
+            let readback = match verify_read(&mut session, seg.addr, &seg.data) {
                 Ok(d) => d,
-                Err(_) => match session.dm().read_mem(seg.addr, seg.data.len() as u32) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        return fail(
-                            cli,
-                            CMD,
-                            ErrorKind::TransferFailed,
-                            format!("readback failed: {e}"),
-                            None,
-                        );
-                    }
-                },
+                Err(e) => {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("readback failed: {e}"),
+                        None,
+                    );
+                }
             };
             if readback != seg.data {
                 let at = readback
