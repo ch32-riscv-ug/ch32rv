@@ -53,8 +53,8 @@ ch32rv doctor
 
 ### Tier 2: flash 往復(非破壊 = backup→書込→verify→restore)
 ```sh
-# 退避: --range で範囲指定(容量は target info の flash 値。例 64 KiB なら +64k)。--region は未実装。
-ch32rv read --range 0x08000000+64k -o backup.bin --probe serial:<SN>
+# 退避: --region code で全 code 領域(容量は probe 報告 flash から自動)。--range でも可。
+ch32rv read --region code -o backup.bin --probe serial:<SN>
 ch32rv flash tests/fixtures/pattern-4k.bin --probe serial:<SN>  # 既定 verify=readback で検証込み
 ch32rv verify tests/fixtures/pattern-4k.bin --probe serial:<SN> # 独立 readback で再確認(任意)
 ch32rv flash backup.bin --probe serial:<SN>                     # 書き戻して復旧

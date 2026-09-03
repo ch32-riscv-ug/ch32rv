@@ -286,11 +286,6 @@ fn simple_ok(
 
 pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     const CMD: &str = "read";
-    // The clap ArgGroup guarantees exactly one of --range / --region is present.
-    let (start, len) = match resolve_range(args) {
-        Ok(v) => v,
-        Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
-    };
     let mut warnings = Vec::new();
     let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
         Ok(v) => v,
@@ -299,6 +294,20 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
         Ok(s) => s,
         Err(c) => return c,
+    };
+    // The clap ArgGroup guarantees exactly one of --range / --region. A named region needs the
+    // target's sizes, so resolve it after attach: flash size from the probe (ChipInfo), SRAM from DB.
+    let (start, len) = {
+        let flash_bytes = session.chip.as_ref().map(|c| c.flash_bytes).unwrap_or(0);
+        let sram_bytes =
+            match ch32rv_target::Db::builtin().resolve_by_chip_id(session.attach.chip_id) {
+                ch32rv_target::Resolution::Sku(s) => s.sram_bytes,
+                _ => 0,
+            };
+        match resolve_range(args, flash_bytes, sram_bytes) {
+            Ok(v) => v,
+            Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+        }
     };
     if let Err(e) = session.dm().halt() {
         return fail(
@@ -309,24 +318,34 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
             None,
         );
     }
-    // en: Fast bulk read via the WCH-Link (SetReadMemoryRegion + ReadMemory + data endpoint);
-    // fall back to word-by-word DMI reads if the probe rejects the region.
-    // ja: WCH-Link の高速バルク read を使い、領域が弾かれたら DMI word 読みへ fallback。
-    let data = match session.link().read_mem(start, len) {
-        Ok(d) => d,
-        Err(_) => match session.dm().read_mem(start, len) {
+    // en: Fast bulk read via the WCH-Link (SetReadMemoryRegion + ReadMemory + data endpoint),
+    // chunked so a large read (e.g. a full-flash backup) stays under the probe's per-transfer limit
+    // and timeout; each chunk falls back to word-by-word DMI reads if the probe rejects it.
+    // ja: WCH-Link の高速バルク read を chunk 単位で行い(全 flash backup 等の大読みが probe の
+    // 1 転送上限・timeout を超えないように)、chunk ごとに弾かれたら DMI word 読みへ fallback。
+    const READ_CHUNK: u32 = 32 * 1024;
+    let mut data = Vec::with_capacity(len as usize);
+    let mut off = 0u32;
+    while off < len {
+        let want = READ_CHUNK.min(len - off);
+        let chunk = match session.link().read_mem(start + off, want) {
             Ok(d) => d,
-            Err(e) => {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::TransferFailed,
-                    format!("read failed: {e}"),
-                    None,
-                );
-            }
-        },
-    };
+            Err(_) => match session.dm().read_mem(start + off, want) {
+                Ok(d) => d,
+                Err(e) => {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("read failed at {:#010x}: {e}", start + off),
+                        None,
+                    );
+                }
+            },
+        };
+        data.extend_from_slice(&chunk);
+        off += want;
+    }
 
     if args.blank_check {
         let blank = data.iter().all(|&b| b == 0xff);
@@ -357,19 +376,55 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     output_data(cli, CMD, args, start, &data, warnings)
 }
 
-fn resolve_range(args: &ReadArgs) -> Result<(u32, u32), String> {
+fn resolve_range(args: &ReadArgs, flash_bytes: u32, sram_bytes: u32) -> Result<(u32, u32), String> {
     if let Some(r) = &args.range {
         parse::range(r)
-    } else if let Some(_region) = &args.region {
-        // en: Named regions need the target DB (region base addresses); not generated yet.
-        // ja: 領域名は target DB(領域ベース番地)が要る。DB 未生成のため当面 --range を使う。
-        Err(
-            "--region is not available until the target DB is generated; use --range for now"
-                .to_owned(),
-        )
+    } else if let Some(region) = &args.region {
+        resolve_region(region, flash_bytes, sram_bytes)
     } else {
         Err("read needs --range or --region".to_owned())
     }
+}
+
+/// en: Resolve a `--region <name>[+off[+len]]` to `(start, len)`. The base and default length come
+/// from well-known CH32 memory windows: `code` = flash base 0x0800_0000 (length = the probe's flash
+/// size), `ram` = 0x2000_0000 (length = the DB SRAM size), `option` = 0x1FFF_F800 (16 bytes).
+/// `system`/`eeprom` are family-specific, so they require an explicit `--range`.
+/// ja: `--region <名前>[+off[+len]]` を `(start, len)` に解決。base と既定長は CH32 の既知窓から:
+/// `code`=0x0800_0000(長さ=probe 報告 flash)、`ram`=0x2000_0000(長さ=DB SRAM)、
+/// `option`=0x1FFF_F800(16)。`system`/`eeprom` は family 依存なので `--range` を要求。
+fn resolve_region(spec: &str, flash_bytes: u32, sram_bytes: u32) -> Result<(u32, u32), String> {
+    let mut parts = spec.split('+');
+    let name = parts.next().unwrap_or("");
+    let (base, default_len) = match name {
+        "code" | "flash" => (0x0800_0000u32, flash_bytes),
+        "ram" => (0x2000_0000, sram_bytes),
+        "option" => (0x1FFF_F800, 16),
+        "system" | "eeprom" => {
+            return Err(format!(
+                "region `{name}` is family-specific; use --range <addr>+<len>"
+            ));
+        }
+        other => {
+            return Err(format!(
+                "unknown region `{other}` (code|ram|option; system/eeprom need --range)"
+            ));
+        }
+    };
+    let off = match parts.next() {
+        Some(s) => parse::u32_addr(s)?,
+        None => 0,
+    };
+    let len = match parts.next() {
+        Some(s) => parse::byte_len(s)?,
+        None => default_len.saturating_sub(off),
+    };
+    if len == 0 {
+        return Err(format!(
+            "region `{name}` size is unknown for this target; specify a length: --region {name}+0+<len>"
+        ));
+    }
+    Ok((base.saturating_add(off), len))
 }
 
 fn output_data(
@@ -712,8 +767,33 @@ pub fn dmi(cli: &Cli, sub: &DmiCmd) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_reg_name, parse_u32};
+    use super::{parse_reg_name, parse_u32, resolve_region};
     use ch32rv_dmi::RegName;
+
+    #[test]
+    fn region_resolution() {
+        // code: flash base, default length = the probe's flash size.
+        assert_eq!(
+            resolve_region("code", 0x4_8000, 0x1_0000),
+            Ok((0x0800_0000, 0x4_8000))
+        );
+        // ram: SRAM base + explicit offset/length.
+        assert_eq!(
+            resolve_region("ram+0+64", 0, 0x1_0000),
+            Ok((0x2000_0000, 64))
+        );
+        assert_eq!(
+            resolve_region("ram+0x100", 0, 0x8000),
+            Ok((0x2000_0100, 0x8000 - 0x100))
+        );
+        // option: fixed 16 bytes at 0x1FFF_F800.
+        assert_eq!(resolve_region("option", 0, 0), Ok((0x1FFF_F800, 16)));
+        // family-specific and unknown regions are rejected.
+        assert!(resolve_region("system", 0x1000, 0x1000).is_err());
+        assert!(resolve_region("bogus", 0x1000, 0x1000).is_err());
+        // code with no known flash size and no explicit length -> error.
+        assert!(resolve_region("code", 0, 0).is_err());
+    }
 
     #[test]
     fn parses_register_names() {
