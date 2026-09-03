@@ -96,6 +96,38 @@ pub(crate) fn record(chan: Chan, dir: Dir, data: &[u8], ok: bool) {
     let _ = sink.writer.flush();
 }
 
+/// en: Record the identity of the device being opened, so a replay fixture can reconstruct
+/// `enumerate()` offline. Written as a `{"_device":{...}}` line. No-op when capture is off.
+/// ja: 開く device の識別子を記録し、replay fixture が offline で `enumerate()` を再構成できる
+/// ようにする。`{"_device":{...}}` 行で書く。capture off なら no-op。
+pub(crate) fn record_device(
+    vid: u16,
+    pid: u16,
+    serial: Option<&str>,
+    topology: &str,
+    product: Option<&str>,
+    ports: &[String],
+) {
+    let Some(cell) = SINK.get() else {
+        return;
+    };
+    let Ok(mut guard) = cell.lock() else {
+        return;
+    };
+    let val = serde_json::json!({
+        "_device": {
+            "vid": vid,
+            "pid": pid,
+            "serial": serial,
+            "topology": topology,
+            "product": product,
+            "ports": ports,
+        }
+    });
+    let _ = writeln!(guard.writer, "{val}");
+    let _ = guard.writer.flush();
+}
+
 /// Format one NDJSON transaction line (pure, so it can be unit-tested).
 fn encode_line(seq: u64, t_us: u128, chan: Chan, dir: Dir, data: &[u8], ok: bool) -> String {
     let mut hex = String::with_capacity(data.len() * 2);

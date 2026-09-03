@@ -188,6 +188,7 @@ dependencies = [
  "ch32rv-usb-wch-win",
  "fs4",
  "nusb",
+ "serde_json",
  "thiserror",
 ]
 

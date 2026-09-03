@@ -32,6 +32,17 @@ use ch32rv_contract::{self as contract, ErrorKind, ResultEnvelope};
 
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    // --replay: run against a recorded capture instead of hardware (mutually exclusive with --capture).
+    if let Some(path) = cli.replay.as_deref() {
+        if cli.capture.is_some() {
+            eprintln!("error: --replay and --capture cannot be used together");
+            return ErrorKind::Usage.exit_code().into();
+        }
+        if let Err(e) = ch32rv_usb::replay::start(path) {
+            eprintln!("error: --replay: cannot load {}: {e}", path.display());
+            return ErrorKind::Usage.exit_code().into();
+        }
+    }
     // Start USB transaction capture if requested (diagnostic; a failure to open the file only warns).
     if let Some(path) = cli.capture.as_deref()
         && let Err(e) = ch32rv_usb::capture::start(path)
@@ -41,52 +52,65 @@ fn main() -> std::process::ExitCode {
             path.display()
         );
     }
+    let code = run_command(&cli);
+    // After a replay, note if the run diverged from the recording (a protocol change) or ran short.
+    if let Some((divergences, underruns)) = ch32rv_usb::replay::summary()
+        && (divergences > 0 || underruns > 0)
+    {
+        eprintln!(
+            "warning: replay diverged from the recording ({divergences} write mismatch(es), {underruns} short read(s)) - the code may produce a different protocol than the capture"
+        );
+    }
+    code
+}
+
+fn run_command(cli: &Cli) -> std::process::ExitCode {
     match &cli.command {
-        Command::Version => cmd_version(&cli),
-        Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(&cli, *watch),
-        Command::Probe(ProbeCmd::Info) => cmd_probe::info(&cli),
-        Command::Probe(ProbeCmd::Mode(ModeCmd::Get)) => cmd_probe::mode_get(&cli),
-        Command::Probe(ProbeCmd::Mode(ModeCmd::Set { mode })) => cmd_probe::mode_set(&cli, *mode),
-        Command::Probe(ProbeCmd::Power(p)) => cmd_probe::power(&cli, p),
-        Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Info)) => cmd_probe::firmware_info(&cli),
+        Command::Version => cmd_version(cli),
+        Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(cli, *watch),
+        Command::Probe(ProbeCmd::Info) => cmd_probe::info(cli),
+        Command::Probe(ProbeCmd::Mode(ModeCmd::Get)) => cmd_probe::mode_get(cli),
+        Command::Probe(ProbeCmd::Mode(ModeCmd::Set { mode })) => cmd_probe::mode_set(cli, *mode),
+        Command::Probe(ProbeCmd::Power(p)) => cmd_probe::power(cli, p),
+        Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Info)) => cmd_probe::firmware_info(cli),
         Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Check { min })) => {
-            cmd_probe::firmware_check(&cli, min.as_deref())
+            cmd_probe::firmware_check(cli, min.as_deref())
         }
-        Command::Target(TargetCmd::Info) => cmd_target::info(&cli),
-        Command::Target(TargetCmd::Opt(OptionCmd::Get)) => cmd_target::option_get(&cli),
+        Command::Target(TargetCmd::Info) => cmd_target::info(cli),
+        Command::Target(TargetCmd::Opt(OptionCmd::Get)) => cmd_target::option_get(cli),
         Command::Target(TargetCmd::Opt(OptionCmd::WriteRaw { hex })) => {
-            cmd_target::option_write_raw(&cli, hex)
+            cmd_target::option_write_raw(cli, hex)
         }
-        Command::Target(TargetCmd::Opt(OptionCmd::Set { kv })) => cmd_target::option_set(&cli, kv),
-        Command::Target(TargetCmd::Opt(OptionCmd::Reset)) => cmd_target::option_reset(&cli),
-        Command::Target(TargetCmd::Protect { state }) => cmd_target::protect(&cli, *state),
-        Command::Dbg(DbgCmd::Regs) => cmd_dbg::regs(&cli),
-        Command::Dbg(DbgCmd::Halt { reset }) => cmd_dbg::halt(&cli, *reset),
-        Command::Dbg(DbgCmd::Resume) => cmd_dbg::resume(&cli),
-        Command::Dbg(DbgCmd::Step { n }) => cmd_dbg::step(&cli, *n),
-        Command::Dbg(DbgCmd::Reg(sub)) => cmd_dbg::reg(&cli, sub),
-        Command::Dbg(DbgCmd::Dmi(sub)) => cmd_dbg::dmi(&cli, sub),
-        Command::Read(args) => cmd_dbg::read(&cli, args),
-        Command::Flash(args) => cmd_flash::flash(&cli, args),
-        Command::Verify(args) => cmd_flash::verify(&cli, args),
-        Command::Erase(args) => cmd_flash::erase(&cli, args),
-        Command::Reset(args) => cmd_flash::reset(&cli, args),
-        Command::Recover(args) => cmd_flash::recover(&cli, args),
-        Command::Doctor(args) => cmd_doctor::doctor(&cli, args),
-        Command::Monitor(args) => cmd_monitor::monitor(&cli, args),
-        Command::Gdb(args) => cmd_gdb::gdb(&cli, args),
+        Command::Target(TargetCmd::Opt(OptionCmd::Set { kv })) => cmd_target::option_set(cli, kv),
+        Command::Target(TargetCmd::Opt(OptionCmd::Reset)) => cmd_target::option_reset(cli),
+        Command::Target(TargetCmd::Protect { state }) => cmd_target::protect(cli, *state),
+        Command::Dbg(DbgCmd::Regs) => cmd_dbg::regs(cli),
+        Command::Dbg(DbgCmd::Halt { reset }) => cmd_dbg::halt(cli, *reset),
+        Command::Dbg(DbgCmd::Resume) => cmd_dbg::resume(cli),
+        Command::Dbg(DbgCmd::Step { n }) => cmd_dbg::step(cli, *n),
+        Command::Dbg(DbgCmd::Reg(sub)) => cmd_dbg::reg(cli, sub),
+        Command::Dbg(DbgCmd::Dmi(sub)) => cmd_dbg::dmi(cli, sub),
+        Command::Read(args) => cmd_dbg::read(cli, args),
+        Command::Flash(args) => cmd_flash::flash(cli, args),
+        Command::Verify(args) => cmd_flash::verify(cli, args),
+        Command::Erase(args) => cmd_flash::erase(cli, args),
+        Command::Reset(args) => cmd_flash::reset(cli, args),
+        Command::Recover(args) => cmd_flash::recover(cli, args),
+        Command::Doctor(args) => cmd_doctor::doctor(cli, args),
+        Command::Monitor(args) => cmd_monitor::monitor(cli, args),
+        Command::Gdb(args) => cmd_gdb::gdb(cli, args),
         Command::Db(DbCmd::List {
             family,
             verified_only,
-        }) => cmd_db::list(&cli, family.as_deref(), *verified_only),
-        Command::Db(DbCmd::Info { sku }) => cmd_db::info(&cli, sku),
-        Command::Capabilities => cmd_capabilities::capabilities(&cli),
-        Command::Write(args) => cmd_write::write(&cli, args),
-        Command::Arduino(ArduinoCmd::Discovery) => cmd_arduino::discovery(&cli),
-        Command::Arduino(ArduinoCmd::Monitor) => cmd_arduino::monitor(&cli),
-        Command::Run(args) => cmd_run::run(&cli, args),
+        }) => cmd_db::list(cli, family.as_deref(), *verified_only),
+        Command::Db(DbCmd::Info { sku }) => cmd_db::info(cli, sku),
+        Command::Capabilities => cmd_capabilities::capabilities(cli),
+        Command::Write(args) => cmd_write::write(cli, args),
+        Command::Arduino(ArduinoCmd::Discovery) => cmd_arduino::discovery(cli),
+        Command::Arduino(ArduinoCmd::Monitor) => cmd_arduino::monitor(cli),
+        Command::Run(args) => cmd_run::run(cli, args),
         Command::Complete(a) => cmd_complete(a.shell),
-        other => unimplemented_cmd(&cli, canonical_name(other)),
+        other => unimplemented_cmd(cli, canonical_name(other)),
     }
 }
 

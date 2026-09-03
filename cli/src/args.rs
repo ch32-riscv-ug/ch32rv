@@ -68,9 +68,12 @@ pub struct Cli {
     /// Write a detailed log to this file
     #[arg(long, global = true)]
     pub log_file: Option<PathBuf>,
-    /// Record USB/serial transactions (replay fixture)
+    /// Record USB/serial transactions to a file (a replay fixture)
     #[arg(long, global = true)]
     pub capture: Option<PathBuf>,
+    /// Replay a captured session offline instead of using hardware (see --capture)
+    #[arg(long, global = true)]
+    pub replay: Option<PathBuf>,
     /// Plan only; do not open any device
     #[arg(long, global = true)]
     pub dry_run: bool,
