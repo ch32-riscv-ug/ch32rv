@@ -99,7 +99,8 @@ ch32rv
 | `--duration <s>` | | Ctrl-C まで | streaming コマンド(`monitor` / `run`)の実行時間 |
 | `--db <path>` | | 内蔵 | target DB の overlay(新 SKU の試行用) |
 | `--log-file <path>` | | - | 詳細 log の保存 |
-| `--capture <path>` | | - | USB/serial transaction の記録(replay fixture 用)P1 |
+| `--capture <path>` | | - | USB transaction を NDJSON で記録(replay fixture 用) |
+| `--replay <path>` | | - | 記録した capture を HW 無しで再生(`enumerate`〜転送を fixture から供給)。`--capture` と排他。CI/バグ再現用 |
 | `--dry-run` | | off | device を開かず計画のみ表示 P2 |
 | `-v` / `-q` | 重ね掛け | | 冗長度 |
 

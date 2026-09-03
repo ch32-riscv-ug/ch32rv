@@ -46,11 +46,18 @@ fn classify_open_error(e: impl Into<io::Error>) -> UsbError {
     }
 }
 
-/// en: Information about one enumerated USB device. Wraps `nusb::DeviceInfo` without
-/// exposing it.
-/// ja: 列挙された USB device 1 つ分の情報。`nusb::DeviceInfo` を隠蔽して包む。
+/// en: Information about one enumerated USB device. Wraps `nusb::DeviceInfo` without exposing it,
+/// or - under `--replay` - the identity recorded in a capture fixture.
+/// ja: 列挙された USB device 1 つ分の情報。`nusb::DeviceInfo` を隠蔽して包む(`--replay` 時は
+/// capture fixture に記録された識別子)。
 pub struct UsbDeviceInfo {
-    inner: nusb::DeviceInfo,
+    inner: Inner,
+}
+
+enum Inner {
+    Nusb(nusb::DeviceInfo),
+    /// A device reconstructed from a `--replay` capture fixture (no real hardware).
+    Replay(crate::replay::ReplayDevice),
 }
 
 impl std::fmt::Debug for UsbDeviceInfo {
@@ -66,23 +73,38 @@ impl std::fmt::Debug for UsbDeviceInfo {
 
 impl UsbDeviceInfo {
     pub fn vid(&self) -> u16 {
-        self.inner.vendor_id()
+        match &self.inner {
+            Inner::Nusb(d) => d.vendor_id(),
+            Inner::Replay(d) => d.vid,
+        }
     }
 
     pub fn pid(&self) -> u16 {
-        self.inner.product_id()
+        match &self.inner {
+            Inner::Nusb(d) => d.product_id(),
+            Inner::Replay(d) => d.pid,
+        }
     }
 
     pub fn serial(&self) -> Option<&str> {
-        self.inner.serial_number()
+        match &self.inner {
+            Inner::Nusb(d) => d.serial_number(),
+            Inner::Replay(d) => d.serial.as_deref(),
+        }
     }
 
     pub fn product(&self) -> Option<&str> {
-        self.inner.product_string()
+        match &self.inner {
+            Inner::Nusb(d) => d.product_string(),
+            Inner::Replay(d) => d.product.as_deref(),
+        }
     }
 
     pub fn manufacturer(&self) -> Option<&str> {
-        self.inner.manufacturer_string()
+        match &self.inner {
+            Inner::Nusb(d) => d.manufacturer_string(),
+            Inner::Replay(_) => None,
+        }
     }
 
     /// "VID:PID" in lowercase hex.
@@ -95,11 +117,15 @@ impl UsbDeviceInfo {
     /// ja: 物理位置: `<bus>-<port.port...>`(`usb:` selector の値)。port chain が
     /// 取れない環境では device address で代替する。
     pub fn topology(&self) -> String {
-        let bus = self.inner.bus_id().trim_start_matches('0');
+        let d = match &self.inner {
+            Inner::Nusb(d) => d,
+            Inner::Replay(r) => return r.topology.clone(),
+        };
+        let bus = d.bus_id().trim_start_matches('0');
         let bus = if bus.is_empty() { "0" } else { bus };
-        let chain = self.inner.port_chain();
+        let chain = d.port_chain();
         if chain.is_empty() {
-            format!("{bus}-addr{}", self.inner.device_address())
+            format!("{bus}-addr{}", d.device_address())
         } else {
             let ports: Vec<String> = chain.iter().map(u8::to_string).collect();
             format!("{bus}-{}", ports.join("."))
@@ -111,9 +137,13 @@ impl UsbDeviceInfo {
     /// ja: この USB device に属する serial port ノード(CDC 等)。当面 Linux のみ
     /// (sysfs 走査)。他 OS は空を返す(TODO M2: Windows COM / macOS cu.*)。
     pub fn serial_ports(&self) -> Vec<String> {
+        let nusb = match &self.inner {
+            Inner::Nusb(d) => d,
+            Inner::Replay(r) => return r.ports.clone(),
+        };
         #[cfg(target_os = "linux")]
         {
-            let dev_path = match self.inner.sysfs_path().canonicalize() {
+            let dev_path = match nusb.sysfs_path().canonicalize() {
                 Ok(p) => p,
                 Err(_) => return Vec::new(),
             };
@@ -133,6 +163,7 @@ impl UsbDeviceInfo {
         }
         #[cfg(not(target_os = "linux"))]
         {
+            let _ = nusb;
             Vec::new()
         }
     }
@@ -152,6 +183,21 @@ impl UsbDeviceInfo {
         ep_out: u8,
         ep_in: u8,
     ) -> Result<UsbInterface, UsbError> {
+        // Replay: no hardware is opened; transfers are served from the loaded capture fixture.
+        if matches!(self.inner, Inner::Replay(_)) {
+            return Ok(UsbInterface {
+                backend: Backend::Replay,
+            });
+        }
+        // Record the device identity so a `--capture` run yields a replayable fixture.
+        crate::capture::record_device(
+            self.vid(),
+            self.pid(),
+            self.serial(),
+            &self.topology(),
+            self.product(),
+            &self.serial_ports(),
+        );
         match self.open_nusb(interface, ep_out, ep_in) {
             Ok(backend) => Ok(UsbInterface {
                 backend: Backend::Nusb(Box::new(backend)),
@@ -169,7 +215,10 @@ impl UsbDeviceInfo {
     }
 
     fn open_nusb(&self, interface: u8, ep_out: u8, ep_in: u8) -> Result<NusbBackend, UsbError> {
-        let device = self.inner.open().wait().map_err(classify_open_error)?;
+        let Inner::Nusb(info) = &self.inner else {
+            return Err(UsbError::Open("replay device has no nusb backend".into()));
+        };
+        let device = info.open().wait().map_err(classify_open_error)?;
         let iface = device
             .claim_interface(interface)
             .wait()
@@ -232,10 +281,20 @@ impl UsbDeviceInfo {
 /// en: Enumerate all USB devices. Callers filter by VID/PID.
 /// ja: 全 USB device を列挙する。VID/PID での絞り込みは呼び出し側で行う。
 pub fn enumerate() -> Result<Vec<UsbDeviceInfo>, UsbError> {
+    // Replay: present exactly the device recorded in the loaded fixture, no hardware scan.
+    if let Some(dev) = crate::replay::device() {
+        return Ok(vec![UsbDeviceInfo {
+            inner: Inner::Replay(dev),
+        }]);
+    }
     let devices = nusb::list_devices()
         .wait()
         .map_err(|e| UsbError::Enumerate(io::Error::from(e).to_string()))?;
-    Ok(devices.map(|inner| UsbDeviceInfo { inner }).collect())
+    Ok(devices
+        .map(|inner| UsbDeviceInfo {
+            inner: Inner::Nusb(inner),
+        })
+        .collect())
 }
 
 /// en: An opened device with one bulk OUT/IN endpoint pair and blocking transfers,
@@ -258,6 +317,8 @@ enum Backend {
     Nusb(Box<NusbBackend>),
     #[cfg(windows)]
     Ch375(Ch375Backend),
+    /// `--replay`: transfers are served from / matched against the loaded capture fixture.
+    Replay,
 }
 
 struct NusbBackend {
@@ -293,6 +354,10 @@ impl UsbInterface {
                 .write_pipe(b.ep_out, data)
                 .map(|()| data.len())
                 .map_err(ch375_err),
+            Backend::Replay => {
+                crate::replay::consume_write(crate::capture::Chan::Cmd, data);
+                Ok(data.len())
+            }
         };
         crate::capture::record(
             crate::capture::Chan::Cmd,
@@ -308,6 +373,7 @@ impl UsbInterface {
             Backend::Nusb(b) => read_ep(&mut b.inp, buf, timeout),
             #[cfg(windows)]
             Backend::Ch375(b) => b.dev.read_pipe(b.ep_in, buf).map_err(ch375_err),
+            Backend::Replay => serve_replay_read(crate::capture::Chan::Cmd, buf),
         };
         let n = *r.as_ref().unwrap_or(&0);
         crate::capture::record(
@@ -347,6 +413,7 @@ impl UsbInterface {
                     b.data_eps = Some((ep_out, ep_in));
                 }
             }
+            Backend::Replay => {}
         }
         Ok(())
     }
@@ -365,6 +432,10 @@ impl UsbInterface {
                     .write_pipe(ep_out, data)
                     .map(|()| data.len())
                     .map_err(ch375_err)
+            }
+            Backend::Replay => {
+                crate::replay::consume_write(crate::capture::Chan::Data, data);
+                Ok(data.len())
             }
         };
         crate::capture::record(
@@ -388,6 +459,7 @@ impl UsbInterface {
                 let (_, ep_in) = b.data_eps.ok_or(UsbError::Endpoint(0x82))?;
                 b.dev.read_pipe(ep_in, buf).map_err(ch375_err)
             }
+            Backend::Replay => serve_replay_read(crate::capture::Chan::Data, buf),
         };
         let n = *r.as_ref().unwrap_or(&0);
         crate::capture::record(
@@ -398,6 +470,14 @@ impl UsbInterface {
         );
         r
     }
+}
+
+/// Serve one recorded IN transfer into `buf` (for the [`Backend::Replay`] path).
+fn serve_replay_read(chan: crate::capture::Chan, buf: &mut [u8]) -> Result<usize, UsbError> {
+    let bytes = crate::replay::serve_read(chan);
+    let n = bytes.len().min(buf.len());
+    buf[..n].copy_from_slice(&bytes[..n]);
+    Ok(n)
 }
 
 fn write_ep(
