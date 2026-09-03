@@ -31,6 +31,9 @@ pub struct Session {
 pub enum SessionError {
     Open(WchLinkError),
     ProbeInfo(WchLinkError),
+    /// No target answered on the debug pins (attach got 0x55 / no response) - exit 20.
+    NoTarget,
+    /// Attach failed for another reason (SetSpeed, unexpected error) - exit 22.
     Attach(String),
     /// `--chip` conflicts with the detected target (exit 23).
     ChipMismatch(String),
@@ -68,7 +71,7 @@ impl Session {
         let _ = link.detach_chip();
 
         let probe_info = link.probe_info().map_err(SessionError::ProbeInfo)?;
-        let attach = attach_once(&mut link, speed).map_err(SessionError::Attach)?;
+        let attach = attach_once(&mut link, speed)?;
 
         // Validate an explicit --chip against the detected target (fail-closed on a family conflict).
         if let Some(requested) = chip {
@@ -117,7 +120,7 @@ impl Session {
                 });
                 let _ = link.redetect_chip();
                 let _ = link.detach_chip();
-                let _ = attach_once(&mut link, speed).map_err(SessionError::Attach)?;
+                let _ = attach_once(&mut link, speed)?;
                 match link.chip_info() {
                     Ok(ChipInfoStatus::Ok(ci)) => Some(ci),
                     _ => {
@@ -166,14 +169,15 @@ impl Drop for Session {
     }
 }
 
-fn attach_once(link: &mut WchLink, speed: Speed) -> Result<AttachInfo, String> {
+fn attach_once(link: &mut WchLink, speed: Speed) -> Result<AttachInfo, SessionError> {
     link.set_speed_default(speed)
-        .map_err(|e| format!("SetSpeed failed: {e}"))?;
+        .map_err(|e| SessionError::Attach(format!("SetSpeed failed: {e}")))?;
     link.attach_chip().map_err(|e| match e {
+        // No response on the debug pins - a distinct, common case worth its own exit code (20).
         WchLinkError::Protocol { reason: 0x55, .. } | WchLinkError::UnexpectedResponse(_) => {
-            "no target detected on the debug pins".to_owned()
+            SessionError::NoTarget
         }
-        other => format!("attach failed: {other}"),
+        other => SessionError::Attach(format!("attach failed: {other}")),
     })
 }
 

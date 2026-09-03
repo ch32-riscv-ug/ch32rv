@@ -56,8 +56,15 @@ pub(crate) fn mode_str(mode: ProbeMode) -> &'static str {
 /// ja: --probe(env・設定別名込み)を fail-closed にちょうど 1 台へ解決する。
 /// probe 経路の全 command が共用する。
 pub(crate) fn select_entry(cli: &Cli, cmd: &str) -> Result<Entry, ExitCode> {
-    let mut entries =
-        wch_devices().map_err(|e| fail(cli, cmd, ErrorKind::Internal, e.to_string(), None))?;
+    let mut entries = wch_devices().map_err(|e| {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceOpenFailed,
+            e.to_string(),
+            Some("USB enumeration failed; check permissions/udev (`ch32rv doctor`)"),
+        )
+    })?;
     let selector = parse_selector(cli, cmd)?;
     let idx = match ch32rv_usb::resolve(selector.as_ref(), entries.iter().map(|e| &e.dev)) {
         Ok(i) => i,
@@ -191,7 +198,15 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
     }
     let entries = match wch_devices() {
         Ok(e) => e,
-        Err(e) => return fail(cli, "probe.list", ErrorKind::Internal, e.to_string(), None),
+        Err(e) => {
+            return fail(
+                cli,
+                "probe.list",
+                ErrorKind::DeviceOpenFailed,
+                e.to_string(),
+                Some("USB enumeration failed; check permissions/udev (`ch32rv doctor`)"),
+            );
+        }
     };
 
     let mut probes_json = Vec::new();
@@ -202,10 +217,18 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         lines.push(format_row(&report, error.as_deref()));
         let mut v = match serde_json::to_value(&report) {
             Ok(v) => v,
-            Err(e) => return fail(cli, "probe.list", ErrorKind::Internal, e.to_string(), None),
+            Err(e) => {
+                return fail(
+                    cli,
+                    "probe.list",
+                    ErrorKind::DeviceOpenFailed,
+                    e.to_string(),
+                    Some("USB enumeration failed; check permissions/udev (`ch32rv doctor`)"),
+                );
+            }
         };
         if let (Some(err), Some(obj)) = (error, v.as_object_mut()) {
-            obj.insert("error".to_owned(), serde_json::Value::String(err));
+            obj.insert("probe_error".to_owned(), serde_json::Value::String(err));
         }
         probes_json.push(v);
         all_warnings.extend(warnings);
@@ -272,17 +295,12 @@ pub fn info(cli: &Cli) -> ExitCode {
     let (report, warnings, error) = report_with_retry(&entry);
 
     if let Some(e) = error {
-        let kind = if e.contains("access denied") {
-            ErrorKind::DeviceOpenFailed
-        } else if e.contains("busy") {
-            ErrorKind::DeviceBusy
-        } else {
-            ErrorKind::DeviceOpenFailed
-        };
+        // A probe-open failure is always exit 11 (device-open-failed); exit 13 (device-busy) is
+        // reserved for the advisory-lock timeout and a typed USB-claimed error (see session_error).
         return fail(
             cli,
             "probe.info",
-            kind,
+            ErrorKind::DeviceOpenFailed,
             e,
             Some("check permissions/driver binding, or whether another tool holds the probe"),
         );
@@ -481,6 +499,8 @@ pub(crate) fn attach(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
 /// ja: `SessionError` を CLI 失敗 envelope + 実用的な hint として描画。コマンド間で文言がぶれない
 /// よう一箇所に集約。
 pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
+    use ch32rv_usb::UsbError;
+    use ch32rv_wchlink::WchLinkError;
     match e {
         SessionError::ChipMismatch(msg) => fail(
             cli,
@@ -490,28 +510,38 @@ pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
             Some("pass the correct --chip, or omit it to use auto-detection"),
         ),
         SessionError::Open(err) | SessionError::ProbeInfo(err) => {
-            let s = err.to_string();
-            let kind = if s.contains("busy") {
-                ErrorKind::DeviceBusy
-            } else {
-                ErrorKind::DeviceOpenFailed
+            // Classify off the *typed* error, never a substring of its Display text.
+            let (kind, hint) = match &err {
+                WchLinkError::Usb(UsbError::Busy(_)) => (
+                    ErrorKind::DeviceBusy,
+                    "another process has claimed this probe; close it and retry",
+                ),
+                WchLinkError::Usb(UsbError::AccessDenied(_)) => (
+                    ErrorKind::DeviceOpenFailed,
+                    "check permissions/udev rules (run `ch32rv doctor`) or the driver binding",
+                ),
+                _ => (
+                    ErrorKind::DeviceOpenFailed,
+                    "check the probe connection, or whether another tool holds it",
+                ),
             };
-            fail(
-                cli,
-                cmd,
-                kind,
-                s,
-                Some("check permissions/driver binding, or whether another tool holds the probe"),
-            )
+            fail(cli, cmd, kind, err.to_string(), Some(hint))
         }
+        SessionError::NoTarget => fail(
+            cli,
+            cmd,
+            ErrorKind::TargetNoResponse,
+            "no target detected on the debug pins",
+            Some(
+                "check target wiring/power/BOOT; for a protected or bricked target see `ch32rv recover`",
+            ),
+        ),
         SessionError::Attach(msg) => fail(
             cli,
             cmd,
             ErrorKind::AttachFailed,
             msg,
-            Some(
-                "check target wiring/power/BOOT; for a protected or bricked target see `ch32rv recover`",
-            ),
+            Some("check target wiring/power/BOOT, and the debug speed (--speed)"),
         ),
         SessionError::Busy(err) => fail(
             cli,
@@ -550,10 +580,10 @@ pub fn firmware_info(cli: &Cli) -> ExitCode {
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
-            "version": format!("{maj}.{min:02}"),
+            "firmware": format!("{maj}.{min:02}"),
             "raw": fw.raw,
             "wch": fw.wch,
-            "mode": mode,
+            "firmware_mode": mode,
             "known_bad": bad.is_some(),
             "known_bad_reason": bad,
         }));
@@ -613,7 +643,6 @@ pub fn firmware_check(cli: &Cli, min: Option<&str>) -> ExitCode {
         env.result = Some(serde_json::json!({
             "firmware": format!("{maj}.{mn:02}"),
             "min": min,
-            "ok": true,
         }));
         crate::print_envelope(&env)
     } else {
@@ -815,11 +844,12 @@ pub fn power(cli: &Cli, cmd: &crate::args::PowerCmd) -> ExitCode {
         }
         Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
     }
-    let (desc, result) = match cmd {
+    let (desc, json, result) = match cmd {
         PowerCmd::V3v3 { state } => {
             let on = matches!(state, SwitchState::On);
             (
                 format!("3v3 {}", if on { "on" } else { "off" }),
+                serde_json::json!({ "rail": "3v3", "on": on }),
                 link.set_power(false, on),
             )
         }
@@ -827,6 +857,7 @@ pub fn power(cli: &Cli, cmd: &crate::args::PowerCmd) -> ExitCode {
             let on = matches!(state, SwitchState::On);
             (
                 format!("5v {}", if on { "on" } else { "off" }),
+                serde_json::json!({ "rail": "5v", "on": on }),
                 link.set_power(true, on),
             )
         }
@@ -839,20 +870,24 @@ pub fn power(cli: &Cli, cmd: &crate::args::PowerCmd) -> ExitCode {
                 }
                 Err(e) => Err(e),
             };
-            (format!("cycle 3v3 (off {off_ms}ms)"), r)
+            (
+                format!("cycle 3v3 (off {off_ms}ms)"),
+                serde_json::json!({ "rail": "3v3", "on": true, "cycled": true, "off_ms": off_ms }),
+                r,
+            )
         }
     };
     match result {
         Ok(()) => {
             if cli.json {
                 let mut env = ResultEnvelope::success(CMD);
-                env.result = Some(serde_json::json!({ "power": desc }));
+                env.result = Some(json);
                 crate::print_envelope(&env)
             } else {
                 println!("power: {desc}");
                 ExitCode::SUCCESS
             }
         }
-        Err(e) => fail(cli, CMD, ErrorKind::TransportTimeout, e.to_string(), None),
+        Err(e) => fail(cli, CMD, ErrorKind::TransferFailed, e.to_string(), None),
     }
 }

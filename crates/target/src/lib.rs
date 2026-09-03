@@ -11,6 +11,19 @@
 //! `generated/` に commit する。不足データは ch32-device-data へ依頼し、納品までは
 //! `provisional/` の暫定 overlay で進む。SKU ごとに verified / provisional flag を持ち出力に出す。
 //! 内蔵 DB は `cargo xtask db-gen` が `generated/skus.csv` を生成し `include_str!` で埋め込む。
+//!
+//! ```
+//! use ch32rv_target::{Db, Resolution};
+//!
+//! let db = Db::builtin();
+//! // Resolve a live chip id to a SKU. The silicon-revision nibble (chip_id bits `[7:4]`) is masked,
+//! // and resolution is fail-closed: a cross-family-ambiguous id yields `Family`, an unknown one `Unknown`.
+//! match db.resolve_by_chip_id(0x3070_0528) {
+//!     Resolution::Sku(s) => println!("{}: {} bytes flash", s.sku, s.flash_bytes),
+//!     Resolution::Family(fam, cands) => println!("{fam} ({} candidates)", cands.len()),
+//!     Resolution::Unknown => println!("not in the DB"),
+//! }
+//! ```
 
 use serde::{Deserialize, Serialize};
 
@@ -189,7 +202,7 @@ pub fn option_user_fields(family: &str) -> Vec<OptionUserField> {
     out
 }
 
-/// Silicon-revision bits [7:4] of the device_id are don't-care when matching (every delivered row
+/// Silicon-revision bits `[7:4]` of the device_id are don't-care when matching (every delivered row
 /// uses this mask; `xtask db-gen` rejects any other).
 const DEVICE_ID_MASK: u32 = 0xFFFF_FF0F;
 
@@ -282,10 +295,10 @@ impl Db {
         fams
     }
 
-    /// en: Resolve a live `chip_id` (AttachChip response) to a SKU. Silicon-revision bits [7:4] are
+    /// en: Resolve a live `chip_id` (AttachChip response) to a SKU. Silicon-revision bits `[7:4]` are
     /// masked out. Fail-closed: an ambiguous multi-family match returns `Unknown` rather than a
     /// guess; a same-family ambiguity returns `Family` with the candidates.
-    /// ja: 実機の `chip_id` を SKU へ解決。rev [7:4] は無視。多 family で曖昧なら推測せず `Unknown`、
+    /// ja: 実機の `chip_id` を SKU へ解決。rev `[7:4]` は無視。多 family で曖昧なら推測せず `Unknown`、
     /// 同 family の曖昧は候補付き `Family` を返す(fail-closed)。
     pub fn resolve_by_chip_id(&self, chip_id: u32) -> Resolution<'_> {
         let masked = chip_id & DEVICE_ID_MASK;
@@ -318,8 +331,8 @@ pub struct SkuRecord {
     pub series: String,
     /// device_id read from memory (from measured evidence).
     pub device_id: Option<u32>,
-    pub flash_bytes: u64,
-    pub sram_bytes: u64,
+    pub flash_bytes: u32,
+    pub sram_bytes: u32,
     /// en: Verified on real silicon (kept distinct from merely "implemented").
     /// ja: 実機確認済みか(「実装済み」と区別する)。
     pub verified: bool,

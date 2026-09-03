@@ -15,7 +15,7 @@ pub enum ExitCode {
     /// Entry device (probe / ISP device / DFU / port) not found
     DeviceNotFound = 10,
     /// Device cannot be opened (permissions, driver binding)
-    DeviceOpen = 11,
+    DeviceOpenFailed = 11,
     /// Device firmware does not satisfy the operation (incl. known-bad versions)
     DeviceFirmware = 12,
     /// Device busy (lock acquisition failed)
@@ -31,15 +31,15 @@ pub enum ExitCode {
     /// Target ambiguous (multiple candidates / conflicts with --chip)
     TargetAmbiguous = 23,
     /// Capability missing for this probe x firmware x target x operation
-    Unsupported = 24,
+    CapabilityUnsupported = 24,
     /// Verify mismatch / blank check failed
     VerifyMismatch = 30,
-    /// Transport timeout / interrupted transfer
-    TransportTimeout = 40,
-    /// Probe is wedged; a USB re-plug is required
+    /// Any transfer / DMI operation failure, including a genuine transport timeout
+    TransferFailed = 40,
+    /// Probe is wedged; a USB re-plug is required (reserved; not currently emitted)
     ProbeWedged = 41,
     /// Programmed, but the target is not running (confirm-run failed)
-    NotRunning = 50,
+    NotRunningAfterWrite = 50,
     /// Internal error (bug)
     Internal = 70,
 }
@@ -77,7 +77,10 @@ pub enum ErrorKind {
     CapabilityUnsupported,
     VerifyMismatch,
     BlankCheckFailed,
+    /// A genuine transport timeout (transfer stalled/interrupted).
     TransportTimeout,
+    /// A flash/DMI operation failed for a non-timeout reason (program/erase/readback/option/reset).
+    TransferFailed,
     ProbeWedged,
     NotRunningAfterWrite,
     Internal,
@@ -105,6 +108,7 @@ impl ErrorKind {
             ErrorKind::VerifyMismatch => "verify-mismatch",
             ErrorKind::BlankCheckFailed => "blank-check-failed",
             ErrorKind::TransportTimeout => "transport-timeout",
+            ErrorKind::TransferFailed => "transfer-failed",
             ErrorKind::ProbeWedged => "probe-wedged",
             ErrorKind::NotRunningAfterWrite => "not-running-after-write",
             ErrorKind::Internal => "internal",
@@ -117,7 +121,7 @@ impl ErrorKind {
         match self {
             ErrorKind::Usage => ExitCode::Usage,
             ErrorKind::DeviceNotFound => ExitCode::DeviceNotFound,
-            ErrorKind::DeviceOpenFailed => ExitCode::DeviceOpen,
+            ErrorKind::DeviceOpenFailed => ExitCode::DeviceOpenFailed,
             ErrorKind::DeviceFirmwareUnsupported | ErrorKind::DeviceFirmwareKnownBad => {
                 ExitCode::DeviceFirmware
             }
@@ -127,11 +131,11 @@ impl ErrorKind {
             ErrorKind::TargetProtected => ExitCode::TargetProtected,
             ErrorKind::AttachFailed => ExitCode::AttachFailed,
             ErrorKind::TargetAmbiguous => ExitCode::TargetAmbiguous,
-            ErrorKind::CapabilityUnsupported => ExitCode::Unsupported,
+            ErrorKind::CapabilityUnsupported => ExitCode::CapabilityUnsupported,
             ErrorKind::VerifyMismatch | ErrorKind::BlankCheckFailed => ExitCode::VerifyMismatch,
-            ErrorKind::TransportTimeout => ExitCode::TransportTimeout,
+            ErrorKind::TransportTimeout | ErrorKind::TransferFailed => ExitCode::TransferFailed,
             ErrorKind::ProbeWedged => ExitCode::ProbeWedged,
-            ErrorKind::NotRunningAfterWrite => ExitCode::NotRunning,
+            ErrorKind::NotRunningAfterWrite => ExitCode::NotRunningAfterWrite,
             ErrorKind::Internal | ErrorKind::Unimplemented => ExitCode::Internal,
         }
     }

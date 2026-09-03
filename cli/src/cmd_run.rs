@@ -12,9 +12,8 @@ use ch32rv_contract::policy::ImageFormat;
 use ch32rv_contract::{ErrorKind, Warning};
 use ch32rv_dmi::RegName;
 use ch32rv_flash::params_for_family;
-use ch32rv_wchlink::FlashParams as WlFlashParams;
 
-use crate::args::{Cli, RunArgs};
+use crate::args::{Cli, ExitOn, RunArgs};
 use crate::cmd_probe::{fail, select_entry};
 use crate::parse;
 use crate::session::Session;
@@ -45,32 +44,12 @@ fn is_semihosting_seq(before: u32, at: u32, after: u32) -> bool {
 
 pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
     const CMD: &str = "run";
-    let exit_mode = match args.exit_on.as_deref() {
-        None => ExitMode::Timeout(cli.timeout.map(Duration::from_secs)),
-        Some("semihosting") => ExitMode::Semihosting {
-            cap: Duration::from_secs(cli.timeout.unwrap_or(60)),
+    // The run length / safety cap is --duration (transport --timeout stays per-transfer).
+    let exit_mode = match args.exit_on {
+        Some(ExitOn::Semihosting) => ExitMode::Semihosting {
+            cap: Duration::from_secs(cli.duration.unwrap_or(60)),
         },
-        Some(s) if s.starts_with("timeout=") => match s["timeout=".len()..].parse::<u64>() {
-            Ok(secs) => ExitMode::Timeout(Some(Duration::from_secs(secs))),
-            Err(_) => {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::Usage,
-                    "invalid --exit-on timeout value",
-                    None,
-                );
-            }
-        },
-        Some(_) => {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::Usage,
-                "--exit-on must be `semihosting` or `timeout=<seconds>`",
-                None,
-            );
-        }
+        None | Some(ExitOn::Timeout) => ExitMode::Timeout(cli.duration.map(Duration::from_secs)),
     };
 
     // Only dmdata streaming is wired into run so far (probe-agnostic; no CDC needed).
@@ -150,24 +129,17 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
             ImageFormat::Auto,
             &args.elf,
             None,
-            fp.code_flash_start,
+            ch32rv_flash::CODE_FLASH_START,
         ) {
             Ok(i) => i,
             Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
         };
-        let wl = WlFlashParams {
-            stub: fp.stub,
-            data_packet_size: fp.data_packet_size,
-            write_pack_size: fp.write_pack_size,
-            supports_protect: fp.supports_protect,
-            supports_special_erase: fp.supports_special_erase,
-        };
         for seg in &image.segments {
-            if let Err(e) = session.link().write_flash(&seg.data, seg.addr, &wl, |_| {}) {
+            if let Err(e) = session.link().write_flash(seg.addr, &seg.data, &fp, |_| {}) {
                 return fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("program failed at {:#010x}: {e}", seg.addr),
                     None,
                 );
@@ -338,15 +310,19 @@ fn run_semihosting(
                 }
             }
             _ => {
-                // A non-semihosting halt (a real breakpoint/trap): report and stop.
+                // A non-semihosting halt (a real breakpoint/trap): the program is not running as
+                // expected after program+reset, same class as flash's confirm-run failure (exit 50).
                 let msg = format!("run: target halted at {dpc:#010x} (not a semihosting call)");
                 if cli.json {
-                    let env =
-                        ch32rv_contract::ResultEnvelope::failure(cmd, ErrorKind::AttachFailed, msg);
+                    let env = ch32rv_contract::ResultEnvelope::failure(
+                        cmd,
+                        ErrorKind::NotRunningAfterWrite,
+                        msg,
+                    );
                     return crate::print_envelope(&env);
                 }
                 eprintln!("{msg}");
-                return ErrorKind::AttachFailed.exit_code().into();
+                return ErrorKind::NotRunningAfterWrite.exit_code().into();
             }
         }
     }

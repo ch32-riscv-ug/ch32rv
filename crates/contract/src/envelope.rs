@@ -137,9 +137,9 @@ pub struct TargetReport {
     pub provisional: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub protected: Option<bool>,
-    /// Flash size in KiB as reported by the probe (ChipInfo).
+    /// Flash size in bytes as reported by the probe (ChipInfo).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub flash_kb: Option<u32>,
+    pub flash_bytes: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

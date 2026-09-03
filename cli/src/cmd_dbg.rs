@@ -13,7 +13,7 @@ use ch32rv_dmi::{DtmAccess, RegName};
 use crate::args::{Cli, DmiCmd, ReadArgs, ReadFormat, RegCmd};
 use crate::cmd_probe::{Entry, fail, select_entry};
 use crate::parse;
-use crate::session::{Session, SessionError};
+use crate::session::Session;
 
 const GPR_ABI: [&str; 32] = [
     "zero", "ra", "sp", "gp", "tp", "t0", "t1", "t2", "s0", "s1", "a0", "a1", "a2", "a3", "a4",
@@ -58,42 +58,7 @@ fn open_session(
         cli.chip.as_deref(),
         warnings,
     )
-    .map_err(|e| match e {
-        SessionError::ChipMismatch(msg) => fail(
-            cli,
-            cmd,
-            ErrorKind::TargetAmbiguous,
-            msg,
-            Some("pass the correct --chip, or omit it to use auto-detection"),
-        ),
-        SessionError::Open(err) => {
-            let kind = if err.to_string().contains("access denied") {
-                ErrorKind::DeviceOpenFailed
-            } else if err.to_string().contains("busy") {
-                ErrorKind::DeviceBusy
-            } else {
-                ErrorKind::DeviceOpenFailed
-            };
-            fail(cli, cmd, kind, err.to_string(), None)
-        }
-        SessionError::ProbeInfo(err) => {
-            fail(cli, cmd, ErrorKind::DeviceOpenFailed, err.to_string(), None)
-        }
-        SessionError::Attach(msg) => fail(
-            cli,
-            cmd,
-            ErrorKind::AttachFailed,
-            msg,
-            Some("check target wiring/power/BOOT; a protected target needs `ch32rv recover`"),
-        ),
-        SessionError::Busy(err) => fail(
-            cli,
-            cmd,
-            ErrorKind::DeviceBusy,
-            err.to_string(),
-            Some("another ch32rv is using this probe; wait for it, or raise --lock-timeout"),
-        ),
-    })
+    .map_err(|e| crate::cmd_probe::session_error(cli, cmd, e))
 }
 
 pub fn regs(cli: &Cli) -> ExitCode {
@@ -130,7 +95,7 @@ pub fn regs(cli: &Cli) -> ExitCode {
                 return fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("read x{i} failed: {e}"),
                     None,
                 );
@@ -192,7 +157,7 @@ pub fn halt(cli: &Cli, reset: bool) -> ExitCode {
         return fail(
             cli,
             CMD,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!("reset failed: {e}"),
             None,
         );
@@ -245,7 +210,7 @@ pub fn resume(cli: &Cli) -> ExitCode {
         Err(e) => fail(
             cli,
             CMD,
-            ErrorKind::TransportTimeout,
+            ErrorKind::TransferFailed,
             format!("resume failed: {e}"),
             None,
         ),
@@ -279,7 +244,7 @@ pub fn step(cli: &Cli, n: Option<u32>) -> ExitCode {
             return fail(
                 cli,
                 CMD,
-                ErrorKind::TransportTimeout,
+                ErrorKind::TransferFailed,
                 format!("step {} failed: {e}", i + 1),
                 None,
             );
@@ -347,7 +312,7 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     // en: Fast bulk read via the WCH-Link (SetReadMemoryRegion + ReadMemory + data endpoint);
     // fall back to word-by-word DMI reads if the probe rejects the region.
     // ja: WCH-Link の高速バルク read を使い、領域が弾かれたら DMI word 読みへ fallback。
-    let data = match session.link().read_memory(start, len) {
+    let data = match session.link().read_mem(start, len) {
         Ok(d) => d,
         Err(_) => match session.dm().read_mem(start, len) {
             Ok(d) => d,
@@ -355,7 +320,7 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
                 return fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("read failed: {e}"),
                     None,
                 );
@@ -372,7 +337,7 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
                 ResultEnvelope::failure(CMD, ErrorKind::BlankCheckFailed, "region is not blank")
             };
             env.result = Some(serde_json::json!({
-                "start": format!("0x{start:08x}"), "len": len, "blank": blank,
+                "addr": format!("0x{start:08x}"), "len": len, "blank": blank,
             }));
             env.warnings = warnings;
             return crate::print_envelope(&env);
@@ -423,17 +388,18 @@ fn output_data(
     {
         let bytes = match args.format {
             ReadFormat::Bin => data.to_vec(),
-            ReadFormat::Hex => hex_dump(start, data).into_bytes(),
+            ReadFormat::HexDump => hex_dump(start, data).into_bytes(),
             ReadFormat::Ihex => match ihex_dump(start, data) {
                 Ok(s) => s.into_bytes(),
-                Err(m) => return fail(cli, cmd, ErrorKind::Internal, m, None),
+                Err(m) => return fail(cli, cmd, ErrorKind::Usage, m, None),
             },
         };
         if let Err(e) = std::fs::write(path, &bytes) {
+            // A filesystem error on the user's output path is a usage error, not a bug (exit 70).
             return fail(
                 cli,
                 cmd,
-                ErrorKind::Internal,
+                ErrorKind::Usage,
                 format!("write {}: {e}", path.display()),
                 None,
             );
@@ -441,7 +407,7 @@ fn output_data(
         if cli.json {
             let mut env = ResultEnvelope::success(cmd);
             env.result = Some(serde_json::json!({
-                "start": format!("0x{start:08x}"), "len": data.len(),
+                "addr": format!("0x{start:08x}"), "len": data.len(),
                 "out": path.display().to_string(),
             }));
             env.warnings = warnings;
@@ -454,7 +420,7 @@ fn output_data(
     if cli.json {
         let mut env = ResultEnvelope::success(cmd);
         env.result = Some(serde_json::json!({
-            "start": format!("0x{start:08x}"), "len": data.len(),
+            "addr": format!("0x{start:08x}"), "len": data.len(),
             "hex": data.iter().map(|b| format!("{b:02x}")).collect::<String>(),
         }));
         env.warnings = warnings;
@@ -612,7 +578,7 @@ pub fn reg(cli: &Cli, sub: &RegCmd) -> ExitCode {
                 Err(e) => fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("read {name} failed: {e}"),
                     None,
                 ),
@@ -639,13 +605,21 @@ pub fn reg(cli: &Cli, sub: &RegCmd) -> ExitCode {
             };
             match dm.write_reg(reg, val) {
                 Ok(()) => {
-                    println!("{name} <- 0x{val:08x}");
-                    ExitCode::SUCCESS
+                    if cli.json {
+                        let mut env = ResultEnvelope::success(CMD);
+                        env.result = Some(serde_json::json!({
+                            "reg": name, "value": format!("0x{val:08x}"),
+                        }));
+                        crate::print_envelope(&env)
+                    } else {
+                        println!("{name} <- 0x{val:08x}");
+                        ExitCode::SUCCESS
+                    }
                 }
                 Err(e) => fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("write {name} failed: {e}"),
                     None,
                 ),
@@ -695,7 +669,7 @@ pub fn dmi(cli: &Cli, sub: &DmiCmd) -> ExitCode {
                 Err(e) => fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("dmi read 0x{a:02x} failed: {e}"),
                     None,
                 ),
@@ -713,13 +687,21 @@ pub fn dmi(cli: &Cli, sub: &DmiCmd) -> ExitCode {
             };
             match session.link().dmi_write(a, v) {
                 Ok(()) => {
-                    println!("dmi[0x{a:02x}] <- 0x{v:08x}");
-                    ExitCode::SUCCESS
+                    if cli.json {
+                        let mut env = ResultEnvelope::success(CMD);
+                        env.result = Some(serde_json::json!({
+                            "addr": format!("0x{a:02x}"), "value": format!("0x{v:08x}"),
+                        }));
+                        crate::print_envelope(&env)
+                    } else {
+                        println!("dmi[0x{a:02x}] <- 0x{v:08x}");
+                        ExitCode::SUCCESS
+                    }
                 }
                 Err(e) => fail(
                     cli,
                     CMD,
-                    ErrorKind::TransportTimeout,
+                    ErrorKind::TransferFailed,
                     format!("dmi write 0x{a:02x} failed: {e}"),
                     None,
                 ),

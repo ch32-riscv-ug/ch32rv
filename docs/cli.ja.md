@@ -95,7 +95,8 @@ ch32rv
 | `--non-interactive` | | off | 対話プロンプトを全て拒否に変える |
 | `--yes` | | off | 破壊操作の確認を省略 |
 | `--lock-timeout <s>` | | 10 | device lock の待ち時間(§3.7) |
-| `--timeout <s>` | | 操作ごと | transport timeout の上書き |
+| `--timeout <s>` | | 3秒 | transport timeout(USB 転送 1 回の上限)の上書き |
+| `--duration <s>` | | Ctrl-C まで | streaming コマンド(`monitor` / `run`)の実行時間 |
 | `--db <path>` | | 内蔵 | target DB の overlay(新 SKU の試行用) |
 | `--log-file <path>` | | - | 詳細 log の保存 |
 | `--capture <path>` | | - | USB/serial transaction の記録(replay fixture 用)P1 |
@@ -176,13 +177,13 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 | 13 | device 使用中(lock 取得失敗) |
 | 14 | device が一意に解決されない(fail-closed) |
 | 20 | target を特定できない(応答なし / DB に無い。両者は JSON で区別) |
-| 21 | target が protected(明示 unprotect が必要) |
-| 22 | attach 失敗(配線、電源、BOOT) |
+| 21 | target が protected(明示 unprotect が必要)**(予約: 現状は未発行)** |
+| 22 | attach 失敗(配線、電源、BOOT)。無応答は 20(`target-no-response`)で区別 |
 | 23 | target 曖昧(複数候補 / `--chip` と検出の矛盾) |
 | 24 | capability 不足(probe×FW×target×operation で不可) |
 | 30 | verify 不一致 / blank check 失敗 |
-| 40 | transport timeout・転送中断 |
-| 41 | probe が固まっており USB 再接続が必要(検出時) |
+| 40 | 転送/DMI 操作の失敗、または真の transport timeout。JSON `kind` で `transfer-failed` と `transport-timeout` を区別 |
+| 41 | probe が固まっており USB 再接続が必要**(予約: 現状は未発行)** |
 | 50 | 書けたが target が走っていない(`--confirm-run` 失敗) |
 | 70 | 内部エラー(bug。report 情報を出す) |
 
@@ -206,7 +207,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 ```text
 ch32rv flash <FILE>
   --format auto|elf|hex|bin|uf2      既定 auto(magic 判別)
-  --offset <addr>                    bin 用ロード先(既定: code 領域先頭)
+  --at <addr>                        bin 用ロード先(既定: code 領域先頭)
   --region code|system               書込先領域(既定 code)。system は対応 family のみ、unlock 手順込み
   --erase auto|sector|chip|none      既定 auto。chip=全 chip 消去(1発・高速)。sector=image が覆う page のみ消去(image 外を消さない)。auto=flash 先頭開始の image は chip・部分/offset image は sector。none=消去しない
   --verify readback|crc|none         既定 readback。crc は capability 依存。none は明示選択
@@ -219,18 +220,18 @@ ch32rv flash <FILE>
   --repeat                           target の再接続を検知して連続書込(量産)P2
 ```
 
-- ELF/ihex はセグメントの物理アドレスを使い、`--offset` は無視して warn(bin のみ有効)。セグメントが DB 上の書込可能領域に収まらなければ実行前に exit 2。
+- ELF/ihex はセグメントの物理アドレスを使い、`--at` は無視して warn(bin のみ有効)。セグメントが DB 上の書込可能領域に収まらなければ実行前に exit 2。
 - `--confirm-run=status` は DM の running 状態のみ確認。`=pc` はさらに瞬間 halt→dpc 読取→resume で PC を採取し、flash 領域内かを判定する。SRAM 先頭(`0x2000_0018` 型)で止まっていれば「BOOT ピン疑い」を hint に出す。
 - 対応 SKU でも **DB 上 verified でない場合は warn を出して続行**する(「実装済み」と「実機確認済み」の区別)。
 - **`--erase` のモード別挙動(2026-09-01 修正)**: `chip` は WCH-Link stub の全 chip 消去(`erase_flash`。1発で速い)。`sector` は **image が実際に覆う flash page だけ**を §4.2.1 の直接 FLASH controller(`flash_page_erase`)で消してから stub で program する — image 外の flash(高位の bootloader・校正データ等)を消さない。`auto` は **image の最小番地が flash 先頭(`code_flash_start`)なら chip、そうでなければ(部分/offset 書込)sector** を選ぶ。`none` は消去なし。**選ばれた scope は必ず出力する**(通常出力の `erase:` 行 / JSON の `erase` フィールド)ので auto の挙動が不透明にならない。**修正の背景**: 修正前は `sector`/`auto` とも無条件で全 chip 消去していた(=部分 image を焼くと chip 全体が飛ぶ silent な data-loss footgun)。auto を「全 image=chip・部分=sector」に賢くすることで footgun を潰しつつ、フル書込(=blink 等の常道)の速度も維持する。**sector が全 image 既定でない理由(実測)**: page 単位消去は ~100ms/page(直接 FLASH controller の DMI 往復)で、chip 消去 0.15s に対し 32KB(128 page)= 12.8s、64KB= ~25s、V307 の 288KB なら数分。フル書込を毎回 sector にすると Arduino ビルドループ等が致命的に遅くなるため、フル image は chip を選ぶ。sector は検証済み FLASH-controller profile を持つ family のみ(無ければ fail-closed。`--erase chip` を案内)。同一 page を共有するセグメントは 1 回に畳んで program 前に一括消去。実機検証(L103): フル image + `--erase auto` → `erase: chip`(0.78s で 64KB 書込+program)、`flash <256B> --offset 0x0800FF00 --erase auto/sector` → `erase: sector` で 0x08000000 の firmware・未対象域を無傷のまま対象 page だけ書換え(page 計算は単体テスト `covered_pages`)。program 後に stub が page-erase 済み(chip-erase でない)flash へ書けることも実機確認済み。
 - **`--restore-unwritten`(2026-09-01 実装)**: sector 消去は覆う page 全体を消すため、image が page の一部しか埋めない場合その page の残りは blank になる。このフラグを付けると、**消去前に対象 page を read → image を上書き合成 → page 全体を program** することで、image が触れない byte の元値を保つ。**page 単位 erase 必須**なので `--erase chip`/`none` と併用は fail-closed(usage error)、`--erase auto` は自動で sector に倒す。**family 制限**: 消去済みセルが debug read で本来の `0xff` を返す family(profile の `erased_reads_ff`=Buffered/V103 系)のみ。V20x/V30x は placeholder `0xe339e339` を返し blank と実データを区別できず placeholder を焼き込むため fail-closed(capability-unsupported、消去前に判定=非破壊)。実機検証(L103): page に pattern を置き先頭16Bだけ 0xAA を `--restore-unwritten` で書くと 16–255B目の pattern が保存、verify OK。V307 では消去せずに拒否・firmware 無傷を確認。
 - **`--preverify`(2026-09-01 実装)**: 破壊操作の前に image 領域を read して現在値と比較し、**全一致なら erase/program をまるごと省略**(flash cycle と摩耗を節約)。一致時は `preverify: target already matches - skipped`(JSON `skipped:true`・`erase:"none"`・`verify:true`)を出し、**reset 方針だけは適用**(reset run 済みの target をちゃんと走らせる)。不一致なら link 状態を戻して通常の flash に流れる。reset+finish の末尾は `reset_and_finish` に切り出して通常経路と skip 経路で共有。実機検証(L103): 同一 image を再 flash → skip、別 image → 通常書込に流れて反映を確認。
-- **`--sdi` / `--monitor` / `--repeat`(2026-09-01 実装)**: いずれも scaffold だったものを実装。**`--sdi on|off`**: 書込+reset 後に probe の SDI print forwarding を設定(`set_sdi_print_enabled`)。programming は成功済みなので失敗しても flash は失敗させず warning 止まり。**`--monitor uart|sdi|dmdata|rtt`**: 書込+reset 後にそのまま monitor session へ移行(Ctrl-C まで、`--timeout` でバウンド可)。実装は reset+結果出力の末尾を `finish_flash`(session を値で受けて drop→USB 解放してから monitor が probe を開き直す)に集約し、通常経路・preverify skip 経路の両方から `--sdi`/`--monitor` が効く。**`--repeat`**: `flash` を dispatcher にして `flash_once` をループ。1 台焼く→operator が外す(AttachChip 失敗を poll)→次を挿す(AttachChip 成功を poll)→焼く、を Ctrl-C まで。失敗 board は報告して次へ。実機検証(L103): `--sdi on` が program+設定を完了、`--preverify --monitor dmdata --timeout 4` が skip→dmdata monitor 移行→bound 終了、`--repeat` が #1 を焼いて removal 待ちに入る(remove→insert→再焼きの完全周回は物理 target 交換が要るため未検証)。
+- **`--sdi` / `--monitor` / `--repeat`(2026-09-01 実装)**: いずれも scaffold だったものを実装。**`--sdi on|off`**: 書込+reset 後に probe の SDI print forwarding を設定(`set_sdi_print_enabled`)。programming は成功済みなので失敗しても flash は失敗させず warning 止まり。**`--monitor uart|sdi|dmdata|rtt`**: 書込+reset 後にそのまま monitor session へ移行(Ctrl-C まで、`--duration` でバウンド可)。実装は reset+結果出力の末尾を `finish_flash`(session を値で受けて drop→USB 解放してから monitor が probe を開き直す)に集約し、通常経路・preverify skip 経路の両方から `--sdi`/`--monitor` が効く。**`--repeat`**: `flash` を dispatcher にして `flash_once` をループ。1 台焼く→operator が外す(AttachChip 失敗を poll)→次を挿す(AttachChip 成功を poll)→焼く、を Ctrl-C まで。失敗 board は報告して次へ。実機検証(L103): `--sdi on` が program+設定を完了、`--preverify --monitor dmdata --timeout 4` が skip→dmdata monitor 移行→bound 終了、`--repeat` が #1 を焼いて removal 待ちに入る(remove→insert→再焼きの完全周回は物理 target 交換が要るため未検証)。
 
 #### verify / read / write / erase
 
 ```text
-ch32rv verify <FILE> [--format ...] [--offset ...] [--region ...]     不一致は exit 30
+ch32rv verify <FILE> [--format ...] [--at ...] [--region ...]     不一致は exit 30
 ch32rv read  (--range <addr>[+len|..end] | --region <r>[+off][+len])
              [-o <file>|-] [--format bin|hex|ihex] [--blank-check]
 ch32rv write (<FILE> | hex:<bytes> | word:<u32>) --at <addr|region[+off]>
@@ -247,7 +248,7 @@ ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指�
 ```text
 ch32rv reset [--halt] [--dm] [--confirm-run]      既定: reset して実行、detach
 ch32rv run <ELF> [--no-flash] [--source dmdata|rtt|uart|sdi]
-             [--exit-on semihosting|timeout=<s>]  target の exit code を伝搬(HIL 用)
+             [--exit-on semihosting|timeout] [--duration <s>]  target の exit code を伝搬(HIL 用)
 ch32rv recover --method power-off|nrst|unprotect|unbrick
              [--chip <family>]                    特殊消去(power-off/nrst)は --chip 必須
 ```
