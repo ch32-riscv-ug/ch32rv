@@ -709,7 +709,63 @@ const FLASH_WPRERR: u32 = 1 << 4;
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// A scriptable [`DtmAccess`] for testing DM logic offline: DMI reads return the last value set
+    /// for that register (0 by default) and writes are recorded and stored.
+    #[derive(Default)]
+    struct MockDtm {
+        regs: std::collections::HashMap<u8, u32>,
+        writes: Vec<(u8, u32)>,
+    }
+    impl MockDtm {
+        fn set(&mut self, addr: u8, v: u32) {
+            self.regs.insert(addr, v);
+        }
+    }
+    impl DtmAccess for MockDtm {
+        fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
+            Ok(self.regs.get(&addr).copied().unwrap_or(0))
+        }
+        fn dmi_write(&mut self, addr: u8, value: u32) -> Result<(), DmiError> {
+            self.writes.push((addr, value));
+            self.regs.insert(addr, value);
+            Ok(())
+        }
+        fn dmi_nop(&mut self) -> Result<(), DmiError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn is_halted_reads_dmstatus() {
+        let mut m = MockDtm::default();
+        m.set(DMSTATUS, DMSTATUS_ALLHALTED | DMSTATUS_ANYHALTED);
+        assert!(DebugModule::new(&mut m).is_halted().unwrap());
+
+        let mut running = MockDtm::default();
+        running.set(DMSTATUS, DMSTATUS_ALLRUNNING | DMSTATUS_ANYRUNNING);
+        assert!(!DebugModule::new(&mut running).is_halted().unwrap());
+    }
+
+    #[test]
+    fn dmdata_poll_decodes_a_frame() {
+        // A 3-byte target->host frame "ABC": low byte = 0x80 | (count+4) = 0x80|7 = 0x87,
+        // data bytes in DMDATA0 bits 8.. (0x41, 0x42, 0x43).
+        let mut m = MockDtm::default();
+        m.set(DMDATA0, 0x4342_4187);
+        let got = DebugModule::new(&mut m).dmdata_poll(&[]).unwrap();
+        assert_eq!(got, Some(vec![0x41, 0x42, 0x43]));
+    }
+
+    #[test]
+    fn dmdata_poll_empty_when_bit7_clear() {
+        // No pending frame: bit7 of DMDATA0's low byte is clear.
+        let mut m = MockDtm::default();
+        m.set(DMDATA0, 0x0000_0000);
+        assert_eq!(DebugModule::new(&mut m).dmdata_poll(&[]).unwrap(), None);
+    }
 
     #[test]
     fn reg_abstract_numbers() {
