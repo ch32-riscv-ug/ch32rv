@@ -15,6 +15,7 @@ ch32rv = WCH CH32 RISC-V MCU の書き込み・デバッグツール(Rust)。**s
 - **システム変更(apt / driver / udev / usbipd bind 等)はユーザーが実行**する。こちらは**コマンドを依頼形式で提示**する(勝手に実行しない)。
 - **device データ(CSV)はこのリポジトリ内で作らない**: [ch32-device-data](https://github.com/ch32-riscv-ug/ch32-device-data) への作成依頼を第一とする(`docs/data-requests/`、1 依頼 1 ファイル=ファイル自体が依頼)。納品までの暫定 overlay は可([architecture.ja.md](architecture.ja.md) §3)。
 - **ライセンス**: MIT 単独(dual ではない)。
+- **read/write(transport)経路を変えたら、他 OS へ引き継ぐ前に Linux で probe 横断の回帰を通す**。特に **CH549 Link(WCH-Link 無印、fw 2.12)を必ず含める**: LinkE(fw 2.22)では出ない癖を持つ(0.4.0 の高速バルク read は CH549 で stub 直後に stale flash を返し偽 verify-mismatch を起こした=[testing.ja.md](testing.ja.md) §6)。probe ごとに `flash <fixture> --erase auto --confirm-run pc` を **10 回以上反復**して間欠不具合を炙り出す。
 
 ## 3. ビルドとチェック
 
