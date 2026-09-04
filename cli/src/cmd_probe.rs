@@ -823,7 +823,9 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
                 CMD,
                 ErrorKind::Usage,
                 format!("cannot read {}: {e}", image_path.display()),
-                None,
+                Some(
+                    "probe firmware is not bundled: get it from WCH-LinkUtility (https://www.wch.cn/downloads/wch-linkutility_zip.html), Firmware_Link/FIRMWARE_CH32V305.bin for a WCH-LinkE",
+                ),
             );
         }
     };
@@ -843,7 +845,9 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
                 "{} carries a {bl:#x}-byte bootloader before the application - that file is for an external programmer at 0x08000000, not for IAP",
                 image_path.display()
             ),
-            Some("write the application-only image (WCH-LinkUtility Firmware_Link/FIRMWARE_*.bin)"),
+            Some(
+                "write the application-only image next to it (Firmware_Link/FIRMWARE_*.bin; FIRMWARE_CH32V305.bin for a WCH-LinkE)",
+            ),
         );
     }
     let image_version = info.version.map(|(a, b)| format!("{a}.{b:02}"));

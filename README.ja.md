@@ -89,7 +89,7 @@ ch32rv capabilities                     # この probe + target の組で何が�
 | `verify` / `read` / `write` | image と比較 · dump / blank-check · raw メモリ・flash 書き込み |
 | `erase` / `reset` | 消去(`--all` / `--region` / `--range`)· reset して run |
 | `recover` | 復旧: power-off、NRST、unprotect(読み出し保護部品の mass-erase unbrick) |
-| `probe` | probe 管理: `list`、`info`、firmware `info` / `check`、`mode get` |
+| `probe` | probe 管理: `list`、`info`、firmware `info` / `check` / `update`(IAP 経由で probe 自身の firmware を書換)/ `exit-iap`、`mode get` |
 | `target` | `info`、構造化 `option` byte(`get` / `set` / `write-raw` / `reset`)、`protect` |
 | `dbg` / `gdb` | ワンショット制御(halt / resume / step / regs / reg / dmi)· GDB server |
 | `monitor` | runtime I/O: uart / sdi / dmdata |
