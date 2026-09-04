@@ -76,6 +76,9 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Check { min })) => {
             cmd_probe::firmware_check(cli, min.as_deref())
         }
+        Command::Probe(ProbeCmd::Firmware(FirmwareCmd::ExitIap)) => {
+            cmd_probe::firmware_exit_iap(cli)
+        }
         Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Update { image })) => {
             cmd_probe::firmware_update(cli, image)
         }
@@ -234,6 +237,7 @@ fn canonical_name(cmd: &Command) -> &'static str {
             ProbeCmd::Mode(ModeCmd::Set { .. }) => "probe.mode.set",
             ProbeCmd::Firmware(FirmwareCmd::Info) => "probe.firmware.info",
             ProbeCmd::Firmware(FirmwareCmd::Check { .. }) => "probe.firmware.check",
+            ProbeCmd::Firmware(FirmwareCmd::ExitIap) => "probe.firmware.exit-iap",
             ProbeCmd::Firmware(FirmwareCmd::Update { .. }) => "probe.firmware.update",
             ProbeCmd::Vendor { .. } => "probe.vendor",
         },

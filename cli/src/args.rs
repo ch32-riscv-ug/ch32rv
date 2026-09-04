@@ -376,6 +376,8 @@ pub enum FirmwareCmd {
         #[arg(long)]
         min: Option<String>,
     },
+    /// Leave IAP mode without writing (jumps to the application already in the probe)
+    ExitIap,
     /// Enter IAP mode and write a user-supplied image
     Update {
         /// Probe firmware image (the application-only file, e.g. Firmware_Link/FIRMWARE_CH32V305.bin)

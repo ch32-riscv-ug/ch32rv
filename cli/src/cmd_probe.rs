@@ -712,6 +712,67 @@ fn parse_version(s: &str) -> Option<(u8, u8)> {
 }
 
 /// `probe mode get`: the probe's current mode (RISC-V vs DAP/ARM), from VID:PID and the firmware.
+/// en: `probe firmware exit-iap` - leave IAP mode without writing anything. IAP entry is
+/// persistent (a probe left in IAP stays there across a power cycle even with an intact
+/// application), and the end frame `83 02 0000` is what makes the bootloader jump, so this is the
+/// escape hatch for a probe that was put into IAP but does not need new firmware.
+/// ja: `probe firmware exit-iap`。何も書かずに IAP mode を抜ける。IAP entry は不揮発で、app が
+/// 無傷でも電源再投入では戻らない。jump させるのは終了 frame(`83 02 0000`)なので、これが
+/// 「IAP に入れたが firmware は要らない」個体の脱出口になる。
+pub fn firmware_exit_iap(cli: &Cli) -> ExitCode {
+    use ch32rv_wchlink::iap::IapDevice;
+
+    const CMD: &str = "probe.firmware.exit-iap";
+    const REENUMERATE_TIMEOUT: Duration = Duration::from_secs(20);
+
+    let entry = match select_entry(cli, CMD) {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    if entry.mode != ProbeMode::Iap {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            format!("probe is in {} mode, not IAP", mode_str(entry.mode)),
+            None,
+        );
+    }
+    let topology = entry.dev.topology();
+    let mut dev = match IapDevice::open(&entry.dev) {
+        Ok(d) => d,
+        Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+    };
+    if let Err(e) = dev.end() {
+        return fail(cli, CMD, ErrorKind::TransferFailed, e.to_string(), None);
+    }
+    let mut after = None;
+    for _ in 0..5 {
+        let Some(e) = wait_for_mode(&topology, ProbeMode::Riscv, REENUMERATE_TIMEOUT) else {
+            break;
+        };
+        if let Ok(mut link) = WchLink::open(&e.dev)
+            && let Ok(i) = link.probe_info()
+        {
+            after = Some(format!("{}.{:02}", i.fw_major, i.fw_minor));
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({ "firmware": after, "left_iap": after.is_some() }));
+        return crate::print_envelope(&env);
+    }
+    match &after {
+        Some(v) => println!("left IAP mode; firmware {v}"),
+        None => println!(
+            "sent the end frame; the probe has not come back as a normal probe (its application may be incomplete - write one with `probe firmware update`)"
+        ),
+    }
+    ExitCode::SUCCESS
+}
+
 /// en: Wait until a probe on `topology` shows up in `want` mode, or the deadline passes.
 /// Re-enumeration keeps the physical port, so topology is the identity that survives a PID
 /// change; a lone match is accepted when the port chain is unknown.
@@ -841,6 +902,7 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
     };
 
     let mut before: Option<String> = None;
+    let resumed_in_iap = entry.mode == ProbeMode::Iap;
     match entry.mode {
         // Rescue: the probe is already in its bootloader, so no entry command is needed.
         ProbeMode::Iap => {}
@@ -943,7 +1005,11 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
 
     let sink = crate::progress::sink(cli);
     sink.event(&Event::Phase {
-        name: "iap-enter".into(),
+        name: if resumed_in_iap {
+            "iap-resume".into()
+        } else {
+            "iap-enter".into()
+        },
         total: None,
     });
     let iap_entry = match wait_for_mode(&topology, ProbeMode::Iap, REENUMERATE_TIMEOUT) {
