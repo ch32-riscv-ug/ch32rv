@@ -18,6 +18,10 @@ use nusb::MaybeFuture;
 use nusb::transfer::{Buffer, Bulk, In, Out};
 use thiserror::Error;
 
+/// The WCH-Link data endpoint pair, assumed until `open_data_endpoints` names one.
+const DATA_EP_OUT: u8 = 0x02;
+const DATA_EP_IN: u8 = 0x82;
+
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum UsbError {
@@ -187,6 +191,8 @@ impl UsbDeviceInfo {
         if matches!(self.inner, Inner::Replay(_)) {
             return Ok(UsbInterface {
                 backend: Backend::Replay,
+                cmd_eps: (ep_out, ep_in),
+                data_eps: (DATA_EP_OUT, DATA_EP_IN),
             });
         }
         // Record the device identity so a `--capture` run yields a replayable fixture.
@@ -201,11 +207,15 @@ impl UsbDeviceInfo {
         match self.open_nusb(interface, ep_out, ep_in) {
             Ok(backend) => Ok(UsbInterface {
                 backend: Backend::Nusb(Box::new(backend)),
+                cmd_eps: (ep_out, ep_in),
+                data_eps: (DATA_EP_OUT, DATA_EP_IN),
             }),
             #[cfg(windows)]
             Err(primary) => match self.open_ch375(interface, ep_out, ep_in) {
                 Some(backend) => Ok(UsbInterface {
                     backend: Backend::Ch375(backend),
+                    cmd_eps: (ep_out, ep_in),
+                    data_eps: (DATA_EP_OUT, DATA_EP_IN),
                 }),
                 None => Err(primary),
             },
@@ -310,6 +320,11 @@ pub fn enumerate() -> Result<Vec<UsbDeviceInfo>, UsbError> {
 /// ため安全。
 pub struct UsbInterface {
     backend: Backend,
+    /// Raw command endpoint addresses `(out, in)`, recorded in `--capture` lines.
+    cmd_eps: (u8, u8),
+    /// Raw data endpoint addresses `(out, in)`; the conventional pair until
+    /// [`UsbInterface::open_data_endpoints`] names them.
+    data_eps: (u8, u8),
 }
 
 enum Backend {
@@ -360,6 +375,7 @@ impl UsbInterface {
             }
         };
         crate::capture::record(
+            self.cmd_eps.0,
             crate::capture::Chan::Cmd,
             crate::capture::Dir::Out,
             data,
@@ -377,6 +393,7 @@ impl UsbInterface {
         };
         let n = *r.as_ref().unwrap_or(&0);
         crate::capture::record(
+            self.cmd_eps.1,
             crate::capture::Chan::Cmd,
             crate::capture::Dir::In,
             &buf[..n],
@@ -390,6 +407,7 @@ impl UsbInterface {
     /// ja: 同じ interface 上に 2 つ目の bulk endpoint 組(WCH-Link の flash data 経路、
     /// EP 0x02/0x82)を開く。冪等。
     pub fn open_data_endpoints(&mut self, ep_out: u8, ep_in: u8) -> Result<(), UsbError> {
+        self.data_eps = (ep_out, ep_in);
         match &mut self.backend {
             Backend::Nusb(b) => {
                 if b.data_out.is_none() {
@@ -439,6 +457,7 @@ impl UsbInterface {
             }
         };
         crate::capture::record(
+            self.data_eps.0,
             crate::capture::Chan::Data,
             crate::capture::Dir::Out,
             data,
@@ -463,6 +482,7 @@ impl UsbInterface {
         };
         let n = *r.as_ref().unwrap_or(&0);
         crate::capture::record(
+            self.data_eps.1,
             crate::capture::Chan::Data,
             crate::capture::Dir::In,
             &buf[..n],

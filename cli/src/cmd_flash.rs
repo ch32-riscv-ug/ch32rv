@@ -21,7 +21,7 @@ use ch32rv_flash::{CODE_FLASH_START, Image, Segment, params_for_family};
 use std::path::Path;
 
 use crate::args::{Cli, FlashArgs, RecoverArgs, SwitchState};
-use crate::cmd_probe::{fail, mode_str, select_entry};
+use crate::cmd_probe::{confirm_destructive, fail, mode_str, select_entry};
 use crate::parse;
 use crate::session::Session;
 
@@ -821,8 +821,14 @@ pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
-    if !cli.yes && !cli.non_interactive && !confirm("Erase the entire chip flash?") {
-        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    if let Err(why) = confirm_destructive(cli, "Erase the entire chip flash?") {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            why,
+            Some("pass --yes to confirm"),
+        );
     }
     if let Err(e) = session.link().erase_flash() {
         return fail(
@@ -914,13 +920,17 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
     let pages = len / page;
     let end = start.saturating_add(len);
 
-    if !cli.yes
-        && !cli.non_interactive
-        && !confirm(&format!(
-            "Erase {len} bytes ({pages} page(s)) at 0x{start:08x}..0x{end:08x}?"
-        ))
-    {
-        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    if let Err(why) = confirm_destructive(
+        cli,
+        &format!("Erase {len} bytes ({pages} page(s)) at 0x{start:08x}..0x{end:08x}?"),
+    ) {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            why,
+            Some("pass --yes to confirm"),
+        );
     }
 
     if let Err(e) = session.dm().halt() {
@@ -1155,18 +1165,6 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
     }
 }
 
-/// Simple y/N confirmation on stderr/stdin.
-fn confirm(prompt: &str) -> bool {
-    use std::io::Write;
-    eprint!("{prompt} [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut line = String::new();
-    if std::io::stdin().read_line(&mut line).is_err() {
-        return false;
-    }
-    matches!(line.trim(), "y" | "Y" | "yes")
-}
-
 pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
     match args.method {
         RecoverMethod::PowerOff | RecoverMethod::Nrst => recover_special_erase(cli, args.method),
@@ -1187,11 +1185,17 @@ fn recover_unprotect(cli: &Cli) -> ExitCode {
         0xA5, 0x5A, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF,
         0x00,
     ];
-    if !cli.yes
-        && !cli.non_interactive
-        && !confirm("Remove read protection? This ERASES ALL FLASH on a protected target.")
-    {
-        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    if let Err(why) = confirm_destructive(
+        cli,
+        "Remove read protection? This ERASES ALL FLASH on a protected target.",
+    ) {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            why,
+            Some("pass --yes to confirm"),
+        );
     }
     let mut session = match crate::cmd_probe::attach(cli, CMD) {
         Ok(s) => s,
@@ -1248,13 +1252,17 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
         0xA5, 0x5A, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF,
         0x00,
     ];
-    if !cli.yes
-        && !cli.non_interactive
-        && !confirm(
-            "Unbrick this target? This ERASES ALL FLASH (and clears read protection if set).",
-        )
-    {
-        return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    if let Err(why) = confirm_destructive(
+        cli,
+        "Unbrick this target? This ERASES ALL FLASH (and clears read protection if set).",
+    ) {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            why,
+            Some("pass --yes to confirm"),
+        );
     }
     // Quiet attach: on failure give the tailored "use power-off" hint rather than a generic error.
     let entry = match select_entry(cli, CMD) {

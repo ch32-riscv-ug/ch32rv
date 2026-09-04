@@ -970,26 +970,22 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
                 "{}.{:02}",
                 probe_info.fw_major, probe_info.fw_minor
             ));
-            // docs/cli.ja.md §1.5: a destructive step prompts, `--yes` skips the prompt, and
-            // `--non-interactive` without `--yes` refuses instead of prompting.
-            if !cli.yes {
-                if cli.non_interactive {
-                    return fail(
-                        cli,
-                        CMD,
-                        ErrorKind::Usage,
-                        "refusing to rewrite the probe firmware without --yes",
-                        Some("pass --yes to confirm in --non-interactive mode"),
-                    );
-                }
-                if !confirm_mode(&format!(
+            if let Err(why) = confirm_destructive(
+                cli,
+                &format!(
                     "Rewrite the firmware of probe {} ({} -> {})? It re-enumerates into IAP mode; an interruption leaves it there.",
                     entry.dev.serial().unwrap_or("?"),
                     before.as_deref().unwrap_or("?"),
                     image_version.as_deref().unwrap_or("?"),
-                )) {
-                    return fail(cli, CMD, ErrorKind::Usage, "aborted", None);
-                }
+                ),
+            ) {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    why,
+                    Some("pass --yes to confirm"),
+                );
             }
             if let Err(e) = link.enter_iap() {
                 return fail(cli, CMD, ErrorKind::TransferFailed, e.to_string(), None);
@@ -1163,13 +1159,28 @@ pub fn mode_get(cli: &Cli) -> ExitCode {
 }
 
 /// Confirm a mode switch on the terminal (fail-closed under `--non-interactive`).
-fn confirm_mode(prompt: &str) -> bool {
-    eprint!("{prompt} [y/N] ");
+/// en: The gate in front of a destructive step (docs/cli.ja.md §1.5): `--yes` skips the prompt,
+/// `--non-interactive` without `--yes` refuses instead of prompting, otherwise ask on the terminal.
+/// `Err` carries the reason, which the caller reports as a usage error.
+/// ja: 破壊操作の前段(docs/cli.ja.md §1.5)。`--yes` で確認省略、`--non-interactive` は `--yes`
+/// が無ければ拒否、それ以外は端末で確認する。`Err` は理由(呼び出し側が usage error にする)。
+pub(crate) fn confirm_destructive(cli: &Cli, prompt: &str) -> Result<(), &'static str> {
     use std::io::Write as _;
+    if cli.yes {
+        return Ok(());
+    }
+    if cli.non_interactive {
+        return Err("refusing a destructive step without --yes (--non-interactive)");
+    }
+    eprint!("{prompt} [y/N] ");
     let _ = std::io::stderr().flush();
     let mut s = String::new();
     let _ = std::io::stdin().read_line(&mut s);
-    matches!(s.trim(), "y" | "Y" | "yes")
+    if matches!(s.trim(), "y" | "Y" | "yes" | "YES") {
+        Ok(())
+    } else {
+        Err("aborted")
+    }
 }
 
 /// `probe mode set <riscv|dap>` — switch a WCH-LinkE between RISC-V and DAP/ARM mode. The probe
@@ -1196,14 +1207,20 @@ pub fn mode_set(cli: &Cli, mode: crate::args::ProbeModeSet) -> ExitCode {
         println!("already in {target_str} mode");
         return ExitCode::SUCCESS;
     }
-    if !cli.yes
-        && !cli.non_interactive
-        && !confirm_mode(&format!(
+    if let Err(why) = confirm_destructive(
+        cli,
+        &format!(
             "Switch probe {} to {target_str} mode? It re-enumerates (USB PID changes).",
             entry.dev.serial().unwrap_or("?")
-        ))
-    {
-        return fail(cli, CMD, ErrorKind::Usage, "aborted", None);
+        ),
+    ) {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            why,
+            Some("pass --yes to confirm"),
+        );
     }
     let serial = entry.dev.serial().map(str::to_owned);
     match (entry.mode, target) {

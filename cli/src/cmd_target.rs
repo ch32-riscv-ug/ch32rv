@@ -350,21 +350,10 @@ fn hex(bytes: &[u8]) -> String {
 
 const OPTION_BASE: u32 = 0x1FFF_F800;
 
-/// Confirm a destructive option-byte write: `--yes` skips it, `--non-interactive` without `--yes`
-/// refuses, otherwise prompt on the terminal.
+/// Confirm a destructive option-byte write (the shared gate: `--yes` skips it,
+/// `--non-interactive` without `--yes` refuses, otherwise prompt on the terminal).
 fn ob_confirm(cli: &Cli, prompt: &str) -> bool {
-    use std::io::Write;
-    if cli.yes {
-        return true;
-    }
-    if cli.non_interactive {
-        return false;
-    }
-    eprint!("{prompt} [y/N] ");
-    let _ = std::io::stderr().flush();
-    let mut s = String::new();
-    let _ = std::io::stdin().read_line(&mut s);
-    matches!(s.trim(), "y" | "Y" | "yes" | "YES")
+    crate::cmd_probe::confirm_destructive(cli, prompt).is_ok()
 }
 
 /// Parse exactly 16 hex bytes (optionally space/`:`-separated) for `option write-raw`.
