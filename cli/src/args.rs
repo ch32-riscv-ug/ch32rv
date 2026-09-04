@@ -378,6 +378,7 @@ pub enum FirmwareCmd {
     },
     /// Enter IAP mode and write a user-supplied image
     Update {
+        /// Probe firmware image (the application-only file, e.g. Firmware_Link/FIRMWARE_CH32V305.bin)
         #[arg(long)]
         image: PathBuf,
     },

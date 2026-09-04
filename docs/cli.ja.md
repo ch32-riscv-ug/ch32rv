@@ -101,7 +101,7 @@ ch32rv
 | `--log-file <path>` | | - | 詳細 log の保存 |
 | `--capture <path>` | | - | USB transaction を NDJSON で記録(replay fixture 用) |
 | `--replay <path>` | | - | 記録した capture を HW 無しで再生(`enumerate`〜転送を fixture から供給)。`--capture` と排他。CI/バグ再現用 |
-| `--dry-run` | | off | device を開かず計画のみ表示 P2 |
+| `--dry-run` | | off | device を開かず計画のみ表示(`probe firmware update` は実装済: image の版・USB id・frame 数を出して終了。他コマンドは P2) |
 | `-v` / `-q` | 重ね掛け | | 冗長度 |
 
 ### 3.2 環境変数
@@ -268,12 +268,13 @@ ch32rv probe mode get
 ch32rv probe mode set <riscv|dap> [--yes]
 ch32rv probe firmware info                        版と hash。既知不良版 DB と照合して判定を出す(2026-09-02 実装: `2.22 (WCH v42, raw 0216)`+mode+known-bad)
 ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12(実装済。実機: LinkE 2.22 は --min 2.20 通過/2.30 で exit12、CH549 2.12 は --min 2.20 で exit12)
-ch32rv probe firmware update --image <FILE> [--yes]
+ch32rv probe firmware update --image <FILE> [--yes]  IAP 経由で probe 自身の firmware を書換(実装済。実機: LinkE 2.22 ⇔ 2.13 を相互に更新し版を確認)
 ch32rv probe vendor <hex...>                      隠し。backend 固有 command の escape hatch
 ```
 
 - firmware 版は **raw byte・正規化表記(2.12)・WCH 表記(v32)を常に併記**し、比較は正規化値で行う(表記系の混同と probe-rs の版比較バグを構造的に避ける)。
-- `firmware update` は IAP mode(`4348:55e0`)への遷移・書込・再 enumeration 待ち・版確認までを 1 操作にする。既に IAP に滞留した個体を検出したら update の続行か脱出(exit IAP)を提示する。image は同梱しない(user-supplied)。
+- `firmware update` は IAP mode(`4348:55e0`)への遷移・書込・再 enumeration 待ち・版確認までを 1 操作にする(protocol は docs/protocol/wch-link.ja.md §6.1)。**既に IAP に滞留した個体はそのまま書ける**(entry 不要)ので、中断した更新の復旧経路が同じコマンドになる。image は同梱しない(user-supplied)。
+- image は渡された時点で検査する: **BL 付き `*_APP_IAP.bin` は拒否**(外部書込機用。IAP に流すと app 領域に BL を書く)、非 RISC-V image は拒否、版は image 内の `bcdDevice` から読む。probe 型番は image からは判別できないため警告を出す(LinkE には `FIRMWARE_CH32V305.bin`)。
 - 対応 probe: WCH-LinkE / LinkW / LinkS / 旧 Link(CH549)を型番として区別し、非対応 operation は capability で事前に弾く。互換 probe(funprog HID / NHC-Link042 / ardulink / rv003usb 系)は P2 の backend として同じ体系に入る。
 
 ### 4.3 target
