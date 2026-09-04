@@ -108,7 +108,7 @@ pub fn doctor(cli: &Cli, args: &DoctorArgs) -> ExitCode {
                     name: "probe-iap",
                     ok: false,
                     detail: format!("{label}: device is in IAP/ISP mode (4348:55e0)"),
-                    hint: Some("a LinkE stuck in IAP needs a firmware update; a bare ISP device is a target, not a probe".into()),
+                    hint: Some("a LinkE left in IAP stays there across a power cycle: `probe firmware exit-iap` returns it to the application it already has, `probe firmware update --image <FILE>` writes a new one; a bare ISP device is a target, not a probe".into()),
                 }),
                 _ => checks.push(Check {
                     name: "probe-mode",
