@@ -84,7 +84,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "ch32rv"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-debug",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-boot"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "thiserror",
@@ -111,7 +111,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-contract"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "clap",
  "serde",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-debug"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
@@ -132,7 +132,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-dmi"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "thiserror",
@@ -140,7 +140,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-flash"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
@@ -152,7 +152,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-isp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-usb",
@@ -162,7 +162,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-monitor"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
@@ -173,7 +173,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-target"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "serde",
@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-usb"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-usb-wch-win",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-usb-wch-win"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "thiserror",
  "windows-sys 0.61.2",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-wchlink"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "zmij"
