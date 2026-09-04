@@ -383,8 +383,9 @@ pub enum FirmwareCmd {
         /// Probe firmware image: the application-only file from WCH-LinkUtility
         /// (Firmware_Link/FIRMWARE_CH32V305.bin for a WCH-LinkE), not the bootloader-bearing
         /// *_APP_IAP.bin. Not bundled - download WCH-LinkUtility from
-        /// https://www.wch.cn/downloads/wch-linkutility_zip.html (english:
-        /// https://www.wch-ic.com/downloads/wch-linkutility_zip.html)
+        /// https://www.wch.cn/downloads/WCH-LinkUtility_ZIP.html (WCH's Chinese site only; the
+        /// English site's page of the same name comes up empty), or take it from a MounRiver
+        /// Studio install
         #[arg(long)]
         image: PathBuf,
     },

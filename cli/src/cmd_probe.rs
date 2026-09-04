@@ -824,7 +824,7 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
                 ErrorKind::Usage,
                 format!("cannot read {}: {e}", image_path.display()),
                 Some(
-                    "probe firmware is not bundled: get it from WCH-LinkUtility (https://www.wch.cn/downloads/wch-linkutility_zip.html), Firmware_Link/FIRMWARE_CH32V305.bin for a WCH-LinkE",
+                    "probe firmware is not bundled: get it from WCH-LinkUtility (https://www.wch.cn/downloads/WCH-LinkUtility_ZIP.html), Firmware_Link/FIRMWARE_CH32V305.bin for a WCH-LinkE",
                 ),
             );
         }
