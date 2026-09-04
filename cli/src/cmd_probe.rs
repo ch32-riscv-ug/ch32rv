@@ -712,6 +712,352 @@ fn parse_version(s: &str) -> Option<(u8, u8)> {
 }
 
 /// `probe mode get`: the probe's current mode (RISC-V vs DAP/ARM), from VID:PID and the firmware.
+/// en: Wait until a probe on `topology` shows up in `want` mode, or the deadline passes.
+/// Re-enumeration keeps the physical port, so topology is the identity that survives a PID
+/// change; a lone match is accepted when the port chain is unknown.
+/// ja: `topology` の probe が `want` mode で現れるのを待つ。再列挙で PID は変わるが物理位置は
+/// 変わらないので topology を同一性の鍵に使う。
+fn wait_for_mode(topology: &str, want: ProbeMode, timeout: Duration) -> Option<Entry> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if let Ok(devs) = wch_devices() {
+            let mut same_mode = devs
+                .into_iter()
+                .filter(|e| e.mode == want)
+                .collect::<Vec<_>>();
+            if let Some(i) = same_mode.iter().position(|e| e.dev.topology() == topology) {
+                return Some(same_mode.swap_remove(i));
+            }
+            if same_mode.len() == 1 {
+                return same_mode.pop();
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
+/// en: `probe firmware update --image <file>` - rewrite the probe's OWN firmware over IAP
+/// (docs/protocol/wch-link.ja.md §6.1). The probe leaves RISC-V mode, re-enumerates as
+/// `4348:55e0`, takes the image twice (write pass + verify pass) and jumps back into the new
+/// application. A probe already sitting in IAP mode is written directly - that is the rescue
+/// path for an interrupted update. The target is never touched.
+/// ja: `probe firmware update --image <file>`。probe 自身の firmware を IAP 経由で書き換える。
+/// 既に IAP mode の probe はそのまま書ける(中断した更新の復旧経路)。target には触れない。
+pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
+    use ch32rv_contract::event::Event;
+    use ch32rv_contract::progress::ProgressSink;
+    use ch32rv_wchlink::iap::{self, IapDevice, Pass};
+
+    const CMD: &str = "probe.firmware.update";
+    const REENUMERATE_TIMEOUT: Duration = Duration::from_secs(20);
+
+    let image = match std::fs::read(image_path) {
+        Ok(d) => d,
+        Err(e) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                format!("cannot read {}: {e}", image_path.display()),
+                None,
+            );
+        }
+    };
+    if image.is_empty() {
+        return fail(cli, CMD, ErrorKind::Usage, "image is empty", None);
+    }
+    let info = iap::inspect(&image);
+    // The most likely accident: WCH ships `*-APP-IAP.bin` (bootloader + application) next to the
+    // application-only image. Writing the former over IAP puts a bootloader image where the
+    // application belongs.
+    if let Some(bl) = info.bootloader_prefix {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            format!(
+                "{} carries a {bl:#x}-byte bootloader before the application - that file is for an external programmer at 0x08000000, not for IAP",
+                image_path.display()
+            ),
+            Some("write the application-only image (WCH-LinkUtility Firmware_Link/FIRMWARE_*.bin)"),
+        );
+    }
+    let image_version = info.version.map(|(a, b)| format!("{a}.{b:02}"));
+
+    // `--dry-run`: everything that can be said about the image without opening a device.
+    if cli.dry_run {
+        let frames = image.len().div_ceil(iap::CHUNK);
+        let usb_ids = info
+            .pids
+            .iter()
+            .map(|p| format!("{:04x}:{p:04x}", wchlink::VID_WCH))
+            .collect::<Vec<_>>();
+        if cli.json {
+            let mut env = ResultEnvelope::success(CMD);
+            env.result = Some(serde_json::json!({
+                "dry_run": true,
+                "image": {
+                    "path": image_path.display().to_string(),
+                    "bytes": image.len(),
+                    "version": image_version,
+                    "usb_ids": usb_ids,
+                    "riscv": info.looks_riscv,
+                },
+                "frames_per_pass": frames,
+            }));
+            return crate::print_envelope(&env);
+        }
+        println!("image:    {}", image_path.display());
+        println!("bytes:    {}", image.len());
+        println!(
+            "version:  {} (from bcdDevice)",
+            image_version.as_deref().unwrap_or("unknown")
+        );
+        println!(
+            "usb ids:  {}",
+            if usb_ids.is_empty() {
+                "none found".to_owned()
+            } else {
+                usb_ids.join(", ")
+            }
+        );
+        println!("riscv:    {}", if info.looks_riscv { "yes" } else { "no" });
+        println!("plan:     enter IAP, write {frames} frames, verify {frames} frames, end");
+        println!("dry-run:  no device opened");
+        return ExitCode::SUCCESS;
+    }
+
+    let entry = match select_entry(cli, CMD) {
+        Ok(e) => e,
+        Err(c) => return c,
+    };
+    let topology = entry.dev.topology();
+    let _lock = match lock_probe(cli, CMD, &entry) {
+        Ok(l) => l,
+        Err(c) => return c,
+    };
+
+    let mut before: Option<String> = None;
+    match entry.mode {
+        // Rescue: the probe is already in its bootloader, so no entry command is needed.
+        ProbeMode::Iap => {}
+        ProbeMode::Riscv => {
+            let mut link = match WchLink::open(&entry.dev) {
+                Ok(l) => l,
+                Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+            };
+            let probe_info = match link.probe_info() {
+                Ok(i) => i,
+                Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+            };
+            if probe_info.variant != wchlink::Variant::LinkE {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::CapabilityUnsupported,
+                    format!(
+                        "IAP update is verified for the WCH-LinkE only (this probe is {})",
+                        probe_info.variant.name()
+                    ),
+                    Some("use WCH-LinkUtility on Windows for other probe models"),
+                );
+            }
+            // A LinkE runs a CH32V305, so its firmware is RISC-V; the CH549 Link images in the
+            // same directory are 8051 code and would brick it.
+            if !info.looks_riscv {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    "image does not start with a RISC-V jal - it is not CH32V probe firmware",
+                    Some("the WCH-LinkE image is Firmware_Link/FIRMWARE_CH32V305.bin"),
+                );
+            }
+            // The image announces the PIDs it will enumerate as; a LinkE image carries the
+            // RISC-V-mode one. Refuse anything that does not.
+            if !info.pids.is_empty() && !info.pids.contains(&wchlink::PID_LINK_RISCV) {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    format!(
+                        "image does not look like WCH-LinkE firmware (embedded USB ids: {})",
+                        info.pids
+                            .iter()
+                            .map(|p| format!("{:04x}:{p:04x}", wchlink::VID_WCH))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    None,
+                );
+            }
+            // Nothing in a WCH probe image names its probe model (the USB product string is
+            // "WCH-Link" in all of them), so a LinkW image would pass every check here.
+            crate::progress::sink(cli).event(&Event::Warn {
+                code: "image-model-unverified".into(),
+                msg: "the image cannot be checked against the probe model; for a WCH-LinkE it must be Firmware_Link/FIRMWARE_CH32V305.bin".into(),
+            });
+            before = Some(format!(
+                "{}.{:02}",
+                probe_info.fw_major, probe_info.fw_minor
+            ));
+            // docs/cli.ja.md §1.5: a destructive step prompts, `--yes` skips the prompt, and
+            // `--non-interactive` without `--yes` refuses instead of prompting.
+            if !cli.yes {
+                if cli.non_interactive {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        "refusing to rewrite the probe firmware without --yes",
+                        Some("pass --yes to confirm in --non-interactive mode"),
+                    );
+                }
+                if !confirm_mode(&format!(
+                    "Rewrite the firmware of probe {} ({} -> {})? It re-enumerates into IAP mode; an interruption leaves it there.",
+                    entry.dev.serial().unwrap_or("?"),
+                    before.as_deref().unwrap_or("?"),
+                    image_version.as_deref().unwrap_or("?"),
+                )) {
+                    return fail(cli, CMD, ErrorKind::Usage, "aborted", None);
+                }
+            }
+            if let Err(e) = link.enter_iap() {
+                return fail(cli, CMD, ErrorKind::TransferFailed, e.to_string(), None);
+            }
+            drop(link);
+        }
+        other => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::CapabilityUnsupported,
+                format!("cannot update from {} mode", mode_str(other)),
+                Some("switch to RISC-V mode first (`ch32rv probe mode set riscv`)"),
+            );
+        }
+    }
+
+    let sink = crate::progress::sink(cli);
+    sink.event(&Event::Phase {
+        name: "iap-enter".into(),
+        total: None,
+    });
+    let iap_entry = match wait_for_mode(&topology, ProbeMode::Iap, REENUMERATE_TIMEOUT) {
+        Some(e) => e,
+        None => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::DeviceNotFound,
+                "the probe did not re-enumerate in IAP mode (4348:55e0)",
+                Some(
+                    "under usbipd the new USB id is not forwarded automatically: attach it to the VM, then re-run this command (it resumes from IAP mode)",
+                ),
+            );
+        }
+    };
+
+    let mut dev = match IapDevice::open(&iap_entry.dev) {
+        Ok(d) => d,
+        Err(e) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::DeviceOpenFailed,
+                e.to_string(),
+                Some("the probe is in IAP mode; re-run this command once it can be opened"),
+            );
+        }
+    };
+    let total = image.len() as u64;
+    sink.event(&Event::Phase {
+        name: Pass::Write.as_str().into(),
+        total: Some(total),
+    });
+    let mut phase = Pass::Write;
+    let result = dev.update(&image, |pass, done| {
+        if pass != phase {
+            phase = pass;
+            sink.event(&Event::Phase {
+                name: pass.as_str().into(),
+                total: Some(total),
+            });
+        }
+        sink.event(&Event::Progress {
+            phase: pass.as_str().into(),
+            done,
+            total: Some(total),
+        });
+    });
+    if let Err(e) = result {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::TransferFailed,
+            e.to_string(),
+            Some(
+                "the probe is still in IAP mode and its application is incomplete: re-run this command to write it again",
+            ),
+        );
+    }
+
+    // The probe jumps into the new application and comes back as a normal probe. Right after a
+    // re-enumeration the CDC function is claimed before the vendor interface is ready, so the
+    // first open can fail with "interface is busy" - retry rather than call it a no-show
+    // (docs/protocol/wch-link.ja.md §7, the same race `report_with_retry` handles).
+    let mut after = None;
+    for attempt in 0..5 {
+        let Some(e) = wait_for_mode(&topology, ProbeMode::Riscv, REENUMERATE_TIMEOUT) else {
+            break;
+        };
+        if let Ok(mut link) = WchLink::open(&e.dev)
+            && let Ok(i) = link.probe_info()
+        {
+            after = Some(format!("{}.{:02}", i.fw_major, i.fw_minor));
+            break;
+        }
+        sink.event(&Event::Retry {
+            phase: "reopen".into(),
+            attempt: attempt + 1,
+            cause: "probe not openable yet after re-enumeration".into(),
+        });
+        std::thread::sleep(Duration::from_secs(1));
+    }
+
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "image": {
+                "path": image_path.display().to_string(),
+                "bytes": image.len(),
+                "version": image_version,
+            },
+            "firmware_before": before,
+            "firmware_after": after,
+        }));
+        return crate::print_envelope(&env);
+    }
+    match (&before, &after) {
+        (Some(b), Some(a)) => println!(
+            "firmware {b} -> {a} ({} bytes written and verified)",
+            image.len()
+        ),
+        (_, Some(a)) => println!(
+            "firmware now {a} ({} bytes written and verified)",
+            image.len()
+        ),
+        _ => println!(
+            "wrote and verified {} bytes; the probe did not answer yet after re-enumerating (check `ch32rv probe list`)",
+            image.len()
+        ),
+    }
+    ExitCode::SUCCESS
+}
+
 pub fn mode_get(cli: &Cli) -> ExitCode {
     const CMD: &str = "probe.mode.get";
     let entry = match select_entry(cli, CMD) {

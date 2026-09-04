@@ -579,6 +579,19 @@ impl WchLink {
         Ok(())
     }
 
+    /// en: Enter IAP mode (`81 0f 01 01`) - the probe reboots into its own bootloader and
+    /// re-enumerates as `4348:55e0`, where [`crate::IapDevice`] rewrites its firmware. No reply
+    /// is returned (the device leaves immediately), and the target is untouched. LinkE only -
+    /// the caller must check the variant first. Verified: WCH-LinkUtility V3.00 capture
+    /// (docs/protocol/wch-link.ja.md §6.1).
+    /// ja: IAP mode に入る(`81 0f 01 01`)。probe は自分の bootloader へ再起動し `4348:55e0`
+    /// として再列挙する。応答は返らない(即座に device が消える)。target には触れない。
+    /// LinkE 限定(呼び出し側で variant 確認)。
+    pub fn enter_iap(&mut self) -> Result<(), WchLinkError> {
+        let _ = self.iface.write(&[0x81, 0x0f, 0x01, 0x01], self.timeout);
+        Ok(())
+    }
+
     /// en: Soft reset and run (Reset 0x01). This is `wlink reset` / the run-after-flash reset.
     /// ja: soft reset して実行(Reset 0x01)。`wlink reset` 相当。
     pub fn soft_reset(&mut self) -> Result<(), WchLinkError> {

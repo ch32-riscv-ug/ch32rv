@@ -25,6 +25,15 @@ ch32rv を実機でテストする手順。**まず Linux で通し、次に Win
   ```
 - **Windows**: probe を Windows に挿す(WSL で usbipd に attach 中なら `usbipd detach --busid <B>` で Windows へ戻す。`--force` は使わない)。ドライバは WCH 純正でも WinUSB でも可(ch32rv が自動フォールバック、Zadig 不要)。状況は `ch32rv doctor`。
 - **macOS**: 挿すだけ(専用ドライバ不要)。開けなければ `ch32rv doctor` の指示に従う。
+- **WSL + usbipd で再列挙を伴うテスト**(`probe mode set` / `probe firmware update`): probe は別の VID:PID として現れるため、そのままでは WSL から消える。Windows 側で 1 度だけ以下を用意する(管理者 PowerShell。IAP mode 用の AutoBind policy)。
+  ```powershell
+  usbipd policy add --effect Allow --operation AutoBind --hardware-id 4348:55e0
+  ```
+  そのうえで、テスト中は port を追いかける auto-attach を走らせておく(非管理者で可):
+  ```powershell
+  usbipd attach --wsl --busid <BUSID> --auto-attach
+  ```
+  Linux 側の udev ルールは IAP mode の `4348:55e0` も含めること(`ch32rv doctor --emit-udev` の出力は対応済み)。
 
 いずれも `ch32rv doctor` が USB 列挙・権限・firmware・probe mode を診断する。
 

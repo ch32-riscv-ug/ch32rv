@@ -13,7 +13,7 @@
 | RISC-V mode | `1a86:8010` | vendor bulk(MI_00)+ CDC serial | verified(実機 2 台) |
 | RISC-V mode(第 2 PID) | `1a86:8011` | 同上 | attested(ch32-device-data `read_link_version.py` が対応。手元に実機なし) |
 | ARM/DAP mode | `1a86:8012` | CMSIS-DAP + CDC。**version 照会(`81 0d 01 01`)には EP `0x02`/`0x83` で同一フレームが通る** | attested(同スクリプト実測) |
-| IAP mode | `4348:55e0` | WCH factory ISP と同一の bulk 構成 | attested(minichlink / wlink-iap) |
+| IAP mode | `4348:55e0` | interface class `0xff` / subclass `0x80` / protocol `0x55`、64 B bulk EP 4 本(`0x01`/`0x81`/`0x02`/`0x82`)。**更新に使うのは `0x02`/`0x82` の 1 組だけ**。string descriptor を持たない(product/serial とも無し) | **verified**(§6.1 の実機更新で VID:PID・EP とも確認) |
 
 - product string は `"WCH-Link"` または `"WCH_Link"`(probe-rs は両方を受ける)。
 - IAP mode は搭載 MCU(LinkE = CH32V305)の factory ISP そのものなので、ISP scan と衝突する。判別は BTVER / chip 種別で行う。
@@ -175,7 +175,7 @@ family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0
 
 ### 4.5 存在の証拠のみ(未実装)
 
-`wlink_disabledebug`、`wlink_getromram`(CODE/RAM split)、`wlink_rstout`、`wlink_chip_reset`、`wlink_armversion`、mode 切替、IAP entry(wlink-iap)。→ wlink source / RINS から転記 → capture で verified 化。
+`wlink_disabledebug`、`wlink_getromram`(CODE/RAM split)、`wlink_rstout`、`wlink_chip_reset`、`wlink_armversion`、mode 切替。→ wlink source / RINS から転記 → capture で verified 化。
 
 ## 5. AttachChip 応答と chip 識別
 
@@ -217,6 +217,61 @@ family byte(probe-rs `wlink/mod.rs:90-128` より転記。状態: attested):
 | SDI print 要件 | firmware 2.10 以降(wlink README) | single-source |
 | probe-rs の版チェックのバグ | `v_major != 2 && v_minor < 7` のため major=2 で素通り。**同じ比較ミスをしないこと**(正規化値で比較 + 単体テスト) | 教訓 |
 | hash→版対応 | `ch32-device-data/evidence/link_firmware.csv`(10 行)を照合に使う | データ |
+
+### 6.1 IAP による probe firmware 更新(verified)
+
+probe 自身の firmware を書き換える経路。**target には触れない**。probe が USB device として別の identity(`4348:55e0`)に再列挙してから行う。
+
+```
+通常 mode(1a86:8010)  host → 81 0d 01 01     GetProbeInfo(現在版)
+                      host → 81 0f 01 01     IAP entry(応答なし。probe は即再起動)
+IAP mode(4348:55e0)   開始 → 書込 pass → 照合 pass → 終了
+通常 mode(1a86:8010)  新しい app が起動(bcdDevice も新版)
+```
+
+**IAP mode の frame**(bulk `0x02` OUT / `0x82` IN のみ。command EP は使わない)
+
+```
+host  → cmd | len | off_lo | off_hi | data...
+probe → 00 00
+```
+
+| cmd | len | 意味 | 応答 |
+|---|---|---|---|
+| `0x81` | `0x02` | 開始(payload `00 00`) | `0000` |
+| `0x80` | `0x3c` | 書込。`off` から 60 byte | `0000` |
+| `0x82` | `0x3c` | 照合。同じ範囲を同じ内容でもう一度 | `0000` |
+| `0x83` | `0x02` | 終了。probe が app へ jump | **なし** |
+
+- image は offset 0 から 60 byte ずつ、**書込 pass と照合 pass の 2 回**送る(純正と同じ手順)。最終 packet だけ `len` が端数。
+- `off` は累積 offset の**下位 16 bit**で 64 KB ごとに巻き上がる。上位を持つのは probe 側なので、**転送は 0 から順送りに限る**(seek / resume はできない)。
+- ack は常に `00 00`。**それ以外は即中断**する(異常時の応答形式は未確認)。
+- **書込 pass は 64 packet(3,840 B)ごとに ~170 ms 止まる**(probe が溜めてから焼く)。ack の timeout はそれより十分大きく取る(本実装 3 s。100 ms 固定では 64 転送ごとに必ず失敗する)。書込 pass の端数は**照合 pass の最初の frame**で flush される。
+- 開始(`81 02 0000`)の ack は ~10 ms で、全消去には短すぎる。消去は書込 pass 中の stall 側にある。
+- 中断すると probe は IAP mode に留まる(**BL は転送対象外なので残る**)。**IAP mode の device にもう一度書けば復旧する**(entry 不要)。
+
+**image の判定**(渡された image を host 側で弾く)
+
+| 検査 | 内容 |
+|---|---|
+| BL+app を拒否 | `*_APP_IAP.bin` は先頭に bootloader(CH32V 系 `0x2000` / CH549 系 `0xC00`)を持ち、その直前が `0xff` padding。**外部書込機で `0x08000000` に焼くためのもの**で、IAP に流すと app 領域に BL を書く |
+| RISC-V か | 先頭が `0x6f`(`jal`)。CH549 系 image は 8051(`0x02` = LJMP) |
+| 版 | image 内の USB device descriptor の `bcdDevice`(**BCD**。`0x0222` = 2.22)。GetProbeInfo の raw(`02 16`)は binary で、同じ版の別表現 |
+| 型番 | **image からは判別できない**(product string は全機種 `"WCH-Link"`)。WCH-LinkE には `Firmware_Link/FIRMWARE_CH32V305.bin` を渡す |
+
+- **先頭 2 byte での判別は不可**: `WCH-LinkE-APP-IAP.bin` も `6f 10` で始まる。BL 判定は上表の padding 構造で行う。
+
+**実測**(WCH-LinkE、`FIRMWARE_CH32V305.bin` 109,544 B ⇔ 90,868 B の相互更新)
+
+| 事象 | 値 |
+|---|---|
+| 転送数 | 書込 1,826 + 照合 1,826(60 B × 1,825 + 端数 44 B)、ack 3,653 個すべて `0000` |
+| entry → IAP 再列挙 | 1.9 s(Windows 純正)/ usbipd 経由 ~5 s |
+| 書込 pass + 照合 pass | 6.8 s(Windows 純正)/ 7.9 s(本実装・usbipd 経由) |
+| 終了 → 通常 mode 再列挙 | 1.1 s |
+| 書込/照合の非対称 | 書込 6.3 s(stall 28 回)に対し照合 1.7 s。速度は「両 pass 合計 ÷ 総時間」で均さない |
+
+再列挙は**固定待ちにせず device の消失と再出現を検出**して進める。戻ってきた直後は CDC が先に enumerate される窓があるため、最初の open は失敗しうる(§7 の attach 直後のレースと同じ)。
 
 ## 7. 実装間で確認された quirk(要 capture 検証)
 

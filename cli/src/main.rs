@@ -76,6 +76,9 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Check { min })) => {
             cmd_probe::firmware_check(cli, min.as_deref())
         }
+        Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Update { image })) => {
+            cmd_probe::firmware_update(cli, image)
+        }
         Command::Target(TargetCmd::Info) => cmd_target::info(cli),
         Command::Target(TargetCmd::Opt(OptionCmd::Get)) => cmd_target::option_get(cli),
         Command::Target(TargetCmd::Opt(OptionCmd::WriteRaw { hex })) => {

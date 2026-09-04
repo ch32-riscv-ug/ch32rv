@@ -31,8 +31,10 @@
 //! DmiOp`)も実装するので [`ch32rv_dmi::DebugModule`] を載せられる。一次文書は
 //! `docs/protocol/wch-link.ja.md`。capture で verified でないコマンドは実装しない。
 
+pub mod iap;
 pub mod probe;
 
+pub use iap::{IapDevice, IapError, ImageInfo, Pass};
 pub use probe::{
     AttachInfo, ChipInfo, ChipInfoStatus, DmiReply, DmiStatus, FlashParams, FwMode, ProbeInfo,
     Speed, Variant, WchLink, WchLinkError, family_name, known_bad_firmware,
