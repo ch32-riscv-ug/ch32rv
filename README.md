@@ -96,7 +96,7 @@ a device. Exit codes and the JSON envelope are defined by the `ch32rv-contract` 
 | `verify` / `read` / `write` | Compare against an image · dump / blank-check · raw memory or flash write |
 | `erase` / `reset` | Erase (`--all` / `--region` / `--range`) · reset and run |
 | `recover` | Recovery: power-off, NRST, unprotect (mass-erase unbrick of read-protected parts) |
-| `probe` | Manage the probe: `list`, `info`, firmware `info` / `check`, `mode get` |
+| `probe` | Manage the probe: `list`, `info`, firmware `info` / `check` / `update` (rewrite the probe's own firmware over IAP) / `exit-iap`, `mode get` |
 | `target` | `info`, structured `option` bytes (`get` / `set` / `write-raw` / `reset`), `protect` |
 | `dbg` / `gdb` | One-shot control (halt / resume / step / regs / reg / dmi) · GDB server |
 | `monitor` | Runtime I/O: uart / sdi / dmdata |

@@ -275,6 +275,7 @@ ch32rv probe vendor <hex...>                      隠し。backend 固有 comman
 
 - firmware 版は **raw byte・正規化表記(2.12)・WCH 表記(v32)を常に併記**し、比較は正規化値で行う(表記系の混同と probe-rs の版比較バグを構造的に避ける)。
 - `firmware update` は IAP mode(`4348:55e0`)への遷移・書込・再 enumeration 待ち・版確認までを 1 操作にする(protocol は docs/protocol/wch-link.ja.md §6.1)。**既に IAP に滞留した個体はそのまま書ける**(entry 不要)ので、中断した更新の復旧経路が同じコマンドになる。image は同梱しない(user-supplied)。
+- **image は同梱しない**。WCH の [WCH-LinkUtility](https://www.wch.cn/downloads/wch-linkutility_zip.html)(英語版は [wch-ic.com](https://www.wch-ic.com/downloads/wch-linkutility_zip.html))を展開した `Firmware_Link/` に平文で入っている(WCH-LinkE = `FIRMWARE_CH32V305.bin`)。MounRiver Studio 同梱版でも同じ。`--help`・エラー hint からもこの入手先を案内する。
 - **IAP entry は不揮発**: probe を IAP に入れると、app が無傷でも電源再投入では戻らない(protocol §6.1)。抜けるのは終了 frame だけなので、`firmware exit-iap` を脱出口として持つ。中断した更新は `firmware update` の再実行でそのまま復旧する(どの時点で切れても IAP に残る)。
 - image は渡された時点で検査する: **BL 付き `*_APP_IAP.bin` は拒否**(外部書込機用。IAP に流すと app 領域に BL を書く)、非 RISC-V image は拒否、版は image 内の `bcdDevice` から読む。probe 型番は image からは判別できないため警告を出す(LinkE には `FIRMWARE_CH32V305.bin`)。
 - 対応 probe: WCH-LinkE / LinkW / LinkS / 旧 Link(CH549)を型番として区別し、非対応 operation は capability で事前に弾く。互換 probe(funprog HID / NHC-Link042 / ardulink / rv003usb 系)は P2 の backend として同じ体系に入る。

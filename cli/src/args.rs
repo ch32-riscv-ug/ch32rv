@@ -380,7 +380,11 @@ pub enum FirmwareCmd {
     ExitIap,
     /// Enter IAP mode and write a user-supplied image
     Update {
-        /// Probe firmware image (the application-only file, e.g. Firmware_Link/FIRMWARE_CH32V305.bin)
+        /// Probe firmware image: the application-only file from WCH-LinkUtility
+        /// (Firmware_Link/FIRMWARE_CH32V305.bin for a WCH-LinkE), not the bootloader-bearing
+        /// *_APP_IAP.bin. Not bundled - download WCH-LinkUtility from
+        /// https://www.wch.cn/downloads/wch-linkutility_zip.html (english:
+        /// https://www.wch-ic.com/downloads/wch-linkutility_zip.html)
         #[arg(long)]
         image: PathBuf,
     },
