@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The release workflow now verifies the embedded device DB before it bumps the version: it checks `ch32-device-data` out read-only and runs `cargo xtask db-check`, so a release cannot ship generated tables that have fallen behind the data repo (v0.7.0 did). The build stays hermetic - the checkout is only used for the comparison, never for generation.
+- (JA) release workflow が**版 bump の前に埋め込み device DB を検査**するようになった: `ch32-device-data` を read-only で checkout し `cargo xtask db-check` を実行するので、data repo から遅れた生成物のままリリースされることがなくなる(v0.7.0 が実際にそうなっていた)。checkout は比較にしか使わないので、ビルドの hermetic 性は変わらない。
+
 - (EN) The embedded device DB is regenerated from `ch32-device-data@fc8a3e6`. The only data change is CH32H417's programming procedure, which now follows its EVT driver (`PAGE_PG`, then `PG_STRT`) with the reference manual's dissenting `FTPG`/`STRT` recorded in the row's basis; the row stays flagged `conflict`, so this project still refuses to drive that family's FLASH controller (it also has no per-page fast erase). No behaviour change on any supported part.
 - (JA) 埋め込み device DB を `ch32-device-data@fc8a3e6` から再生成。データ差分は CH32H417 の書込手順のみで、EVT driver 側(`PAGE_PG` → `PG_STRT`)を採用し、RM の異議(`FTPG`/`STRT`)は basis に記録された形になった。行は `conflict` のままなので、本 project は引き続きこの family の FLASH controller 経路を使わない(そもそも page 単位 fast erase も持たない)。対応 family の挙動に変化なし。
 

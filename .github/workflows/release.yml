@@ -51,6 +51,23 @@ jobs:
       - name: Install libudev
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
 
+      # The generated device DB is committed and embedded, so the build itself never reads a
+      # neighbour repo - but the committed copy can fall behind ch32-device-data without anyone
+      # noticing, and then a release ships a stale DB (v0.7.0 did: CH32H417's programming procedure
+      # had been resolved upstream). Check the data repo out read-only and verify the committed CSVs
+      # still match a fresh generation. This runs BEFORE the version bump so a stale DB stops the
+      # release before anything is mutated. `db-check` ignores the `# source:` rev header, so an
+      # unrelated upstream commit with identical data does not trip it.
+      - name: Check out ch32-device-data (drift guard only)
+        uses: actions/checkout@v4
+        with:
+          repository: ch32-riscv-ug/ch32-device-data
+          path: .ch32-device-data
+          fetch-depth: 0
+
+      - name: Verify the embedded device DB is current
+        run: cargo run -q -p xtask -- db-check .ch32-device-data
+
       # Bumps the [workspace.package] version + the internal dependency pins in Cargo.toml + the
       # lockfile, and cuts the CHANGELOG "Unreleased" section to the new version. See scripts/release.sh.
       # (The one-time crates.io name-claim bootstrap is a separate script: scripts/first-publish.sh.)
@@ -65,9 +82,6 @@ jobs:
           echo "version=$V"    >> "$GITHUB_OUTPUT"
           echo "tag=v$V"       >> "$GITHUB_OUTPUT"
 
-      # db-check is intentionally NOT here: it regenerates from the sibling ch32-device-data checkout,
-      # which CI does not have. The generated CSVs are committed + embedded, so this build is hermetic;
-      # run `cargo xtask db-check` locally (or in a data-repo-aware CI) as the drift guard.
       - name: Verify (fmt / clippy / test / deny)
         run: |
           cargo fmt --all --check

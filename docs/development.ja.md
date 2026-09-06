@@ -35,6 +35,7 @@ cargo deny check
 ## 4. リリース
 
 - 版・CHANGELOG の bump は `scripts/release.sh`、初回 crate 確保は `scripts/first-publish.sh`、公開は `.github/workflows/release.yml`(workflow_dispatch)。手順の詳細は [release-plan.ja.md](release-plan.ja.md)。
+- **release workflow は版 bump の前に埋め込み device DB の drift を検査する**: `ch32-device-data` を read-only で checkout し `cargo xtask db-check <dir>` を実行する。committed な生成物が data repo と食い違っていればリリースは止まる(`# source:` の rev 行は無視するので、データが同じなら上流の commit が進んでも通る)。ローカルで直すには `cargo xtask db-gen` → 差分を commit。
 
 ## 5. ライブラリ API 規約
 
