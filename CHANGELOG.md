@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-09-06
+
 - (EN) Fix: `target option set` / `write-raw` / `reset` no longer report a false `verify-mismatch` (exit 30) on CH32V103. That part keeps reading the option area as it was before the write until the target resets, so the read-back straight after programming showed the old byte although the write had taken - `option set STOPRST=0` failed while a fresh session showed the new value. Verification now happens after a soft reset, which is also when option bytes take effect. Verified on a CH32V103 (both directions of a real USER-bit change now exit 0 and report the value the target actually holds) and on a CH32L103 for no regression.
 - (JA) 修正: `target option set` / `write-raw` / `reset` が CH32V103 で偽の `verify-mismatch`(exit 30)を返さなくなった。V103 は **reset するまで option 領域を書込前の像で読み返す**ため、書込直後の read-back が古い値を示し、書けているのに `option set STOPRST=0` が失敗していた(新しい session では新しい値が見えていた)。検証を **soft reset の後**に行うようにした — option bytes が反映されるのもそのタイミングなので、意味的にもこちらが正しい。CH32V103 実機で USER bit の変更を往復させて両方向 exit 0・表示値と実値の一致を確認、CH32L103 でも往復させて回帰がないことを確認。
 
