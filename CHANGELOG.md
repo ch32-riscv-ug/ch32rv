@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The embedded device DB is regenerated from `ch32-device-data@fc8a3e6`. The only data change is CH32H417's programming procedure, which now follows its EVT driver (`PAGE_PG`, then `PG_STRT`) with the reference manual's dissenting `FTPG`/`STRT` recorded in the row's basis; the row stays flagged `conflict`, so this project still refuses to drive that family's FLASH controller (it also has no per-page fast erase). No behaviour change on any supported part.
+- (JA) 埋め込み device DB を `ch32-device-data@fc8a3e6` から再生成。データ差分は CH32H417 の書込手順のみで、EVT driver 側(`PAGE_PG` → `PG_STRT`)を採用し、RM の異議(`FTPG`/`STRT`)は basis に記録された形になった。行は `conflict` のままなので、本 project は引き続きこの family の FLASH controller 経路を使わない(そもそも page 単位 fast erase も持たない)。対応 family の挙動に変化なし。
+
 ## 0.7.0 - 2026-09-06
 
 - (EN) Fix: `target option set` / `write-raw` / `reset` no longer report a false `verify-mismatch` (exit 30) on CH32V103. That part keeps reading the option area as it was before the write until the target resets, so the read-back straight after programming showed the old byte although the write had taken - `option set STOPRST=0` failed while a fresh session showed the new value. Verification now happens after a soft reset, which is also when option bytes take effect. Verified on a CH32V103 (both directions of a real USER-bit change now exit 0 and report the value the target actually holds) and on a CH32L103 for no regression.
