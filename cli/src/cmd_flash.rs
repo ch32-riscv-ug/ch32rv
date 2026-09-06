@@ -886,7 +886,8 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         let flash_bytes = session.chip.as_ref().map(|c| c.flash_bytes).unwrap_or(0);
         // erase is flash-only; pass flash_bytes for the SRAM size too so a `ram` spec still resolves
         // to a non-empty range and is then caught by the flash-window check below with a clear error.
-        match parse::resolve_region(region, flash_bytes, flash_bytes) {
+        // erase rejects non-flash regions below, so the option base is irrelevant here.
+        match parse::resolve_region(region, flash_bytes, flash_bytes, None) {
             // erase operates on flash pages only, so reject a non-flash region (e.g. ram/option).
             Ok((start, _)) if !(CODE_FLASH_START..0x1000_0000).contains(&start) => {
                 return fail(
@@ -1202,6 +1203,14 @@ fn recover_unprotect(cli: &Cli) -> ExitCode {
         Err(c) => return c,
     };
     let family = session.family();
+    // The option block is not at the same address on every part (CH32M030: 0x1FFF_F300), so take it
+    // from the device DB rather than assuming - writing factory bytes to the wrong address would
+    // program arbitrary memory.
+    let db_family = crate::cmd_target::db_family_of(&mut session);
+    let option_base = match crate::cmd_target::option_base(&db_family) {
+        Ok(b) => b,
+        Err(msg) => return fail(cli, CMD, ErrorKind::CapabilityUnsupported, msg, None),
+    };
     let mut dm = session.dm();
     if let Err(e) = dm.halt() {
         return fail(
@@ -1212,7 +1221,7 @@ fn recover_unprotect(cli: &Cli) -> ExitCode {
             None,
         );
     }
-    if let Err(e) = dm.flash_program_option_bytes(&FACTORY) {
+    if let Err(e) = dm.flash_program_option_bytes(option_base, &FACTORY) {
         return fail(
             cli,
             CMD,
@@ -1308,6 +1317,13 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
         }
     };
     let family = session.family();
+    // Per-family option-byte block base from the device DB (not universal: CH32M030 uses
+    // 0x1FFF_F300), used for both the RDPR probe and the factory write below.
+    let db_family = crate::cmd_target::db_family_of(&mut session);
+    let option_base = match crate::cmd_target::option_base(&db_family) {
+        Ok(b) => b,
+        Err(msg) => return fail(cli, CMD, ErrorKind::CapabilityUnsupported, msg, None),
+    };
 
     // Decide and apply under a halted hart: read protection off -> chip erase; on -> factory
     // option bytes (mass erase). Scope the DM borrow so we can reach the probe afterwards.
@@ -1323,12 +1339,12 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
                 None,
             );
         }
-        // Option byte 0 (RDPR) at 0x1FFF_F800; 0xA5 = read protection disabled.
-        protected = match dm.read_mem(0x1FFF_F800, 1) {
+        // Option byte 0 (RDPR) at the family's option base; 0xA5 = read protection disabled.
+        protected = match dm.read_mem(option_base, 1) {
             Ok(b) => b.first().copied() != Some(0xA5),
             Err(_) => false,
         };
-        if protected && let Err(e) = dm.flash_program_option_bytes(&FACTORY) {
+        if protected && let Err(e) = dm.flash_program_option_bytes(option_base, &FACTORY) {
             return fail(
                 cli,
                 CMD,

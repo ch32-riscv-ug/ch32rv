@@ -57,9 +57,8 @@ probe → host:  0x82 | cmd | len | payload...   (成功)
 | `0x01` | `0x02` | UnprotectFlash | attested | probe-rs, wlink |
 | `0x0b` | - | Reset(target) | attested | probe-rs, wlink |
 | `0x0c` | - | SetSpeed(payload `[family, speed]`)。attach 前は family 不明のため `0x01` を送る。speed は high=`0x01` / medium=`0x02` / low=`0x03`(逆順注意) | **verified**(2026-09-01) | ch32rv 実装 + probe-rs |
-| `0xff` | `0x01 0x41` / `0x01 0x52` | **モード切替**。RISC-V→DAP は `81 ff 01 41` を通常の command EP へ、DAP→RISC-V は **DAP device(PID 0x8012)の interface 0 OUT EP `0x02`** へ `81 ff 01 52`。応答は返らず probe が再列挙する(PID `0x8010` ⇔ `0x8012`)。**LinkE 専用**(CH549 は fail-closed) | **verified**(2026-09-03、両方向を実機確認。再列挙後に新 PID を確認) | ch32rv `probe mode set` + wlink, cjacker/wchlinke-mode-switch |
-| `0x03` | - | SetReadMemoryRegion。payload `addr_be32 len_be32`(len は 4 の倍数に切上げ)。直後に `0x02 0x0c` を送って §4.2.2 の高速バルク read | **verified**(2026-09-03) | ch32rv 実装 |
 | `0x08` | - | DmiOp。payload 6 byte `[addr, data_be32, op]`(op=0 nop/1 read/2 write)。応答 6 byte `[addr, data_be32, status]`(status=0 success/2 failed/3 busy)。busy は再試行 | **verified**(2026-09-01: DM 経由で V203/V103 の全 GPR・PC・flash/RAM を読み、wlink dump とバイト一致) | ch32rv 実装 + probe-rs, wlink, RINS |
+| `0xff` | `0x01 0x41` / `0x01 0x52` | **モード切替**。RISC-V→DAP は `81 ff 01 41` を通常の command EP へ、DAP→RISC-V は **DAP device(PID 0x8012)の interface 0 OUT EP `0x02`** へ `81 ff 01 52`。応答は返らず probe が再列挙する(PID `0x8010` ⇔ `0x8012`)。**LinkE 専用**(CH549 は fail-closed) | **verified**(2026-09-03、両方向を実機確認。再列挙後に新 PID を確認) | ch32rv `probe mode set` + wlink, cjacker/wchlinke-mode-switch |
 
 ### 4.1.1 Debug Module 操作(DMI 上の高レベル層。ch32rv-dmi crate、状態: verified 2026-09-01)
 
@@ -213,7 +212,7 @@ option bytes は通常 page と手順が違う(専用 unlock と OPTPG/OPTER)。
 - **RDPR(halfword 0)を最初に書く**。手順 2 で保護が消えた状態が最短で済む。
 - 16 byte は**値 + 補数**の 8 組。補数は書き手の責任(`0xFF ^ value`)。
 - **`RDPR` を `0xA5`(保護解除)にする書込は、チップ側で flash 全消去を誘発する**。`recover unbrick` はこれを利用する。
-- **`OB_BASE` は family で違う**(多くは `0x1FFFF800`、**CH32M030 は `0x1FFFF300`**)。ch32rv は現状 `0x1FFFF800` 決め打ちで、DB(`option_bytes.csv` の `address`)から引くのが本筋。→ [../data-requests/](../data-requests/)
+- **`OB_BASE` は family で違う**(多くは `0x1FFFF800`、**CH32M030 は `0x1FFFF300`**)。ch32rv は DB(`option_bytes.csv` の `address`)から引き、DB に無い family は fail-closed。**書込手順も RM は 2 系統に分ける**(`half-word (OBPG)` = V003/V103/V20x/V30x/V407/X315/H417、`fast page (FTPG)` = L103/M030/V006/V205/X035)。ただし **FTPG 分類の L103 で OBPG 経路が実機で動く**ため、分類だけで手順を決められない(RM が新しい手順を書いていても、STM32F1 由来の OBPG 経路が残っているとみられる)。
 - 実機検証(L103): 現在値の round-trip 書込で不変・RDPR 維持・flash 無傷、USER の 1 bit 変更(`0xff`→`0xfd`、補数 `00`→`02`)が read-back に反映。
 
 ### 4.3 特殊消去(SWD ピン共用 target の復旧。verified 2026-09-01)

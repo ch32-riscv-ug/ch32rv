@@ -67,16 +67,23 @@ pub fn byte_len(s: &str) -> Result<u32, String> {
         .ok_or_else(|| format!("length `{s}` overflows u32"))
 }
 
+/// en: The option-byte base used when the caller does not know the target's family. Most CH32
+/// parts use it, but it is an assumption - see `ch32rv_target::option_bytes_layout`.
+/// ja: family が分からない呼び出し元の既定 option base(多くの CH32 で正しいが仮定)。
+pub const DEFAULT_OPTION_BASE: u32 = 0x1FFF_F800;
+
 /// en: Base address of a named memory region (the single source of truth, shared by
 /// `read` / `erase` / `write`). `code`/`flash` = flash base, `ram` = SRAM base, `option` = the
 /// option-byte window. `system`/`eeprom` are family-specific and have no fixed base here.
 /// ja: 名前付き領域の base 番地(read/erase/write 共有の唯一の出所)。`code`/`flash`=flash 先頭、
 /// `ram`=SRAM 先頭、`option`=option byte 窓。`system`/`eeprom` は family 依存で固定 base 無し。
-pub fn region_base(name: &str) -> Result<u32, String> {
+pub fn region_base(name: &str, option_base: Option<u32>) -> Result<u32, String> {
     match name {
         "code" | "flash" => Ok(0x0800_0000),
         "ram" => Ok(0x2000_0000),
-        "option" => Ok(0x1FFF_F800),
+        // Not universal (CH32M030 keeps it at 0x1FFF_F300): callers that know the target's family
+        // pass the DB value, and only a caller with no family falls back to the common base.
+        "option" => Ok(option_base.unwrap_or(DEFAULT_OPTION_BASE)),
         "system" | "eeprom" => Err(format!(
             "region `{name}` is family-specific; use --range <addr>+<len>"
         )),
@@ -90,10 +97,15 @@ pub fn region_base(name: &str) -> Result<u32, String> {
 /// region: the probe's `flash_bytes` for `code`, the DB `sram_bytes` for `ram`, 16 for `option`.
 /// ja: `--region <名前>[+off[+len]]` を `(start, len)` に解決。既定長は領域全体(code=probe 報告
 /// flash、ram=DB SRAM、option=16)。
-pub fn resolve_region(spec: &str, flash_bytes: u32, sram_bytes: u32) -> Result<(u32, u32), String> {
+pub fn resolve_region(
+    spec: &str,
+    flash_bytes: u32,
+    sram_bytes: u32,
+    option_base: Option<u32>,
+) -> Result<(u32, u32), String> {
     let mut it = spec.split('+');
     let name = it.next().unwrap_or("");
-    let base = region_base(name)?;
+    let base = region_base(name, option_base)?;
     let default_len = match name {
         "code" | "flash" => flash_bytes,
         "ram" => sram_bytes,
@@ -119,13 +131,13 @@ pub fn resolve_region(spec: &str, flash_bytes: u32, sram_bytes: u32) -> Result<(
 /// en: Resolve a `<name>[+off]` region spec (or a raw `0x..`/decimal address) to a single address,
 /// for commands that write to a point (`write --at`). Length is not implied.
 /// ja: `<名前>[+off]`(または生番地)を単一番地に解決。length は含まない(`write --at` 用)。
-pub fn region_or_addr(spec: &str) -> Result<u32, String> {
+pub fn region_or_addr(spec: &str, option_base: Option<u32>) -> Result<u32, String> {
     // A bare number is an address; otherwise it is `<region>[+off]`.
     if let Ok(addr) = u32_addr(spec) {
         return Ok(addr);
     }
     let mut it = spec.split('+');
-    let base = region_base(it.next().unwrap_or(""))?;
+    let base = region_base(it.next().unwrap_or(""), option_base)?;
     let off = match it.next() {
         Some(s) => u32_addr(s)?,
         None => 0,
@@ -214,36 +226,48 @@ mod tests {
     fn region_resolution() {
         // code: flash base, default length = the probe's flash size.
         assert_eq!(
-            resolve_region("code", 0x4_8000, 0x1_0000),
+            resolve_region("code", 0x4_8000, 0x1_0000, None),
             Ok((0x0800_0000, 0x4_8000))
         );
-        assert_eq!(resolve_region("flash", 1024, 0), Ok((0x0800_0000, 1024)));
+        assert_eq!(
+            resolve_region("flash", 1024, 0, None),
+            Ok((0x0800_0000, 1024))
+        );
         // ram: SRAM base + explicit offset/length.
         assert_eq!(
-            resolve_region("ram+0+64", 0, 0x1_0000),
+            resolve_region("ram+0+64", 0, 0x1_0000, None),
             Ok((0x2000_0000, 64))
         );
         assert_eq!(
-            resolve_region("ram+0x100", 0, 0x8000),
+            resolve_region("ram+0x100", 0, 0x8000, None),
             Ok((0x2000_0100, 0x8000 - 0x100))
         );
         // option: fixed 16 bytes.
-        assert_eq!(resolve_region("option", 0, 0), Ok((0x1FFF_F800, 16)));
+        assert_eq!(resolve_region("option", 0, 0, None), Ok((0x1FFF_F800, 16)));
+        // The block is family-specific: a caller that knows the target passes its base.
+        assert_eq!(
+            resolve_region("option", 0, 0, Some(0x1FFF_F300)),
+            Ok((0x1FFF_F300, 16))
+        );
+        assert_eq!(
+            resolve_region("option+4+2", 0, 0, Some(0x1FFF_F300)),
+            Ok((0x1FFF_F304, 2))
+        );
         // family-specific / unknown are rejected; code with no size and no length errors.
-        assert!(resolve_region("system", 0x1000, 0x1000).is_err());
-        assert!(resolve_region("bogus", 0x1000, 0x1000).is_err());
-        assert!(resolve_region("code", 0, 0).is_err());
+        assert!(resolve_region("system", 0x1000, 0x1000, None).is_err());
+        assert!(resolve_region("bogus", 0x1000, 0x1000, None).is_err());
+        assert!(resolve_region("code", 0, 0, None).is_err());
     }
 
     #[test]
     fn region_or_addr_forms() {
         assert_eq!(
-            region_or_addr("0x2000_0010".replace('_', "").as_str()),
+            region_or_addr("0x2000_0010".replace('_', "").as_str(), None),
             Ok(0x2000_0010)
         );
-        assert_eq!(region_or_addr("code+0x100"), Ok(0x0800_0100));
-        assert_eq!(region_or_addr("ram+16"), Ok(0x2000_0010));
-        assert_eq!(region_or_addr("option"), Ok(0x1FFF_F800));
-        assert!(region_or_addr("system").is_err());
+        assert_eq!(region_or_addr("code+0x100", None), Ok(0x0800_0100));
+        assert_eq!(region_or_addr("ram+16", None), Ok(0x2000_0010));
+        assert_eq!(region_or_addr("option", None), Ok(0x1FFF_F800));
+        assert!(region_or_addr("system", None).is_err());
     }
 }

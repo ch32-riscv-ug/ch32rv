@@ -304,7 +304,12 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
                 ch32rv_target::Resolution::Sku(s) => s.sram_bytes,
                 _ => 0,
             };
-        match resolve_range(args, flash_bytes, sram_bytes) {
+        // `--region option` is family-specific (CH32M030 keeps the block at 0x1FFF_F300), so take
+        // the base from the DB rather than the common default.
+        let option_base =
+            ch32rv_target::option_bytes_layout(&crate::cmd_target::db_family_of(&mut session))
+                .map(|l| l.base);
+        match resolve_range(args, flash_bytes, sram_bytes, option_base) {
             Ok(v) => v,
             Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
         }
@@ -376,11 +381,16 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     output_data(cli, CMD, args, start, &data, warnings)
 }
 
-fn resolve_range(args: &ReadArgs, flash_bytes: u32, sram_bytes: u32) -> Result<(u32, u32), String> {
+fn resolve_range(
+    args: &ReadArgs,
+    flash_bytes: u32,
+    sram_bytes: u32,
+    option_base: Option<u32>,
+) -> Result<(u32, u32), String> {
     if let Some(r) = &args.range {
         parse::range(r)
     } else if let Some(region) = &args.region {
-        parse::resolve_region(region, flash_bytes, sram_bytes)
+        parse::resolve_region(region, flash_bytes, sram_bytes, option_base)
     } else {
         Err("read needs --range or --region".to_owned())
     }
