@@ -6,7 +6,10 @@
 - 相手: `wch-protocols`(要件調整の場)/ `ArduinoCore-CH32`(発議元)/ `ch32rv-probe`(実装の置き場)
 - 作成日: 2026-09-06
 - 発議側の文書: `ArduinoCore-CH32/docs/harness-probe.ja.md`(採否評価と依頼 5-1〜5-9)、
-  `ArduinoCore-CH32/docs/harness-testing.ja.md`(駆動方式と依頼 5-10〜5-16)
+  `ArduinoCore-CH32/docs/harness-testing.ja.md`(駆動方式と依頼 5-10〜5-16)、
+  **`ArduinoCore-CH32/docs/harness-requirements.ja.md`(要求カタログ `H-001`〜`H-178` と相反 `C-1`〜`C-11`)**、
+  `EmbedBench/docs/HARNESS_REQUESTS.ja.md`(`E-1`〜`E-7`)
+- 所在の索引: `wch-protocols/references/harness-index.ja.md`
 
 ---
 
@@ -179,3 +182,80 @@ harness-testing §1 の resolver は `index/pinout.csv` / `evidence/remap_routes
 - **要件が固まってからプロトコル repo で調整・マージされる**。本書はその入力で、**ここで結論を出さない**。
 - ch32rv 側の実装(`ProbeService` の trait 化、CLI の呼び出し置換)は**要件が固まるまで着手しない**。
 - 相手の文書が更新されたら、本書の §1〜§9 のうち解消した項目に取り消し線を引く。
+
+---
+
+# 追記(2026-09-06): 要求カタログを読んだ結果
+
+`harness-requirements.ja.md`(H-001〜H-178 / C-1〜C-11)と `EmbedBench/HARNESS_REQUESTS.ja.md`(E-1〜E-7)を
+読み直した。ch32rv 側から出せるものを **H-ID に紐づけ直した**(そのまま突き合わせに使える形)。
+
+## 12. 前提が古くなっている要求(訂正が要る)
+
+| ID | 根拠として書かれていること | いまの事実 |
+|---|---|---|
+| **H-126** | 「LinkE は **Windows 専用ツールでしか更新できず**、それが 2.11/2.12 問題を長引かせた」 | **解消済み**。ch32rv `probe firmware update` が **Linux / macOS から LinkE の firmware を更新・ダウングレードできる**(0.5.0、WCH の IAP 経路を実装。2.22 ⇔ 2.13 を実機で往復検証)。IAP 滞留からの救出(`probe firmware exit-iap`)もある。**UF2 が望ましい理由は残る**が、「全 OS で更新できない」という根拠は成り立たない |
+| **H-002** | 「LinkE は `wlink status` に聞くしかなく、それが 2.11/2.12 問題を見えなくしていた」 | 半分解消。ch32rv は `probe info --json` / `probe list` で **probe 種別・firmware 版(raw / 正規化 / WCH 表記の三重)**を machine-readable に出し、`capabilities --json` が probe×target の可否と理由を出す。**要求そのものは有効**(harness も同じことをすべき)だが、根拠の書き方は更新できる |
+
+## 13. ch32rv の実装が既に答えている要求(参照実装として使える)
+
+| ID | 要求 | ch32rv での実体 |
+|---|---|---|
+| H-001 / H-006 | 一意 serial + 候補複数なら fail closed | probe selector は `serial:` / `usb:<bus>-<ports>` / `name:` / `index:`。**曖昧なら中止**。`--device 0` 相当は無い |
+| H-002 | 種別 / 版 / capability を machine-readable | `probe info --json` / `capabilities --json`(§5) |
+| H-003 | per-device advisory lock | `flock`、キーは probe serial(無ければ bus topology)、timeout 超過は **exit 13**、stale 掃除不要。**ただし §2.1 の限界がある** |
+| H-005 | exit code / envelope | `ch32rv-contract` crate(数値は test で凍結) |
+| H-040 / H-041 / H-153 | 無損失で落とせる / provenance 同梱 / replay で実機なし回帰 | `--capture` の NDJSON(`seq` / `t_us` / `chan` / `dir` / `len` / `ok` / hex `data` + `_meta` ヘッダ + `_device` 行)と **`--replay`**。**記録と違う write は divergence として報告**する |
+| H-110 / H-112 | SDI を probe 非依存に / DMDATA を native に | `monitor --source dmdata` は **DM の DATA0/DATA1 を DMI で polling するだけ**なので probe 非依存。LinkE 固有なのは「probe が肩代わりして CDC に出す」部分だけ(`81 0d 02 ee 00`) |
+| H-121 | power-off erase / RST erase | 実装済み(`recover --method power-off` / `nrst`)。**LinkE/LinkW 専用**という制約も込みで |
+
+## 14. カタログに無い要求候補(ch32rv の実測から)
+
+**どれも「読んだ値が確定しているとは限らない」系**で、H-107(壊れ読み値)では覆えない。
+
+### 14-1. 書込後の read がいつ確定するかを仕様に持つ
+
+実例が 2 つある。**どちらも「書けているのに検証が失敗する」**という同じ失敗の形。
+
+| 事例 | 症状 |
+|---|---|
+| **CH549 Link の stale fast-read** | stub 実行直後の高速 bulk read が **program 前の flash 像**(`0xff` やゴミの ramp)を返す。CH549 で ~7 回中 2-3 回、LinkE では未発生。**偽の `verify-mismatch`** の原因 |
+| **CH32V103 の option 領域** | option byte を書いた直後、**reset するまで書込前の像を読み返す**。50 ms × 4 の再読み込みでは足りず、**新しい session(attach = reset)で初めて新しい値が見えた** |
+
+ch32rv の対処は前者が「不一致なら権威ある DMI 読みで再確認」、後者が「**検証を soft reset の後に行う**」。
+**harness は「自分が書いたものを自分で読み返して確かめる」設計になりやすい**ので、
+**確定するまでの規則(reset を挟むのか、bounded retry か、権威ある経路で再確認か)を probe/protocol 側の仕様に持ってほしい**。
+
+### 14-2. attach の監査対象に GPR / CSR を含める
+
+H-100 / H-101 は「target に**書く**もの」を対象にしているが、**メモリだけを見ていると取りこぼす**。
+
+- **CH32V103 で `AttachChip` が生きた GPR `s1`(x9)を chip id で上書きする**(§7)。メモリは 1 byte も変わらない。
+- 監査項目を「**メモリ + GPR + CSR の差分**」と書いておけば、この種の破壊が仕様の網に入る。
+- ついでに: この検出は **harness が自分でできる**(attach 前後で全 GPR を読んで diff するだけ)。H-103(自己観測で証明)の安価な変種。
+
+### 14-3. ch32rv を経路に残すならセッション化が要る(**C 候補**)
+
+**H-030(テスト本体はセッション。CLI 毎回起動にしない)と H-120(flash/verify/reset を `ch32rv-probe-<name>` backend として)は、
+組み合わせると張力を持つ。**
+
+- H-030 の根拠は `reg_probe` の実測(1 レジスタ 1 プロセス起動で 30〜130 秒)。この Reader は **`Ch32rvReader`**、つまり **ch32rv の CLI を毎回起動している**。
+- harness がテスト本体を持てば ch32rv は経路から外れるので張力は消える。**ただし §11-5(セッション中に誰が DUT を焼くか)で ch32rv が残ると、そこだけプロセス起動コストが戻る**。
+- ch32rv には既にセッション型の口が 1 つある(**gdb server**)。**「ch32rv に持続セッションの口を足す」ことが要求になるかどうか**は、まだどこにも書かれていない。**要求になるなら早めに言ってほしい**(こちらの CLI 設計に効く)。
+
+## 15. C-n への材料(裁定はしない)
+
+| # | ch32rv から出せる材料 |
+|---|---|
+| **C-2**(multi-lane vs 1 target 専有) | ch32rv の lock は **probe 単位**。multi-lane にすると「1 lane を別プロセスが使用中」を表現できない。**lane 単位の排他が要る**なら lock のキー設計に効く(§2.1) |
+| **C-4**(capture 帯域 vs control 応答性) | 実測: **DMI 1 往復 471 µs**(§3)。control を USB FS の同じ device に載せる場合、capture の bulk がこれを押しのける。ch32rv 側は「flash の bulk 転送中は他の往復が止まる」構造なので、**同居させると同じ問題が出る**という前例として使える |
+| **C-10**(エミュ vs 実物) | 材料なし |
+| **C-11**(配線は利用者の責任 vs 静かな skip) | ch32rv の `capabilities` が同型の問題を扱っている: **「できない」を理由つきで出す**ことで、静かに落ちるのを防いでいる。H-154 のカバレッジ報告と同じ発想 |
+
+## 16. 索引 §6-4(attach 副作用の還流)について
+
+`harness-index` §6 は「**attach 副作用の還流(`RCC_CFGR0` / `FLASH ACTLR`)→ `protocols/pc-to-link.ja.md` 未反映、材料はライタ `0006` §7**」を残件にしている。
+
+- **`RCC_CFGR0` / `FLASH ACTLR` の実測はコア側の成果**(V307、probe-rs と ch32rv の双方で同じ)。ch32rv は**同じ現象を見ている**という裏づけを出せる。
+- **ch32rv 固有の材料は §7 の `s1`(x9)破壊**のほう。こちらは root cause と対処まで確定している。
+- **書き込みは protocol repo 側で行うもの**なので、こちらからは触らない。必要なら文面はいつでも出せる。
