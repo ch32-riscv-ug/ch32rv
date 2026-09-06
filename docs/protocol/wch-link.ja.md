@@ -119,9 +119,9 @@ family 別パラメータ(wlink 由来、実機確認。code flash 先頭は共�
 | V103 | `0x01` | 2線 | CH32V103 | 128 | 4096 |
 | V20x / V30x | `0x05` / `0x06` | 2線 | CH32V307 | 256 | 4096 |
 | X035 / CH643 | `0x0d` / `0x0c` | 2線 | CH643 | 256 | 4096 |
-| L103 | `0x0e` | 2線 | CH32L103 | 256 | 4096 |
+| L103 | `0x0e` | 2線 | CH643(**X035 と同一 blob**) | 256 | 4096 |
 
-**stub の出所**: wlink `src/flash_op.rs`(元は WCH EVT の flash ルーチン)。`CH32V307` = 446 byte。minichlink の LinkE 用 loader(512 / 1280 byte)は**別物**で、まだ突き合わせていない。
+**stub の出所**: wlink `src/flash_op.rs`(元は WCH EVT の flash ルーチン)。突き合わせ済み(`wch-protocols` の stub 目録、依頼 0005): **wlink 系は実質 4 本**(`CH643` と `CH32L103` はバイト同一)で **9 family byte をカバー**、**RV32EC に収まるのは V003 版だけ**(他は x28〜x30 使用)。minichlink の LinkE 用 loader(512 / 512 / 1536 / 1280 byte)は**別 blob**で、同じ family に 2 系統が並存している(どちらが WCH 純正かは未決)。
 
 family 別 capability(probe-rs 由来、attested): **特殊消去(§4.3)非対応** = `0x02`/`0x03`/`0x07`/`0x0b`(CH56x/57x/58x/59x)。**flash protect コマンド(`0x01`/`0x06`)対応** = `0x01` `0x05` `0x06` `0x09` `0x0c` `0x0d` `0x0e` `0x49` `0x4e` `0x86` `0xc6`。
 

@@ -53,7 +53,7 @@ pub fn params_for_family(family_byte: u8) -> Option<ch32rv_wchlink::FlashParams>
         0x01 => (&stub::CH32V103, 128, 4096),       // CH32V103
         0x05 | 0x06 => (&stub::CH32V307, 256, 4096), // CH32V20x / CH32V30x
         0x0D | 0x0C => (&stub::CH643, 256, 4096),   // CH32X035 / CH643
-        0x0E => (&stub::CH32L103, 256, 4096),       // CH32L103
+        0x0E => (&stub::CH643, 256, 4096),          // CH32L103 (byte-identical to X035/CH643)
         _ => return None,
     };
     // support_special_erase: everything except the CH56x/57x/58x/59x BLE families.
