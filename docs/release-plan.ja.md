@@ -45,7 +45,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 | job | 内容 |
 |---|---|
-| `prepare` | **version bump(`./scripts/release.sh <level>` フック)** → fmt/clippy/test/deny → commit + tag + push → GitHub Release 作成。bump 後の version は `cargo metadata` から読む(スクリプト出力形式に非依存)。db-check は隣接 data repo が要るので CI では回さない(生成物は commit 済みで hermetic、ローカルのドリフト検査に留める)。 |
+| `prepare` | **埋め込み device DB の drift 検査(`ch32-device-data` を checkout → `cargo xtask db-check`)** → **version bump(`./scripts/release.sh <level>` フック)** → fmt/clippy/test/deny → commit + tag + push → GitHub Release 作成。bump 後の version は `cargo metadata` から読む(スクリプト出力形式に非依存)。db-check は隣接 data repo が要るので CI では回さない(生成物は commit 済みで hermetic、ローカルのドリフト検査に留める)。 |
 | `crates-io` | tag を checkout → `rust-lang/crates-io-auth-action`(OIDC 短命トークン)→ 依存順に `cargo publish`。`inputs.publish_crates=false` で無効化可。 |
 | `binaries` | matrix(下表)で `cargo build --release --locked` → tar.gz(Unix)/ zip(Windows)+ `.sha256` → 同じ Release に `gh release upload`。 |
 
@@ -115,6 +115,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 毎回:
 
 - [ ] `cargo fmt --check` / `cargo clippy --all-targets --all-features`(warning 0)/ `cargo test` / `cargo deny check`
+- [ ] `cargo xtask db-check`(埋め込み device DB が `ch32-device-data` と一致。ずれていれば `db-gen` して commit。**release workflow でも版 bump 前に検査される**)
 - [ ] `cargo xtask db-check`(生成物が pinned data と一致)
 - [ ] 6台ベンチで代表フロー(flash→verify、gdb、monitor、target info、capabilities)を再確認
 - [ ] **Windows(WCH 純正ドライバ経路)で probe list / target info / flash 往復を再確認**(依頼 B-2 の回帰)
