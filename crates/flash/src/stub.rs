@@ -8,6 +8,8 @@
 //! ja: flash loader stub(RISC-V 機械語)。target RAM に載せて flash を書く。暫定措置として
 //! wlink `src/flash_op.rs`(MIT/Apache-2.0、元は WCH EVT)から逐語転記した。将来は
 //! docs/architecture.ja.md §3 のとおり in-repo source から build して hash を出す。手編集禁止。
+//! 着手前の下調べとして、他 host tool の loader との突き合わせ(同一 blob か / 何本が等価か / stub の
+//! ABI)を `wch-protocols` の stub 目録へ依頼してある: docs/data-requests/0005-flash-stub-inventory.ja.md
 #![allow(clippy::all)]
 
 /// en: A stable FNV-1a 64-bit digest of every stub, for `version --json` reproducibility
