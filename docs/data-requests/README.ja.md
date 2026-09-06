@@ -31,6 +31,6 @@ ch32rv が必要とするデータは ch32rv 内部で作らず、**資料の持
 | [0003](0003-option-byte-layout.ja.md) | ch32-device-data | option bytes の書き込みレイアウトと工場出荷値 | 依頼済 | 中(M2 の `target option` / `recover unbrick` で必要) |
 | [0004](0004-flash-program-method.ja.md) | ch32-device-data | main flash の消去/書き込み**手順**の family 別分類 | **納品受け入れ・消費済** | 中 |
 | — | ch32-device-data | **flash 消去後の読み出し値**(系統 A `0xFFFFFFFF` / B `0xe339e339`) | `wch-protocols` から依頼(R-31)→ **納品受け入れ・消費済**(V103 の値は[こちらの実測](measured/erased-read-2026-09-06.md)が DB の basis に採用された) | 中 |
-| [0005](0005-flash-stub-inventory.ja.md) | wch-protocols | WCH-Link flash stub(wlink 由来 5 本)の目録化 | draft | 低(stub の source 化に着手するときの土台) |
+| [0005](0005-flash-stub-inventory.ja.md) | wch-protocols | WCH-Link flash stub(wlink 由来 5 本)の目録化 | 依頼済 | 低(stub の source 化に着手するときの土台) |
 
 将来の依頼候補(まだ依頼書にしない): WCH-Link firmware の hash→版対応の継続拡充(既存 `evidence/link_firmware.csv` の新版追従)、UF2 family ID / DFU VID:PID 等の bootloader 識別子表(P2 の `boot` 実装時)。
