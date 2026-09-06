@@ -22,5 +22,7 @@ ch32rv が必要とする device データは ch32rv 内部で作らず、`ch32-
 | [0001](0001-device-id.ja.md) | chip ID(device_id)の evidence 表新設 | 依頼済 | **高**(M2 の target 自動検出のブロッカ) |
 | [0002](0002-debug-interface.ja.md) | debug interface 種別(1線/2線)の明示列 | 依頼済 | 中(M1-M2。当面は core 名からの導出で代替可) |
 | [0003](0003-option-byte-layout.ja.md) | option bytes の書き込みレイアウトと工場出荷値 | 依頼済 | 中(M2 の `target option` / `recover unbrick` で必要) |
+| [0004](0004-flash-program-method.ja.md) | main flash の消去/書き込み**手順**の family 別分類 | draft | 中(直接 FLASH controller 経路を実機の無い family へ広げるのに必要) |
+| — | **flash 消去後の読み出し値**(系統 A `0xFFFFFFFF` / B `0xe339e339`) | `wch-protocols` から依頼済(R-31)。本 project は実機読み 6 family を証拠として提供済み | 中(納品後 `erased_reads_ff` の手書き表を DB 由来に置換) |
 
 将来の依頼候補(まだ依頼書にしない): WCH-Link firmware の hash→版対応の継続拡充(既存 `evidence/link_firmware.csv` の新版追従)、UF2 family ID / DFU VID:PID 等の bootloader 識別子表(P2 の `boot` 実装時)。

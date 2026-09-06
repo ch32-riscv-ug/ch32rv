@@ -1,5 +1,6 @@
-# WCH-Link USB protocol ノート(ch32rv 一次成果物)
+# WCH-Link USB protocol ノート(ch32rv 実装メモ)
 
+- **一次ソースは [`wch-protocols`](../../../wch-protocols/protocols/pc-to-link.ja.md)**。本書の protocol 事実はそちらへ移してある(command 一覧・flash 書込/高速バルク read・直接 FLASH controller・option byte 書込・IAP・quirk)。**新しい protocol 知見はまず wch-protocols に書く**。device データ(消去後の読み出し値・flash 粒度・option byte 配置等)は `ch32-device-data`(依頼は [../data-requests/](../data-requests/))。
 - 作成日: 2026-09-01
 - 状態: **骨組み**。先行実装からの転記段階であり、実機 capture での裏取りは未着手
 - ルール(原設計案 §3): 先行実装(wlink / minichlink / probe-rs / RINS / WCH OpenOCD)は**仕様書として読む**。ここに書く内容は自分の実機 capture で裏を取ってから `verified` にする。**裏の取れていない項目は実装しない**
@@ -149,7 +150,7 @@ family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0
 
 **CH32V103 の flash(WCH EVT `ch32v10x_flash.c` から確定)**: 他 family と 3 点で違う。(1) **fast erase=128B page(PAGE_ER bit17)/ program は fast buffer でなく標準 16bit halfword(CR_PG bit0)** が確実(fast BufLoad は 128bit=4word 単位で DMI 経由だと corrupt した)→ `sh x7,0(x5)`=`0x00729023` の `write_mem16` を追加。(2) **各 erase/program 後に未文書の commit 副作用が必須: `*(0x40022034) = *((addr & ~3) ^ 0x1000)`**(無いと erase/program が無反応。実測)。(3) 高速化: PG も commit も page で 1 回にして per-word の EVT 手順と等価を確認(gdb Z0 応答を remote timeout 内に収めるため)。実機検証: erase→FF→program a0a1..→erase の往復 OK、`erase --range` surgical(128B、隣接無傷)。**gdb flash bp は V103 固有の attach quirk 対処で動く(root-cause 済み)**: 症状は step→patch→resume で core が trap せず 0x110(default handler の `c.j .`)へ飛ぶこと。mcause/mepc/mtval を読んで判明 — **mcause=4(load-address-misaligned)、mepc=faulting `lw a5,4(s1)`、s1(x9)=chip_id(0x2500410f)**。つまり **WCH-Link の AttachChip が生きた GPR s1/x9 を chip id で上書きし(dscratch にも保存されない=復元不可)**、resume 後に program が s1 を使う瞬間 fault する。attach 直後に既に x9=chip_id。halt→resume だけでも crash(V003/V203/X035 は無事=V103 固有)。**修正: attach 後に soft-reset して program にレジスタを再構築させる**(soft-reset 後 x9 が正常な RAM ポインタに戻り halt/resume が通る)。gdb server は `attach_corrupts_regs` family(V103)で attach 後 soft-reset + 50ms 待ちしてから halt。実機で flash bp が複数 `continue` で発火を確認。単一 step・resumereq クリア・prefetch flush はいずれも無関係だった。
 
-**消去済みセルの debug read 値は family で違う**: V20x/V30x は **`0xe339e339`**(実セルは 0xff だが LinkE の placeholder。power-off erase 後・ChipInfo protection_raw と同値)、**X035/V003 は素直に `0xff`**。→ **erase の成否判定は read 値でなく controller STATR(BUSY クリア + WPRERR 無し)で行う**。この経路は flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台。
+**消去済みセルの read 値は family で違う** — **シリコン自体の特性**(RM に明文がある)。系統 A = `0xFFFFFFFF`(V003/V103/V205/V006/X035/L103/M030)、系統 B = **`0xe339e339`**(V20x/V30x/V407/X315/H417。byte 列は `39 e3 39 e3`)。power-off erase 後や ChipInfo の protection_raw が同値なのもこのため。**データソースは [wch-protocols](../../../wch-protocols/references/data/bootloader-survey/flash_erased_read.csv) 側**(RM + WCH の EVT IAP + 本 project の実機読み)。以前ここに書いていた「LinkE の placeholder(実セルは 0xff)」は**誤り**。→ **erase の成否判定は read 値でなく controller STATR(BUSY クリア + WPRERR 無し)で行う**。この経路は flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台。
 
 ### 4.3 特殊消去(SWD ピン共用 target の復旧。verified 2026-09-01)
 
