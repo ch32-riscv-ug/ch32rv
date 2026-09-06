@@ -1,8 +1,9 @@
 # WCH-Link USB protocol ノート(ch32rv 実装メモ)
 
-- **一次ソースは [`wch-protocols`](../../../wch-protocols/protocols/pc-to-link.ja.md)**。本書の protocol 事実はそちらへ移してある(command 一覧・flash 書込/高速バルク read・直接 FLASH controller・option byte 書込・IAP・quirk)。**新しい protocol 知見はまず wch-protocols に書く**。device データ(消去後の読み出し値・flash 粒度・option byte 配置等)は `ch32-device-data`(依頼は [../data-requests/](../data-requests/))。
-- 作成日: 2026-09-01
-- 状態: **骨組み**。先行実装からの転記段階であり、実機 capture での裏取りは未着手
+- **本書は ch32rv 実装の一次記録**。ここに書くのは自分の実機で確かめた事実で、これを [`wch-protocols`](../../../wch-protocols/protocols/pc-to-link.ja.md) に反映して、あちらで他実装と突き合わせてもらう(**まずこの repo が更新 → protocol repo が差分を確認**)。
+- **device データは書かない**: 消去後の読み出し値・flash 粒度・書込手順の family 分類・option byte 配置は `ch32-device-data` の生成 DB から引く(依頼は [../data-requests/](../data-requests/))。
+- 作成日: 2026-09-01(最終更新 2026-09-06)
+- 状態: **probe 経路は verified**(attach / DMI / flash 書込 / 高速バルク read / 直接 FLASH controller / option byte / 特殊消去 / monitor / IAP 更新 / mode 切替 を実機で往復検証)。error 応答の frame 形式と DAP 本体は未解読
 - ルール(原設計案 §3): 先行実装(wlink / minichlink / probe-rs / RINS / WCH OpenOCD)は**仕様書として読む**。ここに書く内容は自分の実機 capture で裏を取ってから `verified` にする。**裏の取れていない項目は実装しない**
 
 各表の `状態` 列: `verified`(自前 capture で確認済み)/ `attested`(複数の先行実装が一致)/ `single-source`(単一実装のみ)/ `conflict`(実装間で矛盾。要 capture)/ `todo`(存在の証拠のみ)。
@@ -56,6 +57,8 @@ probe → host:  0x82 | cmd | len | payload...   (成功)
 | `0x01` | `0x02` | UnprotectFlash | attested | probe-rs, wlink |
 | `0x0b` | - | Reset(target) | attested | probe-rs, wlink |
 | `0x0c` | - | SetSpeed(payload `[family, speed]`)。attach 前は family 不明のため `0x01` を送る。speed は high=`0x01` / medium=`0x02` / low=`0x03`(逆順注意) | **verified**(2026-09-01) | ch32rv 実装 + probe-rs |
+| `0xff` | `0x01 0x41` / `0x01 0x52` | **モード切替**。RISC-V→DAP は `81 ff 01 41` を通常の command EP へ、DAP→RISC-V は **DAP device(PID 0x8012)の interface 0 OUT EP `0x02`** へ `81 ff 01 52`。応答は返らず probe が再列挙する(PID `0x8010` ⇔ `0x8012`)。**LinkE 専用**(CH549 は fail-closed) | **verified**(2026-09-03、両方向を実機確認。再列挙後に新 PID を確認) | ch32rv `probe mode set` + wlink, cjacker/wchlinke-mode-switch |
+| `0x03` | - | SetReadMemoryRegion。payload `addr_be32 len_be32`(len は 4 の倍数に切上げ)。直後に `0x02 0x0c` を送って §4.2.2 の高速バルク read | **verified**(2026-09-03) | ch32rv 実装 |
 | `0x08` | - | DmiOp。payload 6 byte `[addr, data_be32, op]`(op=0 nop/1 read/2 write)。応答 6 byte `[addr, data_be32, status]`(status=0 success/2 failed/3 busy)。busy は再試行 | **verified**(2026-09-01: DM 経由で V203/V103 の全 GPR・PC・flash/RAM を読み、wlink dump とバイト一致) | ch32rv 実装 + probe-rs, wlink, RINS |
 
 ### 4.1.1 Debug Module 操作(DMI 上の高レベル層。ch32rv-dmi crate、状態: verified 2026-09-01)
@@ -109,7 +112,19 @@ trigger も flash profile も無い場合のみ未対応を返す(GDB は "Canno
 | `0x02` | `0x08` | End | verified |
 | `0x0b` | `0x01` | soft reset して実行 | verified |
 
-family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0x49、**1線 SWIO**)= stub CH32V003・data packet 64・write pack 1024、V103(0x01)= stub CH32V103・data packet 128・write pack 4096、V20x/V30x(0x05/0x06)= stub CH32V307・data packet 256・write pack 4096。code flash 先頭は共通 `0x08000000`。
+family 別パラメータ(wlink 由来、実機確認。code flash 先頭は共通 `0x08000000`):
+
+| family | byte | 線 | stub | data packet | write pack |
+|---|---|---|---|---:|---:|
+| V003 / CH641 | `0x09` / `0x49` | **1線 SWIO** | CH32V003 | 64 | 1024 |
+| V103 | `0x01` | 2線 | CH32V103 | 128 | 4096 |
+| V20x / V30x | `0x05` / `0x06` | 2線 | CH32V307 | 256 | 4096 |
+| X035 / CH643 | `0x0d` / `0x0c` | 2線 | CH643 | 256 | 4096 |
+| L103 | `0x0e` | 2線 | CH32L103 | 256 | 4096 |
+
+**stub の出所**: wlink `src/flash_op.rs`(元は WCH EVT の flash ルーチン)。`CH32V307` = 446 byte。minichlink の LinkE 用 loader(512 / 1280 byte)は**別物**で、まだ突き合わせていない。
+
+family 別 capability(probe-rs 由来、attested): **特殊消去(§4.3)非対応** = `0x02`/`0x03`/`0x07`/`0x0b`(CH56x/57x/58x/59x)。**flash protect コマンド(`0x01`/`0x06`)対応** = `0x01` `0x05` `0x06` `0x09` `0x0c` `0x0d` `0x0e` `0x49` `0x4e` `0x86` `0xc6`。
 
 実機検証: CH32V203C8T6(LinkE)・CH32V103R8T6(CH549)・**CH32V003F4P6(LinkE、1線 SWIO)** へ Arduino ビルドの blink BIN を flash → readback が BIN とバイト一致 → confirm-run で running 確認。
 
@@ -131,26 +146,75 @@ family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0
 
 - **unlock**: CTLR&(LOCK\|FLOCK)==0 ならスキップ。else KEYR に KEY1,KEY2 → MODEKEYR に KEY1,KEY2。
 - **page erase(全 family 共通)**: unlock → CTLR=FTER → FLASH_ADDR=addr → CTLR=FTER\|STRT → STATR BUSY クリア待ち → CTLR=0 → STATR 書き戻し(EOP クリア)→ lock。WPRERR で write-protect エラー。
-- **page program は 2 方式ある**(消去済み前提。unlock 後):
-  - **PgStart 方式(V20x/V30x)**: CTLR=FTPG → 4B ずつ write_mem32(各 word 後 WRBUSY 待ち)→ CTLR=FTPG\|PGSTART(bit21)→ STATR BUSY 待ち → CTLR=0 → lock。
-  - **Buffered 方式(V003/CH641・X035/CH643・L103)**: CTLR=FTPG → CTLR=FTPG\|BUFRST(buffer reset)→ BUSY 待ち → 各 word: write_mem32(word) → CTLR=FTPG\|BUFLOAD → BUSY 待ち → 全 word 後: FLASH_ADDR=addr → CTLR=FTPG\|STRT(bit6)→ BUSY 待ち → CTLR=0 → lock。minichlink が X035 を V003 と同じ buffered 系に分類しているのが根拠。
+- **page program は 3 方式ある**(消去済み前提。unlock 後)。**どの family がどれかは手書きしない** —
+  `ch32-device-data` の `flash_program_method.csv`(`mode` / `program_commit` / `program_buffer_load_bits`)
+  から引く(生成 DB 経由。[../data-requests/0004-flash-program-method.ja.md](../data-requests/0004-flash-program-method.ja.md)):
+  - **PgStart 方式(`mode=direct`、commit=`PG_STRT`)**: CTLR=FTPG → 4B ずつ write_mem32(各 word 後 WRBUSY 待ち)→ CTLR=FTPG\|PGSTART(bit21)→ STATR BUSY 待ち → CTLR=0 → lock。
+  - **Buffered 方式(`mode=buffered` かつ `buffer_load_bits=32`)**: CTLR=FTPG → CTLR=FTPG\|BUFRST(buffer reset)→ BUSY 待ち → 各 word: write_mem32(word) → CTLR=FTPG\|BUFLOAD → BUSY 待ち → 全 word 後: FLASH_ADDR=addr → CTLR=FTPG\|STRT(bit6)→ BUSY 待ち → CTLR=0 → lock。
+  - **標準 half-word 方式(`mode=buffered` だが `buffer_load_bits` が 32 より広い family)**: fast buffer を使わず 16bit `sh`(`write_mem16`)で書き、後述の commit を打つ。現状 **CH32V103 のみ実装**。
+
+**buffer load の幅がそのまま方式選択になる**(WCH の EVT `FLASH_BufLoad` の引数で決まる。DB の `program_buffer_load_bits`):
+
+| 幅 | family | DMI から使えるか |
+|---|---|---|
+| 32bit | V003 / V006 / V205 / X035 / L103 | **使える** → Buffered |
+| **64bit** | M030 | 使えない(word ずつ書けない) |
+| **128bit** | V103 | 使えない → 標準 half-word へ |
+
+**word ずつしか書けない DMI writer は、buffer load が 1 word より広い family で page を壊す**(V103 で実際に壊れた)。ch32rv は 32bit 以外を fail-closed にし、標準 half-word 経路がある V103 だけそちらへ倒す。`confidence=conflict` の family(H417)と page 単位 fast erase を持たない family(V407 / X315 / H417)も fail-closed。
+
 - **hart は halt 済みが前提**(progbuf を使うため)。stub 不要=probe 側の 0x55 拒否を回避。
 
-実機検証(2026-09-01):
+実機検証(2026-09-01。**この表は「どの family を実機で流したか」の記録**で、方式の出所は上記 DB):
 
 | family | page | 方式 | 検証 |
 |---|---|---|---|
 | CH32V20x/V30x(0x05/0x06) | 256 | PgStart | ✓ V203/V307(erase+program+restore) |
 | CH32V003/CH641(0x09/0x49) | 64 | Buffered | ✓ V003 |
 | CH32X035/CH643(0x0d/0x0c) | 256 | Buffered | ✓ X035 |
-| CH32L103(0x0e) | 256 | Buffered | attested(X035 と同 profile、未接続) |
+| CH32L103(0x0e) | 256 | Buffered | ✓ L103(256B page の surgical erase → program/verify 往復) |
 | CH32V103(0x01) | erase 128 / prog 標準 | V103(標準 halfword+commit) | ✓ erase --range・program・gdb flash bp 実機確認(attach quirk は soft-reset で対処) |
 
 **当初 X035 を PgStart 方式で実装したが program が全く効かなかった(erase→FF のまま)**。X035 は buffered 方式が必要と実測で判明し修正(erase は FTER+STRT で全 family 共通なので erase --range は当初から動いていた)。
 
 **CH32V103 の flash(WCH EVT `ch32v10x_flash.c` から確定)**: 他 family と 3 点で違う。(1) **fast erase=128B page(PAGE_ER bit17)/ program は fast buffer でなく標準 16bit halfword(CR_PG bit0)** が確実(fast BufLoad は 128bit=4word 単位で DMI 経由だと corrupt した)→ `sh x7,0(x5)`=`0x00729023` の `write_mem16` を追加。(2) **各 erase/program 後に未文書の commit 副作用が必須: `*(0x40022034) = *((addr & ~3) ^ 0x1000)`**(無いと erase/program が無反応。実測)。(3) 高速化: PG も commit も page で 1 回にして per-word の EVT 手順と等価を確認(gdb Z0 応答を remote timeout 内に収めるため)。実機検証: erase→FF→program a0a1..→erase の往復 OK、`erase --range` surgical(128B、隣接無傷)。**gdb flash bp は V103 固有の attach quirk 対処で動く(root-cause 済み)**: 症状は step→patch→resume で core が trap せず 0x110(default handler の `c.j .`)へ飛ぶこと。mcause/mepc/mtval を読んで判明 — **mcause=4(load-address-misaligned)、mepc=faulting `lw a5,4(s1)`、s1(x9)=chip_id(0x2500410f)**。つまり **WCH-Link の AttachChip が生きた GPR s1/x9 を chip id で上書きし(dscratch にも保存されない=復元不可)**、resume 後に program が s1 を使う瞬間 fault する。attach 直後に既に x9=chip_id。halt→resume だけでも crash(V003/V203/X035 は無事=V103 固有)。**修正: attach 後に soft-reset して program にレジスタを再構築させる**(soft-reset 後 x9 が正常な RAM ポインタに戻り halt/resume が通る)。gdb server は `attach_corrupts_regs` family(V103)で attach 後 soft-reset + 50ms 待ちしてから halt。実機で flash bp が複数 `continue` で発火を確認。単一 step・resumereq クリア・prefetch flush はいずれも無関係だった。
 
-**消去済みセルの read 値は family で違う** — **シリコン自体の特性**(RM に明文がある)。系統 A = `0xFFFFFFFF`(V003/V103/V205/V006/X035/L103/M030)、系統 B = **`0xe339e339`**(V20x/V30x/V407/X315/H417。byte 列は `39 e3 39 e3`)。power-off erase 後や ChipInfo の protection_raw が同値なのもこのため。**データソースは [wch-protocols](../../../wch-protocols/references/data/bootloader-survey/flash_erased_read.csv) 側**(RM + WCH の EVT IAP + 本 project の実機読み)。以前ここに書いていた「LinkE の placeholder(実セルは 0xff)」は**誤り**。→ **erase の成否判定は read 値でなく controller STATR(BUSY クリア + WPRERR 無し)で行う**。この経路は flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台。
+**消去済みセルの read 値は family で違う** — **シリコン自体の特性**(RM に明文がある)。系統 A = `0xFFFFFFFF`(V003/V103/V205/V006/X035/L103/M030)、系統 B = **`0xe339e339`**(V20x/V30x/V407/X315/H417。byte 列は `39 e3 39 e3`)。power-off erase 後や ChipInfo の protection_raw が同値なのもこのため。**値は `ch32-device-data` の `flash_geometry.csv`(`erased_read_*` / `blank_check_word`)から引く**(RM + WCH の EVT IAP + 本 project の実機読み。V003/V103 は RM に記述が無く、こちらの実測が採用された → [../data-requests/measured/erased-read-2026-09-06.md](../data-requests/measured/erased-read-2026-09-06.md))。以前ここに書いていた「LinkE の placeholder(実セルは 0xff)」は**誤り**。→ **erase の成否判定は read 値でなく controller STATR(BUSY クリア + WPRERR 無し)で行う**。この経路は flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台。
+
+#### 4.2.2 高速バルク memory read(書込経路の対。verified 2026-09-03)
+
+**word 単位 DMI read の 2 桁高速化**。data EP から生バイトで流れてくる読み出し経路。attach 済みが前提で、**flash / system / RAM のどの読める番地でも使える**。
+
+| 順 | cmd | payload | 意味 |
+|---|---|---|---|
+| 1 | `0x03` | `addr_be32 len_be32` | SetReadMemoryRegion(`len` は 4 の倍数に切上げ) |
+| 2 | `0x02` | `0x0c` | Program: ReadMemory(書込経路と同じ `0x02` の sub) |
+| 3 | - | - | data EP `0x82` から `len` byte を読み切る |
+
+- **返る 32bit word は byte 反転している**。4 byte ごとに `[0]↔[3]` / `[1]↔[2]` を入れ替えて LE に戻す。忘れると「読めているが値が違う」形で壊れる。
+- probe が領域を弾いたときだけ DMI の word 読みへ fallback する。
+- **実測**(LinkE + usbipd): 32 KiB read が **>120s タイムアウト → 0.71s**(~45 KiB/s)、4 KiB の readback verify が ~15s → 0.6s。**遅いリンクほど効く**(usbipd、Windows の CH375 ioctl 経路)。V003 / V103 / V203 / V307 / L103 と CH549 Link で byte 一致(endian 含む)。
+- **CH549 の stale fast-read に注意**(§7): stub 実行直後はこの経路が program 前の古い像を返すことがある。**verify は不一致時に DMI 読みで再確認**する。
+
+#### 4.2.3 option byte の書き込み(同じ DMI 経路の応用。verified 2026-09-01)
+
+option bytes は通常 page と手順が違う(専用 unlock と OPTPG/OPTER)。
+
+| reg | 番地 | 用途 |
+|---|---|---|
+| FLASH_OBKEYR | `0x40022008` | KEY1,KEY2 で **OPTWRE**(option 書込許可)を立てる。STM32F1 の OPTKEYR 相当 |
+| FLASH_CTLR | `0x40022010` | bit4 **OPTPG** / bit5 **OPTER** / bit9 **OPTWRE**(+ §4.2.1 の STRT) |
+
+1. **unlock**: KEYR に KEY1,KEY2 → **OBKEYR に KEY1,KEY2** → MODEKEYR に KEY1,KEY2(無害)。`CTLR & OPTWRE == 0` なら失敗として止める。
+2. **option 全消去**: CTLR=`OPTER|OPTWRE` → `|STRT` → BUSY 待ち(WPRERR で中止)。**書込前に必ず消す**。
+3. **8 halfword を書く**: 各 halfword ごとに CTLR=`OPTPG|OPTWRE` → `|STRT` → `write_mem16(OB_BASE + i*2, value)` → BUSY 待ち。
+4. CTLR=0。反映は **system reset 後**。
+
+- **RDPR(halfword 0)を最初に書く**。手順 2 で保護が消えた状態が最短で済む。
+- 16 byte は**値 + 補数**の 8 組。補数は書き手の責任(`0xFF ^ value`)。
+- **`RDPR` を `0xA5`(保護解除)にする書込は、チップ側で flash 全消去を誘発する**。`recover unbrick` はこれを利用する。
+- **`OB_BASE` は family で違う**(多くは `0x1FFFF800`、**CH32M030 は `0x1FFFF300`**)。ch32rv は現状 `0x1FFFF800` 決め打ちで、DB(`option_bytes.csv` の `address`)から引くのが本筋。→ [../data-requests/](../data-requests/)
+- 実機検証(L103): 現在値の round-trip 書込で不変・RDPR 維持・flash 無傷、USER の 1 bit 変更(`0xff`→`0xfd`、補数 `00`→`02`)が read-back に反映。
 
 ### 4.3 特殊消去(SWD ピン共用 target の復旧。verified 2026-09-01)
 
@@ -176,7 +240,9 @@ family 別パラメータ(wlink 由来、実機確認): V003/CH641(family 0x09/0
 
 ### 4.5 存在の証拠のみ(未実装)
 
-`wlink_disabledebug`、`wlink_getromram`(CODE/RAM split)、`wlink_rstout`、`wlink_chip_reset`、`wlink_armversion`、mode 切替。→ wlink source / RINS から転記 → capture で verified 化。
+`wlink_disabledebug`、`wlink_getromram`(CODE/RAM split)、`wlink_rstout`、`wlink_chip_reset`、`wlink_armversion`。→ wlink source / RINS から転記 → capture で verified 化。
+
+~~mode 切替~~ → **§4.1 で verified**(`81 ff 01 41` / `81 ff 01 52`、両方向を実機確認)。
 
 ## 5. AttachChip 応答と chip 識別
 
@@ -292,6 +358,7 @@ probe → 00 00
 | 大 image で固まる | 16.7KB の書込中に bulk timeout → probe が無応答化。USB 再接続でのみ復旧(`USBDEVFS_RESET` 不可) | ArduinoCore-CH32 実測 |
 | flash 直後の UART bridge | LinkE の CDC 配送が止まることがあり、port の再 open で直る | ArduinoCore-CH32 実測 |
 | **LinkE の壊れ読み値** | 一部ツールの後、probe が target の壊れた読み値を保持する: family byte は正しいまま chip ID と UUID が同一 32bit word の繰り返しになる。再 attach でも target 電源断でも直らない(**probe 側の状態**)。復旧は RedetectChip(`0x0d 0x03`)+ detach + 再 attach。ChipInfo 応答全体が同一 word 繰り返しかで検出できる | board-identify 実測(ch32rv も同じ検出・復旧を実装) |
+| **CH549 の stale fast-read** | §4.2.2 の高速バルク read が、stub 実行直後だけ program 前の古い flash 像(`0xff` やゴミの ramp)を返すことがある(CH549 で ~7 回中 2-3 回、LinkE では未発生)。書込自体は成功しているので、**verify は不一致時に権威ある DMI 読み(progbuf の word 読み)で再確認**する。偽 `verify-mismatch` の原因 | ch32rv 実測(2026-09-03、実 CH549 で再現・修正) |
 | attach の掴み | AttachChip は target core を掴む。セッション終了時は必ず DetachChip で解放する(失敗経路含む) | board-identify 実測 |
 
 ## 8. capture 計画(M0-M1)
