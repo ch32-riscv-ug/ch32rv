@@ -387,6 +387,63 @@ fn option_method_warning(db_family: &str) -> Option<String> {
     })
 }
 
+/// en: The blanket option-byte image used only when the target's current bytes cannot be read
+/// back: RDPR off, everything else `0xff`, each with its complement. It is a last resort - see
+/// [`unprotect_image`] for why writing it unconditionally is wrong.
+/// ja: 現在値が読めないときだけ使う一律 image(RDPR off + 他 `0xff`)。最後の手段。
+pub(crate) const BLANKET_FACTORY: [u8; 16] = [
+    0xA5, 0x5A, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00,
+];
+
+/// en: True when the 16 bytes read back look like real option bytes: RDPR and USER each agree with
+/// their complement. Data/WRPR are deliberately not checked - CH32V103 ships those complements as
+/// `0xff` rather than the inverse (measured, docs/data-requests/measured/option-bytes-2026-09-06.md),
+/// so requiring all eight pairs would reject a healthy part.
+/// ja: 読み戻した 16 byte が本物の option bytes に見えるか(RDPR と USER が補数と整合)。V103 は
+/// Data/WRPR の補数を持たない実測があるので、そこは検査しない。
+pub(crate) fn option_bytes_plausible(raw: &[u8; 16]) -> bool {
+    raw[0] ^ raw[1] == 0xFF && raw[2] ^ raw[3] == 0xFF
+}
+
+/// en: The image that clears read protection **without changing anything else the part carries**.
+/// Writing a blanket `USER=0xff` is wrong on real silicon: the reference manuals leave some USER
+/// bits indeterminate or non-`1` at reset, and the bench measurements show they differ per part -
+/// CH32V20x/V307 ship `RAM_CODE_MOD` (`[7:5]`, the SRAM/flash split) as `001`/`101`, and CH32V003
+/// ships `RST_MODE` (`[4:3]`, the NRST pin function) as `10b`. Clearing read protection must not
+/// silently repartition SRAM or turn NRST into GPIO, so only RDPR and its complement are replaced.
+/// ja: **他を一切変えずに**読み出し保護だけ解除する image。一律 `USER=0xff` は実機と合わない
+/// (V20x/V307 の `RAM_CODE_MOD`、V003 の `RST_MODE` は出荷値が `0xff` ではない)。保護解除が
+/// SRAM 分割や NRST の機能を書き換えてはいけないので、RDPR と補数だけ差し替える。
+pub(crate) fn unprotect_image(current: &[u8; 16]) -> [u8; 16] {
+    let mut img = *current;
+    img[0] = 0xA5;
+    img[1] = 0x5A;
+    img
+}
+
+/// en: The USER byte for `option reset`: every bit the device DB documents goes back to its
+/// reference-manual reset value, and every other bit keeps what the part currently has. The DB does
+/// not carry the multi-bit fields (CH32V003 `RST_MODE`, CH32V20x/V307 `RAM_CODE_MOD`), and the
+/// manuals give `RAM_CODE_MOD` no reset value at all, so those cannot be reconstructed - keeping the
+/// part's own value is the only answer that does not invent one.
+/// ja: `option reset` の USER byte。DB が定義する bit は RM の復位値へ戻し、それ以外は現在値を保つ。
+/// 多 bit フィールド(`RST_MODE` / `RAM_CODE_MOD`)は DB に無く、RM も `RAM_CODE_MOD` の復位値を
+/// 書いていないので、再構成せず現在値を残す。
+pub(crate) fn reset_user_byte(db_family: &str, current: u8) -> u8 {
+    let mut user = current;
+    for f in ch32rv_target::option_user_fields(db_family) {
+        if f.bit < 8 {
+            let mask = 1u8 << f.bit;
+            if f.default == 0 {
+                user &= !mask;
+            } else {
+                user |= mask;
+            }
+        }
+    }
+    user
+}
+
 /// Confirm a destructive option-byte write (the shared gate: `--yes` skips it,
 /// `--non-interactive` without `--yes` refuses, otherwise prompt on the terminal).
 fn ob_confirm(cli: &Cli, prompt: &str) -> bool {
@@ -586,16 +643,27 @@ pub fn option_write_raw(cli: &Cli, hexstr: &str) -> ExitCode {
 /// `target option reset`: restore factory-default option bytes (RDPR off, USER/Data/WRP cleared).
 pub fn option_reset(cli: &Cli) -> ExitCode {
     const CMD: &str = "target.option.reset";
-    // RDPR=0xA5 (unprotected), USER/Data0/Data1/WRPR0..3 = 0xff, each followed by its complement.
-    let defaults: [u8; 16] = [
-        0xA5, 0x5A, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF,
-        0x00,
-    ];
+    // Read first: the USER bits the DB does not document (CH32V003 `RST_MODE`, CH32V20x/V307
+    // `RAM_CODE_MOD`) have no reconstructable reset value, and the parts do not ship them as 1, so
+    // they are carried over instead of being blanked. Data/WRPR are genuinely cleared.
+    let (db_family, current) = match read_option_bytes(cli, CMD) {
+        Ok(v) => v,
+        Err(c) => return c,
+    };
+    let user = reset_user_byte(&db_family, current[2]);
+    let mut defaults = BLANKET_FACTORY;
+    defaults[2] = user;
+    defaults[3] = !user;
     if !ob_confirm(
         cli,
-        "Restore factory-default option bytes (RDPR off, USER/Data/WRP cleared)?",
+        &format!(
+            "Restore factory-default option bytes (RDPR off, USER=0x{user:02x}, Data/WRP cleared)?"
+        ),
     ) {
         return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
+    }
+    if current[2] != user {
+        println!("option reset: USER 0x{:02x} -> 0x{user:02x}", current[2]);
     }
     program_option(cli, CMD, &defaults)
 }
@@ -803,7 +871,77 @@ pub fn protect(cli: &Cli, state: SwitchState) -> ExitCode {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::{option_base, option_method_warning, parse_hex16};
+    use super::{
+        BLANKET_FACTORY, option_base, option_bytes_plausible, option_method_warning, parse_hex16,
+        reset_user_byte, unprotect_image,
+    };
+
+    /// en: Clearing read protection must not disturb the family-specific USER bits. These are the
+    /// bytes actually read off the bench (docs/data-requests/measured/option-bytes-2026-09-06.md):
+    /// CH32V20x ships `USER=0x3f` and CH32V003 `0xf7`, so a blanket 0xff would repartition SRAM
+    /// (`RAM_CODE_MOD`) and change the NRST pin function (`RST_MODE`).
+    /// ja: 保護解除で family 固有の USER bit を壊さないこと(実測値で固定)。
+    #[test]
+    fn unprotect_keeps_everything_but_rdpr() {
+        // CH32V203C8T6 as shipped.
+        let v20x = [
+            0xa5, 0x5a, 0x3f, 0xc0, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00,
+            0xff, 0x00,
+        ];
+        let out = unprotect_image(&v20x);
+        assert_eq!(out[0], 0xA5, "RDPR cleared");
+        assert_eq!(out[1], 0x5A, "RDPR complement");
+        assert_eq!(
+            out[2], 0x3f,
+            "USER must survive (RAM_CODE_MOD = SRAM/flash split)"
+        );
+        assert_eq!(&out[4..], &v20x[4..], "Data/WRPR must survive");
+        // A protected part reads back as something else; only RDPR changes either way.
+        let protected = [
+            0x00, 0xff, 0xf7, 0x08, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00,
+            0xff, 0x00,
+        ];
+        let out = unprotect_image(&protected);
+        assert_eq!((out[0], out[1]), (0xA5, 0x5A));
+        assert_eq!(out[2], 0xf7, "CH32V003 RST_MODE must survive");
+    }
+
+    /// The plausibility gate decides whether the read-back bytes may be trusted. CH32V103 ships
+    /// Data/WRPR complements as 0xff rather than the inverse, so those pairs must not be checked.
+    #[test]
+    fn plausibility_checks_rdpr_and_user_only() {
+        let v103 = [
+            0xa5, 0x5a, 0xff, 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+            0xff, 0xff,
+        ];
+        assert!(
+            option_bytes_plausible(&v103),
+            "CH32V103 as shipped is valid"
+        );
+        let garbage = [0u8; 16];
+        assert!(!option_bytes_plausible(&garbage));
+        let half = [
+            0xa5, 0x5a, 0xff, 0xff, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00, 0xff, 0x00,
+            0xff, 0x00,
+        ];
+        assert!(!option_bytes_plausible(&half), "USER/complement disagree");
+        assert!(option_bytes_plausible(&BLANKET_FACTORY));
+    }
+
+    /// `option reset` restores the bits the DB documents and keeps the ones it cannot know. On the
+    /// bench parts every documented bit already sits at its reset value, so the USER byte must come
+    /// back unchanged - a reset that "fixes" 0x3f into 0xff would be the bug this guards.
+    #[test]
+    fn reset_restores_known_bits_and_keeps_the_rest() {
+        assert_eq!(reset_user_byte("CH32V20x", 0x3f), 0x3f);
+        assert_eq!(reset_user_byte("CH32V307", 0xbf), 0xbf);
+        assert_eq!(reset_user_byte("CH32V003", 0xf7), 0xf7);
+        assert_eq!(reset_user_byte("CH32L103", 0xff), 0xff);
+        // A cleared IWDGSW (bit0, reset value 1) is restored; the undocumented high bits are not.
+        assert_eq!(reset_user_byte("CH32V20x", 0x3e), 0x3f);
+        // An unknown family has no documented bits, so nothing is touched.
+        assert_eq!(reset_user_byte("CH32V999", 0x12), 0x12);
+    }
 
     /// en: The option-byte block is not at one universal address, and the writer must take it from
     /// the DB. CH32M030 is the counter-example that makes a hard-coded `0x1FFF_F800` wrong.
