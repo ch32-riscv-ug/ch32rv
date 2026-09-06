@@ -215,6 +215,8 @@ option bytes は通常 page と手順が違う(専用 unlock と OPTPG/OPTER)。
 - **`OB_BASE` は family で違う**(多くは `0x1FFFF800`、**CH32M030 は `0x1FFFF300`**)。ch32rv は DB(`option_bytes.csv` の `address`)から引き、DB に無い family は fail-closed。**書込手順も RM は 2 系統に分ける**(`half-word (OBPG)` = V003/V103/V20x/V30x/V407/X315/H417、`fast page (FTPG)` = L103/M030/V006/V205/X035)。ただし **FTPG 分類の L103 で OBPG 経路が実機で動く**ため、分類だけで手順を決められない(RM が新しい手順を書いていても、STM32F1 由来の OBPG 経路が残っているとみられる)。
 - 実機検証(L103): 現在値の round-trip 書込で不変・RDPR 維持・flash 無傷、USER の 1 bit 変更(`0xff`→`0xfd`、補数 `00`→`02`)が read-back に反映。
 - **CH32V103 は option 領域を reset まで書込前の像で読み返す**(実測)。書込直後に read-back すると書けているのに古い値が返るので、**検証は reset を挟んでから**行う。他 family では直後の read-back でも反映される。
+- **読み出し保護中の flash read は「その family の消去パターン」を返す**(2026-09-06 実測、CH32V203)。保護を掛けただけで消去はされていない(解除時に mass erase される)にもかかわらず、`0x08000000` を読むと `39 e3 39 e3`(= 系統 B の `0xe339e339`)が返る。**保護 ON = 中身の代わりに消去パターンを見せる**という挙動で、ChipInfo の `protection_raw` が同値なのも、power-off erase 後に同じ値が見えるのも、これで一貫して説明できる(かつて「LinkE の placeholder」と誤読していた現象の正体)。
+- **保護中でも option bytes は読める**(同実測)。`RDPR=0xff` を含む 16 byte がそのまま返るので、**保護解除時に USER などを保存できる**(`recover --method unprotect` はこれに依存している)。
 
 ### 4.3 特殊消去(SWD ピン共用 target の復旧。verified 2026-09-01)
 

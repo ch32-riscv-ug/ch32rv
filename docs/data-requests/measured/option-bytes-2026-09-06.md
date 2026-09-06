@@ -73,3 +73,19 @@ raw: a55afd02...   ← 0xfd。書けている
 **修正**: 検証を**書込直後ではなく soft reset の後**に行うようにしました。option bytes はどのみち reset で反映されるので、意味的にもこちらが正しい。修正後は V103 で `STOPRST=0` → `=1` の往復がどちらも exit 0、表示値も実際の値と一致します。L103(LinkE)でも往復を確認し、副作用がないことを見ています。
 
 **他 family でも同じか**は未確認です(V103 以外は USER を変える書込を通していないため)。reset 後に読む方式なら family に関係なく正しいので、実害はありません。
+
+## 保護 → 解除の往復(CH32V203、2026-09-06)
+
+`recover --method unprotect` を**実際に読み出し保護が掛かった状態**で通しました。firmware は事前に吸い出し、終了後に書き戻してバイト一致を確認しています。
+
+| 段階 | option raw | flash 先頭 |
+|---|---|---|
+| 出荷状態 | `a55a3fc0ff00…` | firmware |
+| `protect on` 後 | `ff003fc0ff00…`(RDPR=`0xff`、**USER=`0x3f` 保持**) | **`39 e3 39 e3`** |
+| `recover --method unprotect` 後 | `a55a3fc0ff00…`(**USER=`0x3f` 保持**) | `39 e3 39 e3`(mass erase 済み) |
+| firmware 書き戻し後 | `a55a3fc0ff00…` | firmware(バイト一致) |
+
+**分かったこと 2 つ**:
+
+1. **保護中でも option bytes は読める**。だから `recover --method unprotect` は現在値を保存できる — 一律 image への fallback は実際には発動しませんでした(fallback 自体は読めない probe/family のために残してあります)。
+2. **保護中の flash read は「その family の消去パターン」を返す**。消去されていないのに `0xe339e339`(系統 B)が返りました。ChipInfo の `protection_raw` が同値なのも、power-off erase 後に同じ値が見えるのも、これで一貫します。
