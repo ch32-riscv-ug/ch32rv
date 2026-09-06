@@ -97,13 +97,20 @@ pub struct FlashCtrlProfile {
     /// 上書きし復元不可 → resume で s1 使用時に fault)。対処: attach 後に soft-reset して program に
     /// レジスタを再構築させてから halt する。
     pub attach_corrupts_regs: bool,
-    /// en: True when an erased flash cell reads back as the real `0xff` over the debug link. On
-    /// V20x/V30x the WCH-Link returns a `0xe339e339` placeholder for erased cells instead, so a
-    /// read-modify-write of a page (e.g. `--restore-unwritten`) cannot tell a blank byte from
-    /// real data and would program the placeholder into it - hence such features are gated on this.
-    /// ja: 消去済みセルが debug read で本来の `0xff` を返す family か。V20x/V30x は placeholder
-    /// `0xe339e339` を返すため、page の read-modify-write(`--restore-unwritten` 等)で blank と
-    /// 実データを区別できず placeholder を焼き込んでしまう → この種の機能はこのフラグで gate する。
+    /// en: True when an erased flash cell reads back as `0xff`. This is a property of the silicon,
+    /// not of the link: the reference manuals split CH32 into two groups - group A erases to
+    /// `0xFFFFFFFF` (V003 / V103 / V205 / V006 / X035 / L103 / M030) and group B to `0xe339e339`
+    /// (V20x / V30x / V407 / X315 / H417). On group B a read-modify-write of a page (e.g.
+    /// `--restore-unwritten`) cannot tell a blank byte from real data and would program the erase
+    /// pattern into it - hence such features are gated on this.
+    /// ja: 消去済みセルが `0xff` を返す family か。**link でなくシリコンの特性**で、RM が 2 系統に
+    /// 書き分けている: 系統 A = `0xFFFFFFFF`(V003/V103/V205/V006/X035/L103/M030)、系統 B =
+    /// `0xe339e339`(V20x/V30x/V407/X315/H417)。系統 B では page の read-modify-write
+    /// (`--restore-unwritten` 等)が blank と実データを区別できず消去パターンを焼き込むため gate する。
+    ///
+    /// Source: `wch-protocols` references/data/bootloader-survey/flash_erased_read.csv (RM + WCH's
+    /// own IAP samples + this project's silicon reads). Once `ch32-device-data` carries the column,
+    /// this flag should come from the generated DB instead of the table below.
     pub erased_reads_ff: bool,
 }
 
@@ -114,7 +121,7 @@ pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
     // (page_size, mode, gdb_breakpoints, attach_corrupts_regs, erased_reads_ff)
     let (page_size, mode, gdb_breakpoints, attach_corrupts_regs, erased_reads_ff) =
         match family_byte {
-            0x05 | 0x06 => (256, FlashProgMode::PgStart, true, false, false), // CH32V20x / V30x - verified (erased reads 0xe339e339)
+            0x05 | 0x06 => (256, FlashProgMode::PgStart, true, false, false), // CH32V20x / V30x - verified (erase group B: reads 0xe339e339)
             0x09 | 0x49 => (64, FlashProgMode::Buffered, true, false, true), // CH32V003 / CH641 - verified
             0x0C | 0x0D => (256, FlashProgMode::Buffered, true, false, true), // CH643 / CH32X035 - verified
             0x0E => (256, FlashProgMode::Buffered, true, false, true), // CH32L103 - verified live

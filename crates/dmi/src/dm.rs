@@ -446,15 +446,17 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     // describe. Unlike the WCH-Link stub write path, this is page-granular (256-byte fast
     // pages on V20x/V30x/X035/CH643/L103), so it supports surgical read-modify-write of a
     // single page - the basis for `erase --range` and flash software breakpoints. Verified
-    // live on CH32V203/V307/X035 (2026-09-01). Note: an erased cell reads back as the
-    // `0xe339e339` placeholder over the LinkE, not 0xff, so callers must not blank-check for
-    // 0xff; trust the controller's completion status instead. The hart must be halted.
+    // live on CH32V203/V307/X035 (2026-09-01). Note: on V20x/V30x an erased cell reads back as
+    // `0xe339e339`, not 0xff - that is the silicon's erase pattern (RM group B), not a link
+    // artefact - so callers must not blank-check for 0xff; trust the controller's completion
+    // status instead. The hart must be halted.
     // ja: memory-mapped FLASH controller(0x4002_2000)を read_mem32/write_mem32 で駆動する
     // (QingKe manual と wlink 参照ブロックの手順)。WCH-Link stub 経路と違い page 単位
     // (V20x/V30x/X035/CH643/L103 は 256byte fast page)なので 1 page の read-modify-write が
     // でき、`erase --range` と flash SW breakpoint の土台になる。CH32V203/V307/X035 で実機確認。
-    // 消去済みセルは LinkE 経由だと 0xff でなく `0xe339e339` を返すので 0xff の blank-check は
-    // 不可、controller の完了ステータスで判定する。hart は halt 済みであること。
+    // V20x/V30x の消去済みセルは 0xff でなく `0xe339e339`(link の都合でなく RM 系統 B =
+    // シリコン自体の消去パターン)なので 0xff の blank-check は不可、controller の完了
+    // ステータスで判定する。hart は halt 済みであること。
 
     /// en: Unlock the FLASH controller (LOCK + FLOCK) with the standard key sequence. Idempotent.
     /// ja: FLASH controller を鍵手順で unlock(LOCK + FLOCK)。冪等。
