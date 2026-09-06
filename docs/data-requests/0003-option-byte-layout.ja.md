@@ -1,6 +1,6 @@
 # 依頼 0003: option bytes の書き込みレイアウトと工場出荷値
 
-- 状態: **納品受け入れ済(2026-09-02)**。`evidence/option_byte_fields.csv`(106行、12 family×byte×bit×default、RM 由来 confirmed)納品。`xtask db-gen` が `generated/option_fields.csv`(USER byte 43 fields)を生成、`target option get` の USER decode を family-aware 化(L103 の CFGCANM 等 RM 準拠、interim warning 解消)。構造化 `option set`(kv)は実装済み。**2026-09-06: `option_bytes.csv` の family 別 base も取り込み**、`xtask db-gen` が `generated/option_bytes.csv`(base + 書込方式)を生成。`0x1FFF_F800` 決め打ちを廃し(CH32M030 = `0x1FFF_F300`)、DB に無い family は fail-closed
+- 状態: **納品受け入れ済(2026-09-02)**。`evidence/option_byte_fields.csv`(106行、12 family×byte×bit×default、RM 由来 confirmed)納品。`xtask db-gen` が `generated/option_fields.csv`(USER byte 43 fields)を生成、`target option get` の USER decode を family-aware 化(L103 の CFGCANM 等 RM 準拠、interim warning 解消)。構造化 `option set`(kv)は実装済み。**2026-09-06: `option_bytes.csv` の family 別 base も取り込み**、`xtask db-gen` が `generated/option_bytes.csv`(base + 書込方式)を生成。`0x1FFF_F800` 決め打ちを廃し(CH32M030 = `0x1FFF_F300`)、DB に無い family は fail-closed。**R-30 が待っていた実測ダンプも提出**: [measured/option-bytes-2026-09-06.md](measured/option-bytes-2026-09-06.md)(ベンチ 5 台。RM 復位値と一致、`RAM_CODE_MOD` は個体差あり、V103 は Data/WRPR に補数が無い)
 - 依頼元: ch32rv
 - 優先度: 中(M2。`target option get/set`(構造化 read-modify-write)と `recover unbrick`(工場値書き戻し)で必要)
 - 作成日: 2026-09-01
