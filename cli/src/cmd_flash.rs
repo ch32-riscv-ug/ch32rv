@@ -1181,11 +1181,6 @@ pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
 /// 済み target ではこれが chip の mass erase を誘発して復旧する。attach は要る(完全死は power-off 等)。
 fn recover_unprotect(cli: &Cli) -> ExitCode {
     const CMD: &str = "recover";
-    // Factory defaults: RDPR=0xA5 (unprotected), USER/Data/WRPR = 0xff, each with its complement.
-    const FACTORY: [u8; 16] = [
-        0xA5, 0x5A, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF,
-        0x00,
-    ];
     if let Err(why) = confirm_destructive(
         cli,
         "Remove read protection? This ERASES ALL FLASH on a protected target.",
@@ -1221,12 +1216,34 @@ fn recover_unprotect(cli: &Cli) -> ExitCode {
             None,
         );
     }
-    if let Err(e) = dm.flash_program_option_bytes(option_base, &FACTORY) {
+    // Clear read protection without touching anything else the part carries: read the current
+    // bytes and replace only RDPR. A blanket USER=0xff would repartition SRAM on V20x/V307
+    // (`RAM_CODE_MOD`) and change the NRST pin function on V003 (`RST_MODE`) - neither is part of
+    // "remove read protection". A protected part may not hand its option bytes back, so fall back
+    // to the blanket image and say so.
+    let (image, preserved) = match dm.read_mem(option_base, 16) {
+        Ok(v) if v.len() == 16 => {
+            let mut cur = [0u8; 16];
+            cur.copy_from_slice(&v);
+            if crate::cmd_target::option_bytes_plausible(&cur) {
+                (crate::cmd_target::unprotect_image(&cur), true)
+            } else {
+                (crate::cmd_target::BLANKET_FACTORY, false)
+            }
+        }
+        _ => (crate::cmd_target::BLANKET_FACTORY, false),
+    };
+    if !preserved {
+        eprintln!(
+            "warning[option-defaults]: the target's current option bytes could not be read back, so family-specific USER bits (SRAM split, NRST mode) are set to 0xff rather than preserved"
+        );
+    }
+    if let Err(e) = dm.flash_program_option_bytes(option_base, &image) {
         return fail(
             cli,
             CMD,
             ErrorKind::TransferFailed,
-            format!("writing factory option bytes failed: {e}"),
+            format!("writing option bytes failed: {e}"),
             None,
         );
     }
@@ -1235,7 +1252,7 @@ fn recover_unprotect(cli: &Cli) -> ExitCode {
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
-            "method": "unprotect", "family": family, "note": "read protection cleared (RDPR=0xA5); applies after reset",
+            "method": "unprotect", "family": family, "preserved_user_bits": preserved, "note": "read protection cleared (RDPR=0xA5); applies after reset",
         }));
         crate::print_envelope(&env)
     } else {
@@ -1256,11 +1273,6 @@ fn recover_unprotect(cli: &Cli) -> ExitCode {
 /// `--method power-off --chip <family>` を案内する。
 fn recover_unbrick(cli: &Cli) -> ExitCode {
     const CMD: &str = "recover";
-    // Factory defaults: RDPR=0xA5 (unprotected), USER/Data/WRPR = 0xff, each with its complement.
-    const FACTORY: [u8; 16] = [
-        0xA5, 0x5A, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF, 0x00, 0xFF,
-        0x00,
-    ];
     if let Err(why) = confirm_destructive(
         cli,
         "Unbrick this target? This ERASES ALL FLASH (and clears read protection if set).",
@@ -1344,7 +1356,20 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
             Ok(b) => b.first().copied() != Some(0xA5),
             Err(_) => false,
         };
-        if protected && let Err(e) = dm.flash_program_option_bytes(option_base, &FACTORY) {
+        // Same reasoning as `--method unprotect`: keep every USER bit the part carries.
+        let image = match dm.read_mem(option_base, 16) {
+            Ok(v) if v.len() == 16 => {
+                let mut cur = [0u8; 16];
+                cur.copy_from_slice(&v);
+                if crate::cmd_target::option_bytes_plausible(&cur) {
+                    crate::cmd_target::unprotect_image(&cur)
+                } else {
+                    crate::cmd_target::BLANKET_FACTORY
+                }
+            }
+            _ => crate::cmd_target::BLANKET_FACTORY,
+        };
+        if protected && let Err(e) = dm.flash_program_option_bytes(option_base, &image) {
             return fail(
                 cli,
                 CMD,
