@@ -40,7 +40,9 @@ V103 : a55a ff00 ffff ffff ffff ffff ffff ffff
 他   : a55a ff00 ff00 ff00 ff00 ff00 ff00 ff00
 ```
 
-つまり **V103 は Data0/Data1/WRPR0-3 の補数バイトを持たない**(または未使用で `0xff` のまま)。`option_bytes.csv` の `complement_address` 列が V103 でも補数を予定しているなら、実機と食い違います。**確認してほしい点**です。
+つまり **V103 は出荷状態で Data0/Data1/WRPR0-3 の補数バイトを持たない**(未使用で `0xff` のまま)。`option_bytes.csv` の `complement_address` 列が V103 でも補数を予定しているなら、出荷状態とは食い違います。**確認してほしい点**です。
+
+> **注**: 上表は**出荷状態のダンプ**です。その後の検証で `option reset` を通したため、この個体の補数バイトは現在 `ff00…` になっています(値バイトは不変。どちらも `0xff` なので意味は変わらない)。**書き込み可能**であることは分かりました。
 
 ## この測定で見つかった ch32rv 側のバグ
 
@@ -51,4 +53,23 @@ V103 : a55a ff00 ffff ffff ffff ffff ffff ffff
 
 読み出し保護を解除するだけのつもりの操作が、NRST の機能や SRAM 分割を書き換えてしまいます。
 
+**実機で検証済み(2026-09-06)**: ベンチ 4 台(V003 `0xf7` / V20x `0x3f` / V307 `0xbf` / L103 `0xff`)で `target option reset --yes` を実行し、**USER が 1 bit も変わらないこと**と flash 無傷を確認。V203 では `recover --method unprotect --yes` も通し、USER=`0x3f` 保持を確認した。
+
 **修正済み(2026-09-06)**: `recover` の 2 経路は**現在値を読んで RDPR だけ差し替える**方式にした(読めない/壊れている場合のみ一律 image + 警告)。`target option reset` は **DB が定義する bit を RM の復位値へ戻し、DB が知らない bit(`RST_MODE` / `RAM_CODE_MOD`)は現在値を保つ**。上表の実測値がそのまま単体テストの固定値になっている。
+
+## もう 1 つ見つかったバグ — option 書込の verify が偽の失敗を出していた
+
+CH32V103(CH549 Link 経由)で `target option set STOPRST=0` が **`verify-mismatch`(exit 30)で失敗を報告**しました。ところが読み直すと **書き込みは成功**しています。
+
+```
+$ ch32rv target option set STOPRST=0 --yes
+error[verify-mismatch]: option byte 2 reads back 0xff, not the requested 0xfd
+$ ch32rv target option get
+raw: a55afd02...   ← 0xfd。書けている
+```
+
+**原因**: V103 は option 領域を **reset するまで書込前の像で読み続ける**(reset 時に再ロードされる shadow を読んでいると思われる)。50ms×4 の再読み込みでは足りず、**新しい session(= attach による reset)で初めて新しい値が見えました**。
+
+**修正**: 検証を**書込直後ではなく soft reset の後**に行うようにしました。option bytes はどのみち reset で反映されるので、意味的にもこちらが正しい。修正後は V103 で `STOPRST=0` → `=1` の往復がどちらも exit 0、表示値も実際の値と一致します。L103(LinkE)でも往復を確認し、副作用がないことを見ています。
+
+**他 family でも同じか**は未確認です(V103 以外は USER を変える書込を通していないため)。reset 後に読む方式なら family に関係なく正しいので、実害はありません。
