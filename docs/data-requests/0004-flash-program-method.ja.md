@@ -1,6 +1,6 @@
 # 依頼 0004: main flash の消去/書き込み**手順**の family 別分類
 
-- 状態: **draft**
+- 状態: **納品受け入れ・消費済(2026-09-06)**。`evidence/flash_program_method.csv`(12 family、confirmed 11・conflict 1=H417)納品。`xtask db-gen` が `generated/flash_program_method.csv` を生成し、`flash_controller_profile` の手書き表(page サイズ / 方式 / 消去パターン)を DB 由来に置換。実機検証済み 5 family の値が納品データから再現することを回帰テストで固定。受け入れ後に出した**残件 2 件も同日中に納品**され(`program_buffer_load_bits` 列の新設と CH32V103 の `blank_check_word`)、ch32rv 側の暫定値は削除済み。**手書き・暫定はゼロ**
 - 依頼元: ch32rv
 - 優先度: 中(対象 family の拡大に直結。実機を持たない family でも実装可否を判断できるようになる)
 - 作成日: 2026-09-06
@@ -92,3 +92,33 @@ catalog の全 12 family。特に埋めてほしいのは **ch32rv が実機を�
 - **R-31**(`wch-protocols` から依頼済): flash 消去後の読み出し値(系統 A `0xFFFFFFFF` / B `0xe339e339`)。本依頼と対になるデータで、ch32rv は実機読み 6 family を証拠として提供済み。
 - 依頼 [0003](0003-option-byte-layout.ja.md)(R-30)で納品された `option_bytes.csv` の `write_unit` が、本依頼の書式の下敷き。
 - 手順そのものの記述は `wch-protocols` の [pc-to-link.ja.md](../../../wch-protocols/protocols/pc-to-link.ja.md) §6 / §6b(protocol 側の一次ソース)。
+
+## 追記: 受け入れ後の確認事項(2026-09-06)
+
+### 1. 訂正 — 「V307 に `PG_STRT` が無い」は誤りでした
+
+§確認してほしい齟齬 の 1 件目は**こちらの確認ミス**です。`register_fields.csv` には V20x と同じ **bit21 が納品前から入って**いました(出力を途中で切って見ていた)。指摘のとおりです。
+
+### 2. `program_method` の「32-bit buffer writes」が family で違う(修正依頼)
+
+buffered 系が一律 `32-bit buffer writes` ですが、WCH の EVT driver では `FLASH_BufLoad` 1 回の幅が 3 通りあります。
+
+| 幅 | family | EVT |
+|---|---|---|
+| 4 Byte(32bit) | V003 / V006 / V205 / X035 / L103 | `FLASH_BufLoad(Address, Data0)` |
+| **64 bit** | **M030** | `FLASH_BufLoad(Address, Data0, Data1)` |
+| **128 bit** | **V103** | `FLASH_BufLoad(Address, Data0..Data3)` |
+
+**DMI 経由で word ずつ書く host は 32bit のときしか buffered 経路を使えません**(V103 で実際に内容が壊れ、標準 half-word + commit に切り替えた)。この幅が **mode 選択そのもの**なので、`program_buffer_load_bits` 列(32/64/128)が欲しいです。
+
+→ **納品済み(2026-09-06)**。`program_buffer_load_bits` 列が新設され、V103=128 / M030=64 / 他=32。こちらが EVT から読んだ値と全 family 一致したので、暫定定数は削除して DB 由来にしました。
+
+### 3. R-31 側: CH32V103 の消去後の値が DB から引けない
+
+`erased_read_word` も `blank_check_word` も空の唯一の family でした。実測は [measured/erased-read-2026-09-06.md](measured/erased-read-2026-09-06.md)。
+
+→ **納品済み(2026-09-06)**。`blank_check_word=0xFFFFFFFF` が入り、`basis` にこちらの実測が third-party measurement として明記されました(RM の `FLASH_STATR.PGERR` の記述が間接的に裏付ける、との注記つき)。暫定定数は削除。なお同じ行の `confidence=conflict` は**消去値とは無関係**で、R-26-1 の `fast_program_bytes`(EVT コメント 256 vs RM 128)の既知 conflict です。ch32rv は `fast_erase`(128、RM 側)しか使わないので影響ありません。
+
+### 4. H417 の conflict はそのままで支障なし
+
+ch32rv は `confidence=conflict` の行を **fail-closed**(controller 経路を無効)として扱います。`ctlr_bit_names` に `PG_STRT` があり、同じ direct 系の V407/X315 も `PG_STRT` なので、driver 側(`PAGE_PG` + `PG_STRT`)が正しいと見ていますが、実機が無いので判定はお任せします。

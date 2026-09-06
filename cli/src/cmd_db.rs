@@ -89,6 +89,7 @@ pub fn info(cli: &Cli, sku_name: &str) -> ExitCode {
     };
     let wiring = ch32rv_target::debug_wiring(&s.series);
     let geo = ch32rv_target::flash_geometry(&s.family);
+    let method = ch32rv_target::flash_program_method(&s.family);
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
@@ -106,6 +107,11 @@ pub fn info(cli: &Cli, sku_name: &str) -> ExitCode {
             "flash_geometry": geo.map(|g| serde_json::json!({
                 "page_erase": g.page_erase, "fast_erase": g.fast_erase,
                 "fast_program": g.fast_program, "block_erase": g.block_erase,
+                "erased_word": g.erased_word.map(|w| format!("0x{w:08x}")),
+            })),
+            "flash_program_method": method.as_ref().map(|m| serde_json::json!({
+                "mode": m.mode, "commit": m.commit,
+                "buffer_load_bits": m.buffer_load_bits, "confidence": m.confidence,
             })),
         }));
         crate::print_envelope(&env)
@@ -130,6 +136,21 @@ pub fn info(cli: &Cli, sku_name: &str) -> ExitCode {
             println!(
                 "flash geom: page-erase={}B  fast-erase={}B  fast-program={}B  block-erase={blk}",
                 g.page_erase, g.fast_erase, g.fast_program
+            );
+            if let Some(w) = g.erased_word {
+                println!("erased:     0x{w:08x}  (value a blank flash word reads back as)");
+            }
+        }
+        if let Some(m) = &method {
+            let bits = m
+                .buffer_load_bits
+                .map(|b| format!("  buffer-load={b}bit"))
+                .unwrap_or_default();
+            println!(
+                "flash prog: {}  commit={}{bits}  ({})",
+                if m.mode.is_empty() { "-" } else { &m.mode },
+                m.commit,
+                m.confidence
             );
         }
         if let Some(w) = &wiring {
@@ -160,11 +181,14 @@ pub fn info(cli: &Cli, sku_name: &str) -> ExitCode {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    /// The hard-coded flash-controller page size (the FTER fast-erase granularity) must equal the
-    /// DB's `fast_erase_bytes` for every family we drive - catches a divergence between the manual
-    /// `flash_controller_profile` table and the RM/EVT-sourced geometry.
+    /// en: Every family the bench drives through the FLASH controller must keep the DB rows that
+    /// path needs: a per-page fast erase, a known erased-cell value, and a programming procedure the
+    /// data repo did not flag `conflict`. A delivery that empties one of these would silently turn
+    /// off `erase --range` and flash software breakpoints, so fail here instead.
+    /// ja: 実機で駆動している family は、DB 側に page 消去粒度・消去後の値・conflict でない書込手順が
+    /// 揃っていること。納品でどれかが欠けると機能が黙って無効化されるので、ここで落とす。
     #[test]
-    fn controller_page_size_matches_db_fast_erase() {
+    fn db_keeps_what_the_controller_path_needs() {
         // (family_byte, DB family string)
         let cases = [
             (0x05u8, "CH32V20x"),
@@ -175,12 +199,23 @@ mod tests {
             (0x01, "CH32V103"),
         ];
         for (fb, fam) in cases {
+            let geo = ch32rv_target::flash_geometry(fam).expect("flash geometry for family");
+            let method =
+                ch32rv_target::flash_program_method(fam).expect("flash program method for family");
+            assert_ne!(geo.fast_erase, 0, "{fam}: no per-page fast erase in the DB");
+            assert!(
+                geo.erased_word.is_some(),
+                "{fam}: DB does not say what an erased word reads back as"
+            );
+            assert_ne!(
+                method.confidence, "conflict",
+                "{fam}: the data repo now flags the programming procedure as conflicting"
+            );
             let profile =
                 ch32rv_flash::flash_controller_profile(fb).expect("controller profile for family");
-            let geo = ch32rv_target::flash_geometry(fam).expect("flash geometry for family");
             assert_eq!(
                 profile.page_size, geo.fast_erase,
-                "family_byte 0x{fb:02x} / {fam}: hard-coded page_size != DB fast_erase"
+                "family_byte 0x{fb:02x} / {fam}: profile page_size != DB fast_erase"
             );
         }
     }

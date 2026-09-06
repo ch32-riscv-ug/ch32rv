@@ -39,6 +39,9 @@ const GENERATED_DEBUG_WIRING: &str = include_str!("../generated/debug_wiring.csv
 /// The embedded generated per-family flash geometry (produced by `cargo xtask db-gen`).
 const GENERATED_FLASH_GEOMETRY: &str = include_str!("../generated/flash_geometry.csv");
 
+/// The embedded generated per-family FLASH-controller programming method (`cargo xtask db-gen`).
+const GENERATED_FLASH_PROGRAM_METHOD: &str = include_str!("../generated/flash_program_method.csv");
+
 /// en: Provenance of the embedded device DB, for `version --json` reproducibility
 /// (docs/architecture.ja.md §3). ja: 埋め込み device DB の来歴。`version --json` の再現性表示用。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +77,7 @@ pub fn provenance() -> DbProvenance {
         GENERATED_OPTION_FIELDS,
         GENERATED_DEBUG_WIRING,
         GENERATED_FLASH_GEOMETRY,
+        GENERATED_FLASH_PROGRAM_METHOD,
     ] {
         for &b in part.as_bytes() {
             h ^= u64::from(b);
@@ -99,6 +103,12 @@ pub struct FlashGeometry {
     pub fast_program: u32,
     /// Block erase (0 when the family has none).
     pub block_erase: u32,
+    /// en: The 32-bit value an erased flash word reads back as. Two groups exist across CH32:
+    /// `0xFFFFFFFF` and `0xe339e339` - a property of the silicon that the reference manuals state,
+    /// so a blank check has to be family-aware. None when the DB does not say.
+    /// ja: 消去済み word の読み出し値(`0xFFFFFFFF` 系 / `0xe339e339` 系)。RM が書き分けている
+    /// シリコン特性なので blank 判定は family 依存。DB に記述が無ければ None。
+    pub erased_word: Option<u32>,
 }
 
 /// en: The flash geometry for a DB `family` string (e.g. `CH32L103`, `CH32V307`). None when the
@@ -109,9 +119,9 @@ pub fn flash_geometry(family: &str) -> Option<FlashGeometry> {
         if line.is_empty() || line.starts_with('#') {
             return None;
         }
-        // family,page_erase,fast_erase,fast_program,block_erase
+        // family,page_erase,fast_erase,fast_program,block_erase,erased_word
         let f: Vec<&str> = line.split(',').collect();
-        let [fam, page, fast_e, fast_p, block] = f.as_slice() else {
+        let [fam, page, fast_e, fast_p, block, erased] = f.as_slice() else {
             return None;
         };
         if !fam.eq_ignore_ascii_case(family) {
@@ -122,8 +132,61 @@ pub fn flash_geometry(family: &str) -> Option<FlashGeometry> {
             fast_erase: fast_e.parse().unwrap_or(0),
             fast_program: fast_p.parse().unwrap_or(0),
             block_erase: block.parse().unwrap_or(0),
+            erased_word: parse_generated_hex(erased),
         })
     })
+}
+
+/// en: How a family's FLASH controller programs a page, as the reference manuals and WCH's own
+/// drivers describe it (`ch32-device-data` `evidence/flash_program_method.csv`).
+/// ja: family の FLASH controller の書込方式(RM と WCH driver 由来)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlashProgramMethod {
+    /// `buffered` (FTPG + BUFRST/BUFLOAD, then STRT), `direct` (FTPG, then PG_STRT), or empty when
+    /// the sources disagree and the DB did not classify the family.
+    pub mode: String,
+    /// The bit that starts the programming operation (`STRT` / `PG_STRT`).
+    pub commit: String,
+    /// en: Width of one buffer load, in bits (32 / 64 / 128). A host driving the controller word by
+    /// word over DMI can only use the buffered path when this is 32. None for `direct` families.
+    /// ja: buffer load 1 回の幅。DMI の word 書きで buffered を使えるのは 32 のときだけ。
+    pub buffer_load_bits: Option<u32>,
+    /// The data repo's confidence for the row (`confirmed` / `conflict` / ...).
+    pub confidence: String,
+}
+
+/// en: The FLASH-controller programming method for a DB `family` string. None when the family is
+/// not in the DB. ja: DB family の FLASH controller 書込方式。DB に無ければ None。
+pub fn flash_program_method(family: &str) -> Option<FlashProgramMethod> {
+    GENERATED_FLASH_PROGRAM_METHOD.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+        // family,mode,commit,buffer_load_bits,confidence
+        let f: Vec<&str> = line.split(',').collect();
+        let [fam, mode, commit, bits, confidence] = f.as_slice() else {
+            return None;
+        };
+        if !fam.eq_ignore_ascii_case(family) {
+            return None;
+        }
+        Some(FlashProgramMethod {
+            mode: (*mode).to_owned(),
+            commit: (*commit).to_owned(),
+            buffer_load_bits: bits.parse().ok(),
+            confidence: (*confidence).to_owned(),
+        })
+    })
+}
+
+/// A generated hex cell (`0x...`); empty when the DB does not state the value.
+fn parse_generated_hex(cell: &str) -> Option<u32> {
+    let cell = cell.trim();
+    let hex = cell
+        .strip_prefix("0x")
+        .or_else(|| cell.strip_prefix("0X"))?;
+    u32::from_str_radix(hex, 16).ok()
 }
 
 /// en: The SWD/SWIO debug wiring for a part series. ja: series の debug 配線。

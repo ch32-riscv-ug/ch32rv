@@ -108,34 +108,76 @@ pub struct FlashCtrlProfile {
     /// `0xe339e339`(V20x/V30x/V407/X315/H417)。系統 B では page の read-modify-write
     /// (`--restore-unwritten` 等)が blank と実データを区別できず消去パターンを焼き込むため gate する。
     ///
-    /// Source: `wch-protocols` references/data/bootloader-survey/flash_erased_read.csv (RM + WCH's
-    /// own IAP samples + this project's silicon reads). Once `ch32-device-data` carries the column,
-    /// this flag should come from the generated DB instead of the table below.
+    /// Source: the generated DB's `erased_word` (`ch32-device-data` `evidence/flash_geometry.csv`,
+    /// R-31: the reference manuals and WCH's own IAP blank checks - and for CH32V103, which no
+    /// manual states, this project's silicon read, which the data repo took as the row's basis).
     pub erased_reads_ff: bool,
 }
 
-/// en: Resolve the FLASH-controller profile from the AttachChip family byte. Returns None for
-/// families whose controller sequence is not capture-verified yet.
-/// ja: family byte から FLASH-controller profile を引く。未検証 family は None。
+/// en: The `ch32-device-data` family string for an AttachChip family byte, for the families whose
+/// controller path this project has driven on real silicon. CH641 and CH643 have no DB row of their
+/// own; they share the CH32V003 / CH32X035 controller (same core generation and geometry), which is
+/// how they were verified here. Bytes that are absent are unsupported by design, not by omission:
+/// the DB knows more families (V006 / V205 / M030 / V407 / X315 / H417), but nothing here has been
+/// run against that silicon, and this path erases and programs flash.
+/// ja: family byte → ch32-device-data の family 文字列(実機で往復検証した family のみ)。CH641 /
+/// CH643 は DB に行が無く、V003 / X035 と同じ controller を共有する。未掲載の byte は「DB に無い」
+/// のではなく「実機未検証だから載せていない」(この経路は flash を消して書くため)。
+fn db_family(family_byte: u8) -> Option<&'static str> {
+    Some(match family_byte {
+        0x01 => "CH32V103",
+        0x05 => "CH32V20x",
+        0x06 => "CH32V307",
+        0x09 | 0x49 => "CH32V003", // CH641 shares the V003 controller
+        0x0C | 0x0D => "CH32X035", // CH643 shares the X035 controller
+        0x0E => "CH32L103",
+        _ => return None,
+    })
+}
+
+/// en: Resolve the FLASH-controller profile from the AttachChip family byte, from the generated DB
+/// (`cargo xtask db-gen` <- `ch32-device-data`): the page size is the family's fast-erase
+/// granularity, the mode comes from the RM/EVT programming procedure, and the erase pattern from the
+/// erased-cell read value. Returns None when the family is unsupported (see [`db_family`]), when the
+/// data repo marks the procedure `conflict`, when the family has no per-page fast erase, or when the
+/// procedure is one this crate cannot drive over DMI - all fail-closed, because the caller uses this
+/// to erase and program flash.
+/// ja: family byte から FLASH-controller profile を引く(生成 DB 由来)。page サイズ = fast erase 粒度、
+/// mode = RM/EVT の編程手順、消去パターン = 消去済み読み出し値。未対応・`conflict`・page 消去なし・
+/// DMI で駆動できない手順はすべて None(fail-closed)。
 pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
-    // (page_size, mode, gdb_breakpoints, attach_corrupts_regs, erased_reads_ff)
-    let (page_size, mode, gdb_breakpoints, attach_corrupts_regs, erased_reads_ff) =
-        match family_byte {
-            0x05 | 0x06 => (256, FlashProgMode::PgStart, true, false, false), // CH32V20x / V30x - verified (erase group B: reads 0xe339e339)
-            0x09 | 0x49 => (64, FlashProgMode::Buffered, true, false, true), // CH32V003 / CH641 - verified
-            0x0C | 0x0D => (256, FlashProgMode::Buffered, true, false, true), // CH643 / CH32X035 - verified
-            0x0E => (256, FlashProgMode::Buffered, true, false, true), // CH32L103 - verified live
-            // CH32V103: FTER 128B erase + standard halfword program + commit. AttachChip corrupts s1,
-            // so gdb needs a reset-after-attach; then flash breakpoints work (verified).
-            0x01 => (128, FlashProgMode::V103, true, true, true),
-            _ => return None,
-        };
+    let family = db_family(family_byte)?;
+    let geometry = ch32rv_target::flash_geometry(family)?;
+    let method = ch32rv_target::flash_program_method(family)?;
+    // The data repo flags rows whose RM and EVT driver disagree; do not guess on a flash writer.
+    if method.confidence == "conflict" {
+        return None;
+    }
+    // `erase --range` and flash breakpoints work at the fast-erase page; 0 = block erase only.
+    let page_size = geometry.fast_erase;
+    if page_size == 0 {
+        return None;
+    }
+    let mode = match (method.mode.as_str(), method.buffer_load_bits) {
+        // FTPG, write the words, then PG_STRT.
+        ("direct", _) => FlashProgMode::PgStart,
+        // FTPG + BUFRST, one word per BUFLOAD, then STRT - drivable word by word over DMI.
+        ("buffered", Some(32)) => FlashProgMode::Buffered,
+        // A wider buffer load (V103 = 128 bit, M030 = 64 bit) cannot be fed by the word-at-a-time
+        // DMI writer - it corrupts the page. CH32V103 is the one such family with a standard
+        // half-word path implemented here (plus its mandatory commit side effect); anything else
+        // fails closed until that path is generalised.
+        ("buffered", Some(_)) if family == "CH32V103" => FlashProgMode::V103,
+        _ => return None,
+    };
     Some(FlashCtrlProfile {
         page_size,
         mode,
-        gdb_breakpoints,
-        attach_corrupts_regs,
-        erased_reads_ff,
+        // Verified on this project's bench for every family `db_family` lists.
+        gdb_breakpoints: true,
+        // CH32V103 only (its AttachChip overwrites s1/x9).
+        attach_corrupts_regs: family == "CH32V103",
+        erased_reads_ff: geometry.erased_word == Some(0xFFFF_FFFF),
     })
 }
 
@@ -159,5 +201,66 @@ impl Default for FlashOptions {
             reset: ResetPolicy::Run,
             confirm_run: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::panic)]
+
+    use super::*;
+
+    /// en: The DB-driven profile must still produce exactly what this project verified on the
+    /// bench (these were hard-coded until the data repo delivered the programming procedure).
+    /// A change in the generated tables that moves any of these is a regression, not an update.
+    /// ja: DB 由来になった profile が実機検証済みの値と一致すること(納品前は手書きだった値)。
+    #[test]
+    fn profile_matches_bench_verified_values() {
+        // (family_byte, page_size, mode, attach_corrupts_regs, erased_reads_ff)
+        let cases = [
+            (0x05u8, 256u32, FlashProgMode::PgStart, false, false), // CH32V20x
+            (0x06, 256, FlashProgMode::PgStart, false, false),      // CH32V30x
+            (0x09, 64, FlashProgMode::Buffered, false, true),       // CH32V003
+            (0x49, 64, FlashProgMode::Buffered, false, true),       // CH641 (shares V003)
+            (0x0C, 256, FlashProgMode::Buffered, false, true),      // CH643 (shares X035)
+            (0x0D, 256, FlashProgMode::Buffered, false, true),      // CH32X035
+            (0x0E, 256, FlashProgMode::Buffered, false, true),      // CH32L103
+            (0x01, 128, FlashProgMode::V103, true, true),           // CH32V103
+        ];
+        for (byte, page_size, mode, corrupts, reads_ff) in cases {
+            let p = flash_controller_profile(byte).unwrap_or_else(|| {
+                panic!("family byte 0x{byte:02x}: no controller profile from the DB")
+            });
+            assert_eq!(p.page_size, page_size, "0x{byte:02x} page_size");
+            assert_eq!(p.mode, mode, "0x{byte:02x} mode");
+            assert_eq!(
+                p.attach_corrupts_regs, corrupts,
+                "0x{byte:02x} attach_corrupts_regs"
+            );
+            assert_eq!(p.erased_reads_ff, reads_ff, "0x{byte:02x} erased_reads_ff");
+            assert!(p.gdb_breakpoints, "0x{byte:02x} gdb_breakpoints");
+        }
+    }
+
+    /// Families the bench has never run must stay unsupported, even though the DB knows them:
+    /// this path erases and programs flash, so it fails closed.
+    #[test]
+    fn unverified_families_have_no_profile() {
+        for byte in [0x4Eu8, 0x86, 0xC6, 0x02, 0x00, 0xFF] {
+            assert!(
+                flash_controller_profile(byte).is_none(),
+                "family byte 0x{byte:02x} must not resolve to a controller profile"
+            );
+        }
+    }
+
+    /// The two silicon erase groups must both be represented, and a group-B family must never be
+    /// reported as blank-checkable with 0xff (that would program the erase pattern into a page).
+    #[test]
+    fn erase_groups_are_distinguished() {
+        let group_b = flash_controller_profile(0x06).expect("CH32V30x profile");
+        assert!(!group_b.erased_reads_ff, "V30x erases to 0xe339e339");
+        let group_a = flash_controller_profile(0x0E).expect("CH32L103 profile");
+        assert!(group_a.erased_reads_ff, "L103 erases to 0xffffffff");
     }
 }
