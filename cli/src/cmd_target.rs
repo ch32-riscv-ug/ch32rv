@@ -187,7 +187,6 @@ pub fn info(cli: &Cli) -> ExitCode {
 /// USER ビットは DB 生成後。生バイトは常に表示し、構造化復号は暫定扱い。
 pub fn option_get(cli: &Cli) -> ExitCode {
     const CMD: &str = "target.option.get";
-    const OPTION_BASE: u32 = 0x1FFF_F800;
     let entry = match select_entry(cli, CMD) {
         Ok(e) => e,
         Err(code) => return code,
@@ -222,13 +221,10 @@ pub fn option_get(cli: &Cli) -> ExitCode {
     };
 
     let family = session.family();
-    // Resolve the DB family from the live chip_id (e.g. family_byte 0x06 -> "CH32V30x", but the DB
-    // and option-field tables key on "CH32V307"): use the DB family when a SKU resolves.
-    let db = ch32rv_target::Db::builtin();
-    let db_family = match db.resolve_by_chip_id(session.attach.chip_id) {
-        ch32rv_target::Resolution::Sku(s) => s.family.clone(),
-        ch32rv_target::Resolution::Family(fam, _) => fam,
-        ch32rv_target::Resolution::Unknown => family.clone(),
+    let db_family = db_family_of(&mut session);
+    let option_base = match option_base(&db_family) {
+        Ok(b) => b,
+        Err(msg) => return fail(cli, CMD, ErrorKind::CapabilityUnsupported, msg, None),
     };
     let user_fields = ch32rv_target::option_user_fields(&db_family);
     let mut dm = session.dm();
@@ -241,7 +237,7 @@ pub fn option_get(cli: &Cli) -> ExitCode {
             None,
         );
     }
-    let raw = match dm.read_mem(OPTION_BASE, 16) {
+    let raw = match dm.read_mem(option_base, 16) {
         Ok(v) => v,
         Err(e) => {
             return fail(
@@ -348,7 +344,48 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-const OPTION_BASE: u32 = 0x1FFF_F800;
+/// en: Resolve the DB family string for the attached target from its live chip id (the AttachChip
+/// family byte is coarser: 0x06 covers CH32V30x while the DB keys on CH32V307).
+/// ja: 生の chip_id から DB の family 文字列を引く(attach の family byte より細かい粒度)。
+pub(crate) fn db_family_of(session: &mut Session) -> String {
+    let db = ch32rv_target::Db::builtin();
+    match db.resolve_by_chip_id(session.attach.chip_id) {
+        ch32rv_target::Resolution::Sku(s) => s.family.clone(),
+        ch32rv_target::Resolution::Family(fam, _) => fam,
+        ch32rv_target::Resolution::Unknown => session.family(),
+    }
+}
+
+/// en: The option-byte block base for a DB family, from the generated device DB. Fail-closed: the
+/// block is **not** at a universal address - most parts put it at `0x1FFF_F800` but CH32M030 uses
+/// `0x1FFF_F300` - so a family the DB does not carry gets an error instead of a guess that would
+/// read, and worse program, the wrong memory.
+/// ja: DB family の option byte ブロック先頭番地(生成 DB 由来)。**共通番地ではない**
+/// (CH32M030 は `0x1FFF_F300`)ので、DB に無い family は推測せずエラーにする。
+pub(crate) fn option_base(db_family: &str) -> Result<u32, String> {
+    ch32rv_target::option_bytes_layout(db_family)
+        .map(|l| l.base)
+        .ok_or_else(|| {
+            format!(
+                "the option-byte block location for {db_family} is not in the device DB, and it is not the same address on every part (CH32M030 uses 0x1FFF_F300) - refusing to guess"
+            )
+        })
+}
+
+/// en: A warning when the family's reference manual describes a different option-byte programming
+/// procedure than the half-word (OBPG) one implemented here. Not fatal: the OBPG path is verified
+/// on CH32L103, which the DB classifies `ftpg`, so the classification alone must not gate the
+/// write - but on an untested family it is worth saying out loud.
+/// ja: RM が本実装(OBPG の half-word 書き)と別の手順を書いている family への警告。致命ではない
+/// (`ftpg` 分類の L103 で OBPG 経路が実機検証済みのため)が、未検証 family では明示する。
+fn option_method_warning(db_family: &str) -> Option<String> {
+    let layout = ch32rv_target::option_bytes_layout(db_family)?;
+    (layout.write_method == "ftpg" && db_family != "CH32L103").then(|| {
+        format!(
+            "{db_family}: the reference manual programs option bytes by the fast-page (FTPG) procedure, while this writes half-words (OPTPG). The half-word path is verified here on CH32L103 only"
+        )
+    })
+}
 
 /// Confirm a destructive option-byte write (the shared gate: `--yes` skips it,
 /// `--non-interactive` without `--yes` refuses, otherwise prompt on the terminal).
@@ -379,12 +416,9 @@ fn parse_hex16(s: &str) -> Result<[u8; 16], String> {
 /// read, detach. ja: 16 byte の option bytes と DB family(USER field 名用)を読む。
 fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<(String, [u8; 16]), ExitCode> {
     let mut session = crate::cmd_probe::attach(cli, cmd)?;
-    let db = ch32rv_target::Db::builtin();
-    let db_family = match db.resolve_by_chip_id(session.attach.chip_id) {
-        ch32rv_target::Resolution::Sku(s) => s.family.clone(),
-        ch32rv_target::Resolution::Family(fam, _) => fam,
-        ch32rv_target::Resolution::Unknown => session.family(),
-    };
+    let db_family = db_family_of(&mut session);
+    let base = option_base(&db_family)
+        .map_err(|msg| fail(cli, cmd, ErrorKind::CapabilityUnsupported, msg, None))?;
     let mut dm = session.dm();
     dm.halt().map_err(|e| {
         fail(
@@ -395,7 +429,7 @@ fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<(String, [u8; 16]), ExitCod
             None,
         )
     })?;
-    let v = dm.read_mem(OPTION_BASE, 16).map_err(|e| {
+    let v = dm.read_mem(base, 16).map_err(|e| {
         fail(
             cli,
             cmd,
@@ -419,6 +453,14 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
         Err(c) => return c,
     };
     let family = session.family();
+    let db_family = db_family_of(&mut session);
+    let base = match option_base(&db_family) {
+        Ok(b) => b,
+        Err(msg) => return fail(cli, cmd, ErrorKind::CapabilityUnsupported, msg, None),
+    };
+    if let Some(w) = option_method_warning(&db_family) {
+        eprintln!("warning[option-write-method]: {w}");
+    }
     let mut dm = session.dm();
     if let Err(e) = dm.halt() {
         return fail(
@@ -429,7 +471,7 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
             None,
         );
     }
-    let before = match dm.read_mem(OPTION_BASE, 16) {
+    let before = match dm.read_mem(base, 16) {
         Ok(v) => v,
         Err(e) => {
             return fail(
@@ -441,7 +483,7 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
             );
         }
     };
-    if let Err(e) = dm.flash_program_option_bytes(new) {
+    if let Err(e) = dm.flash_program_option_bytes(base, new) {
         return fail(
             cli,
             cmd,
@@ -452,7 +494,7 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
             None,
         );
     }
-    let after = match dm.read_mem(OPTION_BASE, 16) {
+    let after = match dm.read_mem(base, 16) {
         Ok(v) => v,
         Err(e) => {
             return fail(
@@ -761,7 +803,39 @@ pub fn protect(cli: &Cli, state: SwitchState) -> ExitCode {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
-    use super::parse_hex16;
+    use super::{option_base, option_method_warning, parse_hex16};
+
+    /// en: The option-byte block is not at one universal address, and the writer must take it from
+    /// the DB. CH32M030 is the counter-example that makes a hard-coded `0x1FFF_F800` wrong.
+    /// ja: option byte の番地は共通ではない(M030 が反例)。DB から引けていることを固定する。
+    #[test]
+    fn option_base_comes_from_the_db_and_m030_differs() {
+        assert_eq!(option_base("CH32V103").unwrap(), 0x1FFF_F800);
+        assert_eq!(option_base("CH32L103").unwrap(), 0x1FFF_F800);
+        assert_eq!(option_base("CH32V307").unwrap(), 0x1FFF_F800);
+        assert_eq!(
+            option_base("CH32M030").unwrap(),
+            0x1FFF_F300,
+            "CH32M030 keeps its option bytes at 0x1FFF_F300"
+        );
+    }
+
+    /// A family the DB does not carry must fail closed rather than fall back to a guessed address.
+    #[test]
+    fn option_base_fails_closed_for_an_unknown_family() {
+        assert!(option_base("CH32V999").is_err());
+        assert!(option_base("unknown (family byte 0x4e)").is_err());
+    }
+
+    /// The DB classifies CH32L103's option programming as the fast-page procedure, but the
+    /// half-word path is verified on that silicon here - so it must not warn, while an untested
+    /// fast-page family must.
+    #[test]
+    fn option_method_warning_only_for_untested_fast_page_families() {
+        assert!(option_method_warning("CH32L103").is_none());
+        assert!(option_method_warning("CH32V103").is_none()); // classified obpg
+        assert!(option_method_warning("CH32M030").is_some());
+    }
 
     #[test]
     fn parses_16_contiguous_bytes() {

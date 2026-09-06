@@ -42,6 +42,9 @@ const GENERATED_FLASH_GEOMETRY: &str = include_str!("../generated/flash_geometry
 /// The embedded generated per-family FLASH-controller programming method (`cargo xtask db-gen`).
 const GENERATED_FLASH_PROGRAM_METHOD: &str = include_str!("../generated/flash_program_method.csv");
 
+/// The embedded generated per-family option-byte block location (`cargo xtask db-gen`).
+const GENERATED_OPTION_BYTES: &str = include_str!("../generated/option_bytes.csv");
+
 /// en: Provenance of the embedded device DB, for `version --json` reproducibility
 /// (docs/architecture.ja.md §3). ja: 埋め込み device DB の来歴。`version --json` の再現性表示用。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,6 +81,7 @@ pub fn provenance() -> DbProvenance {
         GENERATED_DEBUG_WIRING,
         GENERATED_FLASH_GEOMETRY,
         GENERATED_FLASH_PROGRAM_METHOD,
+        GENERATED_OPTION_BYTES,
     ] {
         for &b in part.as_bytes() {
             h ^= u64::from(b);
@@ -176,6 +180,42 @@ pub fn flash_program_method(family: &str) -> Option<FlashProgramMethod> {
             commit: (*commit).to_owned(),
             buffer_load_bits: bits.parse().ok(),
             confidence: (*confidence).to_owned(),
+        })
+    })
+}
+
+/// en: Where a family keeps its option bytes, and how the family programs them.
+/// ja: family の option byte ブロックの位置と書込方式。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionBytesLayout {
+    /// en: Base address of the 16-byte option block. **Not universal**: most families use
+    /// `0x1FFFF800`, but CH32M030 uses `0x1FFFF300`, so a writer must not hard-code it.
+    /// ja: option byte ブロックの先頭番地。**共通ではない**(CH32M030 は `0x1FFFF300`)。
+    pub base: u32,
+    /// `obpg` (half-word writes through `FLASH_CTLR.OPTPG`) or `ftpg` (fast page, 32-bit buffer
+    /// writes), as the reference manual's option-byte programming procedure names it.
+    pub write_method: String,
+}
+
+/// en: The option-byte layout for a DB `family` string. None when the family is not in the DB.
+/// ja: DB family の option byte レイアウト。DB に無ければ None。
+pub fn option_bytes_layout(family: &str) -> Option<OptionBytesLayout> {
+    GENERATED_OPTION_BYTES.lines().find_map(|line| {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            return None;
+        }
+        // family,base,write_method
+        let f: Vec<&str> = line.split(',').collect();
+        let [fam, base, method] = f.as_slice() else {
+            return None;
+        };
+        if !fam.eq_ignore_ascii_case(family) {
+            return None;
+        }
+        Some(OptionBytesLayout {
+            base: parse_generated_hex(base)?,
+            write_method: (*method).to_owned(),
         })
     })
 }

@@ -613,17 +613,24 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         Ok(())
     }
 
-    /// en: Program the 16 option bytes (0x1FFF_F800: 8 halfwords of value+complement). The hart must
-    /// be halted. `bytes` is the full 16-byte image exactly as `read_mem(0x1FFF_F800, 16)` returns
-    /// it; each halfword is written verbatim, so the CALLER owns the complement bytes. CAUTION: a
-    /// wrong RDPR (byte 0) or WRPR here enables read/write protection - an all-0xff option area means
-    /// read protection ON, so RDPR is programmed first. Transcribed from minichlink's option path.
-    /// ja: 16 byte の option bytes(0x1FFF_F800、value+complement の 8 halfword)を program。hart は
-    /// halt 済み。`bytes` は `read_mem(0x1FFF_F800,16)` の 16 byte をそのまま。各 halfword を verbatim で
-    /// 書くので complement は呼び出し側の責任。注意: RDPR(byte0)/WRPR を誤ると保護 ON(全 0xff = 読み
-    /// 出し保護 ON)なので RDPR を最初に書く。minichlink の option 書込経路から転記。
-    pub fn flash_program_option_bytes(&mut self, bytes: &[u8; 16]) -> Result<(), DmiError> {
-        const OB_BASE: u32 = 0x1FFF_F800;
+    /// en: Program the 16 option bytes at `base` (8 halfwords of value+complement). The hart must
+    /// be halted. `bytes` is the full 16-byte image exactly as `read_mem(base, 16)` returns it; each
+    /// halfword is written verbatim, so the CALLER owns the complement bytes. `base` is per family
+    /// and comes from the device DB (`ch32rv_target::option_bytes_layout`) - most parts put the
+    /// block at `0x1FFF_F800`, but CH32M030 uses `0x1FFF_F300`, so it must not be assumed. CAUTION:
+    /// a wrong RDPR (byte 0) or WRPR here enables read/write protection - an all-0xff option area
+    /// means read protection ON, so RDPR is programmed first.
+    /// ja: `base` の 16 byte option bytes(value+complement の 8 halfword)を program。hart は halt
+    /// 済み。`bytes` は `read_mem(base,16)` の 16 byte をそのまま。各 halfword を verbatim で書くので
+    /// complement は呼び出し側の責任。`base` は family 別で device DB から引く
+    /// (`ch32rv_target::option_bytes_layout`)。多くは `0x1FFF_F800` だが **CH32M030 は
+    /// `0x1FFF_F300`** なので決め打ちにしない。注意: RDPR(byte0)/WRPR を誤ると保護 ON(全 0xff =
+    /// 読み出し保護 ON)なので RDPR を最初に書く。
+    pub fn flash_program_option_bytes(
+        &mut self,
+        base: u32,
+        bytes: &[u8; 16],
+    ) -> Result<(), DmiError> {
         const FLASH_OBKEYR: u32 = 0x4002_2008; // option-write unlock (STM32F1-style OPTKEYR)
         const OPTPG: u32 = 1 << 4;
         const OPTER: u32 = 1 << 5;
@@ -657,7 +664,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
             self.write_mem32(FLASH_CTLR, OPTPG | OPTWRE | FLASH_STRT)?;
             let lo = bytes[(i * 2) as usize];
             let hi = bytes[(i * 2 + 1) as usize];
-            self.write_mem16(OB_BASE + i * 2, u16::from_le_bytes([lo, hi]))?;
+            self.write_mem16(base + i * 2, u16::from_le_bytes([lo, hi]))?;
             let statr = self.flash_wait(FLASH_BUSY)?;
             if statr & FLASH_WPRERR != 0 {
                 self.write_mem32(FLASH_CTLR, 0)?;

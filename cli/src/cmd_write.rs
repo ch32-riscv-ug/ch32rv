@@ -43,7 +43,7 @@ pub fn write(cli: &Cli, args: &WriteArgs) -> ExitCode {
             None,
         );
     }
-    let addr = match parse_at(&args.at) {
+    let addr = match parse_at(&args.at, None) {
         Ok(a) => a,
         Err(m) => {
             return fail(
@@ -88,6 +88,22 @@ pub fn write(cli: &Cli, args: &WriteArgs) -> ExitCode {
     ) {
         Ok(s) => s,
         Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
+    };
+
+    // `--at option` was resolved against the common base before attach; now that the family is
+    // known, resolve it again from the DB - the option block is not at the same address on every
+    // part (CH32M030 keeps it at 0x1FFF_F300), and writing 16 bytes to the wrong one is destructive.
+    let addr = if args.at.split('+').next() == Some("option") {
+        let db_family = crate::cmd_target::db_family_of(&mut session);
+        match crate::cmd_target::option_base(&db_family) {
+            Ok(base) => match parse_at(&args.at, Some(base)) {
+                Ok(a) => a,
+                Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+            },
+            Err(msg) => return fail(cli, CMD, ErrorKind::CapabilityUnsupported, msg, None),
+        }
+    } else {
+        addr
     };
 
     let is_flash = (FLASH_BASE..FLASH_END).contains(&addr);
@@ -234,9 +250,12 @@ fn parse_source(s: &str) -> Result<Vec<u8>, String> {
     std::fs::read(s).map_err(|e| format!("read {s}: {e}"))
 }
 
-/// Parse `--at`: a raw address, or `<region>[+off]` (shared region base map in `parse`).
-fn parse_at(s: &str) -> Result<u32, String> {
-    crate::parse::region_or_addr(s)
+/// en: Parse `--at`: a raw address, or `<region>[+off]` (shared region base map in `parse`).
+/// `option` resolves to the common base here; `write` re-resolves it against the target's family
+/// once attached, because the block is not at the same address on every part.
+/// ja: `--at` の解釈。`option` は既定 base で解決し、attach 後に family の base で解決し直す。
+fn parse_at(s: &str, option_base: Option<u32>) -> Result<u32, String> {
+    crate::parse::region_or_addr(s, option_base)
 }
 
 fn parse_u32(s: &str) -> Option<u32> {
@@ -261,8 +280,8 @@ mod tests {
             vec![0xA5, 0x5A, 0xFF]
         );
         assert!(parse_source("hex:xyz").is_err());
-        assert_eq!(parse_at("0x20000010").unwrap(), 0x2000_0010);
-        assert_eq!(parse_at("code+0x100").unwrap(), 0x0800_0100);
-        assert_eq!(parse_at("ram+16").unwrap(), 0x2000_0010);
+        assert_eq!(parse_at("0x20000010", None).unwrap(), 0x2000_0010);
+        assert_eq!(parse_at("code+0x100", None).unwrap(), 0x0800_0100);
+        assert_eq!(parse_at("ram+16", None).unwrap(), 0x2000_0010);
     }
 }
