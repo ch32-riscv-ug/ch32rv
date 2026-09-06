@@ -122,3 +122,5 @@ buffered 系が一律 `32-bit buffer writes` ですが、WCH の EVT driver で�
 ### 4. H417 の conflict はそのままで支障なし
 
 ch32rv は `confidence=conflict` の行を **fail-closed**(controller 経路を無効)として扱います。`ctlr_bit_names` に `PG_STRT` があり、同じ direct 系の V407/X315 も `PG_STRT` なので、driver 側(`PAGE_PG` + `PG_STRT`)が正しいと見ていますが、実機が無いので判定はお任せします。
+
+→ **その方向で更新された**(`ch32-device-data@fc8a3e6`): 値は driver 側(`PAGE_PG` → `PG_STRT`)を採り、RM の異議は basis に `!rm:` として保持。`confidence` は `conflict` のままなので、ch32rv 側の扱い(fail-closed)は変わりません。
