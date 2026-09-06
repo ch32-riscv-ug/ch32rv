@@ -1,6 +1,6 @@
 # 依頼 0005: WCH-Link flash stub(wlink 由来 5 本)を stub 目録に載せてほしい
 
-- 状態: **draft**
+- 状態: **依頼済(2026-09-06)**
 - 依頼元: ch32rv
 - **依頼先**: `wch-protocols`(`references/data/bootloader-survey/`)
 - 優先度: 低(急がない。stub を source から build するサブプロジェクトに着手するときの土台)
