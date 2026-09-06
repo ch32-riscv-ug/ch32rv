@@ -551,21 +551,49 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
             None,
         );
     }
-    let after = match dm.read_mem(base, 16) {
-        Ok(v) => v,
-        Err(e) => {
-            return fail(
-                cli,
-                cmd,
-                ErrorKind::TransferFailed,
-                format!("verify read failed: {e}"),
-                None,
-            );
+    // en: Verify after a reset, not straight after the write. On CH32V103 the option area keeps
+    // reading back the pre-write image until the target resets - `option set STOPRST=0` was
+    // measured reporting a false verify-mismatch while the write had in fact taken, and a fresh
+    // session showed the new value. Option bytes only take effect at reset anyway, so resetting
+    // first is also what the caller wants. Re-read a couple of times in case the reset is still
+    // settling; a mismatch that survives that is a genuine write failure (exit 30).
+    // ja: 検証は reset 後に行う。V103 は reset するまで書込前の像を読み続け、書けているのに
+    // verify-mismatch を返していた(実測)。option bytes はどのみち reset で反映されるので、
+    // reset してから読むのが意味的にも正しい。落ち着くまで数回読み直す。
+    // (the `dm` borrow above ends here, so the probe is reachable again)
+    let _ = session.link().soft_reset();
+    std::thread::sleep(Duration::from_millis(50));
+    let mut dm = session.dm();
+    if let Err(e) = dm.halt() {
+        return fail(
+            cli,
+            cmd,
+            ErrorKind::AttachFailed,
+            format!("halt after the option reset failed: {e}"),
+            None,
+        );
+    }
+    let mut after = Vec::new();
+    for attempt in 0..3 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(50));
         }
-    };
-    // Verify the value bytes (even indices) we asked for actually landed. The flash write itself
-    // lands immediately (the values only *take effect* after a reset), so a readback mismatch is a
-    // genuine write failure - fail with verify-mismatch (exit 30), like flash/verify/write.
+        after = match dm.read_mem(base, 16) {
+            Ok(v) => v,
+            Err(e) => {
+                return fail(
+                    cli,
+                    cmd,
+                    ErrorKind::TransferFailed,
+                    format!("verify read failed: {e}"),
+                    None,
+                );
+            }
+        };
+        if (0..16).step_by(2).all(|i| after[i] == new[i]) {
+            break;
+        }
+    }
     if let Some(i) = (0..16).step_by(2).find(|&i| after[i] != new[i]) {
         return fail(
             cli,

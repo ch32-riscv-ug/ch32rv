@@ -214,6 +214,7 @@ option bytes は通常 page と手順が違う(専用 unlock と OPTPG/OPTER)。
 - **`RDPR` を `0xA5`(保護解除)にする書込は、チップ側で flash 全消去を誘発する**。`recover unbrick` はこれを利用する。
 - **`OB_BASE` は family で違う**(多くは `0x1FFFF800`、**CH32M030 は `0x1FFFF300`**)。ch32rv は DB(`option_bytes.csv` の `address`)から引き、DB に無い family は fail-closed。**書込手順も RM は 2 系統に分ける**(`half-word (OBPG)` = V003/V103/V20x/V30x/V407/X315/H417、`fast page (FTPG)` = L103/M030/V006/V205/X035)。ただし **FTPG 分類の L103 で OBPG 経路が実機で動く**ため、分類だけで手順を決められない(RM が新しい手順を書いていても、STM32F1 由来の OBPG 経路が残っているとみられる)。
 - 実機検証(L103): 現在値の round-trip 書込で不変・RDPR 維持・flash 無傷、USER の 1 bit 変更(`0xff`→`0xfd`、補数 `00`→`02`)が read-back に反映。
+- **CH32V103 は option 領域を reset まで書込前の像で読み返す**(実測)。書込直後に read-back すると書けているのに古い値が返るので、**検証は reset を挟んでから**行う。他 family では直後の read-back でも反映される。
 
 ### 4.3 特殊消去(SWD ピン共用 target の復旧。verified 2026-09-01)
 
