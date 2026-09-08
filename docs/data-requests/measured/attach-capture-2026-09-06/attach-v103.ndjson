@@ -1,0 +1,14 @@
+{"_meta":{"format":1,"unit":"us"}}
+{"_device":{"pid":32784,"ports":["/dev/ttyACM6"],"product":"WCH-Link","serial":"434A124C5596","topology":"1-7","vid":6790}}
+{"seq":0,"t_us":3284,"ep":"0x01","chan":"cmd","dir":"out","len":4,"ok":true,"data":"810d01ff"}
+{"seq":1,"t_us":3952,"ep":"0x81","chan":"cmd","dir":"in","len":4,"ok":true,"data":"820d01ff"}
+{"seq":2,"t_us":4508,"ep":"0x01","chan":"cmd","dir":"out","len":4,"ok":true,"data":"810d0101"}
+{"seq":3,"t_us":5056,"ep":"0x81","chan":"cmd","dir":"in","len":7,"ok":true,"data":"820d04020c0100"}
+{"seq":4,"t_us":5561,"ep":"0x01","chan":"cmd","dir":"out","len":5,"ok":true,"data":"810c020101"}
+{"seq":5,"t_us":6024,"ep":"0x81","chan":"cmd","dir":"in","len":4,"ok":true,"data":"820c0101"}
+{"seq":6,"t_us":6477,"ep":"0x01","chan":"cmd","dir":"out","len":4,"ok":true,"data":"810d0102"}
+{"seq":7,"t_us":13207,"ep":"0x81","chan":"cmd","dir":"in","len":8,"ok":true,"data":"820d05012500410f"}
+{"seq":8,"t_us":13717,"ep":"0x01","chan":"cmd","dir":"out","len":4,"ok":true,"data":"81110105"}
+{"seq":9,"t_us":15901,"ep":"0x81","chan":"cmd","dir":"in","len":20,"ok":true,"data":"ffff0040d39eabcd3bc4bc592500410f0297df3f"}
+{"seq":10,"t_us":17322,"ep":"0x01","chan":"cmd","dir":"out","len":4,"ok":true,"data":"810d01ff"}
+{"seq":11,"t_us":17642,"ep":"0x81","chan":"cmd","dir":"in","len":4,"ok":true,"data":"820d01ff"}

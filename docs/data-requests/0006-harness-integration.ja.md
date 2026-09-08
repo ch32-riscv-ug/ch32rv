@@ -171,7 +171,7 @@ harness-testing §1 の resolver は `index/pinout.csv` / `evidence/remap_routes
 
 | 出せるもの | 状態 |
 |---|---|
-| attach 時の USB 往復 capture(6 family ぶん) | `--capture` で即取得可。**線側 capture との突き合わせ材料**(harness-probe §7-2 の実験) |
+| attach 時の USB 往復 capture | **納品済み(2026-09-06)** → [measured/attach-capture-2026-09-06/](measured/attach-capture-2026-09-06/README.ja.md)。5 family(X035 のみ未接続)+ positive control |
 | DMI 往復・bulk read・page 消去の実測値 | §3 のとおり |
 | `capabilities --json` の語彙 | 実装済み |
 | exit code / envelope の contract | `ch32rv-contract` として crate 化済み |
@@ -259,3 +259,87 @@ H-100 / H-101 は「target に**書く**もの」を対象にしているが、*
 - **`RCC_CFGR0` / `FLASH ACTLR` の実測はコア側の成果**(V307、probe-rs と ch32rv の双方で同じ)。ch32rv は**同じ現象を見ている**という裏づけを出せる。
 - **ch32rv 固有の材料は §7 の `s1`(x9)破壊**のほう。こちらは root cause と対処まで確定している。
 - **書き込みは protocol repo 側で行うもの**なので、こちらからは触らない。必要なら文面はいつでも出せる。
+
+---
+
+# 追記 2(2026-09-06): 相手の更新を確認した結果
+
+コア(`harness-requirements` H-001〜**191** / C-1〜**13**)・ベンチ(`HARNESS_REQUESTS`)・索引が更新され、
+**本書の指摘 15 件はすべて処理された**(`harness-requirements` §6.1 に対応表がある)。
+
+## 17. こちらの指摘がどう反映されたか
+
+| 本書 | 反映 |
+|---|---|
+| §1 2 文書の前提ずれ | 受領。**C-12** を新設し、「**DMI と flash を分ける**」(`M` 段 = lane 0 本 + DMI read/write、flash アルゴリズム無し)で解く案。裁定は protocol 側 |
+| §2.1 lock のキー | **H-180** 新設 |
+| §2.2 halt/running の排他 | **H-181** 新設 |
+| §2.3 CLI 1 回 1 操作は半分 | `harness-testing` §3.1 を訂正(gdb server / monitor がセッション型) |
+| §3 実測値 | `harness-testing` §9.2 / §4.2 の見積りを **471 µs の実測に差し替え** |
+| §4.1 `ProbeService` 未実装 | `harness-probe` §1 を訂正 |
+| §5 contract は広い | **H-182** 新設(caps に可否 + 理由) |
+| §6 mock 段 3 は実在 | **H-183** 新設(NDJSON 形を揃える) |
+| §7 `s1` 破壊 | **H-101** を「監査対象は GPR / CSR も」に拡張 + **H-108** 新設 |
+| §8 DMI の代償 | `harness-testing` §4.2 に**代償の表**を追加 |
+| §9 データ rev | **H-184** 新設 |
+| §12 H-126 の根拠 | 訂正 + **重み ◎ → ○ に降格** |
+| §12 H-002 の根拠 | 根拠を更新(要求は有効のまま) |
+| §14-1 read の確定規則 | **H-109** 新設 |
+| §14-2 GPR/CSR 監査 | **H-108** 新設 |
+| §14-3 持続セッション | 回答あり。**現時点では要求にしない** → §19 |
+
+## 18. 依頼 ①(§6.3)への納品 — attach capture
+
+`harness-requirements` §6.3 が「**欲しい**」としていた本書 §10 の提供物を納品した。
+
+→ [measured/attach-capture-2026-09-06/](measured/attach-capture-2026-09-06/README.ja.md)(5 family + positive control、非破壊)
+
+**分析結果を 1 つ付けた**。共同実験(`harness-probe` §7-2)の切り分けがこれで簡単になる。
+
+| capture | 操作 | 転送 | **DmiOp** |
+|---|---|---:|---:|
+| `attach-*.ndjson` | `target info`(attach を含む) | 12 | **0** |
+| `dmiread-*.ndjson` | `dbg reg read pc` | 28 | **8** |
+
+**attach の往復で ch32rv が出す DMI は 0 件**(ChipInfo は vendor コマンドで DMI ではない)。
+→ **線側で attach 中に DMI が観測されたら、それは 100% probe firmware が自発的に出したもの**。
+`RCC_CFGR0` / `FLASH ACTLR` を書いている犯人は、USB 側と線側の差分でそのまま特定できる。
+
+`dmiread-*` は positive control(ch32rv が DMI を出すとどう見えるか)。線側デコーダの突き合わせにも使える。
+
+**CH32X035 のみ未収録**(ベンチ 6 台目が USB port の都合で外れていた)。接続でき次第追加する。
+
+## 19. 依頼 ②(§4 の代案)— `read` の複数レンジ対応について
+
+コア側の回答:
+
+> `read` が**複数レンジを 1 回の起動で**受けられれば、散在するレジスタ 200〜400 本のプロセス起動が
+> 1 回に畳める。セッション化より小さい変更で同じ効果が出るので、**先にこちらを検討してほしい**
+
+### 19.1 現状の事実
+
+**受けられない。** [cli/src/args.rs](../../cli/src/args.rs) の `ReadArgs` は `range` / `region` とも
+`Option<String>` の**単数**で、clap の ArgGroup で排他になっている。
+
+### 19.2 実装した場合の設計論点(**実装はしない。要件が固まるまで保留**)
+
+セッション化より小さい変更なのは確か(1 attach の中でループするだけ)。ただし決めることがある。
+
+| 論点 | 中身 |
+|---|---|
+| **出力形式** | `--format bin` は連結するのか、レンジごとにファイルを分けるのか。`hex-dump` は区切りが要る。**JSON なら配列が素直**で、`reg_probe` のような consumer は JSON を読むはずなので、そこだけ先に決まれば足りるかもしれない |
+| **重複・隣接レンジ** | 重なったら畳むのか、そのまま 2 回読むのか。畳むと出力とレンジの対応が崩れる |
+| **一部が失敗したとき** | 1 レンジが transfer 失敗したら全体を止めるのか、そのレンジだけエラーにして続けるのか。**exit code をどう決めるか**(contract に効く) |
+| **上限** | レンジ数の上限を設けるか。コマンドライン長の制限もあるので、**ファイルから読む口**(`--ranges <file>`)のほうが 200〜400 本には向く可能性 |
+
+**特に最後の点**: 200〜400 本を引数に並べるとコマンドラインが長くなる。`reg_probe` の用途なら
+**「レンジの一覧をファイルか stdin で受け、JSON で返す」**形のほうが素直で、それは
+**セッション化の議論に片足を残す**(結局こちらが小さな session になる)。**この見極めは要件側の判断**なので、
+C-13 の裁定と併せて決めてほしい。
+
+### 19.3 こちらの立場
+
+- **いま実装しない**(要件出しの段階のため)。
+- ただし **`M` 段(harness が DMI を持つ)が実現すると、この代案の需要そのものが消える**
+  (`reg_probe` の Reader が `HarnessReader` になり、ch32rv は経路から外れる)。
+  **C-12 の裁定が先**で、その結果次第でこの要求は不要になる可能性がある。
