@@ -1,11 +1,11 @@
 //! en: ch32rv CLI. A thin layer that only composes the library crates (docs/architecture.ja.md §2).
-//! The WCH-LinkE-route surface is implemented (flash/verify/read/write/erase/reset/recover, dbg +
-//! gdb, monitor, target/probe/db/capabilities, arduino); a few routes (run/isp/boot/dap) still
+//! The WCH-LinkE-route surface is implemented (flash/verify/read/write/erase/reset/recover, run,
+//! dbg + gdb, monitor, target/probe/db/capabilities, arduino); the isp/boot/dap routes still
 //! return exit 70 (unimplemented).
 //!
 //! ja: ch32rv CLI。library crate 群を組み合わせるだけの薄い層(docs/architecture.ja.md §2)。
-//! WCH-LinkE 経路の機能は実装済み(flash/verify/read/write/erase/reset/recover、dbg+gdb、monitor、
-//! target/probe/db/capabilities、arduino)。一部経路(run/isp/boot/dap)は exit 70(unimplemented)。
+//! WCH-LinkE 経路の機能は実装済み(flash/verify/read/write/erase/reset/recover、run、dbg+gdb、
+//! monitor、target/probe/db/capabilities、arduino)。isp/boot/dap は exit 70(unimplemented)。
 
 mod args;
 mod cmd_arduino;

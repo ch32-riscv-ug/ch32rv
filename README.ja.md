@@ -88,6 +88,7 @@ ch32rv capabilities                     # この probe + target の組で何が�
 | `flash` | erase / verify / reset / confirm-run 方針付きの書き込み(`--preverify`・`--restore-unwritten`・`--repeat`・`--sdi`・`--monitor`) |
 | `verify` / `read` / `write` | image と比較 · dump / blank-check · raw メモリ・flash 書き込み |
 | `erase` / `reset` | 消去(`--all` / `--region` / `--range`)· reset して run |
+| `run` | HIL ランナー: 書込 → reset → runtime 出力を流す(dmdata / rtt、stdin は target へ)→ semihosting の exit code を伝搬 |
 | `recover` | 復旧: power-off、NRST、unprotect(読み出し保護部品の mass-erase unbrick) |
 | `probe` | probe 管理: `list`、`info`、firmware `info` / `check` / `update`(IAP 経由で probe 自身の firmware を書換)/ `exit-iap`、`mode get` |
 | `target` | `info`、構造化 `option` byte(`get` / `set` / `write-raw` / `reset`)、`protect` |
@@ -97,7 +98,7 @@ ch32rv capabilities                     # この probe + target の組で何が�
 | `doctor` / `version` / `complete` | 環境診断 · バージョン · shell 補完 |
 | `arduino` | Arduino IDE 統合(`discovery` / `monitor` Pluggable プロトコル) |
 
-`--help` に出る一部の経路 — `run`(HIL)・`dap`・`isp`・`boot` — は後の `0.x` 予定で、まだ検証範囲外。
+`--help` に出る一部の経路 — `dap`・`isp`・`boot` — は後の `0.x` 予定で、まだ検証範囲外。
 
 ## ライブラリ crate
 

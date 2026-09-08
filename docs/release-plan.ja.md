@@ -70,39 +70,35 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - **cargo-dist は不採用**(タグ起点で UI-bump フローに噛み合わないため手書きにした)。将来インストーラ(shell/powershell one-liner)や自動更新が欲しくなったら dist へ移行を再検討。
 - **注意**: 開発機は Linux(WSL2)+ usbipd 越しの Windows ネイティブ。**Linux x64 = verified**。**Windows x64 = verified**(2026-09-02、WCH 純正ドライバ経路 `ch32rv-usb-wch-win` で全5 probe の flash 往復まで実機確認。Zadig 不要。依頼 B-2 完了)。**macOS / arm = experimental**(未実機)。Release ノートにこの verified 状況を明記する。
 
-## 3. 出荷済みの機能(0.2.0、全て実機検証済み)
+## 3. 出荷済みの機能(0.7.0 時点、全て実機検証済み)
 
 | 系統 | コマンド |
 |---|---|
-| probe | list / info / firmware info・check |
-| target | info(SKU/family/配線/容量)/ option get・set・reset・write-raw / protect |
-| flash | flash(erase auto/sector/chip/none・restore-unwritten・preverify・verify・reset・confirm-run・sdi・monitor・repeat)/ verify / read / write / erase(all/range/region)/ reset / recover(power-off・nrst) |
-| debug | dbg halt/resume/step/regs/reg/dmi / gdb server(HW+flash BP) |
-| monitor | uart / sdi / dmdata |
+| probe | list(`--watch`)/ info / firmware info・check・update・exit-iap / mode get・set / power 3v3・5v・cycle |
+| target | info(SKU/family/配線/容量)/ option get・set・reset・write-raw / protect(option base は DB 由来) |
+| flash | flash(erase auto/sector/chip/none・restore-unwritten・preverify・verify・reset・confirm-run・sdi・monitor・repeat)/ verify / read(range・region)/ write / erase(all/range/region)/ reset / recover(power-off・nrst・unprotect・unbrick) |
+| debug | dbg halt/resume/step/regs/reg/dmi / gdb server(HW+RAM+flash BP) |
+| monitor / run | monitor uart / sdi / dmdata / rtt(uart・dmdata・rtt は双方向)/ run(HIL: flash→reset→出力→semihosting exit code) |
 | DB/診断 | db list・info / capabilities(live+static)/ doctor / version / complete |
-| **arduino** | **discovery / monitor**(Pluggable、upload は flash) |
+| arduino | discovery / monitor(Pluggable。dmdata・rtt を双方向に wrap。upload は flash) |
+| 横断 | `--json`(契約 2)/ `--capture`・`--replay` / per-probe lock(`--lock-timeout`)/ Windows は WCH 純正ドライバで動作(Zadig 不要) |
 
-## 4. 0.2.0 に入れた小機能 / 0.2.0 後に追加(次リリース対象)
+## 4. 版ごとの主な追加(詳細は CHANGELOG)
 
-0.2.0 の小機能:
-- ✅ `recover unprotect`(工場 option 書込=RDP off。protected は mass erase で復旧。実機検証済)
-- ✅ `probe mode get`(現在 mode を VID:PID+firmware から表示。実機検証済)
+- 0.3.0: Windows 純正ドライバ(`ch32rv-usb-wch-win`)、`--capture`、per-probe lock
+- 0.4.0: 一貫性スイープ(契約 1→2)、`recover unbrick`、`monitor rtt`、`run`、`probe power`、`probe mode set`、バルク read 高速化 / 0.4.1: CH549 の stale read 修正
+- 0.5.0: `read --region`、`probe list --watch`、`--replay`
+- 0.6.0: `--non-interactive` の破壊操作拒否、`probe firmware update` / `exit-iap`
+- 0.7.0: FLASH controller profile・option base を生成 DB 由来に、recover が他 option byte を保存、V103 の option verify 修正
 
-0.2.0 後に実装済み(= **次リリースに含める**、CHANGELOG Unreleased 参照):
-- ✅ **A-2 per-probe advisory lock**(`--lock-timeout`、exit 13。実機検証済)
-- ✅ **A-3 `--capture`**(USB transaction を NDJSON 記録=replay fixture。実機検証済)
-- ✅ **Windows の WCH 純正ドライバ対応**(`ch32rv-usb-wch-win`、Zadig 不要、依頼 B-2。実機検証済)
-- 検討中: `option set` の別名(`rdp=`/`nrst=` 等)、`probe mode set`(再列挙対応要)
+## 5. 後続(未実装/重い/未検証)
 
-## 5. 後続(未実装/重い/未検証/電源系)
-
-- `run`(HIL、semihosting exit-code)、`monitor rtt`、`recover unbrick`
-- `probe firmware update`(IAP 再書込)、`probe mode set`
 - `isp`(factory ISP 4348:55e0)、`boot`(UIAPduino/DFU/UF2/HID、後日実機)、`dap`(DAP server)
-- `probe power`(3v3/5v/cycle)← **電源系はユーザー指示で保留**
 - gap 7 series(V205/V407/V467/X305/X315/M030/M103)device 対応 ← データ側未発売でブロック
-- option layout(register CSV)、multi-bit option、V4F FPU レジスタ、vFlash(load)
-- macOS の実機 verified 昇格、arduino discovery の USB hotplug 追随、capture の replay(fixture 再生)。**Windows は WCH 純正ドライバ経路で verified 済み(依頼 B-2 完了)**
+- option layout(register CSV)、multi-bit option、`option set` の構造化別名(`nrst=`/`split=` 等)、V4F FPU レジスタ、vFlash(load)
+- macOS の実機 verified 昇格、arduino discovery の USB hotplug 追随
+- `monitor --source sdi` の in-process forward 起動不良(enable は成功するのに CDC へ流れない。wlink との usbmon 差分要)
+- RTT channel 選択(`--channel`)← **需要待ち**。warning `rtt-channels`(方向あたり 2 本以上)に当たる利用者が出たら
 - `monitor` の外部出口(TCP `--listen` / pty)← **需要待ち**。dmdata/rtt を標準シリアルツール(screen/minicom/PlatformIO/serial GUI)へ繋ぐ IF 候補。IDE は pluggable monitor、端末・CI は stdio で足りるため保留。要るなら TCP(全 OS、std のみ、OpenOCD `rtt server` 同型、channel→port)→ pty(Linux/macOS 限定、pty crate 依存、symlink 管理、読み手不在時は target から汲み続けて host で捨てる)の順。unix の代替: `socat pty,raw,echo=0,link=/tmp/ch32rv0 exec:'ch32rv monitor --source rtt'`
 
 ## 6. リリース前チェック
