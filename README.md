@@ -95,6 +95,7 @@ a device. Exit codes and the JSON envelope are defined by the `ch32rv-contract` 
 | `flash` | Program the target with erase / verify / reset / confirm-run policies (`--preverify`, `--restore-unwritten`, `--repeat`, `--sdi`, `--monitor`) |
 | `verify` / `read` / `write` | Compare against an image · dump / blank-check · raw memory or flash write |
 | `erase` / `reset` | Erase (`--all` / `--region` / `--range`) · reset and run |
+| `run` | HIL runner: flash, reset, stream runtime output (dmdata / rtt, stdin to the target), propagate a semihosting exit code |
 | `recover` | Recovery: power-off, NRST, unprotect (mass-erase unbrick of read-protected parts) |
 | `probe` | Manage the probe: `list`, `info`, firmware `info` / `check` / `update` (rewrite the probe's own firmware over IAP) / `exit-iap`, `mode get` |
 | `target` | `info`, structured `option` bytes (`get` / `set` / `write-raw` / `reset`), `protect` |
@@ -104,7 +105,7 @@ a device. Exit codes and the JSON envelope are defined by the `ch32rv-contract` 
 | `doctor` / `version` / `complete` | Environment diagnosis · versions · shell completions |
 | `arduino` | Arduino IDE integration (`discovery` / `monitor` Pluggable protocols) |
 
-Some routes advertised in `--help` — `run` (HIL), `dap`, `isp`, `boot` — are planned for
+Some routes advertised in `--help` — `dap`, `isp`, `boot` — are planned for
 a later `0.x` and are not part of the verified surface yet.
 
 ## Library crates

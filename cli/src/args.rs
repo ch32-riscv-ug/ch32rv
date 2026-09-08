@@ -65,9 +65,6 @@ pub struct Cli {
     /// Target DB overlay (for trying new SKUs without rebuilding)
     #[arg(long, global = true, env = "CH32RV_DB")]
     pub db: Option<PathBuf>,
-    /// Write a detailed log to this file
-    #[arg(long, global = true)]
-    pub log_file: Option<PathBuf>,
     /// Record USB/serial transactions to a file (a replay fixture)
     #[arg(long, global = true)]
     pub capture: Option<PathBuf>,
