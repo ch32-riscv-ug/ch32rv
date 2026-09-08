@@ -60,6 +60,22 @@ ch32rv monitor --source rtt --probe serial:<SN>
 sketch は [`tests/fixtures/rtt/rtt.ino`](rtt/rtt.ino)(core の SerialRTT/HelloRTT 例)。他 family は
 `arduino-cli compile -b ch32-riscv-ug:ch32v:<board> tests/fixtures/rtt` でビルドして追加できる。
 
+## replay fixtures(`replay/*.ndjson`、HW 無し CI)
+
+`--capture` で記録した USB セッション NDJSON。`cli/tests/replay.rs` が `--replay` で再生し、probe
+無しで wchlink/dmi protocol 層と replay エンジンを回帰テストする(実機で `ch32rv <cmd> --capture
+replay/<name>.ndjson` を録れば再生成できる)。
+
+| ファイル | 再生するコマンド | 固定する挙動 |
+|---|---|---|
+| `probe-info-v307.ndjson` | `probe info` | GetProbeInfo → serial/variant/FW |
+| `target-info-{v307,v003,v103}.ndjson` | `target info` | attach → chip_id → SKU 解決(V003=RV32EC、V103=CH549 Link 経由) |
+| `read-v307.ndjson` | `read --range` | バルク read(SetReadMemoryRegion + ReadMemory) |
+| `flash-v307.ndjson` | `flash --confirm-run pc` | stub upload → 全消去 → program → readback verify → reset → confirm-run |
+| `run-semihosting-v203.ndjson` | `run --no-flash --exit-on semihosting` | reset → resume → dmdata 出力 decode → semihosting host(SYS_WRITE0 出力・SYS_EXIT の code 42 伝搬) |
+
+**録れるのは決定的な交換だけ**。`monitor` や timeout 打ち切りの `run` のような **wall-clock で poll 回数が変わる自走ループは replay できない**(記録した DMI 転送数と再生時の読み出し数がずれて divergence になる)。`run --exit-on semihosting` が録れるのは、target 自身の SYS_EXIT で終わり交換が確定するため。framing そのもの(host→target の ACK 同載・count バイアス・非 frame word 破棄・RTT リング/整列)は `crates/dmi` と `cli/src/source.rs` の単体テストで固定する。
+
 ## 再生成
 
 ```sh
