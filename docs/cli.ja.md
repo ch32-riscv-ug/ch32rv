@@ -45,7 +45,7 @@ ch32rv
 │  ├─ regs / reg <read|write> <name>                                               P1  [wlink regs]
 │  └─ dmi <read|write>         DM レジスタ直接操作(expert)                        P2  [minichlink -s/-m, wlink write-reg]
 │
-├─ monitor [--source uart|sdi|dmdata|rtt]   実行時 I/O                             P0(uart)/P1(sdi,dmdata)/P2(rtt)
+├─ monitor [--source uart|sdi|dmdata|rtt]   実行時 I/O(uart/dmdata/rtt は双方向)      P0(uart)/P1(sdi,dmdata,rtt)
 │  ├─ list                     monitor 候補 port の列挙                            P1
 │  └─ sdi <on|off>             SDI print の有効/無効                               P1  [wlink sdi-print]
 │
@@ -147,6 +147,7 @@ chip = "CH32V203C8T6"
 
 - **stdout**: 結果。`--json` 時は単一の JSON object のみ。human 出力時も結果のみ。
 - **stderr**: log・進捗・警告。`--progress ndjson` 時は 1 行 1 event の NDJSON。
+- **streaming command(`monitor` / `run` / `flash --monitor`)の target 出力**: human 時は stdout へ生 byte。`--json` 時は stdout を envelope に譲り、stderr へ `{"ev":"output","source":"<uart|sdi|dmdata|rtt|semihosting>","data":"<text>"}` を 1 chunk 1 行で流す(`data` は UTF-8 文字境界で分割、不正列は U+FFFD)。envelope は stream の終わり(`--duration` 満了 / semihosting exit)に 1 つ。
 - JSON には必ず `contract`(契約版)と `ok` を含む。schema は `docs/contract/` に置き、CLI の版とは独立に versioning する。
 
 ```json
@@ -248,8 +249,9 @@ ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指�
 
 ```text
 ch32rv reset [--halt] [--dm] [--confirm-run]      既定: reset して実行、detach
-ch32rv run <ELF> [--no-flash] [--source dmdata|rtt|uart|sdi]
-             [--exit-on semihosting|timeout] [--duration <s>]  target の exit code を伝搬(HIL 用)
+ch32rv run <ELF> [--no-flash] [--source dmdata|rtt]
+             [--exit-on semihosting|timeout] [--duration <s>]  target の exit code を伝搬(HIL 用)。
+                                                              出力は DMI source のみ(uart/sdi は monitor)。stdin は target へ
 ch32rv recover --method power-off|nrst|unprotect|unbrick
              [--chip <family>]                    特殊消去(power-off/nrst)は --chip 必須
 ```
@@ -315,11 +317,14 @@ ch32rv dbg dmi read|write <addr> [<value>]          DM レジスタ直接(expert
 ch32rv monitor [--source uart|sdi|dmdata|rtt]
   --port <path:/dev/ttyACM0 | usb:VID:PID[:SERIAL][:IFACE]>   省略時は --probe の CDC から導出
   --baud 115200      (uart のみ)
-  --timestamps / --log <file> / --raw
-  --reconnect        再 enumeration 追従(既定 on。upload 直後の配送停止は再 open で直る実測に基づく)
 ch32rv monitor list [--json]                        候補 port と役割(uart/sdi)の対応
 ch32rv monitor sdi <on|off>
 ```
+
+- **入力**: `uart` / `dmdata` / `rtt` は stdin を target へ流す(端末なら行入力、pipe なら EOF で送信終了)。`sdi` は受信のみ。
+- **出力**: stdout へ生 byte。`--json` 時は §3.5 の `output` event(stderr)。
+- **終了**: Ctrl-C か `--duration`。device 喪失(CDC の EOF / DMI 失敗)は exit 0 ではなく 10 / 40 で終わる(wrapper が再起動を判断できるように)。再 enumeration の追従は持たない。
+- **rtt の channel**: control block の up[0] / down[0] のみ流す。複数 channel を持つ block は warning `rtt-channels` を出す(選択機能は需要待ち。release-plan.ja.md §5)。
 
 4 つの `--source` は「4 本の並列 port」ではなく、**2 種類の host 機構**に分かれる(ArduinoCore-CH32 の Serial / SerialSDI / SerialDMDATA / SerialRTT ライブラリが target 側の一次仕様)。
 
@@ -431,12 +436,13 @@ ch32rv complete <bash|zsh|fish|powershell>          補完スクリプトを std
 ```text
 ch32rv arduino discovery       Pluggable Discovery protocol(stdio JSON)。probe を wchlink://<serial> の port として公開し、
                                ISP device・CDC monitor port(uart/sdi の役割判定付き)も列挙する
-ch32rv arduino monitor         Pluggable Monitor protocol(stdio JSON)。--source uart|sdi|dmdata|rtt を wrap する
+ch32rv arduino monitor         Pluggable Monitor protocol(stdio JSON)。DMI source(dmdata|rtt)を双方向に wrap する。
+                               uart/sdi は IDE の builtin serial-monitor が CDC を直接開くので wrap しない
 ```
 
 Arduino 専用の書き込みロジックは持たない。recipe は §5 の通常 command を呼ぶ。
 
-- **実装状況(2026-09-02)**: cmd_arduino.rs。`discovery` は HELLO/START/LIST/START_SYNC/STOP/QUIT に応答、probe を `wchlink://<serial>` port(protocol=`wchlink`、properties に serial/vid/pid/mode)として列挙。**USB descriptor だけから列挙**し AttachChip しないので、同一 probe への upload/monitor 実行中でも乱さない(A-2 lock 前提)。START_SYNC は現在 port を `add` で一度出す(USB hotplug 監視は後続、IDE の再 LIST に委ねる)。`monitor` は HELLO/DESCRIBE/CONFIGURE/OPEN/CLOSE/QUIT、**OPEN で IDE 指定の `<host:port>` へ TCP client 接続**し、別スレッドで source を pipe(現状 `dmdata` を配線=probe 非依存で確実。uart/sdi/rtt は DESCRIBE で advertise、配線は後続)。実機検証: discovery が接続5 probe を JSON port として LIST、monitor が全ハンドシェイク完了し L103 の SerialDMDATA を local TCP へ pipe。ISP device・CDC port の列挙は ISP/uart 実装と合わせて後続。
+- **実装状況(2026-09-02)**: cmd_arduino.rs。`discovery` は HELLO/START/LIST/START_SYNC/STOP/QUIT に応答、probe を `wchlink://<serial>` port(protocol=`wchlink`、properties に serial/vid/pid/mode)として列挙。**USB descriptor だけから列挙**し AttachChip しないので、同一 probe への upload/monitor 実行中でも乱さない(A-2 lock 前提)。START_SYNC は現在 port を `add` で一度出す(USB hotplug 監視は後続、IDE の再 LIST に委ねる)。`monitor` は HELLO/DESCRIBE/CONFIGURE/OPEN/CLOSE/QUIT、**OPEN で IDE 指定の `<host:port>` へ TCP client 接続**し、別スレッドで source を双方向に pipe(`dmdata` / `rtt`。IDE の送信欄の入力は target の `read()` へ届く。uart/sdi は builtin serial-monitor が CDC を直接開くので wrap しない)。実機検証: discovery が接続5 probe を JSON port として LIST、monitor が全ハンドシェイク完了し L103 の SerialDMDATA を local TCP へ pipe。ISP device・CDC port の列挙は ISP/uart 実装と合わせて後続。
 
 ## 5. 呼び出し例
 

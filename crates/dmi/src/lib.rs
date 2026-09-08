@@ -32,7 +32,7 @@
 
 pub mod dm;
 
-pub use dm::{DebugModule, FlashProgMode, RegName};
+pub use dm::{DebugModule, DmdataPoll, FlashProgMode, RegName};
 
 use thiserror::Error;
 

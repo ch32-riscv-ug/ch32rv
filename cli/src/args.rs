@@ -280,6 +280,7 @@ pub struct RunArgs {
     /// Attach only; do not flash
     #[arg(long)]
     pub no_flash: bool,
+    /// Runtime output source: dmdata (default) or rtt (both over DMI; stdin goes to the target)
     #[arg(long, value_enum)]
     pub source: Option<MonitorSource>,
     /// When to stop: `semihosting` (propagate the target's exit code) or `timeout` (stream for --duration). Default: timeout.
@@ -473,17 +474,9 @@ pub struct MonitorArgs {
     /// Port selector: path:<dev> | usb:VID:PID[:SERIAL][:IFACE] (default: derived from --probe's CDC)
     #[arg(long)]
     pub port: Option<String>,
+    /// Baud rate of the physical UART bridge (uart only)
     #[arg(long, default_value_t = 115200)]
     pub baud: u32,
-    #[arg(long)]
-    pub timestamps: bool,
-    #[arg(long)]
-    pub log: Option<PathBuf>,
-    #[arg(long)]
-    pub raw: bool,
-    /// Disable re-enumeration tracking (enabled by default)
-    #[arg(long)]
-    pub no_reconnect: bool,
 }
 
 #[derive(Subcommand)]

@@ -24,6 +24,7 @@ mod config;
 mod parse;
 mod progress;
 mod session;
+mod source;
 
 use clap::Parser;
 

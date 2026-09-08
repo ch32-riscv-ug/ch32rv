@@ -1,14 +1,17 @@
 //! en: `run` (docs/cli.ja.md §4.1) - the HIL runner: flash an image (unless `--no-flash`), reset to
-//! run, stream the target's runtime output, and end on either a timeout or a semihosting exit whose
-//! code is propagated. Self-contained over the Debug Module (dmdata output + a semihosting host).
-//! ja: `run`。HIL 用ランナー。書込→reset 実行→runtime 出力を流し、timeout か semihosting の
-//! exit(コードを伝搬)で終わる。DM 上で自己完結(dmdata 出力 + semihosting ホスト)。
+//! run, stream the target's runtime output (dmdata or rtt, stdin going back to the target), and
+//! end on either a timeout or a semihosting exit whose code is propagated. Self-contained over the
+//! Debug Module. Under `--json` the output goes to stderr as `output` events and stdout carries
+//! only the result envelope.
+//! ja: `run`。HIL 用ランナー。書込→reset 実行→runtime 出力(dmdata / rtt、stdin は target へ)を
+//! 流し、timeout か semihosting の exit(コードを伝搬)で終わる。DM 上で自己完結。`--json` では
+//! 出力は stderr の `output` event、stdout は envelope のみ。
 
-use std::io::Write as _;
 use std::process::ExitCode;
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
-use ch32rv_contract::policy::ImageFormat;
+use ch32rv_contract::policy::{ImageFormat, MonitorSource};
 use ch32rv_contract::{ErrorKind, Warning};
 use ch32rv_dmi::RegName;
 use ch32rv_flash::params_for_family;
@@ -17,6 +20,7 @@ use crate::args::{Cli, ExitOn, RunArgs};
 use crate::cmd_probe::{fail, select_entry};
 use crate::parse;
 use crate::session::Session;
+use crate::source::{self, DmiSource, Sink};
 
 /// RISC-V semihosting call sequence: `slli x0,x0,0x1f; ebreak; srai x0,x0,7`.
 const SEMI_SLLI: u32 = 0x01f0_1013;
@@ -52,15 +56,14 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
         None | Some(ExitOn::Timeout) => ExitMode::Timeout(cli.duration.map(Duration::from_secs)),
     };
 
-    // Only dmdata streaming is wired into run so far (probe-agnostic; no CDC needed).
-    if let Some(src) = args.source
-        && !matches!(src, ch32rv_contract::policy::MonitorSource::Dmdata)
-    {
+    // run streams over DMI only (probe-agnostic, no CDC involved): dmdata (default) or rtt.
+    let source = args.source.unwrap_or(MonitorSource::Dmdata);
+    if matches!(source, MonitorSource::Uart | MonitorSource::Sdi) {
         return fail(
             cli,
             CMD,
             ErrorKind::CapabilityUnsupported,
-            "run currently streams via --source dmdata; uart/sdi/rtt are a follow-up",
+            "run streams over DMI: --source dmdata or rtt (uart/sdi are `monitor` sources)",
             None,
         );
     }
@@ -148,46 +151,64 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
     }
 
     // Reset to run the freshly programmed image. For semihosting the ebreak-debug CSR is set
-    // *after* the reset (in run_semihosting) so a core reset cannot clear it.
+    // *after* the reset (so a core reset cannot clear it) and *before* the source is opened (the
+    // rtt scan lets the core run between attempts, and an ebreak must already trap to debug mode).
     let _ = session.link().soft_reset();
+    if matches!(exit_mode, ExitMode::Semihosting { .. }) {
+        let mut dm = session.dm();
+        let _ = dm.halt();
+        let _ = dm.enable_ebreak_debug();
+    }
+    let mut src = match DmiSource::open(&mut session, source, &mut warnings) {
+        Ok(s) => s,
+        Err(e) => return crate::cmd_monitor::open_error(cli, CMD, e),
+    };
     if !cli.json {
         eprintln!(
-            "run: {} (Ctrl-C to stop)",
+            "run: {} via {} (Ctrl-C to stop; stdin goes to the target)",
+            src.name(),
             entry.dev.serial().unwrap_or("?")
         );
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
     }
+    let input = source::spawn_reader(std::io::stdin());
 
     match exit_mode {
-        ExitMode::Timeout(dur) => run_stream(cli, CMD, &mut session, dur, warnings),
-        ExitMode::Semihosting { cap } => run_semihosting(cli, CMD, &mut session, cap, warnings),
+        ExitMode::Timeout(dur) => {
+            run_stream(cli, CMD, &mut session, &mut src, &input, dur, warnings)
+        }
+        ExitMode::Semihosting { cap } => {
+            run_semihosting(cli, CMD, &mut session, &mut src, &input, cap, warnings)
+        }
     }
 }
 
-/// Stream dmdata output until the deadline (or forever), then exit 0.
+/// Stream the source's output until the deadline (or forever), then exit 0.
 fn run_stream(
     cli: &Cli,
     cmd: &str,
     session: &mut Session,
+    src: &mut DmiSource,
+    input: &Receiver<Vec<u8>>,
     dur: Option<Duration>,
     warnings: Vec<Warning>,
 ) -> ExitCode {
     let deadline = dur.map(|d| Instant::now() + d);
-    let mut dm = session.dm();
-    let _ = dm.resume();
-    let mut out = std::io::stdout().lock();
-    loop {
-        if let Some(dl) = deadline
-            && Instant::now() >= dl
-        {
-            break;
-        }
-        match dm.dmdata_poll(&[]) {
-            Ok(Some(bytes)) if !bytes.is_empty() => {
-                let _ = out.write_all(&bytes);
-                let _ = out.flush();
-            }
-            _ => std::thread::sleep(Duration::from_millis(20)),
-        }
+    // Open leaves the core halted; the sources only move while it runs.
+    let _ = session.dm().resume();
+    let mut sink = Sink::new(cli, src.name());
+    let result = source::stream(session, src, &mut sink, input, deadline);
+    sink.finish();
+    if let Err(e) = result {
+        return fail(
+            cli,
+            cmd,
+            source::dmi_error_kind(&e),
+            format!("{} stream failed: {e}", src.name()),
+            None,
+        );
     }
     if cli.json {
         let mut env = ch32rv_contract::ResultEnvelope::success(cmd);
@@ -200,23 +221,25 @@ fn run_stream(
 }
 
 /// Run, servicing semihosting calls, until SYS_EXIT (propagate the code) or the safety cap.
+/// The caller has already enabled ebreak-to-debug-mode on the (halted) core.
 fn run_semihosting(
     cli: &Cli,
     cmd: &str,
     session: &mut Session,
+    src: &mut DmiSource,
+    input: &Receiver<Vec<u8>>,
     cap: Duration,
     warnings: Vec<Warning>,
 ) -> ExitCode {
     let deadline = Instant::now() + cap;
-    let mut out = std::io::stdout().lock();
-    let mut dm = session.dm();
-    // ebreak must trap to debug mode (halt) rather than the target's own handler. Setting the CSR
-    // requires the hart halted; do it now (post-reset), then resume into the application.
-    let _ = dm.halt();
-    let _ = dm.enable_ebreak_debug();
-    let _ = dm.resume();
+    let mut sink = Sink::new(cli, src.name());
+    let mut semi = Sink::new(cli, "semihosting");
+    let mut pending = Vec::new();
+    let _ = session.dm().resume();
     loop {
         if Instant::now() >= deadline {
+            sink.finish();
+            semi.finish();
             let msg = "run: timed out waiting for a semihosting exit";
             if cli.json {
                 let env =
@@ -226,13 +249,12 @@ fn run_semihosting(
             eprintln!("{msg}");
             return ErrorKind::TransportTimeout.exit_code().into();
         }
-        // Also drain any dmdata output while running.
-        if let Ok(Some(b)) = dm.dmdata_poll(&[])
-            && !b.is_empty()
-        {
-            let _ = out.write_all(&b);
-            let _ = out.flush();
+        // Exchange runtime output / stdin while running (an rtt poll leaves a halted core halted).
+        source::drain_input(input, &mut pending);
+        if let Ok(b) = src.poll(session, &mut pending) {
+            sink.write(&b);
         }
+        let mut dm = session.dm();
         match dm.is_halted() {
             Ok(false) => {
                 std::thread::sleep(Duration::from_millis(5));
@@ -264,6 +286,8 @@ fn run_semihosting(
                 match op {
                     SYS_EXIT | SYS_EXIT_EXTENDED => {
                         let code = semihosting_exit_code(&mut dm, op, arg);
+                        sink.finish();
+                        semi.finish();
                         if cli.json {
                             let mut env = ch32rv_contract::ResultEnvelope::success(cmd);
                             env.result = Some(serde_json::json!({ "exit": code }));
@@ -283,11 +307,10 @@ fn run_semihosting(
                                 if byte == 0 {
                                     break 'outer;
                                 }
-                                let _ = out.write_all(&[byte]);
+                                semi.write(&[byte]);
                             }
                             addr = addr.wrapping_add(16);
                         }
-                        let _ = out.flush();
                         // Skip the ebreak: resume from the srai (dpc + 4).
                         let _ = dm.write_reg(RegName::Pc, dpc.wrapping_add(4));
                         let _ = dm.resume();
@@ -296,8 +319,7 @@ fn run_semihosting(
                         if let Ok(c) = dm.read_mem(arg, 1)
                             && let Some(&byte) = c.first()
                         {
-                            let _ = out.write_all(&[byte]);
-                            let _ = out.flush();
+                            semi.write(&[byte]);
                         }
                         let _ = dm.write_reg(RegName::Pc, dpc.wrapping_add(4));
                         let _ = dm.resume();
@@ -312,6 +334,8 @@ fn run_semihosting(
             _ => {
                 // A non-semihosting halt (a real breakpoint/trap): the program is not running as
                 // expected after program+reset, same class as flash's confirm-run failure (exit 50).
+                sink.finish();
+                semi.finish();
                 let msg = format!("run: target halted at {dpc:#010x} (not a semihosting call)");
                 if cli.json {
                     let env = ch32rv_contract::ResultEnvelope::failure(

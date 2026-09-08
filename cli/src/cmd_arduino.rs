@@ -1,10 +1,13 @@
 //! en: `arduino discovery` / `arduino monitor` (docs/cli.ja.md §4.11): the Arduino Pluggable
 //! Discovery and Monitor protocols (line-based stdio JSON). Discovery exposes each WCH probe as a
-//! `wchlink://<serial>` port; Monitor wraps a `ch32rv monitor` source (dmdata/sdi/uart) as the
-//! IDE's Serial Monitor. Machine-facing: never mixes human text onto stdout.
+//! `wchlink://<serial>` port; Monitor wraps the DMI sources (dmdata / rtt) as the IDE's Serial
+//! Monitor, both ways (what the user types reaches the sketch). uart / sdi need no wrapper: the
+//! IDE opens the probe's CDC port with its builtin serial monitor. Machine-facing: never mixes
+//! human text onto stdout.
 //! ja: `arduino discovery`/`monitor`。Arduino の Pluggable Discovery/Monitor プロトコル(行単位の
-//! stdio JSON)。discovery は各 WCH probe を `wchlink://<serial>` port として公開、monitor は
-//! `ch32rv monitor` の source を IDE の Serial Monitor として wrap する。
+//! stdio JSON)。discovery は各 WCH probe を `wchlink://<serial>` port として公開、monitor は DMI
+//! source(dmdata / rtt)を IDE の Serial Monitor として双方向に wrap する。uart / sdi は IDE の
+//! builtin serial monitor が CDC を直接開くので wrap 不要。
 
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
@@ -87,21 +90,37 @@ fn emit(out: &mut impl Write, v: &Value) {
 
 // ---- arduino monitor (Pluggable Monitor protocol) ----
 
-use std::net::TcpStream;
+use std::net::{Shutdown, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
+use ch32rv_contract::policy::MonitorSource;
+
+use crate::source::{self, DmiSource};
+
+/// The sources this monitor wraps (the DMI ones; uart/sdi are the IDE's own serial monitor).
+const SOURCES: [MonitorSource; 2] = [MonitorSource::Dmdata, MonitorSource::Rtt];
+
 /// `arduino monitor`: the Pluggable Monitor protocol over stdio. OPEN connects (TCP client) to the
-/// IDE-provided address and pipes the target's runtime output to it. `source` (dmdata/uart/sdi/rtt)
-/// selects the backend - dmdata (probe-agnostic DMI mailbox) is the default and the wired one.
+/// IDE-provided address and pipes the target's runtime output to it and the IDE's input back.
+/// `source` (dmdata, the default, or rtt) selects the backend.
 pub fn monitor(_cli: &Cli) -> ExitCode {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
-    let mut source = "dmdata".to_string();
+    let mut source = MonitorSource::Dmdata;
     let stop = Arc::new(AtomicBool::new(false));
-    let mut stream: Option<JoinHandle<()>> = None;
+    let mut stream: Option<(JoinHandle<()>, TcpStream)> = None;
+
+    // CLOSE / QUIT: stop the pipe thread and shut the socket so its blocked reads/writes end.
+    let close = |stream: &mut Option<(JoinHandle<()>, TcpStream)>| {
+        stop.store(true, Ordering::SeqCst);
+        if let Some((h, sock)) = stream.take() {
+            let _ = sock.shutdown(Shutdown::Both);
+            let _ = h.join();
+        }
+    };
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
@@ -122,17 +141,28 @@ pub fn monitor(_cli: &Cli) -> ExitCode {
                         "configuration_parameters": {
                             "source": {
                                 "label":"Runtime output source","type":"enum",
-                                "values":["dmdata","uart","sdi","rtt"],"selected":"dmdata"
+                                "values": SOURCES.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                                "selected": source.as_str()
                             }
                         }
                     }
                 }),
             ),
             "CONFIGURE" => {
-                if parts.len() >= 3 && parts[1] == "source" {
-                    source = parts[2].to_string();
+                let picked = (parts.len() >= 3 && parts[1] == "source")
+                    .then(|| SOURCES.iter().find(|s| s.as_str() == parts[2]))
+                    .flatten();
+                match picked {
+                    Some(s) => {
+                        source = *s;
+                        emit(&mut out, &json!({"eventType":"configure","message":"OK"}));
+                    }
+                    None => emit(
+                        &mut out,
+                        &json!({"eventType":"configure","error":true,
+                        "message":"CONFIGURE source <dmdata|rtt>"}),
+                    ),
                 }
-                emit(&mut out, &json!({"eventType":"configure","message":"OK"}));
             }
             "OPEN" => {
                 // OPEN <client-host:port> <port-address>
@@ -143,22 +173,13 @@ pub fn monitor(_cli: &Cli) -> ExitCode {
                     );
                     continue;
                 };
-                if source != "dmdata" {
-                    emit(
-                        &mut out,
-                        &json!({"eventType":"open","error":true,
-                        "message":format!("source {source:?} is not wired yet; CONFIGURE source dmdata")}),
-                    );
-                    continue;
-                }
                 let serial = port.strip_prefix("wchlink://").unwrap_or(port).to_string();
-                match TcpStream::connect(client) {
-                    Ok(sock) => {
+                match TcpStream::connect(client).and_then(|s| Ok((s.try_clone()?, s))) {
+                    Ok((keep, sock)) => {
                         stop.store(false, Ordering::SeqCst);
                         let stop2 = stop.clone();
-                        stream = Some(std::thread::spawn(move || {
-                            pipe_dmdata(&serial, sock, stop2)
-                        }));
+                        let handle = std::thread::spawn(move || pipe(&serial, source, sock, stop2));
+                        stream = Some((handle, keep));
                         emit(&mut out, &json!({"eventType":"open","message":"OK"}));
                     }
                     Err(e) => emit(
@@ -169,17 +190,11 @@ pub fn monitor(_cli: &Cli) -> ExitCode {
                 }
             }
             "CLOSE" => {
-                stop.store(true, Ordering::SeqCst);
-                if let Some(h) = stream.take() {
-                    let _ = h.join();
-                }
+                close(&mut stream);
                 emit(&mut out, &json!({"eventType":"close","message":"OK"}));
             }
             "QUIT" => {
-                stop.store(true, Ordering::SeqCst);
-                if let Some(h) = stream.take() {
-                    let _ = h.join();
-                }
+                close(&mut stream);
                 emit(&mut out, &json!({"eventType":"quit","message":"OK"}));
                 return ExitCode::SUCCESS;
             }
@@ -191,12 +206,13 @@ pub fn monitor(_cli: &Cli) -> ExitCode {
             ),
         }
     }
+    close(&mut stream);
     ExitCode::SUCCESS
 }
 
-/// Attach to the probe with `serial`, resume the core, and pipe its SerialDMDATA output to `sock`
-/// until `stop` is set or the socket errors.
-fn pipe_dmdata(serial: &str, mut sock: TcpStream, stop: Arc<AtomicBool>) {
+/// Attach to the probe with `serial`, open `source`, resume the core, and exchange the target's
+/// output / the IDE's input with `sock` until `stop` is set or the socket goes away.
+fn pipe(serial: &str, source: MonitorSource, mut sock: TcpStream, stop: Arc<AtomicBool>) {
     let Ok(entries) = crate::cmd_probe::wch_devices() else {
         return;
     };
@@ -215,17 +231,25 @@ fn pipe_dmdata(serial: &str, mut sock: TcpStream, stop: Arc<AtomicBool>) {
         Ok(s) => s,
         Err(_) => return,
     };
-    let mut dm = session.dm();
-    let _ = dm.resume(); // the mailbox only moves while the core runs
+    let Ok(mut src) = DmiSource::open(&mut session, source, &mut warnings) else {
+        return;
+    };
+    let _ = session.dm().resume(); // the sources only move while the core runs
+    let Ok(reader) = sock.try_clone() else {
+        return;
+    };
+    let input = source::spawn_reader(reader);
+    let mut pending = Vec::new();
     while !stop.load(Ordering::SeqCst) {
-        match dm.dmdata_poll(&[]) {
-            Ok(Some(bytes)) if !bytes.is_empty() => {
+        source::drain_input(&input, &mut pending);
+        match src.poll(&mut session, &mut pending) {
+            Ok(bytes) if !bytes.is_empty() => {
                 if sock.write_all(&bytes).is_err() {
                     break;
                 }
                 let _ = sock.flush();
             }
-            Ok(_) => std::thread::sleep(Duration::from_millis(2)),
+            Ok(_) => std::thread::sleep(src.idle()),
             Err(_) => break,
         }
     }
