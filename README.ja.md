@@ -73,7 +73,7 @@ ch32rv erase --all
 ch32rv reset
 
 ch32rv gdb                              # GDB server を 127.0.0.1:3333 で(HW + flash BP)
-ch32rv monitor --source dmdata          # runtime 出力を stream(uart / sdi / dmdata)
+ch32rv monitor --source dmdata          # runtime I/O(uart / sdi / dmdata / rtt)
 ch32rv capabilities                     # この probe + target の組で何ができるか
 ```
 
@@ -92,12 +92,12 @@ ch32rv capabilities                     # この probe + target の組で何が�
 | `probe` | probe 管理: `list`、`info`、firmware `info` / `check` / `update`(IAP 経由で probe 自身の firmware を書換)/ `exit-iap`、`mode get` |
 | `target` | `info`、構造化 `option` byte(`get` / `set` / `write-raw` / `reset`)、`protect` |
 | `dbg` / `gdb` | ワンショット制御(halt / resume / step / regs / reg / dmi)· GDB server |
-| `monitor` | runtime I/O: uart / sdi / dmdata |
+| `monitor` | runtime I/O: uart / sdi / dmdata / rtt(uart / dmdata / rtt は stdin を target へ) |
 | `db` / `capabilities` | 内蔵デバイス DB の閲覧 · probe×firmware×target の可否マトリクス |
 | `doctor` / `version` / `complete` | 環境診断 · バージョン · shell 補完 |
 | `arduino` | Arduino IDE 統合(`discovery` / `monitor` Pluggable プロトコル) |
 
-`--help` に出る一部の経路 — `run`(HIL)・`dap`・`isp`・`boot`・`monitor rtt` — は後の `0.x` 予定で、まだ検証範囲外。
+`--help` に出る一部の経路 — `run`(HIL)・`dap`・`isp`・`boot` — は後の `0.x` 予定で、まだ検証範囲外。
 
 ## ライブラリ crate
 

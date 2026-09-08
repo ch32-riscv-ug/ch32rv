@@ -103,6 +103,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - gap 7 series(V205/V407/V467/X305/X315/M030/M103)device 対応 ← データ側未発売でブロック
 - option layout(register CSV)、multi-bit option、V4F FPU レジスタ、vFlash(load)
 - macOS の実機 verified 昇格、arduino discovery の USB hotplug 追随、capture の replay(fixture 再生)。**Windows は WCH 純正ドライバ経路で verified 済み(依頼 B-2 完了)**
+- `monitor` の外部出口(TCP `--listen` / pty)← **需要待ち**。dmdata/rtt を標準シリアルツール(screen/minicom/PlatformIO/serial GUI)へ繋ぐ IF 候補。IDE は pluggable monitor、端末・CI は stdio で足りるため保留。要るなら TCP(全 OS、std のみ、OpenOCD `rtt server` 同型、channel→port)→ pty(Linux/macOS 限定、pty crate 依存、symlink 管理、読み手不在時は target から汲み続けて host で捨てる)の順。unix の代替: `socat pty,raw,echo=0,link=/tmp/ch32rv0 exec:'ch32rv monitor --source rtt'`
 
 ## 6. リリース前チェック
 

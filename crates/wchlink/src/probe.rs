@@ -520,16 +520,23 @@ impl WchLink {
     /// en: Fast bulk memory read via the WCH-Link (SetReadMemoryRegion + Program ReadMemory +
     /// bulk from the data endpoint) - the read counterpart of [`Self::write_flash`], far faster than
     /// word-by-word DMI reads over a high-latency link (usbipd, the Windows WCH-driver ioctl path).
-    /// `len` is rounded up to 4 bytes. Works for any readable address (flash / system / RAM). The
-    /// chip must be attached. The link returns each 32-bit word byte-reversed; this restores LE.
+    /// Works for any readable address (flash / system / RAM) and any byte alignment: the probe
+    /// transfers whole words, so the request is widened to the enclosing word-aligned window and
+    /// trimmed back (an unaligned start handed to the probe directly comes back scrambled -
+    /// measured while draining an RTT ring from an odd read offset). The chip must be attached.
+    /// The link returns each 32-bit word byte-reversed; this restores LE.
     /// ja: WCH-Link の高速バルク read(SetReadMemoryRegion + ReadMemory + data EP からバルク)。
-    /// word 単位 DMI read より桁違いに速い(usbipd / Windows の ioctl 経路で顕著)。len は 4 に切上げ。
+    /// word 単位 DMI read より桁違いに速い(usbipd / Windows の ioctl 経路で顕著)。probe は word
+    /// 単位で転送するので、要求を word 境界の窓に広げて読み、端を切り落として返す(非整列の先頭を
+    /// そのまま渡すと化ける。RTT リングを奇数 offset から汲んで実測)。
     pub fn read_mem(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, WchLinkError> {
-        let len4 = len.div_ceil(4) * 4;
+        let start = addr & !3;
+        let skip = (addr - start) as usize;
+        let len4 = (skip as u32 + len).div_ceil(4) * 4;
         self.iface.open_data_endpoints(DATA_EP_OUT, DATA_EP_IN)?;
         // SetReadMemoryRegion (cmd 0x03): start_addr BE32 + len BE32.
         let mut region = Vec::with_capacity(8);
-        region.extend_from_slice(&addr.to_be_bytes());
+        region.extend_from_slice(&start.to_be_bytes());
         region.extend_from_slice(&len4.to_be_bytes());
         let _ = self.command(CMD_SET_READ_MEM_REGION, &region)?;
         // Program ReadMemory (0x0c), then stream len4 bytes from the data endpoint.
@@ -550,6 +557,7 @@ impl WchLink {
             buf.swap(i + 1, i + 2);
             i += 4;
         }
+        buf.drain(..skip);
         buf.truncate(len as usize);
         Ok(buf)
     }

@@ -8,7 +8,7 @@
   "properties": {
     "ev": {
       "type": "string",
-      "enum": ["phase", "progress", "retry", "warn", "log"]
+      "enum": ["phase", "progress", "retry", "warn", "log", "output"]
     }
   },
   "oneOf": [
@@ -53,6 +53,14 @@
         "msg": { "type": "string" }
       },
       "required": ["ev", "level", "msg"]
+    },
+    {
+      "properties": {
+        "ev": { "const": "output" },
+        "source": { "type": "string", "description": "uart / sdi / dmdata / rtt / semihosting" },
+        "data": { "type": "string", "description": "target の実行時出力(UTF-8 文字境界で分割。--json 時の monitor / run)" }
+      },
+      "required": ["ev", "source", "data"]
     }
   ]
 }

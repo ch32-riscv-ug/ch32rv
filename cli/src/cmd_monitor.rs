@@ -1,19 +1,18 @@
-//! en: `monitor` (docs/cli.ja.md §4.5). Two backends, per the corrected design:
+//! en: `monitor` (docs/cli.ja.md §4.5). Two backends:
 //!   - CDC serial (`uart`, `sdi`): open the probe's CDC port. `sdi` first tells the LinkE to
 //!     forward the target's DM data registers to that same port (LinkE only; mixes with uart).
-//!   - DMI (`dmdata`, `rtt`): the host reads the target's debug registers directly while the
-//!     core runs. `dmdata` polls the ch32fun/minichlink data0/data1 mailbox (SerialDMDATA).
+//!     `uart` also forwards stdin to the port; `sdi` is receive-only.
+//!   - DMI (`dmdata`, `rtt`): the host reads the target's debug registers / RAM directly while
+//!     the core runs, and pushes stdin to the target the same way. The sources themselves live in
+//!     [`crate::source`] and are shared with `run` and `arduino monitor`.
 //!
-//! `rtt` finds a SEGGER-format control block in RAM (by scanning for its magic), then drains the
-//! up (target->host) ring buffer. Reading arbitrary RAM and writing back the read offset both go
-//! over the Debug Module, which needs the hart halted, so this backend briefly halts the core once
-//! per poll (unlike probe-rs's background access, so the target's timers drift a little while a
-//! monitor is attached). The loop runs until Ctrl-C or, in tests, a bounded run via `--timeout`.
+//! Output goes to stdout as raw bytes; under `--json` it goes to stderr as `output` NDJSON events
+//! so stdout keeps the single result envelope (docs/cli.ja.md §3.5). The loop runs until Ctrl-C
+//! or `--duration`; losing the device ends it with a failure exit, not 0.
 //!
 //! ja: `monitor`。CDC serial(uart/sdi)と DMI(dmdata/rtt)の 2 backend。設計は cli.ja.md §4.5。
-//! `rtt` は RAM 内の SEGGER 形式 control block を magic 走査で見つけ up(target→host)リングを
-//! 汲む。RAM 読みと read offset 書戻しは DM 経由=hart halt 要なので poll ごとに一瞬 halt する
-//! (probe-rs の background access と違い target のタイマが僅かにドリフトする)。
+//! uart/dmdata/rtt は stdin を target へ流す(sdi は受信のみ)。出力は stdout へ生 byte、`--json`
+//! 時は stderr の `output` event(stdout は envelope 専用)。device 喪失は失敗 exit で終わる。
 
 use std::io::Write;
 use std::process::ExitCode;
@@ -26,6 +25,7 @@ use crate::args::{Cli, MonitorArgs, MonitorCmd, SwitchState};
 use crate::cmd_probe::{Entry, fail, mode_str, select_entry};
 use crate::parse;
 use crate::session::Session;
+use crate::source::{self, DmiSource, OpenError, Sink};
 
 pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
     match &args.cmd {
@@ -36,8 +36,7 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
     match args.source {
         MonitorSource::Uart => run_uart(cli, args),
         MonitorSource::Sdi => run_sdi(cli, args),
-        MonitorSource::Dmdata => run_dmdata(cli, args),
-        MonitorSource::Rtt => run_rtt(cli, args),
+        MonitorSource::Dmdata | MonitorSource::Rtt => run_dmi(cli, args.source),
     }
 }
 
@@ -45,6 +44,23 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
 /// (distinct from `--timeout`, which is the per-transfer transport timeout).
 fn run_duration(cli: &Cli) -> Option<Duration> {
     cli.duration.map(Duration::from_secs)
+}
+
+/// Normal end of a stream (`--duration` elapsed): the JSON envelope, or plain exit 0.
+fn finish_ok(
+    cli: &Cli,
+    cmd: &str,
+    source: &str,
+    warnings: Vec<ch32rv_contract::Warning>,
+) -> ExitCode {
+    if cli.json {
+        let mut env = ch32rv_contract::ResultEnvelope::success(cmd);
+        env.result = Some(serde_json::json!({ "source": source }));
+        env.warnings = warnings;
+        crate::print_envelope(&env)
+    } else {
+        ExitCode::SUCCESS
+    }
 }
 
 // ---- CDC serial backend ----
@@ -70,27 +86,29 @@ fn resolve_port(
     }
 }
 
-/// en: Stream the probe's CDC port to stdout until the deadline / Ctrl-C.
+/// en: Stream the probe's CDC port until the deadline / Ctrl-C.
 /// `raw=true` opens the tty as a plain file (like `cat`) WITHOUT touching modem control, which
 /// is required for SDI: the serialport crate asserts DTR on open and the WCH-LinkE then stops
-/// forwarding SDI after one line (measured). `raw=false` uses the serialport crate so `--baud`
-/// takes effect for the physical UART bridge (where DTR is harmless).
-/// ja: probe の CDC を stdout へ流す。`raw=true` は tty を生ファイルで開き modem 線を触らない
-/// (SDI 必須。serialport は DTR を assert して forward を止める実測)。`raw=false` は
-/// serialport で baud を効かせる(物理 UART bridge 用、DTR 無害)。
+/// forwarding SDI after one line (measured). That path is receive-only. `raw=false` uses the
+/// serialport crate so `--baud` takes effect for the physical UART bridge (where DTR is
+/// harmless) and forwards stdin to the port.
+/// ja: probe の CDC を流す。`raw=true` は tty を生ファイルで開き modem 線を触らない(SDI 必須。
+/// serialport は DTR を assert して forward を止める実測)、受信のみ。`raw=false` は serialport で
+/// baud を効かせ(物理 UART bridge 用、DTR 無害)、stdin を port へ流す。
 fn stream_port(
     cli: &Cli,
     cmd: &str,
     port_path: &str,
     baud: u32,
-    label: &str,
+    label: &'static str,
     raw: bool,
+    warnings: Vec<ch32rv_contract::Warning>,
 ) -> ExitCode {
     if !cli.json {
         eprintln!("monitor: {label} on {port_path} @ {baud} baud (Ctrl-C to stop)");
     }
     let deadline = run_duration(cli).map(|d| Instant::now() + d);
-    let mut out = std::io::stdout().lock();
+    let mut sink = Sink::new(cli, label);
     let mut buf = [0u8; 512];
 
     #[cfg(unix)]
@@ -118,21 +136,33 @@ fn stream_port(
             if let Some(dl) = deadline
                 && Instant::now() >= dl
             {
-                break;
+                sink.finish();
+                return finish_ok(cli, cmd, label, warnings);
             }
             match file.read(&mut buf) {
-                Ok(0) => break,
-                Ok(n) => {
-                    let _ = out.write_all(&buf[..n]);
-                    let _ = out.flush();
+                Ok(0) => {
+                    sink.finish();
+                    return fail(
+                        cli,
+                        cmd,
+                        ErrorKind::DeviceNotFound,
+                        format!("{port_path} closed (probe disconnected?)"),
+                        None,
+                    );
                 }
+                Ok(n) => sink.write(&buf[..n]),
                 Err(e) => {
-                    eprintln!("\nmonitor: serial error: {e}");
-                    break;
+                    sink.finish();
+                    return fail(
+                        cli,
+                        cmd,
+                        ErrorKind::TransferFailed,
+                        format!("read {port_path}: {e}"),
+                        None,
+                    );
                 }
             }
         }
-        return ExitCode::SUCCESS;
     }
 
     // en: The raw-open path above is unix-only; on other platforms `raw` has no effect here, so
@@ -156,26 +186,45 @@ fn stream_port(
             );
         }
     };
+    let input = source::spawn_reader(std::io::stdin());
+    let mut pending = Vec::new();
     loop {
         if let Some(dl) = deadline
             && Instant::now() >= dl
         {
-            break;
+            sink.finish();
+            return finish_ok(cli, cmd, label, warnings);
+        }
+        source::drain_input(&input, &mut pending);
+        if !pending.is_empty() {
+            if let Err(e) = sp.write_all(&pending) {
+                sink.finish();
+                return fail(
+                    cli,
+                    cmd,
+                    ErrorKind::TransferFailed,
+                    format!("write {port_path}: {e}"),
+                    None,
+                );
+            }
+            pending.clear();
         }
         match std::io::Read::read(&mut sp, &mut buf) {
             Ok(0) => {}
-            Ok(n) => {
-                let _ = out.write_all(&buf[..n]);
-                let _ = out.flush();
-            }
+            Ok(n) => sink.write(&buf[..n]),
             Err(ref e) if e.kind() == std::io::ErrorKind::TimedOut => {}
             Err(e) => {
-                eprintln!("\nmonitor: serial error: {e}");
-                break;
+                sink.finish();
+                return fail(
+                    cli,
+                    cmd,
+                    ErrorKind::TransferFailed,
+                    format!("read {port_path}: {e}"),
+                    None,
+                );
             }
         }
     }
-    ExitCode::SUCCESS
 }
 
 /// `uart`: the physical UART bridge - just open the probe's CDC port, no attach needed.
@@ -194,7 +243,7 @@ fn run_uart(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Ok(p) => p,
         Err(c) => return c,
     };
-    stream_port(cli, CMD, &port, args.baud, "uart", false)
+    stream_port(cli, CMD, &port, args.baud, "uart", false, Vec::new())
 }
 
 /// en: `sdi`: attach the chip (so the LinkE knows the family / DM data address), resume the
@@ -222,17 +271,10 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Ok(l) => l,
         Err(c) => return c,
     };
-    let (speed, mut warnings) = match parse::speed(&cli.speed) {
+    let (speed, warnings) = match parse::speed(&cli.speed) {
         Ok(v) => v,
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
-    // en: Attach so the LinkE learns the family / DM data address; resume (attach halts the
-    // core, but SerialSDI must run to print); enable forwarding; then KEEP the chip attached
-    // (detaching stops forwarding - wlink's --no-detach). The session is dropped without
-    // detaching, leaving the LinkE forwarding to its CDC, which we then read.
-    // ja: attach で family=DM data 番地を LinkE に知らせ、resume で走らせ(attach は halt する)、
-    // forward を有効化して attach を保つ(detach で forward 停止 = wlink の --no-detach)。
-    let _ = &mut warnings;
     // en: Minimal wlink-equivalent on a raw link (no ChipInfo read, no halt, no detach):
     // SetSpeed(placeholder) -> AttachChip (learn the family, does not halt) -> enable
     // forwarding. Then KEEP the link open while reading the CDC: dropping the nusb interface
@@ -300,12 +342,15 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
              `--source dmdata` (SerialDMDATA) or `wlink sdi-print enable`."
         );
     }
-    stream_port(cli, CMD, &port, args.baud, "sdi", true)
+    stream_port(cli, CMD, &port, args.baud, "sdi", true, warnings)
 }
 
-// ---- DMI backend (dmdata) ----
+// ---- DMI backend (dmdata / rtt) ----
 
-fn run_dmdata(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
+/// en: `dmdata` / `rtt`: attach, open the source, resume the core, then exchange output and stdin
+/// with the target until Ctrl-C / `--duration`. Works on any probe (no CDC involved).
+/// ja: `dmdata` / `rtt`: attach → source を開く → resume → 出力と stdin を交換。任意 probe で動く。
+fn run_dmi(cli: &Cli, source: MonitorSource) -> ExitCode {
     const CMD: &str = "monitor";
     let entry = match select_entry(cli, CMD) {
         Ok(e) => e,
@@ -317,139 +362,8 @@ fn run_dmdata(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
             CMD,
             ErrorKind::CapabilityUnsupported,
             format!(
-                "dmdata monitor needs a RISC-V-mode probe (this is {})",
-                mode_str(entry.mode)
-            ),
-            None,
-        );
-    }
-    let (speed, mut warnings) = match parse::speed(&cli.speed) {
-        Ok(v) => v,
-        Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
-    };
-    // Attach WITHOUT halting - the target must keep running for the mailbox to move.
-    let mut session = match Session::attach(
-        &entry,
-        speed,
-        Duration::from_millis(1000),
-        Duration::from_secs(cli.lock_timeout),
-        cli.chip.as_deref(),
-        &mut warnings,
-    ) {
-        Ok(s) => s,
-        Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
-    };
-
-    if !cli.json {
-        eprintln!(
-            "monitor: dmdata (DMI poll, core runs) via {} (Ctrl-C to stop)",
-            entry.dev.serial().unwrap_or("?")
-        );
-    }
-    let deadline = run_duration(cli).map(|d| Instant::now() + d);
-    let mut out = std::io::stdout().lock();
-    let mut dm = session.dm();
-    // en: Attach leaves the core halted; the SerialDMDATA mailbox only moves while it runs, so
-    // resume it (minichlink's `-T` resumes/reboots at terminal start too).
-    // ja: attach は core を halt したままにするので resume する(minichlink -T も同様)。
-    let _ = dm.resume();
-    loop {
-        if let Some(dl) = deadline
-            && Instant::now() >= dl
-        {
-            break;
-        }
-        match dm.dmdata_poll(&[]) {
-            Ok(Some(bytes)) if !bytes.is_empty() => {
-                let _ = out.write_all(&bytes);
-                let _ = out.flush();
-            }
-            Ok(_) => std::thread::sleep(Duration::from_millis(2)),
-            Err(e) => {
-                eprintln!("\nmonitor: dmi error: {e}");
-                break;
-            }
-        }
-    }
-    ExitCode::SUCCESS
-}
-
-// ---- DMI backend (rtt / SEGGER-format RAM ring buffer) ----
-
-/// All CH32 parts map SRAM at this base.
-const RTT_RAM_BASE: u32 = 0x2000_0000;
-/// The control-block id string the target publishes once its RTT channel is up.
-const RTT_MAGIC: &[u8] = b"SEGGER RTT";
-/// Sanity cap on a ring-buffer size read out of RAM (reject a half-initialized / garbage block).
-const RTT_MAX_BUF: u32 = 0x1_0000;
-/// Scan length when the target's SRAM size is unknown (the `_SEGGER_RTT` block lives in early .bss).
-const RTT_DEFAULT_SCAN: u32 = 8 * 1024;
-
-/// The WCH-Link's bulk read rejects/times-out on a very large single region, so read the scan
-/// window in transfers this size (8 KiB is proven to work well within the transport timeout).
-const RTT_READ_CHUNK: u32 = 8192;
-
-fn le32(b: &[u8], off: usize) -> u32 {
-    u32::from_le_bytes([b[off], b[off + 1], b[off + 2], b[off + 3]])
-}
-
-/// Read `len` bytes of target memory into one buffer, chunked so each transfer stays small. Stops
-/// early (returning what it has) if a chunk fails, so a short read still lets the scan try.
-fn read_region(session: &mut Session, base: u32, len: u32) -> Vec<u8> {
-    let mut buf = Vec::with_capacity(len as usize);
-    let mut off = 0u32;
-    while off < len {
-        let want = RTT_READ_CHUNK.min(len - off);
-        match session.link().read_mem(base + off, want) {
-            Ok(mut chunk) => {
-                buf.append(&mut chunk);
-                off += want;
-            }
-            Err(_) => break,
-        }
-    }
-    buf
-}
-
-/// Find the byte offset, within a RAM snapshot, of a SEGGER RTT control block whose up[0]
-/// descriptor validates (buffer pointer in RAM, sane size, offsets in range). Validating rejects a
-/// stray copy of the magic that lives in a ring buffer's own contents, not in a real block.
-fn find_control_block(snap: &[u8]) -> Option<usize> {
-    let mut from = 0usize;
-    while let Some(rel) = snap[from..]
-        .windows(RTT_MAGIC.len())
-        .position(|w| w == RTT_MAGIC)
-    {
-        let pos = from + rel;
-        // up[0] descriptor sits right after id[16] + max_up(4) + max_down(4).
-        let d = pos + 24;
-        if d + 24 <= snap.len() {
-            let buffer = le32(snap, d + 4);
-            let size = le32(snap, d + 8);
-            let wr = le32(snap, d + 12);
-            let rd = le32(snap, d + 16);
-            if size > 0 && size <= RTT_MAX_BUF && wr < size && rd < size && buffer >= RTT_RAM_BASE {
-                return Some(pos);
-            }
-        }
-        from = pos + 1;
-    }
-    None
-}
-
-fn run_rtt(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
-    const CMD: &str = "monitor";
-    let entry = match select_entry(cli, CMD) {
-        Ok(e) => e,
-        Err(c) => return c,
-    };
-    if entry.mode != ch32rv_contract::ProbeMode::Riscv {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::CapabilityUnsupported,
-            format!(
-                "rtt monitor needs a RISC-V-mode probe (this is {})",
+                "{} monitor needs a RISC-V-mode probe (this is {})",
+                source.as_str(),
                 mode_str(entry.mode)
             ),
             None,
@@ -470,107 +384,66 @@ fn run_rtt(cli: &Cli, _args: &MonitorArgs) -> ExitCode {
         Ok(s) => s,
         Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
-
-    // How much RAM to scan for the control block: the target's SRAM (from the DB) or a default.
-    let scan_len = {
-        let db = ch32rv_target::Db::builtin();
-        match db.resolve_by_chip_id(session.attach.chip_id) {
-            ch32rv_target::Resolution::Sku(s) if s.sram_bytes > 0 => s.sram_bytes.min(64 * 1024),
-            _ => RTT_DEFAULT_SCAN,
-        }
+    let mut src = match DmiSource::open(&mut session, source, &mut warnings) {
+        Ok(s) => s,
+        Err(e) => return open_error(cli, CMD, e),
     };
-
-    // Find the control block. The target has been running its sketch since power-on, so begin()
-    // has already published the block; retry a few times in case we attached very early.
-    let cb_base = 'find: {
-        for _ in 0..10 {
-            let _ = session.dm().halt();
-            let snap = read_region(&mut session, RTT_RAM_BASE, scan_len);
-            if let Some(cb) = find_control_block(&snap) {
-                break 'find Some(RTT_RAM_BASE + cb as u32);
-            }
-            let _ = session.dm().resume();
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        None
-    };
-    let cb_base = match cb_base {
-        Some(b) => b,
-        None => {
-            let _ = session.dm().resume();
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::CapabilityUnsupported,
-                format!(
-                    "no SEGGER RTT control block in the first {scan_len} bytes of RAM (from 0x{RTT_RAM_BASE:08x})"
-                ),
-                Some("flash a SerialRTT/RTT sketch first; the block only appears after begin()"),
-            );
-        }
-    };
-
     if !cli.json {
         eprintln!(
-            "monitor: rtt (RAM ring @ 0x{cb_base:08x}, core briefly halts per poll) via {} (Ctrl-C to stop)",
+            "monitor: {} via {} (Ctrl-C to stop; stdin goes to the target)",
+            src.describe(),
             entry.dev.serial().unwrap_or("?")
         );
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
     }
-
-    // up[0] descriptor: control block is id[16] + max_up(4) + max_down(4), then up[0].
-    let up = cb_base + 24;
+    // Attach (and the rtt scan) leave the core halted; the sources only move while it runs.
+    let _ = session.dm().resume();
+    let input = source::spawn_reader(std::io::stdin());
+    let mut sink = Sink::new(cli, src.name());
     let deadline = run_duration(cli).map(|d| Instant::now() + d);
-    let mut out = std::io::stdout().lock();
-    loop {
-        if let Some(dl) = deadline
-            && Instant::now() >= dl
-        {
-            break;
-        }
-        let _ = session.dm().halt();
-        // up[0]: name(+0), buffer(+4), size(+8), write_off(+12), read_off(+16), flags(+20).
-        let desc = match session.link().read_mem(up, 24) {
-            Ok(d) if d.len() >= 24 => d,
-            _ => {
-                let _ = session.dm().resume();
-                break;
-            }
-        };
-        let buffer = le32(&desc, 4);
-        let size = le32(&desc, 8);
-        let wr = le32(&desc, 12);
-        let rd = le32(&desc, 16);
-        if size == 0 || size > RTT_MAX_BUF || wr >= size || rd >= size || buffer < RTT_RAM_BASE {
-            // Not ready or garbage; let it run and retry.
-            let _ = session.dm().resume();
-            std::thread::sleep(Duration::from_millis(50));
-            continue;
-        }
-        if wr != rd {
-            let bytes = if wr > rd {
-                session.link().read_mem(buffer + rd, wr - rd).ok()
-            } else {
-                // Wrapped: [rd, size) then [0, wr).
-                let mut v = Vec::new();
-                if let Ok(a) = session.link().read_mem(buffer + rd, size - rd) {
-                    v.extend_from_slice(&a);
-                }
-                if let Ok(b) = session.link().read_mem(buffer, wr) {
-                    v.extend_from_slice(&b);
-                }
-                Some(v)
-            };
-            if let Some(bytes) = bytes {
-                let _ = out.write_all(&bytes);
-                let _ = out.flush();
-            }
-            // Tell the target we drained: up[0].read_off (at up + 16) = write_off.
-            let _ = session.dm().write_mem32(up + 16, wr);
-        }
-        let _ = session.dm().resume();
-        std::thread::sleep(Duration::from_millis(50));
+    let result = source::stream(&mut session, &mut src, &mut sink, &input, deadline);
+    sink.finish();
+    match result {
+        Ok(()) => finish_ok(cli, CMD, src.name(), warnings),
+        Err(e) => fail(
+            cli,
+            CMD,
+            source::dmi_error_kind(&e),
+            format!("{} stream failed: {e}", src.name()),
+            None,
+        ),
     }
-    ExitCode::SUCCESS
+}
+
+/// Map a source open failure to the CLI's exit vocabulary.
+pub(crate) fn open_error(cli: &Cli, cmd: &str, e: OpenError) -> ExitCode {
+    match e {
+        OpenError::NotDmi => fail(
+            cli,
+            cmd,
+            ErrorKind::CapabilityUnsupported,
+            "this source is a CDC serial one (uart/sdi), not a DMI source",
+            Some("use --source dmdata or --source rtt"),
+        ),
+        OpenError::NoControlBlock { scan_len } => fail(
+            cli,
+            cmd,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "no SEGGER RTT control block in the first {scan_len} bytes of RAM (from 0x2000_0000)"
+            ),
+            Some("flash a SerialRTT/RTT sketch first; the block only appears after begin()"),
+        ),
+        OpenError::Dmi(e) => fail(
+            cli,
+            cmd,
+            source::dmi_error_kind(&e),
+            format!("open source: {e}"),
+            None,
+        ),
+    }
 }
 
 // ---- monitor list / sdi on|off ----
@@ -654,46 +527,5 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
             if on { "enabled" } else { "disabled" }
         );
         ExitCode::SUCCESS
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Build a RAM snapshot with a valid control block whose magic starts at `at`.
-    fn snapshot_with_cb(at: usize, buffer: u32, size: u32, wr: u32, rd: u32) -> Vec<u8> {
-        let mut ram = vec![0u8; at + 24 + 24 + 8];
-        ram[at..at + RTT_MAGIC.len()].copy_from_slice(RTT_MAGIC);
-        let d = at + 24; // up[0] descriptor
-        ram[d + 4..d + 8].copy_from_slice(&buffer.to_le_bytes());
-        ram[d + 8..d + 12].copy_from_slice(&size.to_le_bytes());
-        ram[d + 12..d + 16].copy_from_slice(&wr.to_le_bytes());
-        ram[d + 16..d + 20].copy_from_slice(&rd.to_le_bytes());
-        ram
-    }
-
-    #[test]
-    fn finds_valid_control_block() {
-        let ram = snapshot_with_cb(64, RTT_RAM_BASE + 0x100, 256, 10, 0);
-        assert_eq!(find_control_block(&ram), Some(64));
-    }
-
-    #[test]
-    fn skips_magic_with_bogus_descriptor() {
-        // A stray "SEGGER RTT" in buffer contents: the descriptor after it is garbage (size huge),
-        // so it must not be mistaken for a real block.
-        let ram = snapshot_with_cb(64, 0, 0xFFFF_FFFF, 0, 0);
-        assert_eq!(find_control_block(&ram), None);
-    }
-
-    #[test]
-    fn no_magic_returns_none() {
-        assert_eq!(find_control_block(&[0u8; 64]), None);
-    }
-
-    #[test]
-    fn le32_reads_little_endian() {
-        assert_eq!(le32(&[0x78, 0x56, 0x34, 0x12], 0), 0x1234_5678);
     }
 }

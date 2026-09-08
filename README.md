@@ -79,7 +79,7 @@ ch32rv erase --all
 ch32rv reset
 
 ch32rv gdb                              # GDB server on 127.0.0.1:3333 (HW + flash breakpoints)
-ch32rv monitor --source dmdata          # stream runtime output (uart / sdi / dmdata)
+ch32rv monitor --source dmdata          # runtime I/O (uart / sdi / dmdata / rtt)
 ch32rv capabilities                     # what this probe + target combination supports
 ```
 
@@ -99,12 +99,12 @@ a device. Exit codes and the JSON envelope are defined by the `ch32rv-contract` 
 | `probe` | Manage the probe: `list`, `info`, firmware `info` / `check` / `update` (rewrite the probe's own firmware over IAP) / `exit-iap`, `mode get` |
 | `target` | `info`, structured `option` bytes (`get` / `set` / `write-raw` / `reset`), `protect` |
 | `dbg` / `gdb` | One-shot control (halt / resume / step / regs / reg / dmi) · GDB server |
-| `monitor` | Runtime I/O: uart / sdi / dmdata |
+| `monitor` | Runtime I/O: uart / sdi / dmdata / rtt (stdin goes to the target on uart / dmdata / rtt) |
 | `db` / `capabilities` | Inspect the built-in device DB · probe×firmware×target capability matrix |
 | `doctor` / `version` / `complete` | Environment diagnosis · versions · shell completions |
 | `arduino` | Arduino IDE integration (`discovery` / `monitor` Pluggable protocols) |
 
-Some routes advertised in `--help` — `run` (HIL), `dap`, `isp`, `boot`, `monitor rtt` — are planned for
+Some routes advertised in `--help` — `run` (HIL), `dap`, `isp`, `boot` — are planned for
 a later `0.x` and are not part of the verified surface yet.
 
 ## Library crates

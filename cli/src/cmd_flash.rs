@@ -714,10 +714,6 @@ fn finish_flash(
             source,
             port: None,
             baud: 115_200,
-            timestamps: false,
-            log: None,
-            raw: false,
-            no_reconnect: false,
         };
         return crate::cmd_monitor::monitor(cli, &margs);
     }

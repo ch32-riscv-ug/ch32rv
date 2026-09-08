@@ -11,16 +11,31 @@
 use crate::{DmiError, DtmAccess};
 
 /// en: Encode up to 3 host->target bytes into a data0 word with bit7 clear (the target's
-/// poll() takes them). Empty input encodes to 0 (a bare ACK).
-/// ja: host→target の最大 3 byte を bit7 クリアの data0 word に符号化(空なら 0=ただの ACK)。
+/// poll() takes them). The count is biased by 4 like the target->host direction (minichlink
+/// `appendword |= i + 4`; ch32fun/SerialDMDATA read `count > 4`). Empty input encodes to 0 (a
+/// bare ACK).
+/// ja: host→target の最大 3 byte を bit7 クリアの data0 word に符号化。count は target→host と
+/// 同じく 4 バイアス(minichlink `i + 4`、target 側は `count > 4` で判定)。空なら 0=ただの ACK。
 fn encode_host_input(input: &[u8]) -> u32 {
     let n = input.len().min(3);
+    if n == 0 {
+        return 0;
+    }
     let mut word = 0u32;
     for (i, &b) in input.iter().take(3).enumerate() {
         word |= u32::from(b) << (8 * (i + 1));
     }
-    // Low byte carries the count (no bit7: this is a host->target frame).
-    word | (n as u32)
+    // Low byte carries count + 4 (no bit7: this is a host->target frame).
+    word | (n as u32 + 4)
+}
+
+/// Result of one [`DebugModule::dmdata_poll`] cycle.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DmdataPoll {
+    /// Target->host payload (empty when no frame was pending).
+    pub received: Vec<u8>,
+    /// How many leading bytes of `host_input` were handed to the target (0..=3).
+    pub sent: usize,
 }
 
 // Debug Module register addresses (DMI address space).
@@ -313,26 +328,38 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.read(DMDATA0)
     }
 
-    /// en: One receive cycle of the ch32fun/minichlink DMDATA terminal (SerialDMDATA).
+    /// en: One exchange cycle of the ch32fun/minichlink DMDATA terminal (SerialDMDATA).
     /// The core keeps RUNNING - this only reads the DM data registers. Frame layout
     /// (target->host): data0 low byte = `0x80 | (count+4)`, upper 3 bytes = payload[0..3];
-    /// data1 = payload[3..7]. Returns the payload and ACKs by clearing data0 (with the given
-    /// host-input bytes, up to 3, for the reverse direction).
-    /// ja: SerialDMDATA(minichlink -T)の受信 1 周期。core は running のまま DM data レジスタ
+    /// data1 = payload[3..7]. Returns the payload and ACKs by writing data0 with bit7 clear.
+    /// Host->target bytes (up to 3) ride on that ACK word only: the target invites the next
+    /// word by leaving an empty pending frame (`0x84`) once it has taken the previous one, so
+    /// writing at any other time could clobber input it has not read yet (minichlink does the
+    /// same). A sketch that never prints still polls, so input flows even without output.
+    /// ja: SerialDMDATA(minichlink -T)の交換 1 周期。core は running のまま DM data レジスタ
     /// のみ読む。frame は target→host: data0 下位 byte=`0x80|(count+4)`、上位 3B=payload、
-    /// data1=残り。ACK は data0 を書いてクリア(host→target の入力を最大 3 byte 同載)。
-    pub fn dmdata_poll(&mut self, host_input: &[u8]) -> Result<Option<Vec<u8>>, DmiError> {
+    /// data1=残り。ACK は bit7 クリアの data0 書込。host→target(最大 3 byte)は ACK word に
+    /// のみ同載する: target は前の入力を取り込むと空の pending frame(`0x84`)を置いて次を招く
+    /// ので、それ以外の時に書くと未読の入力を潰しうる(minichlink と同じ挙動)。
+    pub fn dmdata_poll(&mut self, host_input: &[u8]) -> Result<DmdataPoll, DmiError> {
         let d0 = self.read(DMDATA0)?;
         if d0 & 0x80 == 0 {
-            // No target frame pending. If we have input to send, place it (bit7 clear).
-            if !host_input.is_empty() {
-                self.write(DMDATA0, encode_host_input(host_input))?;
-            }
-            return Ok(None);
+            // Nothing pending from the target (and our previous word may still be unread).
+            return Ok(DmdataPoll::default());
         }
-        // count is biased by 4 in the low 6 bits.
-        let count = ((d0 & 0x3f).saturating_sub(4)) as usize;
-        let d1 = self.read(DMDATA1)?;
+        // count is biased by 4 in the low 6 bits: a target frame carries 4..=11 there.
+        let field = d0 & 0x3f;
+        if !(4..=11).contains(&field) {
+            // en: Not a frame the target wrote - attach / flash traffic leaves its own values in
+            // data0 (measured: 0xffffffff after AttachChip + UID read) and bit7 happens to be set.
+            // Clear it so the target's next write is not blocked behind it, and carry no input.
+            // ja: target の frame ではない(attach/flash が data0 に残した値。実測 0xffffffff)。
+            // target の次の write を塞がないようクリアし、入力は載せない。
+            self.write(DMDATA0, 0)?;
+            return Ok(DmdataPoll::default());
+        }
+        let count = (field - 4) as usize;
+        let d1 = if count > 3 { self.read(DMDATA1)? } else { 0 };
         let bytes = [
             (d0 >> 8) as u8,
             (d0 >> 16) as u8,
@@ -342,10 +369,11 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
             (d1 >> 16) as u8,
             (d1 >> 24) as u8,
         ];
-        let out = bytes[..count.min(7)].to_vec();
+        let received = bytes[..count.min(7)].to_vec();
         // ACK: clear bit7; carry host input (if any) in the same word.
+        let sent = host_input.len().min(3);
         self.write(DMDATA0, encode_host_input(host_input))?;
-        Ok(Some(out))
+        Ok(DmdataPoll { received, sent })
     }
 
     /// en: Write one 32-bit word to target memory via program buffer (`sw x7,0(x5)`). The hart
@@ -765,15 +793,44 @@ mod tests {
         let mut m = MockDtm::default();
         m.set(DMDATA0, 0x4342_4187);
         let got = DebugModule::new(&mut m).dmdata_poll(&[]).unwrap();
-        assert_eq!(got, Some(vec![0x41, 0x42, 0x43]));
+        assert_eq!(got.received, vec![0x41, 0x42, 0x43]);
+        assert_eq!(got.sent, 0);
+        // The ACK cleared bit7 (a bare 0: nothing to send).
+        assert_eq!(m.writes.last(), Some(&(DMDATA0, 0)));
     }
 
     #[test]
     fn dmdata_poll_empty_when_bit7_clear() {
-        // No pending frame: bit7 of DMDATA0's low byte is clear.
+        // No pending frame: bit7 of DMDATA0's low byte is clear. Nothing is written either,
+        // even with input queued - the target has not invited the next word yet.
         let mut m = MockDtm::default();
         m.set(DMDATA0, 0x0000_0000);
-        assert_eq!(DebugModule::new(&mut m).dmdata_poll(&[]).unwrap(), None);
+        let got = DebugModule::new(&mut m).dmdata_poll(b"xyz").unwrap();
+        assert_eq!(got, DmdataPoll::default());
+        assert!(m.writes.is_empty());
+    }
+
+    #[test]
+    fn dmdata_poll_discards_stale_non_frame_words() {
+        // Leftover from attach: bit7 set but the count field (0x3f) is not a frame's 4..=11.
+        // It is cleared (so the target can write) and nothing is reported or sent.
+        let mut m = MockDtm::default();
+        m.set(DMDATA0, 0xffff_ffff);
+        let got = DebugModule::new(&mut m).dmdata_poll(b"abc").unwrap();
+        assert_eq!(got, DmdataPoll::default());
+        assert_eq!(m.writes.last(), Some(&(DMDATA0, 0)));
+    }
+
+    #[test]
+    fn dmdata_poll_sends_input_on_ack() {
+        // The target left an empty pending frame (0x84: bit7 + count 0+4) inviting input.
+        // The ACK carries the first 3 input bytes with count+4; the rest stays with the caller.
+        let mut m = MockDtm::default();
+        m.set(DMDATA0, 0x0000_0084);
+        let got = DebugModule::new(&mut m).dmdata_poll(b"hello").unwrap();
+        assert!(got.received.is_empty());
+        assert_eq!(got.sent, 3);
+        assert_eq!(m.writes.last(), Some(&(DMDATA0, 0x6c65_6807)));
     }
 
     #[test]
@@ -790,15 +847,15 @@ mod tests {
 
     #[test]
     fn host_input_frame_encoding() {
-        // Empty: count 0, no data, no bit7 (host->target).
+        // Empty: a bare ACK (0), no bit7 (host->target).
         assert_eq!(encode_host_input(&[]), 0);
-        // One byte sits at <<8; the low byte is the count.
-        assert_eq!(encode_host_input(&[0xaa]), 0x0000_aa01);
-        // Three bytes fill bytes 1..4; count 3.
-        assert_eq!(encode_host_input(&[0x11, 0x22, 0x33]), 0x3322_1103);
+        // One byte sits at <<8; the low byte is count + 4 (minichlink `i + 4`).
+        assert_eq!(encode_host_input(&[0xaa]), 0x0000_aa05);
+        // Three bytes fill bytes 1..4; count 3 + 4.
+        assert_eq!(encode_host_input(&[0x11, 0x22, 0x33]), 0x3322_1107);
         // Never sets bit7 in the count byte.
         assert_eq!(encode_host_input(&[0xff; 3]) & 0x80, 0);
-        // More than 3 bytes: only 3 carried, count saturates at 3.
-        assert_eq!(encode_host_input(&[1, 2, 3, 4, 5]) & 0xff, 3);
+        // More than 3 bytes: only 3 carried, count saturates at 3 (+4 bias).
+        assert_eq!(encode_host_input(&[1, 2, 3, 4, 5]) & 0xff, 7);
     }
 }

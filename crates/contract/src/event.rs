@@ -34,6 +34,12 @@ pub enum Event {
     Warn { code: String, msg: String },
     /// Free-form log line.
     Log { level: LogLevel, msg: String },
+    /// en: A chunk of the target's runtime output (`monitor` / `run` under `--json`, where the
+    /// payload cannot share stdout with the result envelope). `data` is UTF-8 text; chunks are
+    /// split on character boundaries and invalid sequences are replaced.
+    /// ja: target の実行時出力の 1 チャンク(`--json` 時の `monitor`/`run`。payload は stdout
+    /// の envelope と同居できないので event で流す)。`data` は UTF-8 文字境界で切ったテキスト。
+    Output { source: String, data: String },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
