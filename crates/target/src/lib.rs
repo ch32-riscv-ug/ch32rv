@@ -519,12 +519,67 @@ mod tests {
             (0x0351_0601, "CH32X035C8T6"),
             (0x0030_0500, "CH32V003F4P6"),
             (0x2500_410f, "CH32V103R8T6"),
+            (0x0060_0620, "CH32V006K8U6"), // datasheet 0x00600600, rev nibble 0x2
         ];
         for (id, want) in cases {
             match db.resolve_by_chip_id(id) {
                 Resolution::Sku(s) => assert_eq!(s.sku, want, "chip_id 0x{id:08x}"),
                 other => panic!("chip_id 0x{id:08x} -> {other:?}, want {want}"),
             }
+        }
+    }
+
+    /// The overlay is a gap-filler, not a second source of truth: a row that the generated table
+    /// also carries must lose, so a forgotten entry can never shadow delivered data. Exercised
+    /// here because `provisional/skus.csv` is empty whenever nothing is outstanding.
+    #[test]
+    fn provisional_rows_never_shadow_generated_ones() {
+        let generated = parse_sku_table(GENERATED_SKUS, false);
+        let real = generated
+            .iter()
+            .find(|s| s.sku == "CH32V006K8U6")
+            .expect("delivered CH32V006K8U6 row");
+        assert!(!real.provisional, "a generated row is never provisional");
+        assert_eq!(real.device_id, Some(0x0060_0600));
+
+        // Same SKU name, different id -> dropped. Different name, same masked id -> dropped too.
+        let overlay = "\
+BOGUS_NAME,CH32V006,CH32V006,0x00600600,0x1ffff704,1,1,false,9999\n\
+CH32V006K8U6,CH32V006,CH32V006,0x0badf00d,0x1ffff704,1,1,false,9999\n\
+CH32FICTIONAL,CH32V006,CH32V006,0x00990900,0x1ffff704,1,1,false,9999\n";
+        let rows = parse_sku_table(overlay, true);
+        assert_eq!(rows.len(), 3, "all three parse");
+        assert!(rows.iter().all(|r| r.provisional));
+        let kept: Vec<&str> = rows
+            .iter()
+            .filter(|row| {
+                !generated.iter().any(|g| {
+                    g.sku == row.sku
+                        || match (g.device_id, row.device_id) {
+                            (Some(a), Some(b)) => a & DEVICE_ID_MASK == b & DEVICE_ID_MASK,
+                            _ => false,
+                        }
+                })
+            })
+            .map(|r| r.sku.as_str())
+            .collect();
+        assert_eq!(kept, ["CH32FICTIONAL"], "only the genuine gap survives");
+    }
+
+    #[test]
+    fn provisional_overlay_is_parsed_and_flagged() {
+        // Whatever the file holds right now, every row out of it is flagged.
+        assert!(
+            parse_sku_table(PROVISIONAL_SKUS, true)
+                .iter()
+                .all(|r| r.provisional)
+        );
+        // ... and nothing in the shipped DB claims to be provisional while the file is empty.
+        if PROVISIONAL_SKUS
+            .lines()
+            .all(|l| l.trim().is_empty() || l.trim_start().starts_with('#'))
+        {
+            assert!(Db::builtin().skus().iter().all(|s| !s.provisional));
         }
     }
 
