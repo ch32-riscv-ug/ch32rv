@@ -567,7 +567,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// write+BUFLOAD, then STRT), and [`FlashProgMode::V103`] (CH32V103 - standard 16-bit halfword
     /// programming via CR_PG with the mandatory commit side effect per word). All verified live.
     /// ja: `addr` へ `data` を program(page 境界・page サイズ長・消去済みが前提)。`mode` で分岐:
-    /// PgStart(V20x/V30x)、Buffered(V003/X035/L103)、V103(標準 16bit halfword + commit)。全て実機確認済み。
+    /// PgStart(V20x/V30x)、Buffered(V003/V00x/X035/L103)、V103(標準 16bit halfword + commit)。全て実機確認済み。
     pub fn flash_program_page(
         &mut self,
         addr: u32,

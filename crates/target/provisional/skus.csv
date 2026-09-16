@@ -1,0 +1,11 @@
+# PROVISIONAL overlay - rows that `ch32-device-data` does not carry yet.
+# Every row here is a stopgap for a pending data request and is reported with
+# `provisional: true`. Delete a row as soon as the generated DB supplies it.
+# columns: sku,family,series,device_id,id_addr,flash_bytes,sram_bytes,verified,request
+#
+# CH32V006K8U6 (QFN32, 62K/8K): measured on real silicon 2026-09-16 with WCH-LinkE
+# 497F8F06CE2F - AttachChip family byte 0x4E, chip_id 0x00600620 (rev nibble [7:4] = 2).
+# The part number is real but absent from the datasheet: it appears in WCH's EVT, which is
+# where ch32-device-data will pick it up. Upstream `evidence/device_ids.csv` carries exactly
+# one CH32V006 row today (E8R6, 0x00610600); reported, delivery pending (request 0001).
+CH32V006K8U6,CH32V006,CH32V006,0x00600600,0x1ffff704,63488,8192,true,0001

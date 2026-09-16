@@ -61,7 +61,19 @@ pub(crate) fn parse_image(
 /// The hart must already be halted.
 /// ja: verify 用に `addr` から `expected.len()` byte 読む。まず fast bulk read、`expected` と食い違う
 /// (またはエラー)なら権威ある DMI 読みで読み直して返す。fast read は stub 実行直後に一部 probe
-/// (CH549 Link fw2.12 で実測)で stale/ゴミを返し false verify-mismatch を起こす。DMI が真実。
+/// (CH549 Link fw2.12 で実測)で stale/ゴミを返し false verify-mismatch を起こす。DMI が真実。/// en: How a family gets programmed. Most families upload WCH's flash loader stub to the probe,
+/// which then streams the image; the V00x line has no stub, so its own FLASH controller is driven
+/// directly over DMI instead (what minichlink calls "direct mode" - the only route WCH's tooling
+/// uses for these parts either).
+/// ja: family ごとの書込経路。多くは probe へ WCH の flash loader stub を載せて流すが、V00x 系は
+/// stub が無いので target の FLASH controller を DMI で直接叩く(minichlink の "direct mode")。
+enum Programmer {
+    /// The probe runs WCH's loader stub in target RAM.
+    Stub(Box<ch32rv_wchlink::FlashParams>),
+    /// The host drives the target's FLASH controller over DMI, page by page.
+    Controller(ch32rv_flash::FlashCtrlProfile),
+}
+
 fn verify_read(session: &mut Session, addr: u32, expected: &[u8]) -> Result<Vec<u8>, String> {
     let len = expected.len() as u32;
     match session.link().read_mem(addr, len) {
@@ -243,17 +255,23 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
     };
 
     let family = session.attach.family_byte;
-    let Some(fp) = params_for_family(family) else {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::CapabilityUnsupported,
-            format!(
-                "flashing family 0x{family:02x} ({}) is not supported yet (no flash stub in the interim table)",
-                session.family()
-            ),
-            Some("only the connected families have stubs so far; more come with the generated DB"),
-        );
+    let programmer = match params_for_family(family) {
+        Some(fp) => Programmer::Stub(Box::new(fp)),
+        None => match ch32rv_flash::flash_controller_profile(family) {
+            Some(profile) => Programmer::Controller(profile),
+            None => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::CapabilityUnsupported,
+                    format!(
+                        "flashing family 0x{family:02x} ({}) is not supported yet (no flash stub and no FLASH-controller profile)",
+                        session.family()
+                    ),
+                    Some("`capabilities` lists what this probe/target pair can do"),
+                );
+            }
+        },
     };
 
     // Parse the input into flash segments (ELF / Intel HEX / UF2 / raw bin).
@@ -507,9 +525,12 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
             }
             // Reset the link/target debug state so the stub loader programs from a clean slate
             // (mirrors the detach/reattach the verify step does below; verified to program
-            // correctly into page-erased - not chip-erased - flash).
-            session.link().detach_chip().ok();
-            let _ = session.link().attach_chip();
+            // correctly into page-erased - not chip-erased - flash). The controller path keeps
+            // driving the same halted core, so re-attaching there would only undo the halt.
+            if matches!(programmer, Programmer::Stub(_)) {
+                session.link().detach_chip().ok();
+                let _ = session.link().attach_chip();
+            }
         }
     }
 
@@ -521,30 +542,70 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         name: "program".into(),
         total: Some(program_total),
     });
-    {
-        let s = &sink;
-        let mut base = 0u64;
-        for seg in program_segments {
-            let seg_len = seg.data.len() as u64;
-            if let Err(e) = session
-                .link()
-                .write_flash(seg.addr, &seg.data, &fp, |done| {
+    match &programmer {
+        Programmer::Stub(fp) => {
+            let s = &sink;
+            let mut base = 0u64;
+            for seg in program_segments {
+                let seg_len = seg.data.len() as u64;
+                if let Err(e) = session.link().write_flash(seg.addr, &seg.data, fp, |done| {
                     s.event(&Event::Progress {
                         phase: "program".into(),
                         done: base + done,
                         total: Some(program_total),
                     });
-                })
-            {
+                }) {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("program failed at {:#010x}: {e}", seg.addr),
+                        None,
+                    );
+                }
+                base += seg_len;
+            }
+        }
+        // No stub for this family: drive the target's own FLASH controller over DMI, page by page.
+        // Uncovered bytes of a partially-filled page go out as 0xff, which is what the page holds
+        // after the erase step - the same result the stub path produces. `--restore-unwritten` has
+        // already merged the old content into `program_segments` when the caller asked for it.
+        Programmer::Controller(profile) => {
+            if let Err(e) = session.dm().halt() {
                 return fail(
                     cli,
                     CMD,
-                    ErrorKind::TransferFailed,
-                    format!("program failed at {:#010x}: {e}", seg.addr),
+                    ErrorKind::AttachFailed,
+                    format!("halt for controller programming failed: {e}"),
                     None,
                 );
             }
-            base += seg_len;
+            let page = profile.page_size;
+            let mode = profile.mode;
+            let mut dm = session.dm();
+            let mut done = 0u64;
+            for seg in program_segments {
+                let one = std::slice::from_ref(seg);
+                for pg in covered_pages([(seg.addr, seg.data.len() as u32)], page) {
+                    let mut buf = vec![0xffu8; page as usize];
+                    overlay_page(pg, &mut buf, one);
+                    if let Err(e) = dm.flash_program_page(pg, &buf, mode) {
+                        return fail(
+                            cli,
+                            CMD,
+                            ErrorKind::TransferFailed,
+                            format!("program failed at page {pg:#010x}: {e}"),
+                            None,
+                        );
+                    }
+                    done = (done + u64::from(page)).min(program_total);
+                    sink.event(&Event::Progress {
+                        phase: "program".into(),
+                        done,
+                        total: Some(program_total),
+                    });
+                }
+            }
         }
     }
 
@@ -866,7 +927,7 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
                 session.family()
             ),
             Some(
-                "verified so far: V20x/V30x, V003/CH641, X035/CH643, L103 (CH32V103 is a follow-up)",
+                "verified so far: V20x/V30x, V003/CH641, V00x, X035/CH643, L103 (CH32V103 is a follow-up)",
             ),
         );
     };
@@ -1087,7 +1148,8 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
-    if params_for_family(session.attach.family_byte).is_none() {
+    let fb = session.attach.family_byte;
+    if params_for_family(fb).is_none() && ch32rv_flash::flash_controller_profile(fb).is_none() {
         return fail(
             cli,
             CMD,

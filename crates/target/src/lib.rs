@@ -30,6 +30,13 @@ use serde::{Deserialize, Serialize};
 /// The embedded generated SKU table (produced by `cargo xtask db-gen`).
 const GENERATED_SKUS: &str = include_str!("../generated/skus.csv");
 
+/// en: Provisional SKU overlay: rows `ch32-device-data` has not delivered yet, each tied to a
+/// pending data request and reported with [`SkuRecord::provisional`] set. Kept apart from
+/// `generated/` so the two never blur - a row here disappears the moment db-gen supplies it.
+/// ja: 暫定 SKU overlay。ch32-device-data 未納の行(依頼番号付き)で、[`SkuRecord::provisional`] が
+/// 立つ。`generated/` とは混ぜない(db-gen が供給し次第この行は消す)。
+const PROVISIONAL_SKUS: &str = include_str!("../provisional/skus.csv");
+
 /// The embedded generated per-family USER-byte option fields (produced by `cargo xtask db-gen`).
 const GENERATED_OPTION_FIELDS: &str = include_str!("../generated/option_fields.csv");
 
@@ -320,6 +327,57 @@ pub enum Resolution<'a> {
     Unknown,
 }
 
+/// en: Parse one `sku,family,series,device_id,id_addr,flash_bytes,sram_bytes,verified[,...]`
+/// table. Trailing columns are ignored, so the provisional overlay can carry its request number
+/// without a second parser. Malformed rows are skipped rather than failing the whole table.
+/// ja: SKU 表を 1 つ読む。9 列目以降(overlay の依頼番号)は無視。壊れた行は飛ばす。
+fn parse_sku_table(csv: &str, provisional: bool) -> Vec<SkuRecord> {
+    let mut out = Vec::new();
+    for line in csv.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let f: Vec<&str> = line.split(',').collect();
+        let (
+            Some(sku),
+            Some(family),
+            Some(series),
+            Some(device_id),
+            Some(flash),
+            Some(sram),
+            Some(verified),
+        ) = (
+            f.first(),
+            f.get(1),
+            f.get(2),
+            f.get(3),
+            f.get(5),
+            f.get(6),
+            f.get(7),
+        )
+        else {
+            continue;
+        };
+        let device_id = device_id
+            .strip_prefix("0x")
+            .and_then(|h| u32::from_str_radix(h, 16).ok());
+        out.push(SkuRecord {
+            sku: (*sku).to_owned(),
+            family: (*family).to_owned(),
+            series: (*series).to_owned(),
+            device_id,
+            flash_bytes: flash.parse().unwrap_or(0),
+            sram_bytes: sram.parse().unwrap_or(0),
+            // `verified` = the device_id was confirmed on real silicon by this project; the rest
+            // is datasheet/reference data.
+            verified: *verified == "true",
+            provisional,
+        });
+    }
+    out
+}
+
 /// en: The device DB: a read-only view over the generated data plus overlays.
 /// ja: device DB。生成物 + overlay をまとめた読み取り専用ビュー。
 #[derive(Debug, Default)]
@@ -331,42 +389,21 @@ impl Db {
     /// en: Built-in (generated) DB, embedded at compile time from `generated/skus.csv`.
     /// ja: 内蔵(生成済み)DB。`generated/skus.csv` をコンパイル時に埋め込む。
     pub fn builtin() -> Self {
-        let mut skus = Vec::new();
-        for line in GENERATED_SKUS.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            // sku,family,series,device_id,id_addr,flash_bytes,sram_bytes,verified
-            let f: Vec<&str> = line.split(',').collect();
-            let [
-                sku,
-                family,
-                series,
-                device_id,
-                _id_addr,
-                flash,
-                sram,
-                verified,
-            ] = f.as_slice()
-            else {
-                continue;
-            };
-            let device_id = device_id
-                .strip_prefix("0x")
-                .and_then(|h| u32::from_str_radix(h, 16).ok());
-            skus.push(SkuRecord {
-                sku: (*sku).to_owned(),
-                family: (*family).to_owned(),
-                series: (*series).to_owned(),
-                device_id,
-                flash_bytes: flash.parse().unwrap_or(0),
-                sram_bytes: sram.parse().unwrap_or(0),
-                // `verified` = the device_id was confirmed on real silicon by this project; the rest
-                // is datasheet/reference data.
-                verified: *verified == "true",
-                provisional: false,
+        let mut skus = parse_sku_table(GENERATED_SKUS, false);
+        // The overlay only fills gaps: once db-gen starts delivering a SKU (by name or by masked
+        // device_id) the generated row wins and the stale provisional one is dropped, so a
+        // forgotten overlay entry can never shadow real data.
+        for row in parse_sku_table(PROVISIONAL_SKUS, true) {
+            let shadowed = skus.iter().any(|g| {
+                g.sku == row.sku
+                    || match (g.device_id, row.device_id) {
+                        (Some(a), Some(b)) => a & DEVICE_ID_MASK == b & DEVICE_ID_MASK,
+                        _ => false,
+                    }
             });
+            if !shadowed {
+                skus.push(row);
+            }
         }
         Self { skus }
     }
