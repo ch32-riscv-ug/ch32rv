@@ -34,7 +34,7 @@ pub mod progress;
 
 /// en: JSON contract version, carried in `ResultEnvelope::contract`.
 /// ja: JSON contract の版。`ResultEnvelope::contract` に入る。
-pub const CONTRACT_VERSION: &str = "2";
+pub const CONTRACT_VERSION: &str = "3";
 
 pub use envelope::{
     ErrorBody, FirmwareVersion, ProbeMode, ProbeReport, ResultEnvelope, TargetReport, Warning,

@@ -379,6 +379,7 @@ fn run_dmi(cli: &Cli, source: MonitorSource) -> ExitCode {
         Duration::from_millis(1000),
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         &mut warnings,
     ) {
         Ok(s) => s,

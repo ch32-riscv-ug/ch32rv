@@ -466,6 +466,54 @@ impl UsbInterface {
         r
     }
 
+    /// en: **Mitigation, not a cure.** Read and discard whatever is sitting on the data IN endpoint
+    /// before this interface starts a bulk operation, so a packet left by an earlier one cannot be
+    /// consumed as this one's data.
+    ///
+    /// The underlying defect is not understood. Measured on a CH32V103 over the CH549 Link: with
+    /// this disabled, `flash` runs alternate strictly between success and
+    /// `unexpected response: [ff x 64]` (a data packet read where a 4-byte ack was due), and a
+    /// `read` between them comes back shifted by exactly 64 bytes - silently, looking like erase
+    /// padding followed by the image. v0.7.0 reproduces identically, so the defect predates the
+    /// V00x work. Falsified so far: nusb's own transfer queue (`pending()` is 0 and `cancel_all`
+    /// does not help), `read_mem` under-reading (nothing is queued after it), and `write_flash`
+    /// leaving exactly one trailing ack (consuming one changes nothing). Set `CH32RV_NO_DRAIN` to
+    /// disable this and reproduce.
+    ///
+    /// nusb backend only: the CH375 (Windows stock-driver) path blocks until the device produces
+    /// data and has no verified timeout control ([`crate::wch_win`]), so a read that may find
+    /// nothing hangs there.
+    /// ja: **対症療法であって根治ではない。** バルク操作の前に data IN endpoint の残骸を読み捨て、
+    /// 前の操作が残した packet をこの操作のデータとして読まないようにする。
+    ///
+    /// 真因は未解明。CH549 Link + CH32V103 実測: 無効にすると `flash` は成功と
+    /// `unexpected response: [ff x 64]`(4 byte の ack を待つ所でデータ packet を読む)を**厳密に交互**に
+    /// 繰り返し、その間の `read` は**ちょうど 64 byte ずれて**返る(消去 padding + image に見えるので
+    /// 無言で壊れる)。v0.7.0 でも同一挙動なので V00x 対応以前からの欠陥。**否定済みの仮説**: nusb の
+    /// 転送キュー(`pending()` は 0、`cancel_all` で直らない)、`read_mem` の読み残し(直後に残骸なし)、
+    /// `write_flash` が ack を 1 個残す(1 個読んでも変わらない)。`CH32RV_NO_DRAIN` で無効化して再現できる。
+    ///
+    /// nusb backend 限定: CH375(Windows 純正ドライバ)経路は応答までブロックし timeout 制御が未検証。
+    pub fn clear_stale_data(&mut self, timeout: Duration) {
+        if std::env::var_os("CH32RV_NO_DRAIN").is_some() {
+            return;
+        }
+        let Backend::Nusb(b) = &mut self.backend else {
+            return;
+        };
+        let Some(ep) = b.data_in.as_mut() else {
+            return;
+        };
+        let mut scratch = [0u8; 1024];
+        // Bounded: a probe that streams forever must not wedge us here.
+        for _ in 0..1024 {
+            match read_ep(ep, &mut scratch, timeout) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+        }
+    }
+
     /// Read from the data endpoint. Call [`Self::open_data_endpoints`] first.
     pub fn read_data(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize, UsbError> {
         let r = match &mut self.backend {
@@ -526,6 +574,7 @@ fn read_ep(
 ) -> Result<usize, UsbError> {
     let max_packet = ep.max_packet_size().max(1);
     let requested = buf.len().div_ceil(max_packet) * max_packet;
+    let trace = std::env::var_os("CH32RV_DEBUG_EP").is_some();
     ep.submit(Buffer::new(requested));
     let Some(completion) = ep.wait_next_complete(timeout) else {
         ep.cancel_all();
@@ -536,6 +585,13 @@ fn read_ep(
         .status
         .map_err(|e| UsbError::Transfer(e.to_string()))?;
     let n = completion.actual_len;
+    if trace {
+        eprintln!(
+            "[ep] want={} requested={requested} got={n} mp={max_packet} head={:02x?}",
+            buf.len(),
+            &completion.buffer[..n.min(8)]
+        );
+    }
     if n > buf.len() {
         return Err(UsbError::Transfer(format!(
             "device returned {n} bytes, buffer is {}",

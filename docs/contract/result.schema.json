@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ch32-riscv-ug/ch32rv/docs/contract/result.schema.json",
-  "title": "ch32rv result envelope (contract 2)",
+  "title": "ch32rv result envelope (contract 3)",
   "type": "object",
   "required": ["contract", "ok", "cmd"],
   "properties": {
     "contract": {
       "type": "string",
       "description": "契約版。破壊変更でのみ major を上げる",
-      "const": "2"
+      "const": "3"
     },
     "ok": { "type": "boolean" },
     "cmd": {

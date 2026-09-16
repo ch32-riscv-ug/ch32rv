@@ -109,6 +109,7 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
         timeout,
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         &mut warnings,
     ) {
         Ok(s) => s,

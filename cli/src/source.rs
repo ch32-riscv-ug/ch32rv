@@ -206,7 +206,7 @@ impl DmiSource {
     fn open_rtt(session: &mut Session, warnings: &mut Vec<Warning>) -> Result<Self, OpenError> {
         // How much RAM to scan for the control block: the target's SRAM (from the DB) or a default.
         let scan_len = {
-            let db = ch32rv_target::Db::builtin();
+            let db = session.db();
             match db.resolve_by_chip_id(session.attach.chip_id) {
                 ch32rv_target::Resolution::Sku(s) if s.sram_bytes > 0 => {
                     s.sram_bytes.min(64 * 1024)

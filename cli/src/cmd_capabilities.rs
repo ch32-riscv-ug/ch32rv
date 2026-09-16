@@ -80,6 +80,7 @@ fn live_capabilities(cli: &Cli, cmd: &str, entry: &crate::cmd_probe::Entry) -> E
         timeout,
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         &mut warnings,
     ) {
         Ok(s) => s,

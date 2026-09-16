@@ -543,6 +543,7 @@ pub(crate) fn attach(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
         timeout,
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         &mut warnings,
     )
     .map_err(|e| session_error(cli, cmd, e))
@@ -562,6 +563,22 @@ pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
             ErrorKind::TargetAmbiguous,
             msg,
             Some("pass the correct --chip, or omit it to use auto-detection"),
+        ),
+        SessionError::DbOverlay(msg) => fail(
+            cli,
+            cmd,
+            ErrorKind::Usage,
+            msg,
+            Some("--db takes the same columns as crates/target/generated/skus.csv"),
+        ),
+        SessionError::ChipNotInDb(msg) => fail(
+            cli,
+            cmd,
+            ErrorKind::TargetNotInDb,
+            msg,
+            Some(
+                "omit --chip to use auto-detection, or run `ch32rv db list` for the names this build knows",
+            ),
         ),
         SessionError::Open(err) | SessionError::ProbeInfo(err) => {
             // Classify off the *typed* error, never a substring of its Display text.

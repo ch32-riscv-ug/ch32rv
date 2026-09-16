@@ -226,6 +226,7 @@ fn pipe(serial: &str, source: MonitorSource, mut sock: TcpStream, stop: Arc<Atom
         Duration::from_millis(1000),
         Duration::from_secs(10),
         None,
+        None,
         &mut warnings,
     ) {
         Ok(s) => s,

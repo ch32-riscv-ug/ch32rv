@@ -56,6 +56,7 @@ fn open_session(
         timeout,
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         warnings,
     )
     .map_err(|e| crate::cmd_probe::session_error(cli, cmd, e))

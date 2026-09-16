@@ -17,7 +17,8 @@ use fs4::fs_std::FileExt;
 #[derive(Debug)]
 pub struct DeviceLock {
     // Held only to keep the flock alive for this guard's lifetime; closed (released) on drop.
-    _file: File,
+    // `None` under replay, where there is no physical probe to serialize against.
+    _file: Option<File>,
 }
 
 /// Why a lock could not be taken.
@@ -36,6 +37,16 @@ impl DeviceLock {
     /// `timeout`. `LockError::Timeout` when another holder does not release in time.
     /// ja: `key`(probe serial か topology)の排他 lock を `timeout` まで待って取る。
     pub fn acquire(key: &str, timeout: Duration) -> Result<Self, LockError> {
+        // en: Replay serves recorded transfers from a file - there is no probe on the other end to
+        // serialize against. Taking the real lock would make an offline replay fail with
+        // `device-busy` (exit 13) whenever some other process happens to hold that probe, which is
+        // exactly what happened when the test suite ran beside a bench session.
+        // ja: replay は記録済み転送をファイルから供給するだけで、直列化すべき実機が居ない。ここで
+        // 本物の lock を取ると、別プロセスがその probe を握っているだけでオフラインの replay が
+        // `device-busy`(exit 13)で落ちる(実機テストと並走したときに実際に踏んだ)。
+        if crate::replay::active() {
+            return Ok(DeviceLock { _file: None });
+        }
         let dir = lock_dir();
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}.lock", sanitize(key)));
@@ -51,7 +62,7 @@ impl DeviceLock {
             // `flock` is advisory and per-open-file-description: an exclusive lock succeeds only
             // when no other process holds one on this path.
             if file.try_lock_exclusive()? {
-                return Ok(DeviceLock { _file: file });
+                return Ok(DeviceLock { _file: Some(file) });
             }
             if Instant::now() >= deadline {
                 return Err(LockError::Timeout(timeout.as_secs_f64()));
