@@ -68,6 +68,7 @@ wlink `dmi.rs` から転記し実機で確認。DMI レジスタ番地: DMDATA0=
 |---|---|---|
 | halt | DMCONTROL に `0x80000001` を書き DMSTATUS の all/any-halted を待つ→`0x00000001` で haltreq クリア | verified |
 | resume | DMCONTROL=`0x40000001`(resumereq) | verified |
+| reset の ack | DMCONTROL=`0x10000001`(ackhavereset + dmactive)。**CH32V00x の DM は `havereset` を ack するまで DMSTATUS の halt/running bit がリセット時の値で固着する**(V006 実測: 走行中でも `0x004c0382`=halted+havereset、ack 後に `0x00430c82`=allrunning)。soft reset(`0x0b 0x01`)の後は ack → DMSTATUS → halt なら resume、の順で走行を保証する。V307 は ack 無しでも正しく報告する | verified(2026-09-16) |
 | read_reg(GPR/CSR/PC) | DMDATA0=0 → DMCOMMAND=`0x00220000\|regno`(GPR=`0x1000+n`, PC=dpc `0x7b1`)→ abstractcs busy 待ち → DMDATA0 読み | verified |
 | write_reg(GPR/CSR/PC) | DMDATA0=value → DMCOMMAND=`0x00230000\|regno`→ busy 待ち | verified |
 | step(1命令) | dcsr(CSR `0x7b0`)の step(bit2)を立てて write_reg → resume → 再 halt を待つ → step クリア | verified(V203 で PC 前進を確認) |

@@ -251,7 +251,7 @@ ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指�
 #### reset / run / recover
 
 ```text
-ch32rv reset [--halt] [--dm] [--confirm-run]      既定: reset して実行、detach
+ch32rv reset [--halt] [--dm] [--confirm-run]      既定: reset して実行、detach。**soft reset 後に `ackhavereset` → DMSTATUS → halt なら resume**(probe の reset 単体では attach 由来の halt 要求で hart がリセットベクタに止まる。CH32V00x の DM は `havereset` を ack するまで halt/running bit が固着するので ack が先。V006 実測)
 ch32rv run <ELF> [--no-flash] [--source dmdata|rtt]
              [--exit-on semihosting|timeout] [--duration <s>]  target の exit code を伝搬(HIL 用)。
                                                               出力は DMI source のみ(uart/sdi は monitor)。stdin は target へ
