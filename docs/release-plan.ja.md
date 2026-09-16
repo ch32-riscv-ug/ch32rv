@@ -90,6 +90,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - 0.5.0: `read --region`、`probe list --watch`、`--replay`
 - 0.6.0: `--non-interactive` の破壊操作拒否、`probe firmware update` / `exit-iap`
 - 0.7.0: FLASH controller profile・option base を生成 DB 由来に、recover が他 option byte を保存、V103 の option verify 修正
+- 次版: **V00x(V002/V004/V005/V006/V007/M007)対応** — stub が無い family 向けに FLASH controller 直叩きの書込経路を追加、device DB が CH32V006K8U6 を識別
 
 ## 5. 後続(未実装/重い/未検証)
 
@@ -106,7 +107,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 ブートストラップ(新規 crate ごと一度きり):
 
 - [x] 0.2.0 で 8 crate を名前確保 + Trusted Publisher 登録済み
-- [ ] **`ch32rv-usb-wch-win`(0.2 追加の新規)を初回トークン publish + TP 登録**(§1 手順 1・2。次リリース前に必須。first-publish.sh は既存8を skip しこれだけ出す)
+- [x] `ch32rv-usb-wch-win` を初回トークン publish + TP 登録(完了。**9 crate すべて crates.io に 0.7.0 で在る**ので、新規 crate を足さない限り bootstrap は不要 = §7.2 の手順 2・3 は飛ばしてよい)
 - [x] `scripts/release.sh` 動作確認済み
 
 毎回:
@@ -114,7 +115,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - [ ] `cargo fmt --check` / `cargo clippy --all-targets --all-features`(warning 0)/ `cargo test` / `cargo deny check`
 - [ ] `cargo xtask db-check`(埋め込み device DB が `ch32-device-data` と一致。ずれていれば `db-gen` して commit。**release workflow でも版 bump 前に検査される**)
 - [ ] `cargo xtask db-check`(生成物が pinned data と一致)
-- [ ] 6台ベンチで代表フロー(flash→verify、gdb、monitor、target info、capabilities)を再確認
+- [ ] 7台ベンチ(V003 / V00x / V103 / V203 / V307 / X035 / L103)で代表フロー(flash→verify、gdb、monitor、target info、capabilities)を再確認
 - [ ] **Windows(WCH 純正ドライバ経路)で probe list / target info / flash 往復を再確認**(依頼 B-2 の回帰)
 - [ ] CHANGELOG の `Unreleased` を新 version に切る(= release.sh がやる)
 - [ ] README(repo)に crates.io バッジ / インストール手順 / verified OS 明記

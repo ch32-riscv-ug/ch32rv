@@ -14,8 +14,11 @@ management, a built-in device database, and the Arduino IDE integration protocol
 > **Beta.** The `0.x` line is a beta for downstream projects (e.g. ArduinoCore-CH32) to integrate
 > against; the CLI and library APIs may still change before the `1.0` formal release.
 >
-> **Verified scope.** Exercised end-to-end on a six-board bench — CH32V003, V103, V203, V307, X035,
-> and L103. Prebuilt binaries are provided for Linux / macOS / Windows; **Linux x86_64 and Windows
+> **Verified scope.** Exercised end-to-end on a seven-board bench — CH32V003, V00x (V006), V103,
+> V203, V307, X035, and L103. The V00x line has no WCH flash loader stub, so it is programmed by
+> driving the target's own FLASH controller over the debug link: same byte-exact result, but slower
+> (a 2.5 KiB sketch ~17 s, a full 62 KiB image ~6 min).
+> Prebuilt binaries are provided for Linux / macOS / Windows; **Linux x86_64 and Windows
 > x86_64 are verified**, macOS and the arm targets are **experimental** (not yet validated on real
 > hardware). On Windows it works with WCH's stock driver as installed by WCH-LinkUtility — **no Zadig
 > / WinUSB swap needed** (see [Windows](#windows-usb-driver)).
