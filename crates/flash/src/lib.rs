@@ -119,10 +119,12 @@ pub struct FlashCtrlProfile {
 /// own; they share the CH32V003 / CH32X035 controller (same core generation and geometry), which is
 /// how they were verified here. Bytes that are absent are unsupported by design, not by omission:
 /// the DB knows more families (V006 / V205 / M030 / V407 / X315 / H417), but nothing here has been
-/// run against that silicon, and this path erases and programs flash.
+/// run against that silicon, and this path erases and programs flash. CH32V006 (`0x4E`) covers the
+/// whole V00x line (V002/V004/V005/V006/V007/M007), which `ch32-device-data` keys as one family.
 /// ja: family byte → ch32-device-data の family 文字列(実機で往復検証した family のみ)。CH641 /
 /// CH643 は DB に行が無く、V003 / X035 と同じ controller を共有する。未掲載の byte は「DB に無い」
-/// のではなく「実機未検証だから載せていない」(この経路は flash を消して書くため)。
+/// のではなく「実機未検証だから載せていない」(この経路は flash を消して書くため)。`0x4E` は V00x
+/// 系すべて(V002/V004/V005/V006/V007/M007)で、DB はこれを 1 family として扱う。
 fn db_family(family_byte: u8) -> Option<&'static str> {
     Some(match family_byte {
         0x01 => "CH32V103",
@@ -131,6 +133,7 @@ fn db_family(family_byte: u8) -> Option<&'static str> {
         0x09 | 0x49 => "CH32V003", // CH641 shares the V003 controller
         0x0C | 0x0D => "CH32X035", // CH643 shares the X035 controller
         0x0E => "CH32L103",
+        0x4E => "CH32V006", // V002/V004/V005/V006/V007/M007 share one controller profile
         _ => return None,
     })
 }
@@ -226,6 +229,7 @@ mod tests {
             (0x0D, 256, FlashProgMode::Buffered, false, true),      // CH32X035
             (0x0E, 256, FlashProgMode::Buffered, false, true),      // CH32L103
             (0x01, 128, FlashProgMode::V103, true, true),           // CH32V103
+            (0x4E, 256, FlashProgMode::Buffered, false, true),      // CH32V00x (V006 on the bench)
         ];
         for (byte, page_size, mode, corrupts, reads_ff) in cases {
             let p = flash_controller_profile(byte).unwrap_or_else(|| {
@@ -246,7 +250,7 @@ mod tests {
     /// this path erases and programs flash, so it fails closed.
     #[test]
     fn unverified_families_have_no_profile() {
-        for byte in [0x4Eu8, 0x86, 0xC6, 0x02, 0x00, 0xFF] {
+        for byte in [0x86u8, 0xC6, 0x02, 0x00, 0xFF] {
             assert!(
                 flash_controller_profile(byte).is_none(),
                 "family byte 0x{byte:02x} must not resolve to a controller profile"

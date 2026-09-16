@@ -1,6 +1,6 @@
 # 依頼 0001: chip ID(device_id)の evidence 表新設
 
-- 状態: **納品受け入れ済(2026-09-02)**。`evidence/device_ids.csv`(72行)+`device_id_addresses.csv` 納品。実測6台(V003/V103/V203/V307/L103/X035)と突き合わせ、rev bits [7:4] don't-care で全一致。`xtask db-gen` が `crates/target/generated/skus.csv` を生成、`target info` の chip_id→SKU 解決を実装(全5接続台で実機動作)。gap 7 series は未発売でデータ側も未収載(接続でき次第 measured 追記)
+- 状態: **納品受け入れ済(2026-09-02)。追加依頼あり・連絡済み(2026-09-16)** — CH32V006 の package 違いが `evidence/device_ids.csv` に 1 行しか無く、実測した `0x00600600` が解決できない。型番 `CH32V006K8U6` は**データシート未掲載だが EVT には存在**し、EVT から追加予定。→ [measured/device-id-v006-2026-09-16.md](measured/device-id-v006-2026-09-16.md)。`evidence/device_ids.csv`(72行)+`device_id_addresses.csv` 納品。実測6台(V003/V103/V203/V307/L103/X035)と突き合わせ、rev bits [7:4] don't-care で全一致。`xtask db-gen` が `crates/target/generated/skus.csv` を生成、`target info` の chip_id→SKU 解決を実装(全5接続台で実機動作)。gap 7 series は未発売でデータ側も未収載(接続でき次第 measured 追記)
 - 依頼元: ch32rv(CH32 RISC-V 書き込みツール)
 - 優先度: **高**。ch32rv の target 自動検出(chip ID → family/SKU 判定、fail-closed)の一次データであり、M2 のブロッカ
 - 作成日: 2026-09-01
@@ -38,6 +38,7 @@ device_id の evidence 表を新設してほしい。形式は提案であり、
 
 ## 対象範囲と優先順位
 
+0. **2026-09-16 追加(連絡済み): CH32V006 の package 違い** — 実測 `0x00600620`(mask 後 `0x00600600`、QFN32 62K/8K)が未収載。V002 は 5 行・V005 は 4 行あるのに V006 は E8R6 の 1 行だけ。型番は `CH32V006K8U6`(データシート未掲載、EVT にあり)([measured/device-id-v006-2026-09-16.md](measured/device-id-v006-2026-09-16.md))
 1. **最優先: gap の 7 series** — CH32V205 / V407 / V467 / X305 / X315 / M030 / M103(実機実測が必要。ch32-data に値が無い)
 2. 次点: ch32-data が値を持つ既存 series の**取り込み + 照合**(独立 2 ソースの crosscheck として。`tools/crosscheck_ch32data.py` の既存運用に合う)
 3. 実測のたびに: silicon revision([7:4])違いの個体が出たら don't-care の裏付けとして記録

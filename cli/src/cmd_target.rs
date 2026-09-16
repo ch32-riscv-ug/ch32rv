@@ -71,20 +71,35 @@ pub fn info(cli: &Cli) -> ExitCode {
     // masked). Fail-closed: an unknown or cross-family-ambiguous id shows no SKU rather than a guess.
     let db = ch32rv_target::Db::builtin();
     let resolution = db.resolve_by_chip_id(session.attach.chip_id);
+    let mut sku_provisional = None;
     let (sku, sku_verified, sku_line): (Option<String>, Option<bool>, String) = match &resolution {
-        ch32rv_target::Resolution::Sku(s) => (
-            Some(s.sku.clone()),
-            Some(s.verified),
-            format!(
-                "{} ({})",
-                s.sku,
-                if s.verified {
-                    "verified on silicon"
-                } else {
-                    "generated DB, datasheet reference"
-                }
-            ),
-        ),
+        ch32rv_target::Resolution::Sku(s) => {
+            sku_provisional = Some(s.provisional);
+            if s.provisional {
+                // The row is a stopgap from `provisional/skus.csv`, not from the generated DB, so
+                // the SKU name is only as good as the pending data request. Say so every time.
+                warnings.push(Warning {
+                    code: "sku-provisional".to_owned(),
+                    msg: format!(
+                        "{} comes from the provisional overlay, not the generated DB - the part number is pending a data request (docs/data-requests/)",
+                        s.sku
+                    ),
+                });
+            }
+            (
+                Some(s.sku.clone()),
+                Some(s.verified),
+                format!(
+                    "{} ({})",
+                    s.sku,
+                    match (s.provisional, s.verified) {
+                        (true, _) => "provisional overlay, chip_id measured on silicon",
+                        (false, true) => "verified on silicon",
+                        (false, false) => "generated DB, datasheet reference",
+                    }
+                ),
+            )
+        }
         ch32rv_target::Resolution::Family(fam, cands) => {
             let names: Vec<&str> = cands.iter().map(|c| c.sku.as_str()).collect();
             warnings.push(Warning {
@@ -126,7 +141,7 @@ pub fn info(cli: &Cli) -> ExitCode {
         chip_id: Some(format!("0x{:08x}", session.attach.chip_id)),
         uid: chip.as_ref().map(|c| hex(&c.uuid)),
         verified: sku_verified,
-        provisional: None,
+        provisional: sku_provisional,
         protected: None,
         flash_bytes: chip.as_ref().map(|c| c.flash_bytes),
     };

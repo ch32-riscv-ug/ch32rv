@@ -255,11 +255,19 @@ fn build_matrix(
         ));
     }
 
-    // flash (stub loader).
+    // flash: WCH's loader stub, or - for a family that has none - the FLASH controller over DMI.
     caps.push(if flash_ok {
         Cap::yes("flash", "a flash loader stub is available for this family")
+    } else if ctrl.is_some() {
+        Cap::yes(
+            "flash",
+            "no stub for this family - programmed via the direct FLASH controller (slower)",
+        )
     } else {
-        Cap::no("flash", "no flash stub for this family yet (interim table)")
+        Cap::no(
+            "flash",
+            "no flash stub and no FLASH-controller profile for this family",
+        )
     });
 
     // erase --range / --sector / gdb flash software breakpoints (direct FLASH controller).
