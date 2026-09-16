@@ -12,7 +12,9 @@ probe-rs / wlink / minichlink / WCH OpenOCD / WCH-LinkUtility / wchisp などに
 
 > **β版。** `0.x` は下流プロジェクト(例: ArduinoCore-CH32)が統合するためのβで、`1.0` の正式リリースまでに CLI/ライブラリ API は変わりうる。
 >
-> **検証範囲。** 6台ベンチ(CH32V003 / V103 / V203 / V307 / X035 / L103)で end-to-end 検証済み。
+> **検証範囲。** 7台ベンチ(CH32V003 / V00x(V006) / V103 / V203 / V307 / X035 / L103)で end-to-end 検証済み。
+> V00x 系は WCH の flash loader stub が存在しないため、target 側の FLASH controller を debug 経由で
+> 直接叩いて書く(結果はバイト一致で同じだが遅い: 2.5 KiB の sketch で ~17 秒、62 KiB 全面で ~6 分)。
 > Linux / macOS / Windows のバイナリを配布。**Linux x86_64 と Windows x86_64 = verified**、
 > macOS と arm は **experimental**(実機未検証)。Windows は WCH-LinkUtility が入れる **WCH 純正ドライバのまま動く**
 > (**Zadig / WinUSB 置換は不要**。[Windows](#windows-usb-ドライバ) 参照)。
