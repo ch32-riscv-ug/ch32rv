@@ -429,6 +429,7 @@ const MEASURED: &[&str] = &[
     "CH32V307VCT6",
     "CH32L103C8T6",
     "CH32X035C8T6",
+    "CH32V006K8U6",
 ];
 
 /// Minimal CSV reader: returns rows of fields, honouring double-quoted fields (which may contain
