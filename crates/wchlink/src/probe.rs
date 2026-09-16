@@ -36,11 +36,6 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
 /// これで受けてプロトコル上の必要分だけ切り出す。
 const MAX_BULK_PACKET: usize = 64;
 
-/// en: How long [`ch32rv_usb::UsbInterface::clear_stale_data`] waits for a stale packet before
-/// concluding the endpoint is clean. Short on purpose: a clean endpoint pays this once per bulk
-/// operation. ja: 残骸待ちの上限。綺麗なら 1 バルク操作につきこの分だけの損失で済むよう短くする。
-const DRAIN_TIMEOUT: Duration = Duration::from_millis(20);
-
 /// en: Flash parameters that vary by chip family (docs/protocol/wch-link.ja.md, from wlink).
 /// ja: chip family ごとに変わる flash パラメータ(wlink 由来)。
 #[derive(Debug, Clone, Copy)]
@@ -358,6 +353,19 @@ impl WchLink {
         })
     }
 
+    /// en: Bench diagnostics only: one bounded raw read from the data IN endpoint, to see what a
+    /// probe leaves behind. Not part of any protocol path. ja: ベンチ診断専用。data IN を 1 回だけ
+    /// 生で読む(何が残っているかを見る)。プロトコル経路では使わない。
+    #[doc(hidden)]
+    pub fn debug_read_data(
+        &mut self,
+        buf: &mut [u8],
+        timeout: Duration,
+    ) -> Result<usize, WchLinkError> {
+        self.iface.open_data_endpoints(DATA_EP_OUT, DATA_EP_IN)?;
+        Ok(self.iface.read_data(buf, timeout)?)
+    }
+
     /// en: SetSpeed (`0x81 0x0c 0x02 family speed`). Before the first attach the family is
     /// unknown; probe-rs sends 0x01 (CH32V103) as the placeholder and so do we.
     /// ja: SetSpeed。初回 attach 前は family 不明のため、probe-rs と同じく 0x01 を送る。
@@ -477,7 +485,6 @@ impl WchLink {
         mut progress: impl FnMut(u64),
     ) -> Result<(), WchLinkError> {
         self.iface.open_data_endpoints(DATA_EP_OUT, DATA_EP_IN)?;
-        self.iface.clear_stale_data(DRAIN_TIMEOUT);
         if params.supports_protect {
             self.unprotect_if_needed()?;
         }
@@ -522,7 +529,6 @@ impl WchLink {
             progress(done);
         }
 
-        // MEASUREMENT: does the probe leave anything on the data endpoint after the stream?
         let _ = self.command_u8(CMD_PROGRAM, &[0x08])?; // End
         Ok(())
     }
@@ -558,22 +564,48 @@ impl WchLink {
         let skip = (addr - start) as usize;
         let len4 = (skip as u32 + len).div_ceil(4) * 4;
         self.iface.open_data_endpoints(DATA_EP_OUT, DATA_EP_IN)?;
-        self.iface.clear_stale_data(DRAIN_TIMEOUT);
-        // SetReadMemoryRegion (cmd 0x03): start_addr BE32 + len BE32.
-        let mut region = Vec::with_capacity(8);
-        region.extend_from_slice(&start.to_be_bytes());
-        region.extend_from_slice(&len4.to_be_bytes());
-        let _ = self.command(CMD_SET_READ_MEM_REGION, &region)?;
-        // Program ReadMemory (0x0c), then stream len4 bytes from the data endpoint.
-        let _ = self.command(CMD_PROGRAM, &[0x0c])?;
-        let mut buf = vec![0u8; len4 as usize];
-        let mut got = 0usize;
-        while got < buf.len() {
-            let n = self.iface.read_data(&mut buf[got..], self.timeout)?;
-            if n == 0 {
-                return Err(WchLinkError::UnexpectedResponse(Vec::new()));
+        // en: One SetReadMemoryRegion + ReadMemory per window of at most READ_WINDOW bytes, so no
+        // single transfer can outlive the transport timeout. The probe streams slowly over usbipd -
+        // measured 2026-09-16: WCH-LinkE ~56 KB/s (64 KiB in 1.17 s, 128 KiB in 2.32 s, 192 KiB and
+        // up time out at 3 s), CH549 Link ~11 KB/s (32 KiB in 2.93 s, 64 KiB times out). A request
+        // that timed out was cancelled host-side while the probe kept streaming, and the rest of
+        // that stream surfaced as stale data in whatever read came next: a dump shifted by exactly
+        // 64 bytes (silently), or a flash-write ack read that got image bytes instead
+        // (`unexpected response: [ff x 64]`), which aborted the write and left *its* last real ack
+        // queued for the run after - the strictly alternating failures seen on the CH549. This is
+        // the single defect behind all of those; 16 KiB is ~1.5 s on the slowest probe, and the
+        // extra command pair per window is negligible against the stream time.
+        // ja: READ_WINDOW byte ごとに SetReadMemoryRegion + ReadMemory を発行し、1 転送が transport
+        // timeout を越えないようにする。probe は usbipd 越しでは遅い — 2026-09-16 実測: LinkE ~56 KB/s
+        // (64 KiB 1.17 s / 128 KiB 2.32 s / 192 KiB 以上は 3 s で timeout)、CH549 ~11 KB/s(32 KiB 2.93 s /
+        // 64 KiB は timeout)。timeout した要求は host 側で cancel されるが probe は送り続け、残りが次の
+        // read に stale data として現れていた: dump がちょうど 64 byte ずれる(無言)、あるいは flash の
+        // ack 読みが image のバイトを掴む(`unexpected response: [ff x 64]`)→ 書込が abort し、受信済み
+        // chunk の ack が次回へ残る → CH549 で成功/失敗が厳密に交互。これら全部の唯一の原因。16 KiB は
+        // 最遅の probe で ~1.5 s、窓ごとのコマンド 1 往復はストリーム時間に対して無視できる。
+        const READ_WINDOW: u32 = 16 * 1024;
+        let mut buf = Vec::with_capacity(len4 as usize);
+        let mut off = 0u32;
+        while off < len4 {
+            let want = READ_WINDOW.min(len4 - off);
+            // SetReadMemoryRegion (cmd 0x03): start_addr BE32 + len BE32.
+            let mut region = Vec::with_capacity(8);
+            region.extend_from_slice(&(start + off).to_be_bytes());
+            region.extend_from_slice(&want.to_be_bytes());
+            let _ = self.command(CMD_SET_READ_MEM_REGION, &region)?;
+            // Program ReadMemory (0x0c), then stream `want` bytes from the data endpoint.
+            let _ = self.command(CMD_PROGRAM, &[0x0c])?;
+            let mut window = vec![0u8; want as usize];
+            let mut got = 0usize;
+            while got < window.len() {
+                let n = self.iface.read_data(&mut window[got..], self.timeout)?;
+                if n == 0 {
+                    return Err(WchLinkError::UnexpectedResponse(Vec::new()));
+                }
+                got += n;
             }
-            got += n;
+            buf.extend_from_slice(&window);
+            off += want;
         }
         // Each 32-bit word comes back byte-reversed; swap to little-endian in place.
         let mut i = 0;
@@ -582,7 +614,6 @@ impl WchLink {
             buf.swap(i + 1, i + 2);
             i += 4;
         }
-        // MEASUREMENT: does the probe send more than the region we asked for?
         buf.drain(..skip);
         buf.truncate(len as usize);
         Ok(buf)

@@ -23,7 +23,7 @@ ch32rv を実機でテストする手順。**まず Linux で通し、次に Win
   ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules
   sudo udevadm control --reload-rules && sudo udevadm trigger
   ```
-- **Windows**: probe を Windows に挿す(WSL で usbipd に attach 中なら `usbipd detach --busid <B>` で Windows へ戻す。`--force` は使わない)。ドライバは WCH 純正でも WinUSB でも可(ch32rv が自動フォールバック、Zadig 不要)。状況は `ch32rv doctor`。
+- **Windows**: probe を Windows に挿す(WSL で usbipd に attach 中なら `usbipd detach --busid <B>` で Windows へ戻す。`--force` は使わない)。**detach する probe は `usbipd list` の DEVICE 欄が `WCH-Link SERIAL (COMxx)`(= WCH 純正ドライバ)の個体に限る**。`USB シリアル デバイス (COMxx)`(inbox usbser)の個体は detach しても usbipd スタブが残って開けず、**そのまま USB バスから消える**(バス全体が再列挙され、走っている他 probe の実機テストを巻き込んで落とす)。**usbipd を触る前に、他の実機テストをすべて止める**。ドライバは WCH 純正でも WinUSB でも可(ch32rv が自動フォールバック、Zadig 不要)。状況は `ch32rv doctor`。
 - **macOS**: 挿すだけ(専用ドライバ不要)。開けなければ `ch32rv doctor` の指示に従う。
 - **WSL + usbipd で再列挙を伴うテスト**(`probe mode set` / `probe firmware update`): probe は別の VID:PID として現れるため、そのままでは WSL から消える。Windows 側で 1 度だけ以下を用意する(管理者 PowerShell。IAP mode 用の AutoBind policy)。
   ```powershell
@@ -112,7 +112,8 @@ ch32rv --capture cap.ndjson probe info --probe serial:<SN>   # 問題時に添�
 
 ## 6. 既知の注意
 
-- **CH549 Link(WCH-Link 無印、fw 2.12)の read 癖**: 高速バルク read が stub(flash program)実行直後の一瞬、program 前の stale な flash view(`0xff` やゴミ)を返すことがある。0.4.1 で in-flash verify が不一致時に権威ある DMI 読みで再確認するようにして解消済み。**transport(read/write)経路を変えたら CH549 を含めて `flash … --erase auto` を 10 回以上反復**し、間欠的な偽 `verify-mismatch` が出ないことを Windows 引き継ぎ前に Linux で確認する(LinkE では出ないので LinkE だけの確認では漏れる)。
+- **probe のストリームは遅く、1 転送を timeout 内に収める**(2026-09-16 実測、usbipd 越し): LinkE ~56 KB/s、**CH549 ~11 KB/s**。`read_mem` は 16 KiB 窓で発行する。**transport(read/write)経路を変えたら、CH549 と LinkE の両方で `flash` を read を挟まず 3 回以上連続させ、成功/失敗が交互にならないこと**と、`read` の dump が元 image とバイト一致することを確認する(dump の先頭 64 byte が `0xff` / `0xe339e339` なら timeout で残ったストリームを拾っている)。診断用に `crates/wchlink/examples/read_limit.rs`(単発 read のサイズごとの所要時間と残骸)がある。
+- **(旧)CH549 の read 癖**(上の一断面):
 - **Windows**: WCH 純正ドライバ経路は動くが遅い(64B ioctl)。WinUSB があればそちら。`ch32rv doctor` で判別。
 - **macOS**: 未検証(experimental)。このテストで verified 昇格を狙う。
 - 問題報告時は **`--capture <file>`** の NDJSON を添付すると Linux 側で replay 解析しやすい。

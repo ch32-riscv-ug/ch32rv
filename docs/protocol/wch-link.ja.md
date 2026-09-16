@@ -193,7 +193,8 @@ family 別 capability(probe-rs 由来、attested): **特殊消去(§4.3)非対�
 - **返る 32bit word は byte 反転している**。4 byte ごとに `[0]↔[3]` / `[1]↔[2]` を入れ替えて LE に戻す。忘れると「読めているが値が違う」形で壊れる。
 - probe が領域を弾いたときだけ DMI の word 読みへ fallback する。
 - **実測**(LinkE + usbipd): 32 KiB read が **>120s タイムアウト → 0.71s**(~45 KiB/s)、4 KiB の readback verify が ~15s → 0.6s。**遅いリンクほど効く**(usbipd、Windows の CH375 ioctl 経路)。V003 / V103 / V203 / V307 / L103 と CH549 Link で byte 一致(endian 含む)。
-- **CH549 の stale fast-read に注意**(§7): stub 実行直後はこの経路が program 前の古い像を返すことがある。**verify は不一致時に DMI 読みで再確認**する。
+- **1 要求の長さは転送時間で縛る**: probe のストリームは usbipd 越しで **LinkE ~56 KB/s、CH549 ~11 KB/s**(実測 2026-09-16: LinkE は 64 KiB 1.17 s / 128 KiB 2.32 s、192 KiB 以上は 3 s で timeout。CH549 は 32 KiB 2.93 s、64 KiB は timeout)。transport timeout(3 s)を越えた要求は host 側で URB が cancel されるが **probe は最後まで送り続け、残りが次の data EP 読みに stale data として現れる**(dump がちょうど 64 byte ずれる / flash の ack 読みが image のバイトを掴んで abort → 受信済み chunk の ack が次回へ残る → CH549 で成功と失敗が厳密に交互)。ch32rv の `read_mem` は **16 KiB ごとに SetReadMemoryRegion + ReadMemory を発行**して 1 転送を ~1.5 s 以内に収める。
+- **旧記述「CH549 の stale fast-read」(§7)はこれの一断面**: verify の 65536 byte 単発 read が CH549 では必ず timeout し、DMI 読みへ落ちていた(V103 の flash が 108 s かかっていた理由)。窓化で fast read が通り、DMI fallback は保険に戻る。
 
 #### 4.2.3 option byte の書き込み(同じ DMI 経路の応用。verified 2026-09-01)
 
