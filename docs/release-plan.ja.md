@@ -112,11 +112,11 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 毎回:
 
-- [ ] `cargo fmt --check` / `cargo clippy --all-targets --all-features`(warning 0)/ `cargo test` / `cargo deny check`
-- [ ] `cargo xtask db-check`(埋め込み device DB が `ch32-device-data` と一致。ずれていれば `db-gen` して commit。**release workflow でも版 bump 前に検査される**)
+- [x] `cargo fmt --check` / `cargo clippy --all-targets --all-features`(warning 0)/ `cargo test` / `cargo deny check` — 2026-09-16 済
+- [x] `cargo xtask db-check`(埋め込み device DB が `ch32-device-data` と一致。ずれていれば `db-gen` して commit。**release workflow でも版 bump 前に検査される**) — 2026-09-16 済(`ch32-device-data@e3e723a`、K8U6 収載)
 - [ ] `cargo xtask db-check`(生成物が pinned data と一致)
-- [ ] 7台ベンチ(V003 / V00x / V103 / V203 / V307 / X035 / L103)で代表フロー(flash→verify、gdb、monitor、target info、capabilities)を再確認
-- [ ] **Windows(WCH 純正ドライバ経路)で probe list / target info / flash 往復を再確認**(依頼 B-2 の回帰)
+- [x] 7台ベンチ(V003 / V00x / V103 / V203 / V307 / X035 / L103)で代表フロー(flash→verify、gdb、monitor、target info、capabilities)を再確認 — 2026-09-16 済: 全 7 台で dump→flash→dump がバイト一致(V203 3s / V307 12s / L103 4s / X035 3s / V103 15s / V003 2s / V006 243s)、CH549 と V307 で `flash` 連続実行も成功/失敗の交互なし。V006 は Windows(WCH 純正ドライバ)経由でも read/flash/verify を確認
+- [x] **Windows(WCH 純正ドライバ経路)で probe list / target info / flash 往復を再確認**(依頼 B-2 の回帰) — 2026-09-16 済: V006 `497F8F06CE2F` を `usbipd detach` で Windows へ戻し、`probe list/info`・`target info`(K8U6)・`read` 4 KiB・`flash` 4 KiB(V00x controller 経路)・`verify` 62 KiB を Windows ネイティブビルドで確認。**detach 対象は `usbipd list` の DEVICE 欄が `WCH-Link SERIAL` の個体のみ**(docs/testing.ja.md)
 - [ ] CHANGELOG の `Unreleased` を新 version に切る(= release.sh がやる)
 - [ ] README(repo)に crates.io バッジ / インストール手順 / verified OS 明記
 - [ ] Actions「Release」を UI 起動 → crates.io publish(9 crate)と全 OS バイナリ添付を確認
