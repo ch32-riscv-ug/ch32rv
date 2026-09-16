@@ -48,6 +48,7 @@ pub fn info(cli: &Cli) -> ExitCode {
         timeout,
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         &mut warnings,
     ) {
         Ok(s) => s,
@@ -69,7 +70,7 @@ pub fn info(cli: &Cli) -> ExitCode {
     }
     // Resolve the SKU from the live chip_id against the generated DB (device_ids join, rev [7:4]
     // masked). Fail-closed: an unknown or cross-family-ambiguous id shows no SKU rather than a guess.
-    let db = ch32rv_target::Db::builtin();
+    let db = session.db();
     let resolution = db.resolve_by_chip_id(session.attach.chip_id);
     let mut sku_provisional = None;
     let (sku, sku_verified, sku_line): (Option<String>, Option<bool>, String) = match &resolution {
@@ -80,10 +81,17 @@ pub fn info(cli: &Cli) -> ExitCode {
                 // the SKU name is only as good as the pending data request. Say so every time.
                 warnings.push(Warning {
                     code: "sku-provisional".to_owned(),
-                    msg: format!(
-                        "{} comes from the provisional overlay, not the generated DB - the part number is pending a data request (docs/data-requests/)",
-                        s.sku
-                    ),
+                    msg: match cli.db.as_deref() {
+                        Some(path) => format!(
+                            "{} comes from the --db overlay {}, not the generated DB",
+                            s.sku,
+                            path.display()
+                        ),
+                        None => format!(
+                            "{} comes from the in-tree provisional overlay, not the generated DB - the part number is pending a data request (docs/data-requests/)",
+                            s.sku
+                        ),
+                    },
                 });
             }
             (
@@ -93,7 +101,8 @@ pub fn info(cli: &Cli) -> ExitCode {
                     "{} ({})",
                     s.sku,
                     match (s.provisional, s.verified) {
-                        (true, _) => "provisional overlay, chip_id measured on silicon",
+                        (true, true) => "provisional overlay, chip_id measured on silicon",
+                        (true, false) => "provisional overlay, not verified on silicon",
                         (false, true) => "verified on silicon",
                         (false, false) => "generated DB, datasheet reference",
                     }
@@ -229,6 +238,7 @@ pub fn option_get(cli: &Cli) -> ExitCode {
         timeout,
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         &mut warnings,
     ) {
         Ok(s) => s,
@@ -363,7 +373,7 @@ fn hex(bytes: &[u8]) -> String {
 /// family byte is coarser: 0x06 covers CH32V30x while the DB keys on CH32V307).
 /// ja: 生の chip_id から DB の family 文字列を引く(attach の family byte より細かい粒度)。
 pub(crate) fn db_family_of(session: &mut Session) -> String {
-    let db = ch32rv_target::Db::builtin();
+    let db = session.db();
     match db.resolve_by_chip_id(session.attach.chip_id) {
         ch32rv_target::Resolution::Sku(s) => s.family.clone(),
         ch32rv_target::Resolution::Family(fam, _) => fam,

@@ -408,6 +408,42 @@ impl Db {
         Self { skus }
     }
 
+    /// en: The built-in DB plus a user-supplied overlay CSV (`--db` / `CH32RV_DB`), for driving a
+    /// part the shipped tables do not carry yet. Same columns as `generated/skus.csv`
+    /// (`sku,family,series,device_id,id_addr,flash_bytes,sram_bytes,verified`, trailing columns
+    /// ignored, `#` comments allowed). Overlay rows are flagged [`SkuRecord::provisional`] so the
+    /// output never passes them off as shipped data, and - unlike the in-tree
+    /// `provisional/skus.csv`, which only fills gaps - **an overlay row wins** over a generated one
+    /// with the same SKU name or the same revision-masked device_id: the whole point of passing the
+    /// file is to override what the build knows.
+    /// ja: 内蔵 DB + 利用者指定の overlay CSV(`--db` / `CH32RV_DB`)。未収載の部品を動かすための逃げ道。
+    /// 列は `generated/skus.csv` と同じ(9 列目以降は無視、`#` はコメント)。overlay 行は
+    /// [`SkuRecord::provisional`] が立つ。**同名 SKU / 同一マスク device_id では overlay が勝つ**
+    /// (穴埋め専用の in-tree `provisional/skus.csv` とはここが違う。上書きこそが指定の目的)。
+    pub fn with_overlay(path: &std::path::Path) -> Result<Self, String> {
+        let csv = std::fs::read_to_string(path)
+            .map_err(|e| format!("could not read the DB overlay {}: {e}", path.display()))?;
+        let rows = parse_sku_table(&csv, true);
+        if rows.is_empty() {
+            return Err(format!(
+                "the DB overlay {} has no usable rows (expected `sku,family,series,device_id,id_addr,flash_bytes,sram_bytes,verified`)",
+                path.display()
+            ));
+        }
+        let mut skus = Self::builtin().skus;
+        for row in rows {
+            skus.retain(|g| {
+                g.sku != row.sku
+                    && match (g.device_id, row.device_id) {
+                        (Some(a), Some(b)) => a & DEVICE_ID_MASK != b & DEVICE_ID_MASK,
+                        _ => true,
+                    }
+            });
+            skus.push(row);
+        }
+        Ok(Self { skus })
+    }
+
     pub fn skus(&self) -> &[SkuRecord] {
         &self.skus
     }

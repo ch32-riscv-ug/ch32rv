@@ -86,7 +86,8 @@ ch32rv
 | flag | 値 | 既定 | 説明 |
 |---|---|---|---|
 | `--probe <selector>` | §3.4 | (一意なら自動) | probe の選択。複数一致は exit 14 |
-| `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed)。**実装済(2026-09-02)**: `Session::attach` が chip_id と `--chip` 名を DB family へ解決し、要求名が DB にあり検出 family と不一致なら `target-ambiguous`(23)。SKU/family/series/型番 prefix 一致は通過、DB 外の未知名は検証不能で受理 |
+| `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed)。**実装済(2026-09-02)**: `Session::attach` が chip_id と `--chip` 名を DB family へ解決し、要求名が DB にあり検出 family と不一致なら `target-ambiguous`(23)。SKU/family/series/型番 prefix 一致は通過。**DB に無い名前は `target-not-in-db`(exit 20)で停止する**(検証できない名前を受理すると、`--chip` を付けたのに刺さっている別チップへ黙って書くことになるため)。未発売の gap series はここに落ちる。省略すれば従来どおり自動検出 |
+| `--db <FILE>` | `CH32RV_DB` | 内蔵 DB のみ | 内蔵 device DB に CSV overlay を重ねる(列は `generated/skus.csv` と同じ)。**同名 SKU / 同一マスク device_id は overlay が勝つ**(in-tree `provisional/skus.csv` は穴埋め専用で逆)。overlay 行は `provisional: true` + `sku-provisional` warning。読めない/有効行なしは usage(2)。出荷テーブルに無い部品を試す逃げ道 |
 | `--core <n>` | 0.. | 0 | dual-core(H41x)の core 選択 |
 | `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn |
 | `--connect-under-reset` | | off | NRST を assert して attach |
@@ -181,6 +182,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 | 21 | target が protected(明示 unprotect が必要)**(予約: 現状は未発行)** |
 | 22 | attach 失敗(配線、電源、BOOT)。無応答は 20(`target-no-response`)で区別 |
 | 23 | target 曖昧(複数候補 / `--chip` と検出の矛盾) |
+| 20 | target を特定できない。detail で `target-no-response`(無応答)と `target-not-in-db`(DB に無い `--chip` / 未収載 SKU)を区別する |
 | 24 | capability 不足(probe×FW×target×operation で不可) |
 | 30 | verify 不一致 / blank check 失敗 |
 | 40 | 転送/DMI 操作の失敗、または真の transport timeout。JSON `kind` で `transfer-failed` と `transport-timeout` を区別 |

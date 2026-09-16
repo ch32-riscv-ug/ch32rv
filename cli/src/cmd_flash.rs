@@ -248,6 +248,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         timeout,
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         &mut warnings,
     ) {
         Ok(s) => s,
@@ -1371,6 +1372,7 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
         timeout,
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         &mut warnings,
     ) {
         Ok(s) => s,

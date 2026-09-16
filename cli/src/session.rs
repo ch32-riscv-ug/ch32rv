@@ -23,6 +23,12 @@ pub struct Session {
     pub probe_info: ProbeInfo,
     /// ChipInfo readback (flash size / UUID), when the target answered it.
     pub chip: Option<ChipInfo>,
+    /// en: The target DB this invocation resolved against - the built-in tables, or those plus a
+    /// `--db` overlay. Held here so every consumer (SKU lookup, family string, RTT scan length)
+    /// agrees; building it per call site is how `--db` silently applied to some of them and not
+    /// others. ja: この実行が使う target DB(内蔵、または `--db` overlay 込み)。各所で作り直すと
+    /// `--db` が一部にしか効かないので session が 1 つ持つ。
+    db: ch32rv_target::Db,
     /// Per-probe advisory lock, held for the session's lifetime (released on drop).
     _lock: DeviceLock,
 }
@@ -37,6 +43,10 @@ pub enum SessionError {
     Attach(String),
     /// `--chip` conflicts with the detected target (exit 23).
     ChipMismatch(String),
+    /// `--chip` names something the DB has never heard of, so it cannot be checked (exit 20).
+    ChipNotInDb(String),
+    /// The `--db` overlay could not be read or parsed (exit 2).
+    DbOverlay(String),
     /// The per-probe advisory lock could not be taken in time (exit 13).
     Busy(LockError),
 }
@@ -52,6 +62,7 @@ impl Session {
         timeout: Duration,
         lock_timeout: Duration,
         chip: Option<&str>,
+        db_overlay: Option<&std::path::Path>,
         warnings: &mut Vec<Warning>,
     ) -> Result<Self, SessionError> {
         // en: Take the per-probe advisory lock before opening so concurrent ch32rv processes on
@@ -65,6 +76,11 @@ impl Session {
             .unwrap_or_else(|| entry.dev.topology());
         let lock = DeviceLock::acquire(&lock_key, lock_timeout).map_err(SessionError::Busy)?;
 
+        let db = match db_overlay {
+            Some(path) => ch32rv_target::Db::with_overlay(path).map_err(SessionError::DbOverlay)?,
+            None => ch32rv_target::Db::builtin(),
+        };
+
         let mut link = open_with_retry(entry).map_err(SessionError::Open)?;
         link.set_timeout(timeout);
         // Clear any leftover state a previous session left holding the target.
@@ -75,7 +91,7 @@ impl Session {
 
         // Validate an explicit --chip against the detected target (fail-closed on a family conflict).
         if let Some(requested) = chip {
-            let db = ch32rv_target::Db::builtin();
+            let db = &db;
             let req_fams = db.families_for_chip_name(requested);
             let detected_fam = match db.resolve_by_chip_id(attach.chip_id) {
                 ch32rv_target::Resolution::Sku(s) => s.family.clone(),
@@ -84,9 +100,28 @@ impl Session {
                     family_name(attach.family_byte).unwrap_or("").to_owned()
                 }
             };
-            // Only reject a *clear* conflict: the requested name is in the DB and none of its
-            // families match the detected family. An unknown --chip (empty req_fams, e.g. a
-            // gap-series part) cannot be checked here, so it is accepted.
+            // en: A name the DB does not know cannot be checked against anything, so accepting it
+            // would silently program whatever happens to be on the pins - exactly what `--chip`
+            // exists to prevent, and what its "fail-closed on ambiguity" contract promises. The
+            // gap series (V205/V407/V467/X305/X315/M030/M103) land here, which is the point: a
+            // downstream IDE that offers them must hear "not in the DB", not flash a different
+            // part. Auto-detection still works with `--chip` omitted.
+            // ja: DB が知らない名前は何とも突き合わせられないので、受け入れると「刺さっている別の
+            // チップに黙って書く」ことになる。`--chip` の存在意義と help の fail-closed 宣言に反する。
+            // 未発売の gap series がここに落ちるのが狙いどおりで、`--chip` を省けば自動検出で動く。
+            if req_fams.is_empty() {
+                let _ = link.detach_chip();
+                return Err(SessionError::ChipNotInDb(format!(
+                    "--chip {requested} is not in the target DB (detected {} from chip_id 0x{:08x})",
+                    if detected_fam.is_empty() {
+                        "an unknown part"
+                    } else {
+                        &detected_fam
+                    },
+                    attach.chip_id
+                )));
+            }
+            // Reject a clear conflict: none of the requested name's families match the detected one.
             if !req_fams.is_empty()
                 && !detected_fam.is_empty()
                 && !req_fams
@@ -139,6 +174,7 @@ impl Session {
             attach,
             probe_info,
             chip,
+            db,
             _lock: lock,
         })
     }
@@ -151,6 +187,11 @@ impl Session {
     }
 
     /// Borrow a Debug Module driver over the probe's DMI transport.
+    /// The target DB for this invocation (built-in, plus `--db` when given).
+    pub fn db(&self) -> &ch32rv_target::Db {
+        &self.db
+    }
+
     pub fn dm(&mut self) -> DebugModule<'_, WchLink> {
         DebugModule::new(&mut self.link)
     }

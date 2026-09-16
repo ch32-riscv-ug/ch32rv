@@ -84,6 +84,7 @@ pub fn write(cli: &Cli, args: &WriteArgs) -> ExitCode {
         timeout,
         Duration::from_secs(cli.lock_timeout),
         cli.chip.as_deref(),
+        cli.db.as_deref(),
         &mut warnings,
     ) {
         Ok(s) => s,

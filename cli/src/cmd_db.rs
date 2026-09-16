@@ -10,9 +10,26 @@ use ch32rv_contract::{ErrorKind, ResultEnvelope};
 use crate::args::Cli;
 use crate::cmd_probe::fail;
 
+const OVERLAY_HINT: Option<&str> =
+    Some("--db takes the same columns as crates/target/generated/skus.csv");
+
+/// en: The target DB for a command that needs no device: the built-in tables, plus the `--db`
+/// overlay when one is given. Device-bound commands get theirs from the [`crate::session::Session`].
+/// ja: デバイス不要コマンド用の target DB。内蔵 + `--db` overlay。デバイスを開くコマンドは Session 側。
+pub(crate) fn db_for(cli: &Cli) -> Result<ch32rv_target::Db, String> {
+    match cli.db.as_deref() {
+        Some(path) => ch32rv_target::Db::with_overlay(path),
+        None => Ok(ch32rv_target::Db::builtin()),
+    }
+}
+
 /// `db list [--family <f>] [--verified-only]`: enumerate SKUs in the built-in DB.
 pub fn list(cli: &Cli, family: Option<&str>, verified_only: bool) -> ExitCode {
-    let db = ch32rv_target::Db::builtin();
+    const LIST_CMD: &str = "db.list";
+    let db = match db_for(cli) {
+        Ok(db) => db,
+        Err(m) => return fail(cli, LIST_CMD, ErrorKind::Usage, m, OVERLAY_HINT),
+    };
     let mut skus: Vec<_> = db
         .skus()
         .iter()
@@ -73,7 +90,10 @@ pub fn list(cli: &Cli, family: Option<&str>, verified_only: bool) -> ExitCode {
 /// `db info <SKU>`: show one SKU's DB record.
 pub fn info(cli: &Cli, sku_name: &str) -> ExitCode {
     const CMD: &str = "db.info";
-    let db = ch32rv_target::Db::builtin();
+    let db = match db_for(cli) {
+        Ok(db) => db,
+        Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, OVERLAY_HINT),
+    };
     let Some(s) = db
         .skus()
         .iter()

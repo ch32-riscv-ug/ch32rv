@@ -98,7 +98,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - gap 7 series(V205/V407/V467/X305/X315/M030/M103)device 対応 ← データ側未発売でブロック
 - option layout(register CSV)、multi-bit option、`option set` の構造化別名(`nrst=`/`split=` 等)、V4F FPU レジスタ、vFlash(load)
 - macOS の実機 verified 昇格、arduino discovery の USB hotplug 追随
-- `monitor --source sdi` の in-process forward 起動不良(enable は成功するのに CDC へ流れない。wlink との usbmon 差分要)
+- - `monitor --source sdi` の in-process forward 起動不良(enable は成功するのに CDC へ流れない。wlink との usbmon 差分要)
 - RTT channel 選択(`--channel`)← **需要待ち**。warning `rtt-channels`(方向あたり 2 本以上)に当たる利用者が出たら
 - `monitor` の外部出口(TCP `--listen` / pty)← **需要待ち**。dmdata/rtt を標準シリアルツール(screen/minicom/PlatformIO/serial GUI)へ繋ぐ IF 候補。IDE は pluggable monitor、端末・CI は stdio で足りるため保留。要るなら TCP(全 OS、std のみ、OpenOCD `rtt server` 同型、channel→port)→ pty(Linux/macOS 限定、pty crate 依存、symlink 管理、読み手不在時は target から汲み続けて host で捨てる)の順。unix の代替: `socat pty,raw,echo=0,link=/tmp/ch32rv0 exec:'ch32rv monitor --source rtt'`
 

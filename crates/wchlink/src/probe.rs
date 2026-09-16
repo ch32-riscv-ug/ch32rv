@@ -28,6 +28,19 @@ const DATA_EP_OUT: u8 = 0x02;
 const DATA_EP_IN: u8 = 0x82;
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// en: Largest packet a full-speed bulk endpoint can deliver. A bulk IN request is rounded up to
+/// the endpoint's packet size, so a read buffer smaller than this means "asked for a whole packet,
+/// then failed because a whole packet arrived" - read into this and slice out what the protocol
+/// defines. ja: full-speed bulk endpoint の最大 packet。bulk IN の要求は packet サイズへ切り上げ
+/// られるので、これより小さい buffer は「packet 丸ごと要求して、丸ごと来たら失敗」を意味する。
+/// これで受けてプロトコル上の必要分だけ切り出す。
+const MAX_BULK_PACKET: usize = 64;
+
+/// en: How long [`ch32rv_usb::UsbInterface::clear_stale_data`] waits for a stale packet before
+/// concluding the endpoint is clean. Short on purpose: a clean endpoint pays this once per bulk
+/// operation. ja: 残骸待ちの上限。綺麗なら 1 バルク操作につきこの分だけの損失で済むよう短くする。
+const DRAIN_TIMEOUT: Duration = Duration::from_millis(20);
+
 /// en: Flash parameters that vary by chip family (docs/protocol/wch-link.ja.md, from wlink).
 /// ja: chip family ごとに変わる flash パラメータ(wlink 由来)。
 #[derive(Debug, Clone, Copy)]
@@ -464,6 +477,7 @@ impl WchLink {
         mut progress: impl FnMut(u64),
     ) -> Result<(), WchLinkError> {
         self.iface.open_data_endpoints(DATA_EP_OUT, DATA_EP_IN)?;
+        self.iface.clear_stale_data(DRAIN_TIMEOUT);
         if params.supports_protect {
             self.unprotect_if_needed()?;
         }
@@ -489,7 +503,16 @@ impl WchLink {
         let mut done = 0u64;
         for chunk in data.chunks(params.write_pack_size) {
             self.write_data_padded(chunk, params.data_packet_size)?;
-            let mut ack = [0u8; 4];
+            // en: Read the ack into a whole USB packet, not the 4 bytes it nominally is. A bulk IN
+            // request is rounded up to the endpoint's packet size anyway, so a 4-byte buffer means
+            // asking for 64 bytes and then failing if 64 arrive - the data is thrown away and the
+            // flash aborts mid-image (`device returned 64 bytes, buffer is 4`). Taking the packet
+            // and reading the first 4 bytes cannot lose anything.
+            // ja: ack は名目 4 byte だが、USB packet 丸ごと受けられる buffer で読む。bulk IN の要求は
+            // どうせ packet サイズへ切り上げられるので、4 byte buffer は「64 byte 要求して 64 byte
+            // 来たら失敗」を意味し、そのデータを捨てて image の途中で flash が止まる。packet ごと
+            // 受けて先頭 4 byte を読めば取りこぼしが起きない。
+            let mut ack = [0u8; MAX_BULK_PACKET];
             let got = self.iface.read_data(&mut ack, self.timeout)?;
             // Ack looks like `41 01 01 04`; byte 3 == 0x04 means the chunk landed.
             if got < 4 || ack[3] != 0x04 {
@@ -499,6 +522,7 @@ impl WchLink {
             progress(done);
         }
 
+        // MEASUREMENT: does the probe leave anything on the data endpoint after the stream?
         let _ = self.command_u8(CMD_PROGRAM, &[0x08])?; // End
         Ok(())
     }
@@ -534,6 +558,7 @@ impl WchLink {
         let skip = (addr - start) as usize;
         let len4 = (skip as u32 + len).div_ceil(4) * 4;
         self.iface.open_data_endpoints(DATA_EP_OUT, DATA_EP_IN)?;
+        self.iface.clear_stale_data(DRAIN_TIMEOUT);
         // SetReadMemoryRegion (cmd 0x03): start_addr BE32 + len BE32.
         let mut region = Vec::with_capacity(8);
         region.extend_from_slice(&start.to_be_bytes());
@@ -557,6 +582,7 @@ impl WchLink {
             buf.swap(i + 1, i + 2);
             i += 4;
         }
+        // MEASUREMENT: does the probe send more than the region we asked for?
         buf.drain(..skip);
         buf.truncate(len as usize);
         Ok(buf)
