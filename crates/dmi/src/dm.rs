@@ -138,6 +138,24 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
 
     /// en: True if the hart is running (DMSTATUS all/any-running). Used by `--confirm-run`.
     /// ja: hart が実行中か(DMSTATUS all/any-running)。`--confirm-run` で使う。
+    /// en: Acknowledge a hart reset (DMCONTROL `ackhavereset`, bit 28, with `dmactive`). The
+    /// Debug Module latches `havereset` in DMSTATUS after a reset and, on some implementations,
+    /// keeps reporting the pre-reset halt state until the reset is acknowledged. Clears any
+    /// pending halt/resume request as a side effect (they are written as 0 here).
+    /// ja: hart のリセットを ack する(DMCONTROL の `ackhavereset` bit28 + `dmactive`)。DM はリセット後
+    /// に DMSTATUS の `havereset` を立て、実装によっては ack まで halt 状態の表示が更新されない。
+    /// haltreq/resumereq は 0 で書くので、保留中の要求は同時に消える。
+    pub fn ack_have_reset(&mut self) -> Result<(), DmiError> {
+        self.write(DMCONTROL, 0x1000_0001)
+    }
+
+    /// en: Raw DMSTATUS (`0x11`), for diagnostics and for callers that need to interpret the
+    /// per-hart state bits themselves. ja: 生の DMSTATUS(`0x11`)。診断と、状態 bit を自前で
+    /// 解釈したい呼び出し側向け。
+    pub fn dmstatus(&mut self) -> Result<u32, DmiError> {
+        self.read(DMSTATUS)
+    }
+
     pub fn is_running(&mut self) -> Result<bool, DmiError> {
         let s = self.read(DMSTATUS)?;
         Ok(s & DMSTATUS_ALLRUNNING != 0 && s & DMSTATUS_ANYRUNNING != 0)

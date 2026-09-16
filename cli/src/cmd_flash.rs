@@ -703,14 +703,8 @@ fn finish_flash(
     let mut running = None;
     match reset {
         ResetPolicy::Run => {
-            if let Err(e) = session.link().soft_reset() {
-                return fail(
-                    cli,
-                    cmd,
-                    ErrorKind::TransferFailed,
-                    format!("reset failed: {e}"),
-                    None,
-                );
+            if let Err(msg) = soft_reset_and_run(&mut session) {
+                return fail(cli, cmd, ErrorKind::TransferFailed, msg, None);
             }
             if let Some(mode) = confirm {
                 std::thread::sleep(Duration::from_millis(200));
@@ -780,6 +774,48 @@ fn finish_flash(
         return crate::cmd_monitor::monitor(cli, &margs);
     }
     exit
+}
+
+/// en: Soft-reset the target and make sure it is actually executing afterwards. The probe's
+/// "reset and run" (`0x0b 0x01`) puts the hart back at its reset vector, but when the probe still
+/// holds the halt request from attach - always the case for a standalone `reset`, which attaches
+/// and immediately resets - the hart re-enters Debug Mode on reset, and DetachChip only drops the
+/// request; a halted hart needs an explicit resume to leave. Two steps make that decision sound:
+/// first acknowledge the reset (DMCONTROL `ackhavereset`) - on the CH32V00x Debug Module the
+/// halt/running bits in DMSTATUS stay frozen at their reset-time values until the pending
+/// `havereset` is acknowledged, so without the ack a running hart still reads as halted (and the
+/// reverse could happen) - then read DMSTATUS and resume if halted. Measured 2026-09-16 on a
+/// CH32V006 with a UART heartbeat: before, `reset` printed "running" and the UART stayed silent
+/// (3/3) with DMSTATUS `0x004c0382` (halted, havereset); after, the heartbeat appears 5/5 and
+/// DMSTATUS reads `0x00430c82` (allrunning). `flash` never showed the symptom because its verify
+/// step halts through the DM, whose `halt` clears the request before the reset.
+/// ja: soft reset 後、target が本当に走っていることを保証する。probe の「reset して実行」
+/// (`0x0b 0x01`)は hart をリセットベクタへ戻すが、attach 由来の halt 要求を probe が保持したまま
+/// だと(attach 直後に reset する standalone `reset` は常にこれ)hart はリセット時に Debug Mode へ
+/// 再突入し、DetachChip は要求を落とすだけで、halt した hart は明示的な resume がなければ走らない。
+/// 判定を確実にするために 2 段: まず reset を ack する(DMCONTROL `ackhavereset`) — CH32V00x の DM は
+/// 保留中の `havereset` を ack するまで DMSTATUS の halt/running bit がリセット時の値で固着し、走って
+/// いても halted と読める — 次に DMSTATUS を読み、halt なら resume。2026-09-16 CH32V006 + UART
+/// heartbeat で実測: 修正前は `reset` が "running" と出しつつ UART 無音(3/3)・DMSTATUS `0x004c0382`
+/// (halted, havereset)、修正後は heartbeat 5/5・DMSTATUS `0x00430c82`(allrunning)。`flash` は verify
+/// で DM 経由の `halt`(reset 前に要求をクリア)を通るため症状が出なかった。
+fn soft_reset_and_run(session: &mut Session) -> Result<(), String> {
+    session
+        .link()
+        .soft_reset()
+        .map_err(|e| format!("reset failed: {e}"))?;
+    // Give the hart a moment to come out of reset before judging its state.
+    std::thread::sleep(Duration::from_millis(20));
+    let mut dm = session.dm();
+    dm.ack_have_reset()
+        .map_err(|e| format!("reset acknowledge failed: {e}"))?;
+    match dm.is_running() {
+        Ok(true) => Ok(()),
+        // Halted on reset (or the DM could not tell): a resume request is what releases it.
+        Ok(false) | Err(_) => dm
+            .resume()
+            .map_err(|e| format!("resume after reset failed: {e}")),
+    }
 }
 
 /// en: confirm-run: sample whether the target is actually executing. `status` checks the
@@ -1069,14 +1105,8 @@ pub fn reset(cli: &Cli, args: &crate::args::ResetArgs) -> ExitCode {
                 None,
             );
         }
-    } else if let Err(e) = session.link().soft_reset() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::TransferFailed,
-            format!("reset failed: {e}"),
-            None,
-        );
+    } else if let Err(msg) = soft_reset_and_run(&mut session) {
+        return fail(cli, CMD, ErrorKind::TransferFailed, msg, None);
     }
 
     let mut running = None;
