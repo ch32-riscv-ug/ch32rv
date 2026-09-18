@@ -7,7 +7,7 @@
 
 ## 1. 配布する crate(crates.io、依存順に publish)
 
-version は workspace 一括(現在 `0.2.0`、リリースごとに `release.sh` が bump)、license MIT。**9 crate、publish 順は依存順**(先に出したものが index に載ってから次。`ch32rv-usb-wch-win` は `ch32rv-usb` の cfg(windows) 依存なので usb より前):
+version は workspace 一括、リリースごとに`release.sh`がbump、license MIT。**10 crate、publish順は依存順**(先に出したものがindexに載ってから次。`ch32rv-usb-wch-win`は`ch32rv-usb`のcfg(windows)依存なのでusbより前):
 
 1. `ch32rv-contract`(exit code / JSON envelope / policy 語彙)
 2. `ch32rv-usb-wch-win`(Windows の WCH 純正ドライバ経路。0.2 で追加、`ch32rv-usb` より先)
@@ -16,12 +16,13 @@ version は workspace 一括(現在 `0.2.0`、リリースごとに `release.sh`
 5. `ch32rv-target`(生成 device DB。`generated/*.csv` を include_str! で同梱)
 6. `ch32rv-wchlink`(WCH-Link protocol)★目玉
 7. `ch32rv-flash`(erase/program/verify orchestration)
-8. `ch32rv-debug`(run control / gdb server)
-9. `ch32rv`(CLI バイナリ。`cargo install ch32rv` 可)
+8. `ch32rv-boot`(rv003usb/UIAPduino HID bootloader client)
+9. `ch32rv-debug`(run control / gdb server)
+10. `ch32rv`(CLI バイナリ。`cargo install ch32rv` 可)
 
 各 library に keywords / categories / README を付与済み。`ch32rv-contract` は `cargo publish --dry-run` 成功済み(他は contract が index に載れば通る)。
 
-**publish しない**(空スタブ、`publish = false`): `ch32rv-monitor` / `ch32rv-isp` / `ch32rv-boot`。monitor の実体は現状 cli 側。v0.2 で crate 化する際に publish 検討。
+**publish しない**(空スタブ、`publish = false`): `ch32rv-monitor` / `ch32rv-isp`。monitor の実体は現状cli側。
 
 ### publish のやり方(3段階)
 

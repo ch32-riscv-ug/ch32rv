@@ -40,10 +40,18 @@ struct ReplayLog {
     cmd_out: VecDeque<Vec<u8>>,
     data_in: VecDeque<Vec<u8>>,
     data_out: VecDeque<Vec<u8>>,
+    hid_in: VecDeque<RecordedTransfer>,
+    hid_out: VecDeque<RecordedTransfer>,
     /// Count of writes whose bytes did not match the recorded out-transfer (protocol divergence).
     divergences: u32,
     /// Count of reads served past the end of a channel's queue (log exhausted).
     underruns: u32,
+}
+
+#[derive(Debug)]
+struct RecordedTransfer {
+    data: Vec<u8>,
+    ok: bool,
 }
 
 static LOG: OnceLock<Mutex<ReplayLog>> = OnceLock::new();
@@ -68,6 +76,7 @@ pub fn start(path: &Path) -> io::Result<()> {
     let mut device: Option<ReplayDevice> = None;
     let (mut cmd_in, mut cmd_out) = (VecDeque::new(), VecDeque::new());
     let (mut data_in, mut data_out) = (VecDeque::new(), VecDeque::new());
+    let (mut hid_in, mut hid_out) = (VecDeque::new(), VecDeque::new());
 
     for line in text.lines() {
         let line = line.trim();
@@ -92,11 +101,14 @@ pub fn start(path: &Path) -> io::Result<()> {
             continue;
         };
         let bytes = decode_hex(hex);
+        let ok = v.get("ok").and_then(|x| x.as_bool()).unwrap_or(true);
         match (chan, dir) {
             ("cmd", "in") => cmd_in.push_back(bytes),
             ("cmd", "out") => cmd_out.push_back(bytes),
             ("data", "in") => data_in.push_back(bytes),
             ("data", "out") => data_out.push_back(bytes),
+            ("hid", "in") => hid_in.push_back(RecordedTransfer { data: bytes, ok }),
+            ("hid", "out") => hid_out.push_back(RecordedTransfer { data: bytes, ok }),
             _ => {}
         }
     }
@@ -114,10 +126,48 @@ pub fn start(path: &Path) -> io::Result<()> {
         cmd_out,
         data_in,
         data_out,
+        hid_in,
+        hid_out,
         divergences: 0,
         underruns: 0,
     }));
     Ok(())
+}
+
+/// Consume one HID feature-report OUT transfer and return whether the recorded transfer succeeded.
+pub fn consume_hid_write(data: &[u8]) -> bool {
+    let Some(cell) = LOG.get() else {
+        return false;
+    };
+    let Ok(mut guard) = cell.lock() else {
+        return false;
+    };
+    match guard.hid_out.pop_front() {
+        Some(recorded) => {
+            if recorded.data != data {
+                guard.divergences += 1;
+            }
+            recorded.ok
+        }
+        None => {
+            guard.underruns += 1;
+            false
+        }
+    }
+}
+
+/// Serve one recorded HID feature-report IN transfer.
+pub fn serve_hid_read() -> Option<Vec<u8>> {
+    let cell = LOG.get()?;
+    let mut guard = cell.lock().ok()?;
+    match guard.hid_in.pop_front() {
+        Some(recorded) if recorded.ok => Some(recorded.data),
+        Some(_) => None,
+        None => {
+            guard.underruns += 1;
+            None
+        }
+    }
 }
 
 /// A short human summary of how the replay went (divergences / underruns), for the caller to warn.

@@ -129,6 +129,7 @@ name = "ch32rv-boot"
 version = "0.8.0"
 dependencies = [
  "ch32rv-contract",
+ "ch32rv-usb",
  "hidapi",
  "thiserror",
 ]

@@ -94,27 +94,59 @@ pub struct FlashReport {
 }
 
 pub struct HidBoot {
-    device: HidDevice,
+    device: HidBackend,
     vid: u16,
     pid: u16,
 }
 
+enum HidBackend {
+    Device(HidDevice),
+    Replay,
+}
+
 impl HidBoot {
     pub fn open(usb_id: Option<(u16, u16)>) -> Result<Self, HidBootError> {
-        let api = HidApi::new().map_err(|e| HidBootError::Init(e.to_string()))?;
         let ids: &[(u16, u16)] = match usb_id.as_ref() {
             Some(id) => std::slice::from_ref(id),
             None => &DEFAULT_HID_IDS,
         };
+        if ch32rv_usb::replay::active() {
+            let recorded = ch32rv_usb::replay::device()
+                .ok_or_else(|| HidBootError::Init("replay has no device".to_owned()))?;
+            if ids.contains(&(recorded.vid, recorded.pid)) {
+                let boot = Self {
+                    device: HidBackend::Replay,
+                    vid: recorded.vid,
+                    pid: recorded.pid,
+                };
+                boot.commit(&payload(HALT_WAIT, &[], &[])?, false)?;
+                return Ok(boot);
+            }
+            let (vid, pid) = usb_id.unwrap_or(DEFAULT_HID_IDS[0]);
+            return Err(HidBootError::NotFound(vid, pid));
+        }
+
+        let api = HidApi::new().map_err(|e| HidBootError::Init(e.to_string()))?;
         for &(vid, pid) in ids {
-            if api
+            if let Some(info) = api
                 .device_list()
-                .any(|d| d.vendor_id() == vid && d.product_id() == pid)
+                .find(|d| d.vendor_id() == vid && d.product_id() == pid)
             {
+                ch32rv_usb::capture::record_hid_device(
+                    vid,
+                    pid,
+                    info.serial_number(),
+                    &info.path().to_string_lossy(),
+                    info.product_string(),
+                );
                 let device = api
-                    .open(vid, pid)
+                    .open_path(info.path())
                     .map_err(|e| HidBootError::Transfer(e.to_string()))?;
-                let boot = Self { device, vid, pid };
+                let boot = Self {
+                    device: HidBackend::Device(device),
+                    vid,
+                    pid,
+                };
                 boot.commit(&payload(HALT_WAIT, &[], &[])?, false)?;
                 return Ok(boot);
             }
@@ -136,7 +168,9 @@ impl HidBoot {
         self.unlock_flash()?;
 
         let mut sectors_written = 0;
-        for (sector, expected) in padded.chunks_exact(SECTOR_SIZE).enumerate() {
+        for sector in 0..padded_len / SECTOR_SIZE {
+            let start = sector * SECTOR_SIZE;
+            let expected = &padded[start..start + SECTOR_SIZE];
             let addr = V003_FLASH_BASE + (sector * SECTOR_SIZE) as u32;
             if self.read64(addr)? != expected {
                 self.flash64(addr, expected)?;
@@ -235,7 +269,7 @@ impl HidBoot {
     ) -> Result<[u8; REPORT_SIZE], HidBootError> {
         let mut last_error = None;
         for _ in 0..=10 {
-            match self.device.send_feature_report(report) {
+            match self.send_feature_report(report) {
                 Ok(()) => {
                     last_error = None;
                     break;
@@ -257,13 +291,54 @@ impl HidBoot {
         for _ in 0..=200 {
             response.fill(0);
             response[0] = REPORT_ID;
-            match self.device.get_feature_report(&mut response) {
+            match self.get_feature_report(&mut response) {
                 Ok(n) if n > 1 && response[1] == 0xff => return Ok(response),
                 Ok(_) => thread::sleep(Duration::from_millis(1)),
                 Err(_) => thread::sleep(Duration::from_millis(5)),
             }
         }
         Err(HidBootError::Timeout)
+    }
+
+    fn send_feature_report(&self, report: &[u8]) -> Result<(), String> {
+        match &self.device {
+            HidBackend::Device(device) => {
+                let result = device
+                    .send_feature_report(report)
+                    .map_err(|e| e.to_string());
+                ch32rv_usb::capture::record_hid(false, report, result.is_ok());
+                result
+            }
+            HidBackend::Replay => {
+                if ch32rv_usb::replay::consume_hid_write(report) {
+                    Ok(())
+                } else {
+                    Err("recorded HID feature-report write failed".to_owned())
+                }
+            }
+        }
+    }
+
+    fn get_feature_report(&self, response: &mut [u8]) -> Result<usize, String> {
+        match &self.device {
+            HidBackend::Device(device) => match device.get_feature_report(response) {
+                Ok(n) => {
+                    ch32rv_usb::capture::record_hid(true, &response[..n], true);
+                    Ok(n)
+                }
+                Err(e) => {
+                    ch32rv_usb::capture::record_hid(true, &[], false);
+                    Err(e.to_string())
+                }
+            },
+            HidBackend::Replay => {
+                let data = ch32rv_usb::replay::serve_hid_read()
+                    .ok_or_else(|| "recorded HID feature-report read failed".to_owned())?;
+                let n = data.len().min(response.len());
+                response[..n].copy_from_slice(&data[..n]);
+                Ok(n)
+            }
+        }
     }
 }
 
@@ -288,6 +363,8 @@ fn payload(stub: &[u8], words: &[u32], data: &[u8]) -> Result<[u8; REPORT_SIZE],
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::expect_used)]
+
     use super::*;
 
     #[test]
