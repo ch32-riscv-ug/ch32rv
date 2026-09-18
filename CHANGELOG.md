@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-09-18
+
 - (EN) Add `boot hid flash <FILE> [--usb-id <VID:PID>]` for the rv003usb/b003fun HID scratchpad bootloader used by CH32V003 boards such as UIAPduino. It finds UIAPduino (`1209:b803`) and rv003usb (`1209:b003`) by default, while `--usb-id` permits board-specific identities without rebuilding ch32rv. The client halts through a 128-byte HID feature report, unlocks the CH32V003 FLASH controller, pre-verifies and updates only changed 64-byte pages, verifies each programmed page by reading it back, then starts the application. Images are limited to the 16 KiB CH32V003 code-flash range; locked/read-protected flash, controller errors, timeouts, and verify mismatches fail explicitly. The target must already have enumerated in HID bootloader mode; boot entry through the external SWD/SWIO jig remains a separate operation.
 - (JA) CH32V003のUIAPduino等が使うrv003usb/b003fun HID scratchpad bootloader向けに、`boot hid flash <FILE> [--usb-id <VID:PID>]`を追加。既定ではUIAPduino (`1209:b803`)とrv003usb (`1209:b003`)を探索し、ボード固有のVID:PIDも`--usb-id`でch32rvの再ビルドなしに指定できる。128 byte HID feature report経由でtargetをhaltし、CH32V003のFLASH controllerをunlock、64 byte page単位でpreverifyして差分pageだけをerase・programし、各pageをread-back verifyした後にapplicationを起動する。imageはCH32V003 code flashの16 KiB以内に制限し、flash lock/read protection、controller error、timeout、verify mismatchは明示的に失敗する。targetがHID bootloaderとして列挙済みであることが前提で、外部SWD/SWIOジグによるboot modeへの復帰は別操作のまま。
 
