@@ -33,10 +33,10 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 手順:
 
-1. **(新規 crate ごとに一度きり・ユーザー、CLI)** crates.io で API トークンを発行 → `cargo login <token>` → **`scripts/first-publish.sh`**(依存順に publish、**既に存在する crate は自動 skip**、最後に手順 2 の登録先を表示)。**現況: 0.2.0 で 8 crate は済。0.2 で追加した `ch32rv-usb-wch-win` が未 publish なので、次リリース前にこれを1回だけトークンで初回 publish する**(スクリプトが他8をskipしこれだけ出す)。
+1. **(新規 crate ごとに一度きり・ユーザー、CLI)** crates.ioでAPIトークンを発行 → `cargo login <token>` → **`scripts/first-publish.sh`**（依存順にpublish、既存crateは自動skip、最後に手順2の登録先を表示）。**現況: 既存9 crateは登録済み。0.9.0で公開対象へ昇格する`ch32rv-boot`だけ初回publishとTrusted Publisher登録が必要。**
 
 2. **(初回一度きり・ユーザー、Web UI)** 各 crate の Settings → Trusted Publishing で GitHub を登録:
-   owner=`ch32-riscv-ug` / repo=`ch32rv` / workflow=`release.yml`(environment は任意)。**全 9 crate 分**(0.2.0 の 8 は登録済み → 次は `ch32rv-usb-wch-win` の 1 個を追加登録)。
+   owner=`ch32-riscv-ug` / repo=`ch32rv` / workflow=`release.yml`（environmentは任意）。既存9 crateは登録済みで、0.9.0前に`ch32rv-boot`を追加登録する。
 
 3. **(以降・毎回)** Actions の「Release」ワークフローを **画面から起動**(workflow_dispatch)。中で version bump → 検証 → commit/tag → OIDC で crates.io publish、までトークン埋め込み無しで走る。詳細は §2。
 
@@ -109,7 +109,8 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 ブートストラップ(新規 crate ごと一度きり):
 
 - [x] 0.2.0 で 8 crate を名前確保 + Trusted Publisher 登録済み
-- [x] `ch32rv-usb-wch-win` を初回トークン publish + TP 登録(完了。**9 crate すべて crates.io に 0.7.0 で在る**ので、新規 crate を足さない限り bootstrap は不要 = §7.2 の手順 2・3 は飛ばしてよい)
+- [x] `ch32rv-usb-wch-win`を初回トークンpublish + TP登録（既存9 crateは完了）
+- [ ] `ch32rv-boot`を初回トークンpublish + TP登録（保存済みtokenは2026-09-18に403。`cargo login`更新が必要）
 - [x] `scripts/release.sh` 動作確認済み
 
 毎回:
@@ -121,7 +122,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - [x] **Windows(WCH 純正ドライバ経路)で probe list / target info / flash 往復を再確認**(依頼 B-2 の回帰) — 2026-09-16 済: V006 `497F8F06CE2F` を `usbipd detach` で Windows へ戻し、`probe list/info`・`target info`(K8U6)・`read` 4 KiB・`flash` 4 KiB(V00x controller 経路)・`verify` 62 KiB を Windows ネイティブビルドで確認。**detach 対象は `usbipd list` の DEVICE 欄が `WCH-Link SERIAL` の個体のみ**(docs/testing.ja.md)
 - [ ] CHANGELOG の `Unreleased` を新 version に切る(= release.sh がやる)
 - [ ] README(repo)に crates.io バッジ / インストール手順 / verified OS 明記
-- [ ] Actions「Release」を UI 起動 → crates.io publish(9 crate)と全 OS バイナリ添付を確認
+- [ ] Actions「Release」をUI起動 → crates.io publish（10 crate）と全OSバイナリ添付を確認
 
 ## 7. リリース実行順
 
@@ -129,12 +130,12 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 初回は crates.io 制約(新規 crate の初回はトークン必須・TP は crate 存在後にしか登録できない)で特殊だった。8 crate をトークンで初回 publish → TP 登録 → Actions を `version=0.2.0` / `publish_crates=false` でバイナリ+Release、という順で完了。**記録として残す**。
 
 ### 7.2 次リリース(Windows 対応込み)の実行順
-0.2.0 後に **`ch32rv-usb-wch-win` を新規追加**したので、その 1 crate だけ初回 bootstrap が要る。それ以外は通常フロー。
+0.9.0では`ch32rv-boot`を公開対象へ昇格するため、この1 crateだけ初回bootstrapが要る。それ以外は通常フロー。
 
 1. **未コミット分をコミット & push**(Windows crate / 自動化修正 / docs が `main` に載ること。ワークフローは `main` の release.yml を使う)。
-2. **新規 crate を bootstrap**: `cargo login <token>` → `scripts/first-publish.sh`(既存 8 は skip、**`ch32rv-usb-wch-win` だけ現行 version でトークン publish**)。
-3. **その crate の Trusted Publisher 登録**(§1 手順 2、`ch32rv-usb-wch-win` の 1 個)。
-4. **リリース起動**: Actions「Release」を **`level=minor`(新機能なので)/ `publish_crates=true`** で起動 → version bump → 9 crate をトークンレス publish → 全 OS バイナリ添付。
+2. **新規 crate をbootstrap**: `cargo login <token>` → `scripts/first-publish.sh`（既存9 crateはskip、`ch32rv-boot`だけ現行versionでpublish）。
+3. **そのcrateのTrusted Publisher登録**（§1手順2、`ch32rv-boot`の1個）。
+4. **リリース起動**: Actions「Release」を **`level=minor` / `publish_crates=true`** で起動 → version bump → 10 crateをトークンレスpublish → 全OSバイナリ添付。
 5. これ以降は新規 crate を足さない限り **手順 4 だけ**(bootstrap 不要)。
 
 > メモ: 新規 crate を追加した回だけ手順 2・3 が要る(crates.io は新規 crate の初回 publish にトークンが要り、TP は後付けだから)。既存 crate の版上げは常にトークンレス。

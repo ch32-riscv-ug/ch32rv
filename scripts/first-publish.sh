@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# first-publish.sh - ONE-TIME crates.io bootstrap. Run this exactly once, ever.
+# first-publish.sh - crates.io bootstrap for newly added workspace crates.
 #
 # The very first publish of each new crate needs an API token (crates.io has no pre-registration),
-# so it cannot go through the token-free GitHub Actions release. This script claims the eight crate
+# so it cannot go through the token-free GitHub Actions release. This script claims crate
 # names in dependency order from your machine with a token. After it succeeds you register each
 # crate's Trusted Publisher (printed at the end); every release after that runs token-free from
 # .github/workflows/release.yml and you never run this script again.
