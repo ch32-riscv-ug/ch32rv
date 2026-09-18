@@ -33,7 +33,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 手順:
 
-1. **(新規 crate ごとに一度きり・ユーザー、CLI)** crates.ioでAPIトークンを発行 → `cargo login <token>` → **`scripts/first-publish.sh`**（依存順にpublish、既存crateは自動skip、最後に手順2の登録先を表示）。**現況: 既存9 crateは登録済み。0.9.0で公開対象へ昇格する`ch32rv-boot`だけ初回publishとTrusted Publisher登録が必要。**
+1. **(新規 crate ごとに一度きり・ユーザー、CLI)** crates.ioでAPIトークンを発行 → `cargo login <token>` → **`scripts/first-publish.sh`**（依存順にpublish、既存crateは自動skip、最後に手順2の登録先を表示）。**現況: 既存9 crateは登録済み。0.9.0で公開対象へ昇格する`ch32rv-boot`だけ初回publishとTrusted Publisher登録が必要。** 現在のmainはまだ0.8.0で、`ch32rv-boot`のcapture/replay実装が未公開の`ch32rv-usb` APIを使うため、そのままでは0.8.0のpackage verifyが成立しない。スクリプトはbootに限り、capture依存を足す前の0.8.0互換commit (`fad0881`)を一時worktreeへ展開して名前を確保する。mainや作業treeは変更しない。
 
 2. **(初回一度きり・ユーザー、Web UI)** 各 crate の Settings → Trusted Publishing で GitHub を登録:
    owner=`ch32-riscv-ug` / repo=`ch32rv` / workflow=`release.yml`（environmentは任意）。既存9 crateは登録済みで、0.9.0前に`ch32rv-boot`を追加登録する。
@@ -133,7 +133,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 0.9.0では`ch32rv-boot`を公開対象へ昇格するため、この1 crateだけ初回bootstrapが要る。それ以外は通常フロー。
 
 1. **未コミット分をコミット & push**(Windows crate / 自動化修正 / docs が `main` に載ること。ワークフローは `main` の release.yml を使う)。
-2. **新規 crate をbootstrap**: `cargo login <token>` → `scripts/first-publish.sh`（既存9 crateはskip、`ch32rv-boot`だけ現行versionでpublish）。
+2. **新規 crate をbootstrap**: `cargo login <token>` → `scripts/first-publish.sh`（既存9 crateはskip、`ch32rv-boot`だけ0.8.0互換sourceでpublish）。
 3. **そのcrateのTrusted Publisher登録**（§1手順2、`ch32rv-boot`の1個）。
 4. **リリース起動**: Actions「Release」を **`level=minor` / `publish_crates=true`** で起動 → version bump → 10 crateをトークンレスpublish → 全OSバイナリ添付。
 5. これ以降は新規 crate を足さない限り **手順 4 だけ**(bootstrap 不要)。
