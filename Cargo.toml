@@ -50,6 +50,7 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 toml = "0.8"
 fs4 = "0.13"
+hidapi = { version = "2.6.7", default-features = false, features = ["linux-native-basic-udev", "windows-native"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

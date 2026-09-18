@@ -11,6 +11,7 @@ authors.workspace = true
 
 [dependencies]
 ch32rv-contract = { workspace = true }
+hidapi = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]
