@@ -658,7 +658,12 @@ pub enum UartBootCmd {
 
 #[derive(Subcommand)]
 pub enum HidBootCmd {
-    Flash { file: PathBuf },
+    Flash {
+        file: PathBuf,
+        /// Override bootloader USB identity (VID:PID, e.g. 1209:b803)
+        #[arg(long)]
+        usb_id: Option<String>,
+    },
 }
 
 // en: §4.9 db and §4.10 misc. / ja: §4.9 db、§4.10 その他。

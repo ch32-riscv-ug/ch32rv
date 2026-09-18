@@ -9,6 +9,7 @@
 
 mod args;
 mod cmd_arduino;
+mod cmd_boot;
 mod cmd_capabilities;
 mod cmd_db;
 mod cmd_dbg;
@@ -116,6 +117,9 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Arduino(ArduinoCmd::Discovery) => cmd_arduino::discovery(cli),
         Command::Arduino(ArduinoCmd::Monitor) => cmd_arduino::monitor(cli),
         Command::Run(args) => cmd_run::run(cli, args),
+        Command::Boot(BootCmd::Hid(HidBootCmd::Flash { file, usb_id })) => {
+            cmd_boot::hid_flash(cli, file, usb_id.as_deref())
+        }
         Command::Complete(a) => cmd_complete(a.shell),
         other => unimplemented_cmd(cli, canonical_name(other)),
     }
