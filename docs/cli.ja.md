@@ -99,7 +99,7 @@ ch32rv
 | `--timeout <s>` | | 3秒 | transport timeout(USB 転送 1 回の上限)の上書き |
 | `--duration <s>` | | Ctrl-C まで | streaming コマンド(`monitor` / `run`)の実行時間 |
 | `--db <path>` | | 内蔵 | target DB の overlay(新 SKU の試行用) |
-| `--capture <path>` | | - | USB transaction を NDJSON で記録(replay fixture 用) |
+| `--capture <path>` | | - | USB transaction（bulkおよびHID feature report）をNDJSONで記録(replay fixture用) |
 | `--replay <path>` | | - | 記録した capture を HW 無しで再生(`enumerate`〜転送を fixture から供給)。`--capture` と排他。CI/バグ再現用 |
 | `--dry-run` | | off | device を開かず計画のみ表示(`probe firmware update` は実装済: image の版・USB id・frame 数を出して終了。他コマンドは P2) |
 | `-v` / `-q` | 重ね掛け | | 冗長度 |
@@ -199,7 +199,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 - **open 再試行**: 挿抜直後は CDC interface が vendor interface より先に見える(実測)。open 失敗は 1 秒間隔で計 3 回まで再試行してから exit する。
 - **転送再試行**: chunk 単位の timeout→再試行(既定 3 回)。再試行が起きた事実は NDJSON event と JSON 結果(`retries`)に必ず出す。
 - **固まり検出**: 再試行が尽きて probe が応答しなくなったら、`USBDEVFS_RESET` は使わず、再接続手順(usbipd / 物理挿抜)を提示して exit 41。
-- **capture(`--capture <file>`)実装(2026-09-02、依頼 A-3)**: `ch32rv-usb::capture`。`main` が `--capture` 時に一度 sink を設定し、`UsbInterface` の全 bulk 転送(cmd EP 0x01/0x81・data EP 0x02/0x82)を NDJSON 1 行ずつ追記する。行: `{seq,t_us,ep,chan(cmd|data),dir(out|in),len,ok,data(hex)}`、先頭に `{"_meta":{"format":1,"unit":"us"}}` と `{"_device":{…}}`。**`ep` は生の endpoint 番地**(`"0x01"` 等)で、こちらが正: 複数の列挙をまたぐ session(`probe firmware update` の IAP mode など)では `chan` だけで役割が決まらない(IAP mode の `0x02`/`0x82` はその device 唯一の組で command を運ぶ)。行ごと flush(途中クラッシュでもそこまで残る)。flag 無しは no-op。replay(fixture 再生)は後続。実機検証: `target info --capture` が GetProbeInfo/SetSpeed/AttachChip を有効 NDJSON で記録。
+- **capture(`--capture <file>`)実装(2026-09-02、依頼 A-3)**: `ch32rv-usb::capture`。`main` が `--capture` 時に一度 sink を設定し、`UsbInterface` の全 bulk 転送(cmd EP 0x01/0x81・data EP 0x02/0x82)とbootloaderのHID feature reportをNDJSON 1行ずつ追記する。bulk行は`{seq,t_us,ep,chan(cmd|data),dir(out|in),len,ok,data(hex)}`、HID行は`ep:"feature",chan:"hid"`。先頭に `{"_meta":{"format":1,"unit":"us"}}` と `{"_device":{…}}` を持つ。**bulkの`ep`は生のendpoint番地**(`"0x01"`等)で、こちらが正: 複数の列挙をまたぐsession(`probe firmware update`のIAP modeなど)では`chan`だけで役割が決まらない。行ごとflush(途中クラッシュでもそこまで残る)。flag無しはno-op。HIDを含め`--replay`可能。実機検証: `target info --capture`のGetProbeInfo/SetSpeed/AttachChip、および`boot hid flash --capture`のB803 erase/program/verify/runを記録・再生済み。
 
 ## 4. コマンド詳細
 
@@ -401,12 +401,15 @@ ch32rv boot uart flash|info <FILE> [--node <id>]               tinyboot 系(RS-4
 ch32rv boot hid flash <FILE> [--usb-id <VID:PID>]              rv003usb / b003fun 系(UIAPduino 等)
 ```
 
-UF2 family ID・DFU の VID:PID・HID の magic packet は target DB / 設定で管理する。すべて P2。
+HID flashは実装済み。既定で`1209:b803`（UIAPduino）→`1209:b003`（rv003usb）の順に探索し、
+64 byte page単位でpreverify・erase・program・read-back verifyを行ってuser appを起動する。
+`--capture` / `--replay`もHID feature reportを含めて対応する。DFU / UF2 / UARTとboot entryの
+一般化はP2。
 
-**任意 VID/PID 指定(逃げ道。TODO 2026-09-01、ユーザー依頼)**: bootloader 系は vendor/build ごとに USB VID:PID が異なる(rv003usb/b003fun 系は既定 `0x1209:0xb003` だが、**UIAPduino は `0x1209:0xb803`** = ボードごとに変わる)。minichlink は PID をソースに **ハードコード**しており、UIAPduino に書くには PID を書き換えて **リビルドが必要**だった(参照: <https://qiita.com/tomorrow56/items/6cae8ddc7470cb64ad7d>)。ch32rv は同じ轍を踏まない:
+**任意 VID/PID 指定(実装済み、ユーザー依頼)**: bootloader 系は vendor/build ごとに USB VID:PID が異なる(rv003usb/b003fun 系は既定 `0x1209:0xb003` だが、**UIAPduino は `0x1209:0xb803`** = ボードごとに変わる)。minichlink は PID をソースに **ハードコード**しており、UIAPduino に書くには PID を書き換えて **リビルドが必要**だった(参照: <https://qiita.com/tomorrow56/items/6cae8ddc7470cb64ad7d>)。ch32rv は同じ轍を踏まない:
 
-- **known table**: UIAPduino(CH32V003・16KB・b003fun HID bootloader・`0x1209:0xb803`・bootloader 入りは「reset を押しながら USB 接続」)を含む既知 bootloader device を target DB / 設定で持ち、既定で発見できるようにする。
-- **`--usb-id <VID:PID>` 上書き**: known table に無い未知 PID でも、`--usb-id 1209:b803` のように CLI から VID:PID を直接指定して書けるようにする(**リビルド不要の逃げ道**)。`boot dfu` / `boot hid` / `boot uf2`(volume 検出の補助)に共通で効かせる。bootloader protocol は device class から自動判別しつつ、必要なら `--protocol dfu|hid|uf2` で明示指定も許す。
+- **known table**: UIAPduino(CH32V003・16KB・b003fun HID bootloader・`0x1209:0xb803`)とrv003usb (`0x1209:0xb003`)を既定で発見する。
+- **`--usb-id <VID:PID>` 上書き**: known table に無い未知 PID でも、`--usb-id 1209:b803` のようにCLIからVID:PIDを直接指定して書ける(**リビルド不要の逃げ道**)。現時点では`boot hid flash`に実装済み。
 - 設計原則: **単一 PID をコードに焼き込まない**。発見は「known table + ユーザー指定 VID:PID」の二段で、知らない PID にも到達できる状態を既定にする。
 
 ### 4.9 db

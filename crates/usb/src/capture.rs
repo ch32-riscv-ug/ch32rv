@@ -1,11 +1,13 @@
 //! en: USB transaction capture (docs/cli.ja.md §3.7, ArduinoCore-CH32 request A-3). When the CLI is
 //! run with `--capture <file>`, every bulk transfer on the probe (the WCH-Link command channel
-//! 0x01/0x81 and data channel 0x02/0x82) is appended to the file as one NDJSON line, so a
+//! 0x01/0x81 and data channel 0x02/0x82), plus custom-bootloader HID feature reports, is appended
+//! to the file as one NDJSON line, so a
 //! protocol problem hit on the bench can be reported as a replay fixture instead of "reproduce it
 //! on real hardware first". The sink is a process-global set once from `main`; `record` is a no-op
 //! until then, so the transfer paths pay nothing when capture is off.
 //! ja: USB transaction capture(cli.ja.md §3.7、ArduinoCore-CH32 依頼 A-3)。`--capture <file>` 時に
-//! probe の全 bulk 転送(WCH-Link の command 0x01/0x81・data 0x02/0x82)を NDJSON 1 行ずつ追記する。
+//! probe の全 bulk 転送(WCH-Link の command 0x01/0x81・data 0x02/0x82)とcustom bootloaderの
+//! HID feature reportをNDJSON 1行ずつ追記する。
 //! ベンチで踏んだ protocol 問題を「実機で再現待ち」でなく replay fixture として報告できる。sink は
 //! `main` が一度だけ設定するプロセスグローバルで、未設定なら `record` は no-op(off 時のコストなし)。
 
@@ -128,6 +130,48 @@ pub(crate) fn record_device(
     let _ = guard.writer.flush();
 }
 
+/// Record a HID device opened outside the nusb probe abstraction.
+pub fn record_hid_device(
+    vid: u16,
+    pid: u16,
+    serial: Option<&str>,
+    path: &str,
+    product: Option<&str>,
+) {
+    record_device(vid, pid, serial, path, product, &[]);
+}
+
+/// Record one HID feature-report transfer. HID control transfers have no bulk endpoint, so their
+/// endpoint field is the descriptive string `feature` and their channel is `hid`.
+pub fn record_hid(dir_in: bool, data: &[u8], ok: bool) {
+    let Some(cell) = SINK.get() else {
+        return;
+    };
+    let Ok(mut guard) = cell.lock() else {
+        return;
+    };
+    let sink = &mut *guard;
+    let t_us = sink.start.elapsed().as_micros();
+    let seq = sink.seq;
+    sink.seq += 1;
+    let line = encode_hid_line(seq, t_us, dir_in, data, ok);
+    let _ = sink.writer.write_all(line.as_bytes());
+    let _ = sink.writer.write_all(b"\n");
+    let _ = sink.writer.flush();
+}
+
+fn encode_hid_line(seq: u64, t_us: u128, dir_in: bool, data: &[u8], ok: bool) -> String {
+    let mut hex = String::with_capacity(data.len() * 2);
+    for b in data {
+        let _ = write!(hex, "{b:02x}");
+    }
+    let dir = if dir_in { "in" } else { "out" };
+    format!(
+        r#"{{"seq":{seq},"t_us":{t_us},"ep":"feature","chan":"hid","dir":"{dir}","len":{},"ok":{ok},"data":"{hex}"}}"#,
+        data.len(),
+    )
+}
+
 /// en: Format one NDJSON transaction line (pure, so it can be unit-tested). `ep` is the raw
 /// endpoint address: `chan` alone is ambiguous once a session spans several enumerations (in the
 /// WCH-Link IAP mode the `0x02`/`0x82` pair is the device's only pair and carries commands), so
@@ -184,6 +228,14 @@ mod tests {
         assert_eq!(
             line,
             r#"{"seq":0,"t_us":0,"ep":"0x82","chan":"data","dir":"in","len":0,"ok":false,"data":""}"#
+        );
+    }
+
+    #[test]
+    fn encode_hid_feature_report() {
+        assert_eq!(
+            encode_hid_line(4, 99, false, &[0xaa, 0x01], true),
+            r#"{"seq":4,"t_us":99,"ep":"feature","chan":"hid","dir":"out","len":2,"ok":true,"data":"aa01"}"#
         );
     }
 

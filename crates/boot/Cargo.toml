@@ -1,7 +1,9 @@
 [package]
-publish = false
 name = "ch32rv-boot"
 description = "Custom bootloader clients (DFU, UF2, UART/RS-485, HID) for the ch32rv tool suite"
+keywords = ["ch32", "riscv", "wch", "bootloader", "hid"]
+categories = ["embedded", "hardware-support"]
+readme = "README.md"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +13,7 @@ authors.workspace = true
 
 [dependencies]
 ch32rv-contract = { workspace = true }
+ch32rv-usb = { workspace = true }
 hidapi = { workspace = true }
 thiserror = { workspace = true }
 

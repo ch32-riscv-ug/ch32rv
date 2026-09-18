@@ -17,9 +17,9 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-# Dependency order: contract -> usb-wch-win -> usb/dmi/target -> wchlink/flash -> debug -> the CLI.
+# Dependency order: contract -> usb-wch-win -> usb/dmi/target -> wchlink/flash/boot -> debug -> CLI.
 # usb-wch-win before usb: ch32rv-usb has a cfg(windows) dependency on it (docs/windows-wch-driver.ja.md).
-CRATES=(contract usb-wch-win usb dmi target wchlink flash debug)
+CRATES=(contract usb-wch-win usb dmi target wchlink flash boot debug)
 
 crate_exists() {
   # crates.io returns 200 for an existing crate, 404 otherwise. It requires a User-Agent.
@@ -56,7 +56,7 @@ For every crate below, open its crates.io Settings -> Trusted Publishing -> Add,
   (environment: leave empty unless you gate releases behind a GitHub Environment)
 
   ch32rv-contract  ch32rv-usb-wch-win  ch32rv-usb   ch32rv-dmi   ch32rv-target
-  ch32rv-wchlink   ch32rv-flash        ch32rv-debug ch32rv
+  ch32rv-wchlink   ch32rv-flash        ch32rv-boot  ch32rv-debug ch32rv
 
 After that, all future releases run token-free from the Actions "Release" workflow.
 EOF

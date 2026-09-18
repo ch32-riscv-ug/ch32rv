@@ -118,6 +118,32 @@ fn flash_round_trip_replays() {
 }
 
 #[test]
+fn hid_boot_flash_replays() {
+    let out = Command::new(bin())
+        .args([
+            "boot",
+            "hid",
+            "flash",
+            &input("runtest-ch32v003.bin"),
+            "--replay",
+            &fixture("hid-flash-v003.ndjson"),
+            "--progress",
+            "none",
+        ])
+        .output()
+        .expect("run ch32rv");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "exit failure; stderr: {stderr}");
+    assert!(stdout.contains("11 sector(s) changed"), "stdout: {stdout}");
+    assert!(stdout.contains("verified"), "stdout: {stdout}");
+    assert!(
+        !stderr.contains("diverged"),
+        "unexpected divergence: {stderr}"
+    );
+}
+
+#[test]
 fn read_replays() {
     let out = Command::new(bin())
         .args([
