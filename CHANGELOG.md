@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.9.1 - 2026-09-23
+
 - (EN) Fix: `run` erases before it programs, so the HIL runner works on a CH549 WCH-Link. The stub path is a full-region programmer that expects erased flash; `flash` erases first, but `run` went straight to `write_flash`. A WCH-LinkE tolerated that, so the runner worked on the rest of the bench, while on a CH549 Link (fw 2.12) + CH32V103 the probe simply never answered and every `run` that programmed died with `transfer timed out` at the image's first address - the same image flashing fine through `flash` a moment earlier. `run` always programs a whole image from the flash base, so it now does the chip erase that `flash --erase auto` would pick. Not a regression: a build from before this release's programming changes fails identically.
 - (JA) 修正: `run` が書込前に消去するようになり、CH549 の WCH-Link でも HIL ランナーが動くようになった。stub 経路は消去済み flash を前提とする全 region 書込器で、`flash` は先に消すが `run` は `write_flash` へ直行していた。WCH-LinkE はこれを黙認するのでベンチの他機では動いていたが、CH549 Link(fw 2.12)+ CH32V103 では probe が応答を返さず、**書込を伴う `run` は必ず image 先頭で `transfer timed out`** になっていた(同じ image がその直前に `flash` では通る)。`run` は常に flash 先頭から image 全体を焼くので、`flash --erase auto` が選ぶ chip erase を行うようにした。**退行ではない**: この版の書込まわりの変更より前のビルドでも同じに落ちる。
 
