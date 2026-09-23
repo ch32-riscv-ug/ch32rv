@@ -138,7 +138,10 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
             Ok(i) => i,
             Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
         };
-        for seg in &image.segments {
+        // One contiguous region, as the stub path requires - see `Image::program_span`: only the
+        // first `write_flash` of a session takes effect, and an ELF's `.data` initialiser arrives
+        // as a segment of its own behind `.text`, so anything else loses the tail of the image.
+        for seg in image.program_span(fp.data_packet_size as u32).iter() {
             if let Err(e) = session.link().write_flash(seg.addr, &seg.data, &fp, |_| {}) {
                 return fail(
                     cli,

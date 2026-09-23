@@ -92,6 +92,31 @@ fn verify_read(session: &mut Session, addr: u32, expected: &[u8]) -> Result<Vec<
 /// page; segments that share a page collapse to one entry.
 /// ja: `(addr, len)` セグメント群が触れる flash page(page 境界の開始番地)の集合。`--erase sector`
 /// はこの page だけを消すので image 外の flash を消さない。page 途中開始はその page 全体を含む。
+/// en: What the chosen programmer will actually write, for a given image. Both the erase plan and
+/// the program step go through this, so the pages that get erased are exactly the pages that get
+/// programmed. The stub path must hand the probe ONE contiguous region ([`Image::program_span`] -
+/// only the first `write_flash` of a session takes effect); the FLASH-controller path drives whole
+/// pages itself and takes the image's natural blocks, gaps and all. Either way a linked ELF's
+/// `.data` initialiser - its own segment, starting right behind `.text` - stops being a write the
+/// programmer cannot start (the stub would drop it silently, the controller would re-program a page
+/// it had already written).
+/// ja: 選ばれた programmer が実際に書く単位。消去計画も書込も同じこれを通すので、**消される page と
+/// 焼かれる page が一致する**。stub 経路は 1 つの連続 region を渡さなければならない
+/// ([`Image::program_span`]。1 セッションで効くのは最初の `write_flash` だけ)。controller 経路は
+/// page 単位で自分で駆動するので image 本来の block のままでよい。どちらでも、link 済み ELF の
+/// `.data` 初期値(`.text` 直後から始まる独立 segment)が「programmer が書き始められない write」で
+/// なくなる(stub は黙って捨て、controller は書いた page を二度焼きしていた)。
+fn planned_writes(programmer: &Programmer, image: &Image) -> Vec<Segment> {
+    match programmer {
+        // The stub programs one data packet at a time; that packet is the family's flash page.
+        Programmer::Stub(fp) => image
+            .program_span(fp.data_packet_size as u32)
+            .into_iter()
+            .collect(),
+        Programmer::Controller(profile) => image.program_blocks(profile.page_size),
+    }
+}
+
 pub(crate) fn covered_pages(
     segments: impl IntoIterator<Item = (u32, u32)>,
     page: u32,
@@ -459,10 +484,11 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
             let page = cprofile.page_size;
             // Every flash page any segment touches (dedup + sorted, page-aligned). Erase them all
             // before programming so segments that share a page never wipe each other.
-            let pages = covered_pages(
-                image.segments.iter().map(|s| (s.addr, s.data.len() as u32)),
-                page,
-            );
+            // The planned writes, not the raw segments: the stub path programs one contiguous
+            // region, so any gap inside it has to be erased too - otherwise it would program
+            // unerased pages. `--restore-unwritten` puts their previous content back below.
+            let planned = planned_writes(&programmer, &image);
+            let pages = covered_pages(planned.iter().map(|s| (s.addr, s.data.len() as u32)), page);
             let total_pages = pages.len() as u64;
             sink.event(&Event::Phase {
                 name: "erase".into(),
@@ -537,7 +563,15 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
 
     // Program each segment. Under --restore-unwritten we program the merged whole pages instead of
     // the sparse image (so unwritten bytes in a partially-filled page keep their original values).
-    let program_segments: &[Segment] = restored.as_deref().unwrap_or(&image.segments);
+    // Either way what goes out is `planned_writes`, not the raw segments.
+    let source_image = match &restored {
+        Some(segs) => Image {
+            segments: segs.clone(),
+        },
+        None => image.clone(),
+    };
+    let program_segments = planned_writes(&programmer, &source_image);
+    let program_segments: &[Segment] = &program_segments;
     let program_total: u64 = program_segments.iter().map(|s| s.data.len() as u64).sum();
     sink.event(&Event::Phase {
         name: "program".into(),
