@@ -194,6 +194,50 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         Err(DmiError::OperationFailed("hart did not resume".to_owned()))
     }
 
+    /// en: Reset the hart and catch it *at its reset vector*, over DMI: assert `ndmreset` together
+    /// with `haltreq`, then release the reset with `haltreq` still asserted, so the hart enters
+    /// debug mode out of reset before it can execute anything.
+    ///
+    /// The probe's own "reset and run" (`0x0b 0x01`) cannot do this: it clears the Debug Module's
+    /// pending halt request along with everything else, so the image starts immediately and a halt
+    /// sent afterwards is a race the host loses on a slow link. Measured on a CH549 WCH-Link
+    /// (fw 2.12) + CH32V103: after the reset the hart was already at `dpc = 0x2e`, ~11 instructions
+    /// into the image, having executed its first semihosting call - which is why `run --exit-on
+    /// semihosting` sat there until its cap waiting for an exit it had missed, while the same image
+    /// ran fine through a WCH-LinkE. Re-attaching does not help either (the hart stays where the
+    /// flash stub left it, `dpc = 0x200002ea` in SRAM).
+    /// ja: hart を reset し、**reset vector で捕まえる**(DMI 経由): `ndmreset` と `haltreq` を同時に
+    /// 立て、`haltreq` を保持したまま reset を解除する。hart は何も実行する前に debug mode へ入る。
+    ///
+    /// probe の "reset and run"(`0x0b 0x01`)ではこれができない — DM の保留中 halt 要求ごと流すので
+    /// image がすぐ走り出し、後から送る halt は遅いリンクでは負ける。CH549(fw 2.12)+ CH32V103 で実測:
+    /// reset 後の hart は既に `dpc = 0x2e`(image に 11 命令ほど進み、最初の semihosting 呼出を実行済み)。
+    /// `run --exit-on semihosting` が取り逃がした exit を cap いっぱい待っていた原因で、同じ image が
+    /// WCH-LinkE では通っていた。再 attach も効かない(hart は flash stub が残した `dpc = 0x200002ea`
+    /// = SRAM に居座る)。
+    pub fn reset_halt(&mut self) -> Result<(), DmiError> {
+        // ndmreset + haltreq, then release the reset with haltreq still asserted.
+        self.write(DMCONTROL, 0x8000_0003)?;
+        self.write(DMCONTROL, 0x8000_0001)?;
+        for _ in 0..64 {
+            if self.is_halted()? {
+                break;
+            }
+            self.write(DMCONTROL, 0x8000_0001)?;
+        }
+        // Drop the halt request and acknowledge the reset (the CH32V00x DM keeps reporting the
+        // pre-reset halt/running bits until it is acknowledged).
+        self.write(DMCONTROL, 0x0000_0001)?;
+        self.ack_have_reset()?;
+        if self.is_halted()? {
+            Ok(())
+        } else {
+            Err(DmiError::OperationFailed(
+                "hart did not halt out of reset".to_owned(),
+            ))
+        }
+    }
+
     /// en: Request a halt and wait for it (wlink `ensure_mcu_halt`). Idempotent.
     /// ja: halt を要求して待つ(wlink `ensure_mcu_halt`)。冪等。
     pub fn halt(&mut self) -> Result<(), DmiError> {
