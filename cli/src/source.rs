@@ -197,7 +197,12 @@ impl DmiSource {
         warnings: &mut Vec<Warning>,
     ) -> Result<Self, OpenError> {
         match source {
-            MonitorSource::Dmdata => Ok(DmiSource::Dmdata),
+            MonitorSource::Dmdata => {
+                // Empty the mailbox before the core runs: a word left in data0 by attach/flash
+                // reads as host input on the target (see `DebugModule::dmdata_clear`).
+                session.dm().dmdata_clear()?;
+                Ok(DmiSource::Dmdata)
+            }
             MonitorSource::Rtt => Self::open_rtt(session, warnings),
             MonitorSource::Uart | MonitorSource::Sdi => Err(OpenError::NotDmi),
         }

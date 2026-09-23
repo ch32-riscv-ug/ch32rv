@@ -134,6 +134,8 @@ family 別 capability(probe-rs 由来、attested): **特殊消去(§4.3)非対�
 
 **stub write 経路は部分書き込み不可**: `write_flash`(SetWriteMemoryRegion + stub + chunk)で chip erase 無しに mid-flash の 1 page(256B @0x08000400)を書くと probe が `81 55 01 02`(Protocol reason 0x55)で拒否する。stub 経路は full-region programming(chip erase 後、region=全 image)専用。
 
+**1 セッションで効く `write_flash` は 1 回だけ**(verified 2026-09-23、CH32V307VCT6 + WCH-LinkE fw2.22)。2 本目以降は**正常に ack されながら何も焼かない**: stub upload も `Program 0x05`/`0x07`/`0x02` も通常応答を返し、data chunk の ack も `41 01 01 04` で、それでいて対象 page は消去状態のまま、データは他のどこにも書かれていない(chip erase 後、`0x08000000` に 256 B + `0x08004600` に 88 B の 2 block、ともに page 整列で実測。2 本の間に detach/attach や `soft_reset` を挟んでも変わらない)。上の「full-region 専用」を書込回数の側から見たもの。→ **host 側は 1 回の書込につき連続 region を 1 つだけ渡す**(隙間は `0xff` 埋め。ch32rv では `Image::program_span`)。ELF の `.data` 初期値は `.text` 直後の独立 segment として届くので、これを守らないと image 末尾が黙って欠ける。
+
 そこで **memory-mapped FLASH controller(0x4002_2000)を DMI(progbuf の `read_mem32`/`write_mem32`)で直接叩く** page 単位経路を実装(`DebugModule::flash_page_erase`/`flash_program_page`)。QingKe manual / wlink 参照ブロックの手順:
 
 | reg | 番地 | 用途 |

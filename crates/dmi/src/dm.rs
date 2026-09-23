@@ -52,6 +52,7 @@ const DMPROGBUF1: u8 = 0x21;
 const DMSTATUS_ALLRUNNING: u32 = 1 << 11;
 const DMSTATUS_ANYRUNNING: u32 = 1 << 10;
 const DMSTATUS_ALLHALTED: u32 = 1 << 9;
+const DMSTATUS_ALLRESUMEACK: u32 = 1 << 17;
 const DMSTATUS_ANYHALTED: u32 = 1 << 8;
 
 // ABSTRACTCS fields.
@@ -161,11 +162,36 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         Ok(s & DMSTATUS_ALLRUNNING != 0 && s & DMSTATUS_ANYRUNNING != 0)
     }
 
-    /// en: Resume a halted hart (DMCONTROL resumereq). Best-effort ack check.
-    /// ja: halt 中の hart を resume する(DMCONTROL resumereq)。
+    /// en: Resume a halted hart (DMCONTROL `resumereq`) and wait for it to run, the mirror image
+    /// of [`Self::halt`]. The request has to be re-asserted until DMSTATUS reports the hart
+    /// running: on the CH32V00x line a single `resumereq` write is simply not taken (measured on a
+    /// CH32V006K8U6 + WCH-LinkE - the hart stayed `allhalted` forever, so `monitor --source dmdata`
+    /// polled a mailbox that nobody was filling and printed nothing; the second write resumes it).
+    /// A latched hart reset is acknowledged first, because DMSTATUS keeps reporting the pre-reset
+    /// state until it is. The request bit is cleared once the hart runs, so a later halt request is
+    /// not racing a still-asserted resume.
+    /// ja: halt 中の hart を resume し、走り出すまで待つ([`Self::halt`] の対)。DMSTATUS が running を
+    /// 返すまで resumereq を打ち直す: CH32V00x では 1 回の書込が通らない(CH32V006K8U6 + WCH-LinkE で
+    /// 実測。hart は `allhalted` のまま = `monitor --source dmdata` が誰も書かない mailbox を polling
+    /// して無出力。2 回目で resume する)。先に havereset を ack するのは、ack まで DMSTATUS が
+    /// reset 前の状態を返し続けるため。running 後は要求 bit を落とす。
     pub fn resume(&mut self) -> Result<(), DmiError> {
-        self.write(DMCONTROL, 0x4000_0001)?;
-        Ok(())
+        self.ack_have_reset()?;
+        for _ in 0..16 {
+            self.write(DMCONTROL, 0x4000_0001)?;
+            // en: `resumeack` and not just `allrunning`: a hart that resumes into an immediate
+            // breakpoint is halted again by the time this read lands, but it did take the request.
+            // The DM clears the ack when the hart halts on a request, so it cannot be stale here.
+            // ja: `allrunning` だけでなく `resumeack` も見る(resume 直後に breakpoint で止まる
+            // hart はこの read の時点で既に halt しているが、要求は通っている)。
+            let s = self.read(DMSTATUS)?;
+            if s & (DMSTATUS_ALLRUNNING | DMSTATUS_ALLRESUMEACK) != 0 {
+                // Drop resumereq; leaving it asserted would race the next halt request.
+                self.write(DMCONTROL, 0x0000_0001)?;
+                return Ok(());
+            }
+        }
+        Err(DmiError::OperationFailed("hart did not resume".to_owned()))
     }
 
     /// en: Request a halt and wait for it (wlink `ensure_mcu_halt`). Idempotent.
@@ -359,6 +385,21 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// data1=残り。ACK は bit7 クリアの data0 書込。host→target(最大 3 byte)は ACK word に
     /// のみ同載する: target は前の入力を取り込むと空の pending frame(`0x84`)を置いて次を招く
     /// ので、それ以外の時に書くと未読の入力を潰しうる(minichlink と同じ挙動)。
+    /// en: Clear the DMDATA mailbox before the target starts using it. Whatever attach, flash or
+    /// verify last left in data0 is still there when the core is resumed, and the target reads any
+    /// word with bit7 clear and a `4 + n` low byte as host input: after a flash the erase pattern
+    /// `0xe339e339` (low byte `0x39`) is exactly that, so a sketch's first reads return bytes
+    /// nobody typed (seen as `got \xff` / `got 9` before the real input on a CH32V307). Writing 0
+    /// is the "bare ACK, no input" word, so it cannot be mistaken for a frame in either direction.
+    /// ja: target が使い始める前に DMDATA mailbox を空にする。attach/flash/verify が data0 に残した
+    /// 値は resume 後もそのままで、target は bit7 クリア + 下位 byte `4 + n` の word を host 入力と
+    /// して読む。flash 直後の消去パターン `0xe339e339`(下位 `0x39`)がまさにそれで、sketch の最初の
+    /// 読み出しが誰も打っていない byte を返す。0 は「入力なしの ACK」なのでどちらの向きの frame とも
+    /// 取り違えられない。
+    pub fn dmdata_clear(&mut self) -> Result<(), DmiError> {
+        self.write(DMDATA0, 0)
+    }
+
     pub fn dmdata_poll(&mut self, host_input: &[u8]) -> Result<DmdataPoll, DmiError> {
         let d0 = self.read(DMDATA0)?;
         if d0 & 0x80 == 0 {

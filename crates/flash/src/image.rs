@@ -87,6 +87,107 @@ impl Image {
         Ok(img)
     }
 
+    /// en: The blocks to actually program, derived from [`Self::segments`]: runs that are
+    /// contiguous, overlapping, or merely share an `align`-sized programming unit are merged into
+    /// one, and every block is grown to whole `align` units (padded with `0xff`). Programming a
+    /// `0xff` byte cannot clear a cell, so the padding is a no-op on the silicon - but without this
+    /// the programmer would be handed a block at an address the flash cannot start a write at.
+    ///
+    /// This is what a linked ELF needs: the `.data` initialiser lives at its own LMA immediately
+    /// after `.text` (`LOAD 0x08000000+0x2bac` then `LOAD` at `0x08002bac`, 16 bytes), so it
+    /// arrives as a second segment starting mid-page. Handed to the WCH-Link flash stub as-is, that
+    /// write is silently dropped and the image verifies as mismatched at exactly the `.data` LMA;
+    /// on the FLASH-controller path it would re-program a page that the previous segment had
+    /// already written. Merged, both paths see one block per page and program it once.
+    ///
+    /// ja: 実際に書き込む単位。[`Self::segments`] のうち連続・重複・同じ `align` 単位に載るものを
+    /// 1 つにまとめ、各 block を `align` の整数倍へ広げる(埋めは `0xff`)。`0xff` の書込はセルを
+    /// 落とせないので silicon 上は no-op だが、これが無いと flash が書き始められない番地の block を
+    /// programmer に渡すことになる。link 済み ELF ではこれが必要: `.data` の初期値は `.text` 直後の
+    /// LMA に置かれ、page 途中から始まる 2 つ目の segment として届く。WCH-Link の flash stub に
+    /// そのまま渡すとその書込は黙って捨てられ、`.data` の LMA ちょうどで verify mismatch になる。
+    /// FLASH-controller 経路では、前の segment が書いた page を二度書きすることになる。
+    pub fn program_blocks(&self, align: u32) -> Vec<Segment> {
+        let align = align.max(1) as u64;
+        let unit_start = |a: u32| (u64::from(a) / align) * align;
+        let unit_end = |a: u64| a.div_ceil(align) * align;
+
+        let mut sorted = self.segments.clone();
+        sorted.sort_by_key(|s| s.addr);
+        let mut out: Vec<Segment> = Vec::new();
+        for seg in sorted {
+            if seg.data.is_empty() {
+                continue;
+            }
+            let seg_end = u64::from(seg.addr) + seg.data.len() as u64;
+            match out.last_mut() {
+                // The next segment starts inside the block this one already occupies (including
+                // its 0xff tail padding): extend the current block and overlay the bytes.
+                Some(last)
+                    if unit_start(seg.addr)
+                        <= unit_end(u64::from(last.addr) + last.data.len() as u64) =>
+                {
+                    let base = u64::from(last.addr);
+                    let want = (unit_end(seg_end) - base) as usize;
+                    if last.data.len() < want {
+                        last.data.resize(want, 0xff);
+                    }
+                    let at = (u64::from(seg.addr) - base) as usize;
+                    last.data[at..at + seg.data.len()].copy_from_slice(&seg.data);
+                }
+                _ => {
+                    let base = unit_start(seg.addr);
+                    let mut data = vec![0xffu8; (unit_end(seg_end) - base) as usize];
+                    let at = (u64::from(seg.addr) - base) as usize;
+                    data[at..at + seg.data.len()].copy_from_slice(&seg.data);
+                    out.push(Segment {
+                        // `base` is derived from a u32 address rounded down, so it fits.
+                        addr: base as u32,
+                        data,
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// en: The whole image as ONE contiguous block of whole `align` units, gaps between segments
+    /// filled with `0xff`. This is what the WCH-Link flash-stub path must program: the stub is a
+    /// full-region programmer and only the *first* `write_flash` of a session takes effect - a
+    /// second one is acknowledged by the probe (`41 01 01 04`, and the stub upload and every
+    /// Program sub-command reply as usual) and programs nothing at all, so every block after the
+    /// first is silently lost. Measured on a CH32V307VCT6 + WCH-LinkE with a two-block image
+    /// (0x08000000 and 0x08004600, both page-aligned): the second block's page read back erased,
+    /// and the data was not written anywhere else either. A detach/attach or a soft reset between
+    /// the two writes does not help. `docs/protocol/wch-link.ja.md` §4.3 records the same boundary
+    /// from the other side: the stub path is for full-region programming after an erase.
+    ///
+    /// The filler cannot damage anything it covers - programming `0xff` clears no cell - but the
+    /// caller must erase the whole span, not just the segments, because the span is what gets
+    /// programmed. Returns None for an empty image.
+    ///
+    /// ja: image 全体を **1 つの連続 block**(`align` の整数倍、segment 間の隙間は `0xff`)にする。
+    /// WCH-Link の flash stub 経路はこれが必須: stub は全 region 書込器で、**1 セッションで効くのは
+    /// 最初の `write_flash` だけ**。2 本目は probe が ack を返し(`41 01 01 04`、stub upload も各
+    /// Program サブコマンドも正常応答)ながら**何も焼かない**ので、2 つ目以降の block が黙って消える。
+    /// CH32V307VCT6 + WCH-LinkE で 2 block image(0x08000000 と 0x08004600、ともに page 整列)で実測:
+    /// 2 つ目の page は消去状態のまま、データはどこにも書かれていない。間に detach/attach や soft
+    /// reset を挟んでも変わらない。`docs/protocol/wch-link.ja.md` §4.3 が逆側から同じ境界を記録して
+    /// いる(stub 経路は消去後の全 region 書込用)。埋めの `0xff` はセルを落とせないので覆った領域を
+    /// 壊さないが、**焼くのは span 全体なので、呼び出し側は segment ではなく span を消去する**こと。
+    pub fn program_span(&self, align: u32) -> Option<Segment> {
+        let blocks = self.program_blocks(align);
+        let (first, last) = (blocks.first()?, blocks.last()?);
+        let base = first.addr;
+        let end = u64::from(last.addr) + last.data.len() as u64;
+        let mut data = vec![0xffu8; (end - u64::from(base)) as usize];
+        for b in &blocks {
+            let at = (b.addr - base) as usize;
+            data[at..at + b.data.len()].copy_from_slice(&b.data);
+        }
+        Some(Segment { addr: base, data })
+    }
+
     /// en: Reject segments that fall outside `[code_flash_start, code_flash_start+size)`.
     /// ja: flash 範囲外の segment を弾く。
     pub fn check_within_flash(
@@ -350,9 +451,134 @@ fn parse_uf2(bytes: &[u8], code_flash_start: u32) -> Result<Image, ImageError> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// The defect this exists for: a linked ELF hands over `.text` and the `.data` initialiser at
+    /// its LMA as two segments that meet mid-page. They must come out as one page-aligned block.
+    #[test]
+    fn program_blocks_merges_a_data_lma_onto_the_text_tail() {
+        let img = Image {
+            segments: vec![
+                Segment {
+                    addr: 0x0800_0000,
+                    data: vec![0xaa; 0x2bac],
+                },
+                Segment {
+                    addr: 0x0800_2bac,
+                    data: vec![0x11; 0x10],
+                },
+            ],
+        };
+        let blocks = img.program_blocks(256);
+        assert_eq!(blocks.len(), 1, "contiguous segments must merge");
+        assert_eq!(blocks[0].addr, 0x0800_0000);
+        assert_eq!(blocks[0].data.len(), 0x2c00, "grown to whole 256-B units");
+        assert_eq!(&blocks[0].data[0x2ba0..0x2bac], &[0xaa; 12]);
+        assert_eq!(&blocks[0].data[0x2bac..0x2bbc], &[0x11; 16]);
+        assert_eq!(
+            &blocks[0].data[0x2bbc..0x2c00],
+            &[0xff; 0x44],
+            "0xff padding"
+        );
+    }
+
+    /// The second half of the same defect: when `.text` ends exactly on a page boundary the two
+    /// segments only touch, and a merge that required them to overlap left the `.data` page as a
+    /// separate write - which the stub path then loses entirely (see [`Image::program_span`]).
+    #[test]
+    fn program_blocks_merges_segments_that_only_touch() {
+        let img = Image {
+            segments: vec![
+                Segment {
+                    addr: 0x0800_0000,
+                    data: vec![0xaa; 0x4600],
+                },
+                Segment {
+                    addr: 0x0800_4600,
+                    data: vec![0x11; 0x58],
+                },
+            ],
+        };
+        let blocks = img.program_blocks(256);
+        assert_eq!(blocks.len(), 1, "touching segments must merge");
+        assert_eq!(blocks[0].data.len(), 0x4700);
+        assert_eq!(&blocks[0].data[0x4600..0x4658], &[0x11; 0x58]);
+    }
+
+    /// The stub path gets one region, gaps filled, because only its first write takes effect.
+    #[test]
+    fn program_span_is_one_contiguous_region() {
+        let img = Image {
+            segments: vec![
+                Segment {
+                    addr: 0x0800_0000,
+                    data: vec![1; 4],
+                },
+                Segment {
+                    addr: 0x0800_1000,
+                    data: vec![2; 4],
+                },
+            ],
+        };
+        let span = img.program_span(256).expect("non-empty image has a span");
+        assert_eq!(span.addr, 0x0800_0000);
+        assert_eq!(span.data.len(), 0x1100, "0x08000000 .. 0x08001100");
+        assert_eq!(&span.data[0..4], &[1; 4]);
+        assert_eq!(&span.data[4..0x1000], &[0xff; 0xffc], "gap is filled");
+        assert_eq!(&span.data[0x1000..0x1004], &[2; 4]);
+        assert!(Image::default().program_span(256).is_none());
+    }
+
+    /// A block that does not start on a programming unit is grown down to one, and a gap inside
+    /// the same unit is filled - a HEX image may start at any address.
+    #[test]
+    fn program_blocks_aligns_the_start_and_fills_a_same_unit_gap() {
+        let img = Image {
+            segments: vec![
+                Segment {
+                    addr: 0x0800_0004,
+                    data: vec![1, 2, 3, 4],
+                },
+                Segment {
+                    addr: 0x0800_0010,
+                    data: vec![5, 6],
+                },
+            ],
+        };
+        let blocks = img.program_blocks(64);
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0].addr, 0x0800_0000);
+        assert_eq!(blocks[0].data.len(), 64);
+        assert_eq!(&blocks[0].data[0..4], &[0xff; 4]);
+        assert_eq!(&blocks[0].data[4..8], &[1, 2, 3, 4]);
+        assert_eq!(&blocks[0].data[8..16], &[0xff; 8], "gap stays erased");
+        assert_eq!(&blocks[0].data[16..18], &[5, 6]);
+    }
+
+    /// Segments in different programming units stay separate blocks (no 0xff flood between them).
+    #[test]
+    fn program_blocks_keeps_distant_segments_apart() {
+        let img = Image {
+            segments: vec![
+                Segment {
+                    addr: 0x0800_0000,
+                    data: vec![1; 4],
+                },
+                Segment {
+                    addr: 0x0800_1000,
+                    data: vec![2; 4],
+                },
+            ],
+        };
+        let blocks = img.program_blocks(256);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0].addr, 0x0800_0000);
+        assert_eq!(blocks[0].data.len(), 256);
+        assert_eq!(blocks[1].addr, 0x0800_1000);
+        assert_eq!(blocks[1].data.len(), 256);
+    }
 
     #[test]
     fn ihex_basic_maps_to_flash() {
