@@ -166,7 +166,7 @@ fn read_replays() {
 
 #[test]
 fn run_semihosting_replays() {
-    // The whole `run --exit-on semihosting` path replays offline from a CH32V30x capture: flash the
+    // The whole `run --exit-on semihosting` path replays offline from a CH32V203 capture: flash the
     // image, reset, resume, the dmdata output decode, and the semihosting host that recognises the
     // slli/ebreak/srai sequence, services SYS_WRITE0, and propagates SYS_EXIT's code. Deterministic
     // because the recording ends on the target's own exit, not a timeout. The capture flashed, so
@@ -178,7 +178,7 @@ fn run_semihosting_replays() {
             "--exit-on",
             "semihosting",
             "--replay",
-            &fixture("run-semihosting-v307.ndjson"),
+            &fixture("run-semihosting-v203.ndjson"),
         ])
         .output()
         .expect("run ch32rv");

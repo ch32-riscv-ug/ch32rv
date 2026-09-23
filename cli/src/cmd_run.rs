@@ -138,6 +138,27 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
             Ok(i) => i,
             Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
         };
+        // en: Erase before programming, as `flash` does. The stub path is a full-region programmer
+        // that expects erased flash: writing into programmed flash without an erase is refused by
+        // the probe (`0x55`) or - on the CH549 Link, fw 2.12 - simply never answers, so `run`
+        // failed with `transfer timed out` at the image's first address on every attempt while the
+        // same image flashed fine through `flash` (which erases). A WCH-LinkE tolerated it, which
+        // is why the runner worked on the rest of the bench. `run` always programs a whole image
+        // from the flash base, so the chip erase `flash --erase auto` would pick is the right one.
+        // ja: `flash` と同じく書込前に消去する。stub 経路は消去済み flash を前提にした全 region
+        // 書込器で、消去せずに書くと probe が拒否する(`0x55`)か、CH549 Link(fw 2.12)では**応答が
+        // 返ってこない** — `run` は image 先頭で必ず `transfer timed out` になっていた(同じ image が
+        // 消去を伴う `flash` では通る)。WCH-LinkE が黙認するのでベンチの他機では動いていた。`run` は
+        // 常に flash 先頭から image 全体を焼くので、`flash --erase auto` が選ぶ chip erase でよい。
+        if let Err(e) = session.link().erase_flash() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::TransferFailed,
+                format!("erase before programming failed: {e}"),
+                None,
+            );
+        }
         // One contiguous region, as the stub path requires - see `Image::program_span`: only the
         // first `write_flash` of a session takes effect, and an ELF's `.data` initialiser arrives
         // as a segment of its own behind `.text`, so anything else loses the tail of the image.
@@ -157,11 +178,26 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
     // Reset to run the freshly programmed image. For semihosting the ebreak-debug CSR is set
     // *after* the reset (so a core reset cannot clear it) and *before* the source is opened (the
     // rtt scan lets the core run between attempts, and an ebreak must already trap to debug mode).
-    let _ = session.link().soft_reset();
-    if matches!(exit_mode, ExitMode::Semihosting { .. }) {
+    // en: Hold the halt request across the reset so the hart comes out of it in debug mode, at its
+    // reset vector, instead of running ahead of the host. After the flash step the probe no longer
+    // holds the halt request from attach (the stub ran), so a plain reset here lets the image start
+    // immediately, and on a slow link the halt lands well inside it - measured on a CH549 WCH-Link:
+    // `dpc = 0x2e`, the program's first semihosting call already executed, so `--exit-on
+    // semihosting` waited out its cap for an exit it had missed. `halt` then waits and clears the
+    // request; the source open / stream resumes the hart when everything is in place.
+    // ja: reset をまたいで halt 要求を保持し、hart を reset 直後・reset vector で debug mode に入れる
+    // (host より先に走り出させない)。書込後は stub が走った影響で probe 側に attach 由来の halt 要求が
+    // 残っておらず、素の reset では image がすぐ走り出す。遅いリンクでは halt がその内側に落ちる —
+    // CH549 で実測 `dpc = 0x2e`(最初の semihosting 呼出を実行済み)で、`--exit-on semihosting` は
+    // 取り逃がした exit を cap いっぱい待っていた。`halt` が待って要求をクリアし、resume は source を
+    // 開いてから stream が行う。
+    let _ = session.dm().reset_halt();
+    {
         let mut dm = session.dm();
         let _ = dm.halt();
-        let _ = dm.enable_ebreak_debug();
+        if matches!(exit_mode, ExitMode::Semihosting { .. }) {
+            let _ = dm.enable_ebreak_debug();
+        }
     }
     let mut src = match DmiSource::open(&mut session, source, &mut warnings) {
         Ok(s) => s,
