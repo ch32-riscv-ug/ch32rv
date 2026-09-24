@@ -292,6 +292,7 @@ fn run_semihosting(
         // Exchange runtime output / stdin while running (an rtt poll leaves a halted core halted).
         source::drain_input(input, &mut pending);
         if let Ok(b) = src.poll(session, &mut pending) {
+            source::report_notices(src, &mut sink);
             sink.write(&b);
         }
         let mut dm = session.dm();

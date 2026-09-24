@@ -57,7 +57,7 @@
     {
       "properties": {
         "ev": { "const": "output" },
-        "source": { "type": "string", "description": "uart / sdi / dmdata / rtt / semihosting" },
+        "source": { "type": "string", "description": "uart / sdi / dmdata / dmseq / rtt / semihosting" },
         "data": { "type": "string", "description": "target の実行時出力(UTF-8 文字境界で分割。--json 時の monitor / run)" }
       },
       "required": ["ev", "source", "data"]
