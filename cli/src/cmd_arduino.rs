@@ -101,11 +101,15 @@ use ch32rv_contract::policy::MonitorSource;
 use crate::source::{self, DmiSource};
 
 /// The sources this monitor wraps (the DMI ones; uart/sdi are the IDE's own serial monitor).
-const SOURCES: [MonitorSource; 2] = [MonitorSource::Dmdata, MonitorSource::Rtt];
+const SOURCES: [MonitorSource; 3] = [
+    MonitorSource::Dmdata,
+    MonitorSource::Dmseq,
+    MonitorSource::Rtt,
+];
 
 /// `arduino monitor`: the Pluggable Monitor protocol over stdio. OPEN connects (TCP client) to the
 /// IDE-provided address and pipes the target's runtime output to it and the IDE's input back.
-/// `source` (dmdata, the default, or rtt) selects the backend.
+/// `source` (dmdata, the default, dmseq or rtt) selects the backend.
 pub fn monitor(_cli: &Cli) -> ExitCode {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
@@ -160,7 +164,7 @@ pub fn monitor(_cli: &Cli) -> ExitCode {
                     None => emit(
                         &mut out,
                         &json!({"eventType":"configure","error":true,
-                        "message":"CONFIGURE source <dmdata|rtt>"}),
+                        "message":"CONFIGURE source <dmdata|dmseq|rtt>"}),
                     ),
                 }
             }

@@ -86,6 +86,7 @@ policy_enum! {
         Uart => "uart",
         Sdi => "sdi",
         Dmdata => "dmdata",
+        Dmseq => "dmseq",
         Rtt => "rtt",
     }
 }

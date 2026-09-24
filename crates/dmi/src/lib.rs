@@ -31,8 +31,10 @@
 //! FLASH controller の page erase/program・option byte 書込を提供する。
 
 pub mod dm;
+pub mod dmseq;
 
 pub use dm::{DebugModule, DmdataPoll, FlashProgMode, RegName};
+pub use dmseq::{DmSeq, DmSeqPoll};
 
 use thiserror::Error;
 

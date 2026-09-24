@@ -36,7 +36,9 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
     match args.source {
         MonitorSource::Uart => run_uart(cli, args),
         MonitorSource::Sdi => run_sdi(cli, args),
-        MonitorSource::Dmdata | MonitorSource::Rtt => run_dmi(cli, args.source),
+        MonitorSource::Dmdata | MonitorSource::Dmseq | MonitorSource::Rtt => {
+            run_dmi(cli, args.source)
+        }
     }
 }
 
@@ -426,7 +428,7 @@ pub(crate) fn open_error(cli: &Cli, cmd: &str, e: OpenError) -> ExitCode {
             cmd,
             ErrorKind::CapabilityUnsupported,
             "this source is a CDC serial one (uart/sdi), not a DMI source",
-            Some("use --source dmdata or --source rtt"),
+            Some("use --source dmdata, --source dmseq or --source rtt"),
         ),
         OpenError::NoControlBlock { scan_len } => fail(
             cli,

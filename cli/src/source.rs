@@ -1,5 +1,6 @@
 //! en: DMI-backed runtime I/O sources shared by `monitor`, `run` and `arduino monitor`
-//! (docs/cli.ja.md §4.5): `dmdata` (the ch32fun/minichlink DM data0/data1 mailbox) and `rtt`
+//! (docs/cli.ja.md §4.5): `dmdata` (the ch32fun/minichlink DM data0/data1 mailbox), `dmseq` (the
+//! same mailbox with sequence numbers and a CRC-8 - OEP `target.console` framing 2) and `rtt`
 //! (a SEGGER-format ring buffer in target RAM). Both are bidirectional: one [`DmiSource::poll`]
 //! drains the target's output and hands over pending host input. Also here: the output [`Sink`]
 //! (raw bytes on stdout, or `output` NDJSON events on stderr under `--json`, where stdout is
@@ -23,7 +24,7 @@ use std::time::{Duration, Instant};
 use ch32rv_contract::event::Event;
 use ch32rv_contract::policy::MonitorSource;
 use ch32rv_contract::{ErrorKind, Warning};
-use ch32rv_dmi::DmiError;
+use ch32rv_dmi::{DmSeq, DmiError, dmseq};
 
 use crate::args::Cli;
 use crate::session::Session;
@@ -142,7 +143,25 @@ pub(crate) struct RttChannels {
 /// An opened runtime output source over the Debug Module.
 pub(crate) enum DmiSource {
     Dmdata,
+    Dmseq(Box<DmseqStream>),
     Rtt(RttChannels),
+}
+
+/// en: How long to read nothing that is a dmseq frame before saying there is no dmseq console on
+/// this target. The spec leaves the delay to the host; long enough that a target which simply has
+/// not printed yet (it still posts empty frames) is never reported, short enough to answer
+/// "why is nothing coming out?" while the user is still looking.
+/// ja: 「この target に dmseq console が無い」と報告するまでの時間(仕様は host 任せ)。まだ印字
+/// していないだけの target(空フレームは出している)を誤報しない長さで、利用者が見ている間に
+/// 「何も出ない」に答えられる短さ。
+const DMSEQ_NO_CONSOLE_AFTER: Duration = Duration::from_secs(3);
+
+/// One `dmseq` session: the framing state plus what the stream should tell the user about it.
+pub(crate) struct DmseqStream {
+    session: DmSeq,
+    opened: Instant,
+    no_console_reported: bool,
+    notices: Vec<(&'static str, String)>,
 }
 
 pub(crate) enum OpenError {
@@ -203,6 +222,33 @@ impl DmiSource {
                 session.dm().dmdata_clear()?;
                 Ok(DmiSource::Dmdata)
             }
+            MonitorSource::Dmseq => {
+                // en: Nothing to set up, and in particular the mailbox is NOT cleared the way
+                // `dmdata` clears it. dmseq's ownership rule is that the host writes DATA0 only
+                // while bit 7 is set, and a conforming target reads a zero word as silence, not as
+                // an answer - so clearing could only destroy a frame that was already posted and
+                // make the target wait out its timeout (up to 1 s) before posting it again, with a
+                // spurious "output was dropped" warning on the way. What a stale mailbox needs
+                // instead is already in the framing: whatever the probe's attach left in DATA0
+                // (measured: 0xe339e339 on a CH32V203, 0xffffffff elsewhere) fails the target's
+                // answer check, so the target posts its frame again by itself. Verified on a
+                // CH32V203 with a target left latched for 12 s: the session syncs and streams both
+                // ways without the host writing anything first.
+                // ja: 準備は無く、特に **`dmdata` のような mailbox クリアはしない**。dmseq の所有権
+                // 規則では host は bit 7 が 1 のときしか DATA0 を書かず、規格どおりの target は 0 の
+                // word を「沈黙」と読む(答えとは見ない)。したがってクリアは、既に出ているフレームを
+                // 壊して target の timeout(最大 1 秒)を待たせ、偽の「出力が捨てられた」警告まで出す
+                // だけになる。古い mailbox の始末は framing 側にある: probe の attach が DATA0 に
+                // 残す値(実測 CH32V203 は 0xe339e339、他は 0xffffffff)は target の答え検査を通らない
+                // ので、target が自分でフレームを出し直す。12 秒放置して latch させた CH32V203 で
+                // 確認済み(host が先に何も書かなくても同期し、双方向に流れる)。
+                Ok(DmiSource::Dmseq(Box::new(DmseqStream {
+                    session: DmSeq::new(),
+                    opened: Instant::now(),
+                    no_console_reported: false,
+                    notices: Vec::new(),
+                })))
+            }
             MonitorSource::Rtt => Self::open_rtt(session, warnings),
             MonitorSource::Uart | MonitorSource::Sdi => Err(OpenError::NotDmi),
         }
@@ -248,9 +294,20 @@ impl DmiSource {
         Ok(DmiSource::Rtt(RttChannels { up, down }))
     }
 
+    /// en: Anything the source wants said to the user since the last poll (dmseq: the target's
+    /// timeout, "no console here"). Taken, not peeked, so each notice is reported once.
+    /// ja: 前回以降に source が利用者へ伝えたいこと(dmseq の TO / console 不在)。取り出したら消える。
+    pub(crate) fn take_notices(&mut self) -> Vec<(&'static str, String)> {
+        match self {
+            DmiSource::Dmseq(st) => std::mem::take(&mut st.notices),
+            DmiSource::Dmdata | DmiSource::Rtt(_) => Vec::new(),
+        }
+    }
+
     pub(crate) fn name(&self) -> &'static str {
         match self {
             DmiSource::Dmdata => "dmdata",
+            DmiSource::Dmseq(_) => "dmseq",
             DmiSource::Rtt(_) => "rtt",
         }
     }
@@ -259,6 +316,9 @@ impl DmiSource {
     pub(crate) fn idle(&self) -> Duration {
         match self {
             DmiSource::Dmdata => Duration::from_millis(2),
+            // The target waits 1 s for an answer once it has had one, and drops what it writes
+            // after that, so the poll interval is what decides whether output survives.
+            DmiSource::Dmseq(_) => Duration::from_millis(2),
             DmiSource::Rtt(_) => Duration::from_millis(50),
         }
     }
@@ -267,6 +327,7 @@ impl DmiSource {
     pub(crate) fn describe(&self) -> String {
         match self {
             DmiSource::Dmdata => "dmdata (DMI mailbox, core runs)".to_owned(),
+            DmiSource::Dmseq(_) => "dmseq (DMI mailbox, sequenced + CRC, core runs)".to_owned(),
             DmiSource::Rtt(ch) => format!(
                 "rtt (RAM ring @ 0x{:08x}, core briefly halts per poll)",
                 ch.up - RTT_HEADER_LEN
@@ -287,6 +348,36 @@ impl DmiSource {
             DmiSource::Dmdata => {
                 let r = session.dm().dmdata_poll(&input[..input.len().min(3)])?;
                 input.drain(..r.sent);
+                Ok(r.received)
+            }
+            DmiSource::Dmseq(st) => {
+                let take = input.len().min(dmseq::MAX_HOST_PAYLOAD);
+                let r = session.dm().dmseq_poll(&mut st.session, &input[..take])?;
+                input.drain(..r.sent);
+                if r.timed_out {
+                    st.notices.push((
+                        "dmseq-target-timeout",
+                        "the target stopped waiting for an answer; output written while nobody \
+                         answered was dropped"
+                            .to_owned(),
+                    ));
+                }
+                if !st.session.synced()
+                    && !st.no_console_reported
+                    && st.opened.elapsed() >= DMSEQ_NO_CONSOLE_AFTER
+                {
+                    st.no_console_reported = true;
+                    st.notices.push((
+                        "dmseq-no-console",
+                        format!(
+                            "no dmseq frame in {} s ({} word(s) rejected): this target may not \
+                             have a dmseq console (SerialDMSeq) - `--source dmdata` speaks the \
+                             older framing",
+                            DMSEQ_NO_CONSOLE_AFTER.as_secs(),
+                            st.session.invalid
+                        ),
+                    ));
+                }
                 Ok(r.received)
             }
             DmiSource::Rtt(ch) => {
@@ -370,6 +461,13 @@ fn rtt_exchange(
     Ok(out)
 }
 
+/// Hand the source's notices to the sink. Called from every streaming loop (`monitor` / `run`).
+pub(crate) fn report_notices(src: &mut DmiSource, sink: &mut Sink) {
+    for (code, msg) in src.take_notices() {
+        sink.warn(code, &msg);
+    }
+}
+
 /// Exit code class for a DMI failure while streaming (docs/cli.ja.md §3.6: 40 either way, the
 /// JSON `kind` tells a true timeout from a failed transfer).
 pub(crate) fn dmi_error_kind(e: &DmiError) -> ErrorKind {
@@ -420,6 +518,27 @@ impl Sink {
                 pending.extend_from_slice(bytes);
                 let text = take_text(pending);
                 emit_output(source, text);
+            }
+        }
+    }
+
+    /// en: Tell the user something about the stream itself (not target output): human mode gets
+    /// the same `warning[code]: msg` line the rest of the CLI uses, `--json` a `warn` event on
+    /// stderr, where the runtime output already goes.
+    /// ja: stream 自体についての通知(target 出力ではない)。human は CLI 共通の
+    /// `warning[code]: msg`、`--json` は stderr の `warn` event。
+    pub(crate) fn warn(&mut self, code: &str, msg: &str) {
+        match self {
+            Sink::Raw => eprintln!("warning[{code}]: {msg}"),
+            Sink::Json { .. } => {
+                let ev = Event::Warn {
+                    code: code.to_owned(),
+                    msg: msg.to_owned(),
+                };
+                if let Ok(line) = serde_json::to_string(&ev) {
+                    let mut err = std::io::stderr().lock();
+                    let _ = writeln!(err, "{line}");
+                }
             }
         }
     }
@@ -534,6 +653,7 @@ pub(crate) fn stream(
         }
         drain_input(input, &mut pending);
         let out = src.poll(session, &mut pending)?;
+        report_notices(src, sink);
         if out.is_empty() {
             std::thread::sleep(src.idle());
         } else {

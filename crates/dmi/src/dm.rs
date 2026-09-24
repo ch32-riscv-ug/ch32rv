@@ -39,8 +39,8 @@ pub struct DmdataPoll {
 }
 
 // Debug Module register addresses (DMI address space).
-const DMDATA0: u8 = 0x04;
-const DMDATA1: u8 = 0x05;
+pub(crate) const DMDATA0: u8 = 0x04;
+pub(crate) const DMDATA1: u8 = 0x05;
 const DMCONTROL: u8 = 0x10;
 const DMSTATUS: u8 = 0x11;
 const DMABSTRACTCS: u8 = 0x16;
@@ -95,11 +95,11 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         Self { dtm }
     }
 
-    fn write(&mut self, addr: u8, value: u32) -> Result<(), DmiError> {
+    pub(crate) fn write(&mut self, addr: u8, value: u32) -> Result<(), DmiError> {
         self.dtm.dmi_write(addr, value)
     }
 
-    fn read(&mut self, addr: u8) -> Result<u32, DmiError> {
+    pub(crate) fn read(&mut self, addr: u8) -> Result<u32, DmiError> {
         self.dtm.dmi_read(addr)
     }
 

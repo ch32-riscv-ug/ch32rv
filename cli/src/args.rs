@@ -120,7 +120,7 @@ pub enum Command {
     /// One-shot execution control
     #[command(subcommand)]
     Dbg(DbgCmd),
-    /// Runtime I/O (uart / sdi / dmdata / rtt)
+    /// Runtime I/O (uart / sdi / dmdata / dmseq / rtt)
     Monitor(MonitorArgs),
     /// GDB server (never modifies flash on attach)
     Gdb(GdbArgs),
@@ -277,7 +277,7 @@ pub struct RunArgs {
     /// Attach only; do not flash
     #[arg(long)]
     pub no_flash: bool,
-    /// Runtime output source: dmdata (default) or rtt (both over DMI; stdin goes to the target)
+    /// Runtime output source: dmdata (default), dmseq (sequenced + CRC) or rtt (all over DMI; stdin goes to the target)
     #[arg(long, value_enum)]
     pub source: Option<MonitorSource>,
     /// When to stop: `semihosting` (propagate the target's exit code) or `timeout` (stream for --duration). Default: timeout.
