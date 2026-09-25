@@ -1291,9 +1291,11 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
 
 pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
     match args.method {
-        RecoverMethod::PowerOff | RecoverMethod::Nrst => recover_special_erase(cli, args.method),
-        RecoverMethod::Unprotect => recover_unprotect(cli),
-        RecoverMethod::Unbrick => recover_unbrick(cli),
+        None => crate::cmd_recover::diagnose_only(cli),
+        Some(RecoverMethod::Auto) => crate::cmd_recover::auto(cli),
+        Some(m @ (RecoverMethod::PowerOff | RecoverMethod::Nrst)) => recover_special_erase(cli, m),
+        Some(RecoverMethod::Unprotect) => recover_unprotect(cli),
+        Some(RecoverMethod::Unbrick) => recover_unbrick(cli),
     }
 }
 
@@ -1302,7 +1304,7 @@ pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
 /// target must still attach over DMI (a fully-dead target needs power-off/nrst/unbrick instead).
 /// ja: `recover --method unprotect`: 工場 option bytes(RDPR=0xA5)を書いて読み出し保護を解除。保護
 /// 済み target ではこれが chip の mass erase を誘発して復旧する。attach は要る(完全死は power-off 等)。
-fn recover_unprotect(cli: &Cli) -> ExitCode {
+pub(crate) fn recover_unprotect(cli: &Cli) -> ExitCode {
     const CMD: &str = "recover";
     if let Err(why) = confirm_destructive(
         cli,
@@ -1538,7 +1540,7 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
 /// byte, since we cannot read it without attaching.
 /// ja: 「Clear All Code Flash」。attach しない(attach できない target の復旧が目的)。
 /// family byte を読めないため `--chip` が要る。
-fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCode {
+pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCode {
     const CMD: &str = "recover";
     let Some(chip) = cli.chip.as_deref() else {
         return fail(

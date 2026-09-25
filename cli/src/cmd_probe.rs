@@ -515,6 +515,21 @@ pub(crate) fn fail_with_candidates(
     kind.exit_code().into()
 }
 
+thread_local! {
+    static SPEED_OVERRIDE: std::cell::Cell<Option<&'static str>> = const { std::cell::Cell::new(None) };
+}
+
+/// en: Run `f` with [`attach`] using `speed` instead of `--speed`. For `recover --method auto`,
+/// whose diagnosis may find the target answering only at low speed, and which then reuses the
+/// ordinary option-byte commands. ja: `f` の間だけ `--speed` の代わりに `speed` で attach させる。
+/// 診断で low でしか応答しなかった target に、既存の option 書込コマンドをそのまま使うため。
+pub(crate) fn with_speed<T>(speed: &'static str, f: impl FnOnce() -> T) -> T {
+    let prev = SPEED_OVERRIDE.with(|o| o.replace(Some(speed)));
+    let out = f();
+    SPEED_OVERRIDE.with(|o| o.set(prev));
+    out
+}
+
 /// en: Shared attach boilerplate for every probe-routed command that talks to a target: select the
 /// probe, require RISC-V mode, parse `--speed`, and attach (locking the probe, honoring `--chip`).
 /// Errors are already rendered (via [`fail`] / [`session_error`]); callers just propagate the code.
@@ -534,8 +549,11 @@ pub(crate) fn attach(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
             None,
         ));
     }
+    let spec = SPEED_OVERRIDE
+        .with(|o| o.get())
+        .unwrap_or(cli.speed.as_str());
     let (speed, mut warnings) =
-        parse::speed(&cli.speed).map_err(|m| fail(cli, cmd, ErrorKind::Usage, m, None))?;
+        parse::speed(spec).map_err(|m| fail(cli, cmd, ErrorKind::Usage, m, None))?;
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
     Session::attach(
         &entry,
