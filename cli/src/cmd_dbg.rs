@@ -305,15 +305,36 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
                 ch32rv_target::Resolution::Sku(s) => s.sram_bytes,
                 _ => 0,
             };
+        let family = crate::cmd_target::db_family_of(&mut session);
         // `--region option` is family-specific (CH32M030 keeps the block at 0x1FFF_F300), so take
         // the base from the DB rather than the common default.
-        let option_base =
-            ch32rv_target::option_bytes_layout(&crate::cmd_target::db_family_of(&mut session))
-                .map(|l| l.base);
-        match resolve_range(args, flash_bytes, sram_bytes, option_base) {
+        let option_base = ch32rv_target::option_bytes_layout(&family).map(|l| l.base);
+        let (start, len) = match resolve_range(args, flash_bytes, sram_bytes, option_base) {
             Ok(v) => v,
             Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+        };
+        // en: Nothing on the link reports a read of unmapped memory: the silicon returns 0 without
+        // a fault (CH32L103 at 0x60000000 - cmderr stayed 0 on the WCH-Link's bulk read and on a
+        // progbuf `lw` alike, 2026-09-25), so warn instead of letting zeros pass for data.
+        // ja: 未マップ番地の read はリンクのどこにも失敗として現れない(silicon が fault 無しで 0 を返す。
+        // L103 の 0x60000000 で WCH-Link の一括読み・progbuf の lw とも cmderr = 0)ので、0 が
+        // データとして通らないよう警告する。
+        if let Some((at, n)) = unmapped_span(start, len, &family, flash_bytes, sram_bytes) {
+            let w = Warning {
+                code: "read-outside-memory-map".to_owned(),
+                msg: format!(
+                    "{at:#010x}+{n} is outside every memory region ch32rv knows for {family}; CH32 \
+                     parts read unmapped addresses as 0 without reporting an error, so those bytes \
+                     are not data"
+                ),
+            };
+            if cli.json {
+                warnings.push(w);
+            } else {
+                eprintln!("warning[{}]: {}", w.code, w.msg);
+            }
         }
+        (start, len)
     };
     if let Err(e) = session.dm().halt() {
         return fail(
@@ -380,6 +401,68 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     }
 
     output_data(cli, CMD, args, start, &data, warnings)
+}
+
+/// en: The first stretch of `[start, start + len)` that lies outside every memory region the tool
+/// knows for `family`, as `(address, length)`, or None when the whole range is covered. The regions
+/// are the CH32 RISC-V memory map: code flash and its boot alias (`flash_bytes`, from ChipInfo),
+/// the system / ESIG / option-byte area, SRAM (`sram_bytes` from the DB; the parts whose flash/SRAM
+/// split is an option byte are allowed their largest SRAM), the peripheral space, the core-private
+/// space, and on CH32V30x the FSMC window. An unknown size (0) is not judged. It only ever feeds a
+/// warning: a read outside these regions is allowed, it just cannot be told apart from zeros.
+/// ja: `[start, start + len)` のうち、`family` について分かっているどのメモリ領域にも入らない最初の
+/// 区間(`(番地, 長さ)`)。全部入れば None。領域は CH32 RISC-V のメモリ配置(code flash と boot alias、
+/// system / ESIG / option byte 領域、SRAM、周辺、core 私有、V30x の FSMC 窓)。大きさが不明(0)の
+/// ものは判定しない。警告にしか使わない(範囲外の read は許すが、0 と区別できないことを伝える)。
+fn unmapped_span(
+    start: u32,
+    len: u32,
+    family: &str,
+    flash_bytes: u32,
+    sram_bytes: u32,
+) -> Option<(u32, u32)> {
+    let end = u64::from(start) + u64::from(len);
+    // Unknown sizes cover their whole window, so they are never reported.
+    let flash = if flash_bytes > 0 {
+        u64::from(flash_bytes)
+    } else {
+        0x0800_0000
+    };
+    let sram = match family {
+        // The flash/SRAM split is an option byte on these parts (up to 128 KiB of SRAM).
+        "CH32V20x" | "CH32V307" => u64::from(sram_bytes).max(0x2_0000),
+        _ if sram_bytes > 0 => u64::from(sram_bytes),
+        _ => 0x2000_0000,
+    };
+    let mut regions: Vec<(u64, u64)> = vec![
+        (0x0000_0000, flash),               // boot alias of code flash
+        (0x0800_0000, 0x0800_0000 + flash), // code flash
+        (0x1FFF_0000, 0x2000_0000),         // system / boot, ESIG, option bytes
+        (0x2000_0000, 0x2000_0000 + sram),  // SRAM
+        (0x4000_0000, 0x6000_0000),         // peripherals (APB / AHB, USB, ETH)
+        (0xE000_0000, 0xE010_0000),         // core-private (PFIC, SysTick, DM data alias)
+    ];
+    if family == "CH32V307" {
+        regions.push((0x6000_0000, 0xA000_1000)); // FSMC banks and its registers
+    }
+    let mut pos = u64::from(start);
+    while pos < end {
+        match regions.iter().find(|&&(a, b)| pos >= a && pos < b) {
+            Some(&(_, covered_to)) => pos = covered_to,
+            None => {
+                let next = regions
+                    .iter()
+                    .map(|&(a, _)| a)
+                    .filter(|&a| a > pos)
+                    .min()
+                    .unwrap_or(end)
+                    .min(end);
+                // `pos` and `next - pos` both stay below 2^32: they come from a u32 range.
+                return Some((pos as u32, (next - pos) as u32));
+            }
+        }
+    }
+    None
 }
 
 fn resolve_range(
@@ -737,7 +820,7 @@ pub fn dmi(cli: &Cli, sub: &DmiCmd) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_reg_name, parse_u32};
+    use super::{parse_reg_name, parse_u32, unmapped_span};
     use ch32rv_dmi::RegName;
 
     #[test]
@@ -750,6 +833,37 @@ mod tests {
         assert_eq!(parse_reg_name("csr:0x7b0"), Some(RegName::Csr(0x7b0)));
         assert_eq!(parse_reg_name("csr:769"), Some(RegName::Csr(769)));
         assert_eq!(parse_reg_name("nope"), None);
+    }
+
+    /// The case that prompted the warning: 0x60000000 is nothing on a CH32L103 (it reads as 0 with
+    /// no error), while the same address is the FSMC window on a CH32V30x.
+    #[test]
+    fn unmapped_reads_are_found_per_family() {
+        let l103 = |a, n| unmapped_span(a, n, "CH32L103", 64 * 1024, 20 * 1024);
+        assert_eq!(l103(0x6000_0000, 16), Some((0x6000_0000, 16)));
+        assert_eq!(
+            unmapped_span(0x6000_0000, 16, "CH32V307", 256 * 1024, 64 * 1024),
+            None,
+            "FSMC on V30x"
+        );
+        // Everything a normal session reads is covered.
+        assert_eq!(l103(0x0800_0000, 64 * 1024), None, "code flash");
+        assert_eq!(l103(0x0000_0000, 4096), None, "boot alias");
+        assert_eq!(l103(0x1FFF_F7E0, 16), None, "ESIG");
+        assert_eq!(l103(0x1FFF_F800, 16), None, "option bytes");
+        assert_eq!(l103(0x2000_0000, 20 * 1024), None, "SRAM");
+        assert_eq!(l103(0x4002_1000, 0x40), None, "RCC");
+        assert_eq!(l103(0xE000_E000, 0x100), None, "PFIC");
+        // Past the end of flash and of SRAM, reported from where the region stops.
+        assert_eq!(l103(0x0800_FF00, 0x200), Some((0x0801_0000, 0x100)));
+        assert_eq!(l103(0x2000_4F00, 0x200), Some((0x2000_5000, 0x100)));
+        // Unknown sizes are not judged.
+        assert_eq!(unmapped_span(0x0810_0000, 16, "CH32L103", 0, 0), None);
+        // The configurable split on V20x / V30x allows up to 128 KiB of SRAM.
+        assert_eq!(
+            unmapped_span(0x2001_0000, 16, "CH32V20x", 64 * 1024, 20 * 1024),
+            None
+        );
     }
 
     #[test]
