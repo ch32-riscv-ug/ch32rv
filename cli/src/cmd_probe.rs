@@ -1399,13 +1399,33 @@ pub fn power(cli: &Cli, cmd: &crate::args::PowerCmd) -> ExitCode {
             )
         }
     };
+    // en: The probe accepts every SetPower, but on a WCH-LinkE fw 2.22 the 3V3 output measured
+    // 3.24 V after `3v3 off` and after `5v off` alike (wch-protocols E167), and probe-powered targets
+    // kept running (E166). Say so on every "off": the acknowledgement is not evidence.
+    // ja: probe はどの SetPower も受理するが、LinkE fw 2.22 は `3v3 off` の後も 3V3 が 3.24 V のまま
+    // だった(E167)。受理は証拠にならないので、off のたびに伝える。
+    let turns_off = match cmd {
+        PowerCmd::V3v3 { state } | PowerCmd::V5 { state } => matches!(state, SwitchState::Off),
+        PowerCmd::Cycle { .. } => true,
+    };
+    let mut warnings = Vec::new();
+    if turns_off {
+        warnings.push(ch32rv_contract::Warning {
+            code: "power-off-unverified".to_owned(),
+            msg: "the probe accepted the command, but the output may not have switched off: a WCH-LinkE (fw 2.22) was measured still supplying 3.24 V on 3V3 after `3v3 off`, and probe-powered targets kept running".to_owned(),
+        });
+    }
     match result {
         Ok(()) => {
             if cli.json {
                 let mut env = ResultEnvelope::success(CMD);
+                env.warnings = warnings;
                 env.result = Some(json);
                 crate::print_envelope(&env)
             } else {
+                for w in &warnings {
+                    eprintln!("warning[{}]: {}", w.code, w.msg);
+                }
                 println!("power: {desc}");
                 ExitCode::SUCCESS
             }
