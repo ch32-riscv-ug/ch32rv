@@ -178,19 +178,19 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
     // Reset to run the freshly programmed image. For semihosting the ebreak-debug CSR is set
     // *after* the reset (so a core reset cannot clear it) and *before* the source is opened (the
     // rtt scan lets the core run between attempts, and an ebreak must already trap to debug mode).
-    // en: Hold the halt request across the reset so the hart comes out of it in debug mode, at its
-    // reset vector, instead of running ahead of the host. After the flash step the probe no longer
-    // holds the halt request from attach (the stub ran), so a plain reset here lets the image start
-    // immediately, and on a slow link the halt lands well inside it - measured on a CH549 WCH-Link:
-    // `dpc = 0x2e`, the program's first semihosting call already executed, so `--exit-on
-    // semihosting` waited out its cap for an exit it had missed. `halt` then waits and clears the
-    // request; the source open / stream resumes the hart when everything is in place.
-    // ja: reset をまたいで halt 要求を保持し、hart を reset 直後・reset vector で debug mode に入れる
-    // (host より先に走り出させない)。書込後は stub が走った影響で probe 側に attach 由来の halt 要求が
-    // 残っておらず、素の reset では image がすぐ走り出す。遅いリンクでは halt がその内側に落ちる —
-    // CH549 で実測 `dpc = 0x2e`(最初の semihosting 呼出を実行済み)で、`--exit-on semihosting` は
-    // 取り逃がした exit を cap いっぱい待っていた。`halt` が待って要求をクリアし、resume は source を
-    // 開いてから stream が行う。
+    // en: Reset over DMI and catch the hart at its reset vector (`DebugModule::reset_halt`), then arm
+    // semihosting while it sits there; the source open / stream resumes it. Not the probe's own soft
+    // reset: on a CH549 WCH-Link (fw 2.12) + CH32V103 that let the image run ahead, and the halt sent
+    // afterwards landed at `dpc = 0x2e`, past the program's first semihosting call, so `--exit-on
+    // semihosting` waited out its cap. A WCH-LinkE (fw 2.22) raises haltreq before its PFIC system
+    // reset, so the hart comes up halted there (wire capture, 2026-09-25) - which is why only the
+    // CH549 bench failed. The DMI reset-halt is correct on both.
+    // ja: DMI で reset し hart を reset vector で捕まえ(`DebugModule::reset_halt`)、止まっている間に
+    // semihosting を仕込む。resume は source を開いた後に stream が行う。probe 自身の soft reset を使わない
+    // のは、CH549 の WCH-Link(fw 2.12)+ CH32V103 では image が先に走り、後から送った halt が
+    // `dpc = 0x2e`(最初の semihosting 呼出の後)に落ちて `--exit-on semihosting` が cap まで待ったため。
+    // WCH-LinkE(fw 2.22)は system reset の前に haltreq を立てるので hart は止まって出てくる(2026-09-25
+    // の線 capture)— 落ちたのが CH549 だけだった理由。DMI の reset-halt はどちらでも正しい。
     let _ = session.dm().reset_halt();
     {
         let mut dm = session.dm();

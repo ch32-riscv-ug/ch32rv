@@ -198,23 +198,26 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// with `haltreq`, then release the reset with `haltreq` still asserted, so the hart enters
     /// debug mode out of reset before it can execute anything.
     ///
-    /// The probe's own "reset and run" (`0x0b 0x01`) cannot do this: it clears the Debug Module's
-    /// pending halt request along with everything else, so the image starts immediately and a halt
-    /// sent afterwards is a race the host loses on a slow link. Measured on a CH549 WCH-Link
-    /// (fw 2.12) + CH32V103: after the reset the hart was already at `dpc = 0x2e`, ~11 instructions
-    /// into the image, having executed its first semihosting call - which is why `run --exit-on
-    /// semihosting` sat there until its cap waiting for an exit it had missed, while the same image
-    /// ran fine through a WCH-LinkE. Re-attaching does not help either (the hart stays where the
-    /// flash stub left it, `dpc = 0x200002ea` in SRAM).
+    /// The probe's own soft reset (`0x0b 0x01`) is no substitute, and what it does depends on the
+    /// probe firmware. On a CH549 WCH-Link (fw 2.12) + CH32V103 the image started right after it,
+    /// so a halt sent afterwards is a race the host loses on a slow link: the hart was already at
+    /// `dpc = 0x2e`, ~11 instructions in and past its first semihosting call - which is why `run
+    /// --exit-on semihosting` sat until its cap there - and re-attaching did not help (the hart
+    /// stayed where the flash stub left it, `dpc = 0x200002ea` in SRAM). A WCH-LinkE (fw 2.22)
+    /// raises `haltreq` and then issues a PFIC system reset, so its hart comes up halted (wire
+    /// capture, 2026-09-25; `docs/protocol/wch-link.ja.md` §7a) - the reason the same image ran
+    /// fine through a LinkE. This DMI reset-halt is correct on both.
     /// ja: hart を reset し、**reset vector で捕まえる**(DMI 経由): `ndmreset` と `haltreq` を同時に
     /// 立て、`haltreq` を保持したまま reset を解除する。hart は何も実行する前に debug mode へ入る。
     ///
-    /// probe の "reset and run"(`0x0b 0x01`)ではこれができない — DM の保留中 halt 要求ごと流すので
-    /// image がすぐ走り出し、後から送る halt は遅いリンクでは負ける。CH549(fw 2.12)+ CH32V103 で実測:
-    /// reset 後の hart は既に `dpc = 0x2e`(image に 11 命令ほど進み、最初の semihosting 呼出を実行済み)。
-    /// `run --exit-on semihosting` が取り逃がした exit を cap いっぱい待っていた原因で、同じ image が
-    /// WCH-LinkE では通っていた。再 attach も効かない(hart は flash stub が残した `dpc = 0x200002ea`
-    /// = SRAM に居座る)。
+    /// probe 自身の soft reset(`0x0b 0x01`)は代わりにならず、動きも probe の firmware で違う。
+    /// CH549 の WCH-Link(fw 2.12)+ CH32V103 では reset 直後に image が走り出し、後から送る halt は
+    /// 遅いリンクでは負ける: hart は既に `dpc = 0x2e`(11 命令ほど進み、最初の semihosting 呼出の後)で、
+    /// `run --exit-on semihosting` が cap まで待った原因。再 attach も効かなかった(hart は flash stub が
+    /// 残した `dpc = 0x200002ea` = SRAM に居座る)。WCH-LinkE(fw 2.22)は `haltreq` を立ててから PFIC の
+    /// system reset を出すので hart は止まって出てくる(2026-09-25 の線 capture、
+    /// `docs/protocol/wch-link.ja.md` §7a)— 同じ image が LinkE では通っていた理由。この DMI の
+    /// reset-halt はどちらでも正しい。
     pub fn reset_halt(&mut self) -> Result<(), DmiError> {
         // ndmreset + haltreq, then release the reset with haltreq still asserted.
         self.write(DMCONTROL, 0x8000_0003)?;
