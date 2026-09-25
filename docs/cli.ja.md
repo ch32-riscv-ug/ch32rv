@@ -89,7 +89,7 @@ ch32rv
 | `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed)。**実装済(2026-09-02)**: `Session::attach` が chip_id と `--chip` 名を DB family へ解決し、要求名が DB にあり検出 family と不一致なら `target-ambiguous`(23)。SKU/family/series/型番 prefix 一致は通過。**DB に無い名前は `target-not-in-db`(exit 20)で停止する**(検証できない名前を受理すると、`--chip` を付けたのに刺さっている別チップへ黙って書くことになるため)。未発売の gap series はここに落ちる。省略すれば従来どおり自動検出 |
 | `--db <FILE>` | `CH32RV_DB` | 内蔵 DB のみ | 内蔵 device DB に CSV overlay を重ねる(列は `generated/skus.csv` と同じ)。**同名 SKU / 同一マスク device_id は overlay が勝つ**(in-tree `provisional/skus.csv` は穴埋め専用で逆)。overlay 行は `provisional: true` + `sku-provisional` warning。読めない/有効行なしは usage(2)。出荷テーブルに無い部品を試す逃げ道 |
 | `--core <n>` | 0.. | 0 | dual-core(H41x)の core 選択 |
-| `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn(段階の公称値 6000 / 4000 / 400 kHz で判定)。**公称値は線上の速さではない**: WCH-LinkE fw 2.22 + CH32L103 の実測(wch-protocols E163)では high = flash の Program 経路だけ約 2.5 MHz・それ以外約 0.89 MHz、medium = 約 0.89 MHz、low = 約 0.47 MHz。high と medium の差は flash 書込みの速さだけ(pattern-4k で 0.48 s / 0.63 s、low 0.87 s)。V203 では high の一部の区間がもっと速く、target による差がありうる |
+| `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn(段階の公称値 6000 / 4000 / 400 kHz で判定)。**公称値は線上の速さではない**: WCH-LinkE fw 2.22 + CH32L103 の実測(wch-protocols E163)では high = flash の Program 経路だけ速く(L103 約 2.5 MHz、V203 約 10 MHz)それ以外約 0.89 MHz、medium = 約 0.89 MHz、low = 約 0.47 MHz(V203 も medium / low は同じ)。high と medium の差は flash 書込みの速さだけ(pattern-4k の全体で L103 0.48 s / 0.63 s / 0.87 s、V203 high 0.40 s) |
 | `--connect-under-reset` | | off | NRST を assert して attach |
 | `--json` | | off | 結果を JSON で stdout へ(§3.5) |
 | `--progress <bar\|ndjson\|none>` | | bar(tty)/none | 進捗の出力形式。ndjson は stderr へ |
