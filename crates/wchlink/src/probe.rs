@@ -669,15 +669,14 @@ impl WchLink {
         Ok(())
     }
 
-    /// en: "Clear All Code Flash - By Power off" (EraseCodeFlash `0x0f`). Catches the target right
-    /// after a reset and erases before the app can reconfigure the debug pins - the recovery for a
-    /// target whose SWDIO/SWCLK were repurposed. Requires SetSpeed(family) first. LinkE/LinkW.
-    /// Despite the name, a WCH-LinkE fw 2.22 with no target kept 3V3 up and pulsed RST instead
-    /// (67 low pulses of ~4 ms over ~2 s, wch-protocols E167); how it resets a target with NRST
-    /// unwired (it did, on a CH32X035, E165) is not known.
-    /// ja: 「Clear All Code Flash - By Power off」。reset 直後の target を捕まえ、app が debug ピンを
-    /// 再構成する前に消去する。SetSpeed(family) が先に要る。名前に反し、LinkE fw 2.22 は target なしで
-    /// 3V3 を切らず RST を pulse した(E167)。NRST 未配線の target の reset の仕方は未解明。
+    /// en: "Clear All Code Flash - By Power off" (EraseCodeFlash `0x0f`): the recovery for a target
+    /// a normal attach cannot reach. Requires SetSpeed(family) first. LinkE/LinkW. Despite the
+    /// name, a WCH-LinkE fw 2.22 keeps 3V3 up and pulses RST (67 low pulses of ~4 ms over ~2 s,
+    /// wch-protocols E167); with RST unwired the wire shows no target reset, only haltreq sent
+    /// until one gets through and then a mass erase (E165 re-read, 6d0c895).
+    /// ja: 「Clear All Code Flash - By Power off」。通常の attach が届かない target の復旧。SetSpeed
+    /// (family) が先に要る。名前に反し、LinkE fw 2.22 は 3V3 を切らず RST を pulse する(E167)。
+    /// RST 未配線では target の reset は見えず、haltreq を通るまで送って halt を取り、全消去する。
     ///
     /// Returns the probe's status byte. On a CH32X035 (WCH-LinkE fw 2.22) `0x0f` means the erase
     /// took, and `0x00` (after ~2.1 s) that it did not - the first attempt after the target stopped

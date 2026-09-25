@@ -1574,7 +1574,7 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
         Ok(e) => e,
         Err(c) => return c,
     };
-    // Only LinkE/LinkW can power-cycle the target.
+    // Only LinkE/LinkW implement the "power-off" special erase.
     let mut link = match ch32rv_wchlink::WchLink::open(&entry.dev) {
         Ok(l) => l,
         Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
@@ -1593,7 +1593,7 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
             cli,
             CMD,
             ErrorKind::CapabilityUnsupported,
-            "only WCH-LinkE / LinkW can power-cycle the target for power-off erase",
+            "only WCH-LinkE / LinkW implement the power-off special erase",
             Some("use --method nrst with the RST pin wired, or a LinkE/LinkW probe"),
         );
     }
@@ -1602,7 +1602,8 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
     // the first attempt after the target stopped answering has come back `0x00` (~2.1 s) with the
     // flash untouched, and the second `0x0f` (~0.2 s) with it erased (wch-protocols E162 / E164;
     // E165 got `0x0f` first time, so when `0x00` happens is not settled).
-    // So repeat on `0x00`. Other families' answers are not recorded, so a run that never sees
+    // A `0x00` is, by the wire (E165 re-read, wch-protocols 6d0c895), most likely an attempt that
+    // did not get the halt within its ~2.1 s - so repeat on `0x00`. Other families' answers are not recorded, so a run that never sees
     // `0x0f` is reported as unconfirmed rather than failed.
     // ja: probe は消えたら `0x0f`、消えていなければ `0x00` を返す(X035 で 1 回目が `00`、2 回目
     // `0f`。E162 / E164)。`00` なら繰り返す。他 family の応答は未記録なので、`0f` が一度も来なくても
@@ -1636,9 +1637,9 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
     let confirmed = answers.last() == Some(&0x0f);
     let answers_hex: Vec<String> = answers.iter().map(|b| format!("0x{b:02x}")).collect();
 
-    // en: The power-cycle leaves the probe holding a stale (corrupted) readback of the target;
+    // en: The special erase leaves the probe holding a stale (corrupted) readback of the target;
     // clear it so a follow-up attach/read is clean (board-identify's re-detect recovery).
-    // ja: 電源再投入で probe が壊れ読み値を保持するため、redetect でクリアして次の attach を綺麗にする。
+    // ja: 特殊消去の後は probe が壊れ読み値を保持するため、redetect でクリアして次の attach を綺麗にする。
     let _ = link.redetect_chip();
     let _ = link.detach_chip();
 

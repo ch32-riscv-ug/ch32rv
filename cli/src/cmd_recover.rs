@@ -237,9 +237,10 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
             );
         }
         // en: No "retry with --connect-under-reset": the flag is not implemented. And there is no
-        // erase-free route through a WCH-LinkE (fw 2.22): its only post-power-up window is inside
-        // the special erase, `probe power 3v3 off` does not cut the target's power, and DmiOp does
-        // not reach a target without a successful AttachChip (wch-protocols E166).
+        // erase-free route through a WCH-LinkE (fw 2.22): only the special erase keeps knocking on a
+        // target that no longer answers until it gets a halt, `probe power 3v3 off` does not cut the
+        // target's power (E167), and DmiOp does not reach a target without a successful AttachChip
+        // (wch-protocols E166).
         // ja: --connect-under-reset は未実装なので勧めない。LinkE では消さずに直す経路も無い(E166)。
         notes.push(
             "if the probe's RST line is wired to the target's NRST, --method nrst erases through it; through a WCH-LinkE there is no way back that keeps the flash"
@@ -355,14 +356,14 @@ fn command_for(cli: &Cli, d: &Diagnosis, action: Action) -> Option<String> {
 }
 
 /// The hedged caveats of a power-off recovery, shown whenever it is recommended or run.
-// en: Hedged on purpose. Despite its name, a WCH-LinkE (fw 2.22) with no target was measured
-// keeping its 3V3 output up through this erase and pulsing RST instead (wch-protocols E167); how it
-// resets a target whose NRST is not wired (it did, on a CH32X035, E165) is not known yet.
-// ja: 意図的に「可能性」で書く。LinkE fw 2.22 は target なしの実測で、この消去の間も 3V3 を出し続け、
-// 代わりに RST を pulse した(E167)。NRST 未配線の target をどう reset したか(X035 で起きた)は未解明。
+// en: Hedged on purpose. Despite its name, a WCH-LinkE (fw 2.22) keeps 3V3 up through this erase
+// and pulses RST (wch-protocols E167). With RST unwired, the wire shows no target reset at all: it
+// keeps sending haltreq until one gets through, then mass-erases (E165 re-read, 6d0c895).
+// ja: 意図的に「可能性」で書く。LinkE fw 2.22 はこの消去の間も 3V3 を切らず RST を pulse する(E167)。
+// RST 未配線では target を reset した証拠は無く、haltreq を通るまで送り続けて halt を取り、全消去する。
 const POWER_OFF_CAVEATS: [&str; 3] = [
-    "despite its name, a WCH-LinkE (fw 2.22) was measured keeping its 3V3 output on during this erase and pulsing its RST line instead; wiring RST to the target's NRST may make it more reliable",
-    "the erase needs the WCH-LinkE to catch the target right after a reset; whether it can without NRST wired depends on the board (it did on a probe-powered CH32X035)",
+    "despite its name, a WCH-LinkE (fw 2.22) was measured keeping its 3V3 output on during this erase and pulsing its RST line; wiring RST to the target's NRST may make it more reliable",
+    "without NRST wired, the probe keeps sending halt requests until one gets through, then erases; whether it gets through depends on the target's state (it did on a CH32X035 stopped by an attach)",
     "confirm the result with `ch32rv read --blank-check` (or a normal attach) afterwards",
 ];
 
@@ -496,7 +497,7 @@ pub fn auto(cli: &Cli) -> ExitCode {
             }
             if let Err(why) = confirm_destructive(
                 cli,
-                "Power-cycle the target and ERASE its code flash (WCH special erase)? If you have not yet replugged the probe and checked the wiring, answer no and do that first.",
+                "ERASE the target's code flash with the WCH special erase? If you have not yet replugged the probe and checked the wiring, answer no and do that first.",
             ) {
                 return fail(
                     cli,
