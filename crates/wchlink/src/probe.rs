@@ -675,10 +675,16 @@ impl WchLink {
     /// ja: 「Clear All Code Flash - By Power off」。probe が target を電源再投入し、app が
     /// debug ピンを再構成する前の boot 窓で消去する。SWDIO/SWCLK を他用途に使った target の
     /// 復旧手段。SetSpeed(family) が先に要る。target を probe 給電していること(LinkE/LinkW)。
-    pub fn erase_code_flash_by_power_off(&mut self, family_byte: u8) -> Result<(), WchLinkError> {
+    ///
+    /// Returns the probe's status byte. On a CH32X035 (WCH-LinkE fw 2.22) `0x0f` means the erase
+    /// took, and `0x00` (after ~2.1 s) that it did not - the first attempt after the target stopped
+    /// answering came back `0x00` every time and the second `0x0f` (wch-protocols E162 / E164).
+    /// Other families' answers are not recorded yet.
+    /// ja: probe の status byte を返す。X035 では `0x0f` = 消えた、`0x00` = 消えていない(E162 / E164)。
+    pub fn erase_code_flash_by_power_off(&mut self, family_byte: u8) -> Result<u8, WchLinkError> {
         self.set_speed(family_byte, Speed::default())?;
-        let _ = self.command(CMD_CONTROL, &[0x0f, family_byte])?;
-        Ok(())
+        let resp = self.command(CMD_CONTROL, &[0x0f, family_byte])?;
+        Ok(resp.first().copied().unwrap_or(0))
     }
 
     /// en: Enable/disable SDI-print forwarding. Payload is `ee 00` to ENABLE, `ee 01` to
@@ -699,10 +705,13 @@ impl WchLink {
     /// en: "Clear All Code Flash - By RST pin" (EraseCodeFlash `0x08`). Same idea but toggles
     /// NRST instead of power; requires the RST pin wired.
     /// ja: 「Clear All Code Flash - By RST pin」。電源でなく NRST を使う。RST 配線が要る。
-    pub fn erase_code_flash_by_rst(&mut self, family_byte: u8) -> Result<(), WchLinkError> {
+    ///
+    /// Returns the probe's status byte (not yet measured on hardware).
+    /// ja: probe の status byte を返す(実機未測定)。
+    pub fn erase_code_flash_by_rst(&mut self, family_byte: u8) -> Result<u8, WchLinkError> {
         self.set_speed(family_byte, Speed::default())?;
-        let _ = self.command(CMD_CONTROL, &[0x08, family_byte])?;
-        Ok(())
+        let resp = self.command(CMD_CONTROL, &[0x08, family_byte])?;
+        Ok(resp.first().copied().unwrap_or(0))
     }
 
     /// en: ChipInfo (`0x81 0x11 0x01 0x05`): flash size, factory UUID, protection flags.

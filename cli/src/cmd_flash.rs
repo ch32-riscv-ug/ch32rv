@@ -1598,20 +1598,42 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
         );
     }
 
-    let res = match method {
-        RecoverMethod::PowerOff => link.erase_code_flash_by_power_off(family_byte),
-        RecoverMethod::Nrst => link.erase_code_flash_by_rst(family_byte),
-        _ => unreachable!(),
-    };
-    if let Err(e) = res {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::TransferFailed,
-            format!("special erase failed: {e}"),
-            None,
-        );
+    // en: The probe answers `0x0f` when the erase took and `0x00` when it did not: on a CH32X035
+    // the first attempt after the target stopped answering came back `0x00` (~2.1 s) every time,
+    // flash untouched, and the second `0x0f` (~0.2 s) with it erased (wch-protocols E162 / E164).
+    // So repeat on `0x00`. Other families' answers are not recorded, so a run that never sees
+    // `0x0f` is reported as unconfirmed rather than failed.
+    // ja: probe は消えたら `0x0f`、消えていなければ `0x00` を返す(X035 で 1 回目は毎回 `00`、2 回目
+    // `0f`。E162 / E164)。`00` なら繰り返す。他 family の応答は未記録なので、`0f` が一度も来なくても
+    // 失敗ではなく「未確認」として報告する。
+    const ATTEMPTS: usize = 3;
+    let mut answers: Vec<u8> = Vec::new();
+    for _ in 0..ATTEMPTS {
+        let res = match method {
+            RecoverMethod::PowerOff => link.erase_code_flash_by_power_off(family_byte),
+            RecoverMethod::Nrst => link.erase_code_flash_by_rst(family_byte),
+            _ => unreachable!(),
+        };
+        match res {
+            Ok(b) => {
+                answers.push(b);
+                if b != 0x00 {
+                    break;
+                }
+            }
+            Err(e) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("special erase failed: {e}"),
+                    None,
+                );
+            }
+        }
     }
+    let confirmed = answers.last() == Some(&0x0f);
+    let answers_hex: Vec<String> = answers.iter().map(|b| format!("0x{b:02x}")).collect();
 
     // en: The power-cycle leaves the probe holding a stale (corrupted) readback of the target;
     // clear it so a follow-up attach/read is clean (board-identify's re-detect recovery).
@@ -1619,13 +1641,41 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
     let _ = link.redetect_chip();
     let _ = link.detach_chip();
 
+    let mut warnings = Vec::new();
+    if !confirmed {
+        warnings.push(Warning {
+            code: "special-erase-unconfirmed".to_owned(),
+            msg: format!(
+                "the probe did not confirm the erase (answers: {}; 0x0f is the confirmation seen on CH32X035): check with `ch32rv read --blank-check`",
+                answers_hex.join(" ")
+            ),
+        });
+    }
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
-        env.result = Some(serde_json::json!({ "method": method.as_str(), "family": chip }));
+        env.warnings = warnings;
+        env.result = Some(serde_json::json!({
+            "method": method.as_str(), "family": chip, "attempts": answers.len(),
+            "answers": answers_hex, "confirmed": confirmed,
+        }));
         crate::print_envelope(&env)
     } else {
-        println!("special erase ({}) issued for {chip}", method.as_str());
-        println!("the target code flash is cleared; re-flash normally now");
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
+        println!(
+            "special erase ({}) issued for {chip}: {} attempt(s), probe answered {}",
+            method.as_str(),
+            answers.len(),
+            answers_hex.join(" ")
+        );
+        if confirmed {
+            println!("the target code flash is cleared; re-flash normally now");
+        } else {
+            println!(
+                "the erase is not confirmed; check with `ch32rv read --blank-check` before re-flashing"
+            );
+        }
         ExitCode::SUCCESS
     }
 }

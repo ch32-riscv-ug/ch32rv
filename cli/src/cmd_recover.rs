@@ -220,6 +220,22 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
             "check first that the target is powered and SWDIO/SWCLK (or SWIO) and GND are wired, and try unplugging and replugging the probe: those are the common causes, and power-off erases the flash"
                 .to_owned(),
         );
+        // en: A known way to get here without any brick: a CH32X035 whose firmware runs with HPRE
+        // bit 3 set (CFGR0 bit 7: HCLK /2, /4, ...) stops when a WCH-LinkE attaches - the attach
+        // itself succeeds, its ESIG reads come back 0, and every later attach finds no target.
+        // The option bytes are untouched (wch-protocols E164). It cannot be seen before attaching.
+        // ja: brick でなくここに来る既知の経路: HPRE の bit 3(CFGR0 bit 7)を立てて走る X035 は
+        // LinkE の attach で止まる(E164)。option bytes は変わらない。attach 前には判定できない。
+        let x035 = cli
+            .chip
+            .as_deref()
+            .is_none_or(|c| crate::cmd_flash::family_byte_from_name(c) == Some(0x0d));
+        if x035 {
+            notes.push(
+                "a CH32X035 whose firmware divides HCLK with HPRE bit 3 set (CFGR0 bit 7: /2, /4, ...) stops when a WCH-LinkE attaches, option bytes untouched; power-off recovers it (ch32rv repeats it until the probe confirms)"
+                    .to_owned(),
+            );
+        }
         if cli.connect_under_reset {
             notes.push("--connect-under-reset was already tried".to_owned());
         } else {
