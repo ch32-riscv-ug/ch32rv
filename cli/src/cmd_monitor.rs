@@ -65,39 +65,26 @@ fn finish_ok(
     }
 }
 
-/// en: The warning an attaching monitor prints on the families in [`attach_reclocks`]. A WCH-Link
-/// AttachChip reprograms their clock to a fixed per-family PLL setting and does not restore it (wire captures, 2026-09-25,
-/// `docs/protocol/wch-link.ja.md` §7a), so the firmware being watched keeps the probe's clock -
-/// UART baud rates, timers and PWM off - until it resets. ch32rv cannot undo it: the original values
-/// are overwritten inside AttachChip, before anything can read them. `how` says how to get a session
-/// at the firmware's own clock for this source.
-/// ja: [`attach_reclocks`] の family で attach する monitor が出す警告。WCH-Link の AttachChip はクロックを系統ごとの
-/// 決まった PLL 設定に組み直して戻さない(2026-09-25 の線 capture、protocol §7a)ので、観測中の
-/// firmware は reset まで probe のクロックで走る(UART の baud・タイマ・PWM がずれる)。元の値は
-/// AttachChip の中で上書きされるので ch32rv は戻せない。`how` はこの source で firmware 自身の
-/// クロックのまま見る方法。
-/// en: Whether a WCH-Link attach is known to reprogram this family's clock, by AttachChip family
-/// byte. Seen on the wire for CH32L103 (`0x0E`), CH32V20x (`0x05`) and CH32X035 (`0x0D`: it clears
-/// the AHB prescaler and sets two flash wait states rather than switching to the PLL), and for
-/// CH32V30x (`0x06`) from the CFGR0 value left behind; CH643 (`0x0C`) shares the X035's controller
-/// and is kept in until observed. A CH32V003 attach does not touch RCC at all (wire, 2026-09-25).
-/// Families not observed and not of an observed line get no warning rather than a guess.
-/// ja: WCH-Link の attach がこの family のクロックを組み直すと分かっているか(family byte で判定)。
-/// 線で確認したのは L103(`0x0E`)・V20x(`0x05`)・X035(`0x0D`。PLL にはせず AHB の分周を外して flash の
-/// wait を 2 にする)、V30x(`0x06`)は接続後に残る CFGR0 の値から。CH643(`0x0C`)は X035 と同じ controller
-/// なので確認するまで含める。V003 の attach は RCC に一切触れない(線、2026-09-25)。観測も同系統も無い
-/// family には推測で警告しない。
-fn attach_reclocks(family_byte: u8) -> bool {
-    matches!(family_byte, 0x05 | 0x06 | 0x0C | 0x0D | 0x0E)
-}
-
+/// en: The warning every attaching monitor prints. A WCH-Link AttachChip may leave the target's clock
+/// reprogrammed and not restored - seen on the wire for CH32L103 / V20x / X035 and inferred for V30x,
+/// while a V003 attach touches no RCC at all (2026-09-25, `docs/protocol/wch-link.ja.md` §7a) - so
+/// the firmware being watched may keep a different clock until it resets. It is worded as a
+/// possibility and shown on every target: the per-family picture is still being filled in, and a
+/// definite claim would be wrong wherever it turns out otherwise. ch32rv cannot undo it (the original
+/// values are overwritten inside AttachChip); `how` says how to watch at the firmware's own clock.
+/// ja: attach する monitor が必ず出す警告。WCH-Link の AttachChip は target のクロックを組み直したまま
+/// 戻さないことがある(L103 / V20x / X035 は線で確認、V30x は推定、V003 は RCC に触れない。protocol §7a)
+/// ので、観測中の firmware は reset まで別のクロックで走っている可能性がある。family ごとの全体像はまだ
+/// 埋まっておらず、断定すると外れた family で誤りになるので、「可能性」として全 target に出す。元の値は
+/// AttachChip の中で上書きされるので ch32rv は戻せない。`how` は firmware 自身のクロックで見る方法。
 fn attach_reclocks_warning(how: &str) -> ch32rv_contract::Warning {
     ch32rv_contract::Warning {
         code: "attach-reclocks-target".to_owned(),
         msg: format!(
-            "attaching through a WCH-Link reprograms the target's clock and does not restore it: the \
-             running firmware now runs at the probe's clock (UART baud rates and timers may be off) \
-             until it resets. To watch it at its own clock, restart it after attaching: {how}"
+            "attaching through a WCH-Link may have reprogrammed the target's clock, and it is not \
+             restored: the running firmware may now run at a different clock (UART baud rates and \
+             timers off) until it resets. To watch it at its own clock, restart it after attaching: \
+             {how}"
         ),
     }
 }
@@ -381,11 +368,9 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
             Err(e) => return fail(cli, CMD, ErrorKind::AttachFailed, e.to_string(), None),
         };
         let _ = link.set_speed(attach.family_byte, speed);
-        if attach_reclocks(attach.family_byte) {
-            warnings.push(attach_reclocks_warning(
-                "press the board's reset, or use `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`",
-            ));
-        }
+        warnings.push(attach_reclocks_warning(
+            "press the board's reset, or use `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`",
+        ));
         if let Err(e) = link.set_sdi_print_enabled(true) {
             return fail(
                 cli,
@@ -445,12 +430,10 @@ fn run_dmi(cli: &Cli, source: MonitorSource) -> ExitCode {
         Ok(s) => s,
         Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
-    if attach_reclocks(session.attach.family_byte) {
-        warnings.push(attach_reclocks_warning(&format!(
-            "`ch32rv run <elf> --no-flash --source {}` (resets it, then streams)",
-            source.as_str()
-        )));
-    }
+    warnings.push(attach_reclocks_warning(&format!(
+        "`ch32rv run <elf> --no-flash --source {}` (resets it, then streams)",
+        source.as_str()
+    )));
     let mut src = match DmiSource::open(&mut session, source, &mut warnings) {
         Ok(s) => s,
         Err(e) => return open_error(cli, CMD, e),
@@ -594,29 +577,5 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
             if on { "enabled" } else { "disabled" }
         );
         ExitCode::SUCCESS
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::attach_reclocks;
-
-    /// The warning follows what the wire showed: L103 / V20x / X035 (and V30x from the CFGR0 it
-    /// leaves, CH643 as the X035's line) are reclocked, a V003 attach never touches RCC, and
-    /// unobserved families get no guess.
-    #[test]
-    fn reclock_warning_only_where_observed() {
-        assert!(attach_reclocks(0x0E), "CH32L103");
-        assert!(attach_reclocks(0x05), "CH32V20x");
-        assert!(attach_reclocks(0x06), "CH32V30x");
-        assert!(attach_reclocks(0x0D), "CH32X035");
-        assert!(attach_reclocks(0x0C), "CH643 (the X035's controller)");
-        assert!(!attach_reclocks(0x09), "CH32V003 does not touch RCC");
-        for unobserved in [0x01u8, 0x49, 0x4E] {
-            assert!(
-                !attach_reclocks(unobserved),
-                "family byte {unobserved:#04x}"
-            );
-        }
     }
 }
