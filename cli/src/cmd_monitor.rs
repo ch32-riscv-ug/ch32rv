@@ -77,14 +77,18 @@ fn finish_ok(
 /// AttachChip の中で上書きされるので ch32rv は戻せない。`how` はこの source で firmware 自身の
 /// クロックのまま見る方法。
 /// en: Whether a WCH-Link attach is known to reprogram this family's clock, by AttachChip family
-/// byte. Seen on the wire for CH32L103 (`0x0E`) and CH32V20x (`0x05`), and for CH32V30x (`0x06`) from
-/// the CFGR0 value left behind; a CH32V003 attach does not touch RCC at all (wire, 2026-09-25). The
-/// other families have not been observed, so they get no warning rather than a guess.
+/// byte. Seen on the wire for CH32L103 (`0x0E`), CH32V20x (`0x05`) and CH32X035 (`0x0D`: it clears
+/// the AHB prescaler and sets two flash wait states rather than switching to the PLL), and for
+/// CH32V30x (`0x06`) from the CFGR0 value left behind; CH643 (`0x0C`) shares the X035's controller
+/// and is kept in until observed. A CH32V003 attach does not touch RCC at all (wire, 2026-09-25).
+/// Families not observed and not of an observed line get no warning rather than a guess.
 /// ja: WCH-Link の attach がこの family のクロックを組み直すと分かっているか(family byte で判定)。
-/// 線で確認したのは L103(`0x0E`)と V20x(`0x05`)、V30x(`0x06`)は接続後に残る CFGR0 の値から。V003 の
-/// attach は RCC に一切触れない(線、2026-09-25)。未観測の family には推測で警告しない。
+/// 線で確認したのは L103(`0x0E`)・V20x(`0x05`)・X035(`0x0D`。PLL にはせず AHB の分周を外して flash の
+/// wait を 2 にする)、V30x(`0x06`)は接続後に残る CFGR0 の値から。CH643(`0x0C`)は X035 と同じ controller
+/// なので確認するまで含める。V003 の attach は RCC に一切触れない(線、2026-09-25)。観測も同系統も無い
+/// family には推測で警告しない。
 fn attach_reclocks(family_byte: u8) -> bool {
-    matches!(family_byte, 0x05 | 0x06 | 0x0E)
+    matches!(family_byte, 0x05 | 0x06 | 0x0C | 0x0D | 0x0E)
 }
 
 fn attach_reclocks_warning(how: &str) -> ch32rv_contract::Warning {
@@ -597,15 +601,18 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
 mod tests {
     use super::attach_reclocks;
 
-    /// The warning follows what the wire showed: L103 / V20x (and V30x from the CFGR0 it leaves)
-    /// are reclocked, a V003 attach never touches RCC, and unobserved families get no guess.
+    /// The warning follows what the wire showed: L103 / V20x / X035 (and V30x from the CFGR0 it
+    /// leaves, CH643 as the X035's line) are reclocked, a V003 attach never touches RCC, and
+    /// unobserved families get no guess.
     #[test]
     fn reclock_warning_only_where_observed() {
         assert!(attach_reclocks(0x0E), "CH32L103");
         assert!(attach_reclocks(0x05), "CH32V20x");
         assert!(attach_reclocks(0x06), "CH32V30x");
+        assert!(attach_reclocks(0x0D), "CH32X035");
+        assert!(attach_reclocks(0x0C), "CH643 (the X035's controller)");
         assert!(!attach_reclocks(0x09), "CH32V003 does not touch RCC");
-        for unobserved in [0x01u8, 0x0C, 0x0D, 0x49, 0x4E] {
+        for unobserved in [0x01u8, 0x49, 0x4E] {
             assert!(
                 !attach_reclocks(unobserved),
                 "family byte {unobserved:#04x}"
