@@ -289,7 +289,7 @@ ch32rv probe firmware exit-iap                     IAP mode の probe を、何�
 ch32rv probe vendor <hex...>                      隠し。backend 固有 command の escape hatch
 ```
 
-- **`probe power` は target の電源を切れないことがある**: WCH-LinkE fw 2.22 は `3v3 off` / `5v off` を受理する(rc 0)が、LinkE から給電している CH32L103 / V203 / V003 / X035 で、off の間も target は走り続けた(UART が途切れず、X035 は loop counter も連続。wch-protocols E166)。回り込みか LinkE 側のスイッチかは未確認。特殊消去(`recover --method power-off`)の中では target は reset されている(havereset が立つ)ので、LinkE は別の方法を使っている。
+- **`probe power` は target の電源を切れないことがある**: WCH-LinkE fw 2.22 は `3v3 off` / `5v off` を受理する(rc 0)が、LinkE から給電している CH32L103 / V203 / V003 / X035 で、off の間も target は走り続けた(UART が途切れず、X035 は loop counter も連続。wch-protocols E166)。X035 の 3V3 を digital 入力(約 2 V 以上で 1)で見ると、`3v3 off` の間も特殊消去の間も 1 のままだった(E165 の 2b)。それでも特殊消去の中では target は reset される(havereset が立つ。最初の約 124 ms は SWCLK / SWDIO とも high で静か)ので、電位が中途半端に残って電圧低下の reset になるのか、別の切り方なのかは、電圧を測るまで分からない。
 - firmware 版は **raw byte・正規化表記(2.12)・WCH 表記(v32)を常に併記**し、比較は正規化値で行う(表記系の混同と probe-rs の版比較バグを構造的に避ける)。
 - `firmware update` は IAP mode(`4348:55e0`)への遷移・書込・再 enumeration 待ち・版確認までを 1 操作にする(protocol は docs/protocol/wch-link.ja.md §6.1)。**既に IAP に滞留した個体はそのまま書ける**(entry 不要)ので、中断した更新の復旧経路が同じコマンドになる。image は同梱しない(user-supplied)。
 - **image は同梱しない**。WCH の [WCH-LinkUtility](https://www.wch.cn/downloads/WCH-LinkUtility_ZIP.html)(**中文サイトのみ**。英語サイトの同名ページは開いても内容が出ない)を展開した `Firmware_Link/` に平文で入っている(WCH-LinkE = `FIRMWARE_CH32V305.bin`)。MounRiver Studio 同梱版でも同じ。`--help`・エラー hint からもこの入手先を案内する。
