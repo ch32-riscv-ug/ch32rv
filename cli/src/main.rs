@@ -18,6 +18,7 @@ mod cmd_flash;
 mod cmd_gdb;
 mod cmd_monitor;
 mod cmd_probe;
+mod cmd_recover;
 mod cmd_run;
 mod cmd_target;
 mod cmd_write;

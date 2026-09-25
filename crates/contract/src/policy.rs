@@ -98,6 +98,7 @@ policy_enum! {
         Nrst => "nrst",
         Unprotect => "unprotect",
         Unbrick => "unbrick",
+        Auto => "auto",
     }
 }
 

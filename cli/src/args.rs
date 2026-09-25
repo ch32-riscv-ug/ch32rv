@@ -109,7 +109,7 @@ pub enum Command {
     Reset(ResetArgs),
     /// Flash, run, monitor output, and propagate the exit code (for HIL)
     Run(RunArgs),
-    /// Recovery operations (power-off / nrst / unprotect / unbrick)
+    /// Diagnose a target that will not flash, and recover it (power-off / nrst / unprotect / unbrick / auto)
     Recover(RecoverArgs),
     /// Manage the probe itself
     #[command(subcommand)]
@@ -296,8 +296,10 @@ pub enum ExitOn {
 
 #[derive(Args)]
 pub struct RecoverArgs {
+    /// How to recover. Omitted: diagnose only (nothing is written) and print the recommended
+    /// method. `auto`: diagnose, then apply the recommendation (asks for confirmation).
     #[arg(long, value_enum)]
-    pub method: RecoverMethod,
+    pub method: Option<RecoverMethod>,
 }
 
 // en: §4.2 probe. / ja: §4.2 probe。

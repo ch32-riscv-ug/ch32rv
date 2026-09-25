@@ -24,7 +24,7 @@ ch32rv
 ├─ erase                       消去(chip/region/range)                            P0  [各 tool]
 ├─ reset                       リセット(run/halt/dm) + --confirm-run              P0  [wlink reset]
 ├─ run <elf>                   書き込み+実行+出力監視+exit code 伝搬               P1  [probe-rs run/attach]
-├─ recover                     復旧(power-off/nrst/unprotect/unbrick)             P0  [wlink erase --method, minichlink -u, LinkUtility]
+├─ recover                     診断+復旧(auto/power-off/nrst/unprotect/unbrick) P0  [wlink erase --method, minichlink -u, LinkUtility]
 │
 ├─ probe                       probe 本体の管理
 │  ├─ list                     一覧(型番/FW版/mode/serial/使用中/driver)          P0  [wlink list, probe-rs list]
@@ -256,9 +256,16 @@ ch32rv reset [--halt] [--dm] [--confirm-run]      既定: reset して実行、d
 ch32rv run <ELF> [--no-flash] [--source dmdata|rtt]
              [--exit-on semihosting|timeout] [--duration <s>]  target の exit code を伝搬(HIL 用)。
                                                               出力は DMI source のみ(uart/sdi は monitor)。stdin は target へ
+ch32rv recover                                    診断のみ(何も書かない): 状態と推奨を表示
+ch32rv recover --method auto                      診断して推奨を適用(各処理の確認プロンプトあり)
 ch32rv recover --method power-off|nrst|unprotect|unbrick
              [--chip <family>]                    特殊消去(power-off/nrst)は --chip 必須
 ```
+
+- **`recover` の診断(method 省略、2026-09-25)**: 指定 `--speed` で attach し、応答が無ければ low(400 kHz)で再試行 → halt → option bytes を 2 回読む → resume。書込は一切しない。状態は `healthy`(保護 off、DB が定義する USER bit が復位値)/ `read-protected`(RDPR≠`0xA5`)/ `option-nonstandard`(DB 定義の USER bit が復位値と違う。違う field 名を表示)/ `option-unreadable`(2 回の読みが不一致、または RDPR・USER の補数が合わない)/ `unreachable`(どの speed でも応答なし)。推奨はそれぞれ なし / `recover --method unprotect` / `target option reset` / `recover --method unprotect`(一律 image へ fallback)/ `recover --method power-off --chip <family>`(LinkE/LinkW のみ。それ以外の probe では手動の電源サイクル)。low でしか応答しなかった場合はその旨を note に出し、推奨コマンドに `--speed low` を付ける。JSON は `result.state` / `result.recommendation.{action,command}` / `notes` / `caveats`。exit は診断ができれば状態によらず 0。
+- **`--method auto`**: 診断の推奨をそのまま実行する(`unprotect` / `option reset` は診断で応答した speed で attach、power-off は `--chip` 必須で確認プロンプト付き)。`healthy` と手動しかない場合は診断結果を出して何もしない。`option reset` は Data0/1 と WRP も工場値(`0xff`)に戻す点に注意(DB が知らない多 bit の USER field は保持)。
+- **power-off の注意(診断・auto が表示)**: 効くのは target が probe の 3V3/5V から給電されている場合だけ(別電源のボードは電源が落ちない)。また UART(TX→RX)や SWDIO/SWCLK のプルアップ経由で target に電源が回り込み、電源断が成立しない可能性がある。結果は `read --blank-check` か通常の attach で確かめる。
+- 診断が見ない brick: `RST_MODE` 等の**多 bit USER field は DB に無い**ため `option-nonstandard` として検出できない(CH32X035 の `RST_MODE=00` で PA21 を外部 reset にして保持され attach 不能になった例は `unreachable` 扱い)。reset 直後/電源投入直後の窓に attach して消去せずに option を直す経路は後続(第 2 段)。
 
 - **`recover` の option 書込(2026-09-06 修正)**: `unprotect` と `unbrick` の保護解除は、**現在の option bytes を読んで RDPR だけ `0xA5` に差し替える**(他の byte は一切変えない)。読めない/補数が整合しない場合のみ一律 image(RDPR off + `0xff`)へ fallback し、警告を出す。保護解除が SRAM 分割や NRST の機能を書き換えないための措置。
 - `recover` の method は別 operation として固定する: `power-off`(給電断 erase)、`nrst`(RST ピン erase。配線要件を事前表示)、`unprotect`(RDP 解除 = 全消去。確認プロンプト)、`unbrick`(電源サイクル + DM 連打 + option 工場値 + 全消去。minichlink 手順の移植)。
