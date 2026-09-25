@@ -385,19 +385,6 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Ok(p) => p,
         Err(c) => return c,
     };
-    // en: KNOWN LIMITATION (2026-09-01): the enable command succeeds and the core runs, but
-    // in-process SDI forwarding to the CDC does not activate the way it does under the wlink
-    // binary (same command bytes). This needs a usbmon capture to diff the sequences.
-    // `dmdata` is the working, probe-agnostic alternative; `wlink sdi-print enable` also works.
-    // ja: 既知の制約(2026-09-01): enable は成功し core も走るが、in-process では CDC への SDI
-    // forward が起動しない(wlink バイナリと同一バイトなのに)。usbmon で差分要調査。当面は
-    // dmdata(任意 probe で動作)を使う。
-    if !cli.json {
-        eprintln!(
-            "note: sdi CDC forwarding is not yet reliable from ch32rv; if nothing appears, use \
-             `--source dmdata` (SerialDMDATA) or `wlink sdi-print enable`."
-        );
-    }
     stream_port(cli, CMD, &port, args.baud, "sdi", true, warnings)
 }
 
