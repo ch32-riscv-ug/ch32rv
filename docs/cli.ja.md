@@ -90,7 +90,7 @@ ch32rv
 | `--db <FILE>` | `CH32RV_DB` | 内蔵 DB のみ | 内蔵 device DB に CSV overlay を重ねる(列は `generated/skus.csv` と同じ)。**同名 SKU / 同一マスク device_id は overlay が勝つ**(in-tree `provisional/skus.csv` は穴埋め専用で逆)。overlay 行は `provisional: true` + `sku-provisional` warning。読めない/有効行なしは usage(2)。出荷テーブルに無い部品を試す逃げ道 |
 | `--core <n>` | 0.. | 0 | dual-core(H41x)の core 選択 |
 | `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn(段階の公称値 6000 / 4000 / 400 kHz で判定)。**公称値は線上の速さではない**: WCH-LinkE fw 2.22 + CH32L103 の実測(wch-protocols E163)では high = flash の Program 経路だけ速く(L103 約 2.5 MHz、V203 約 10 MHz)それ以外約 0.89 MHz、medium = 約 0.89 MHz、low = 約 0.47 MHz(V203 も medium / low は同じ)。high と medium の差は flash 書込みの速さだけ(pattern-4k の全体で L103 0.48 s / 0.63 s / 0.87 s、V203 high 0.40 s) |
-| `--connect-under-reset` | | off | NRST を assert して attach |
+| `--connect-under-reset` | | off | NRST を assert して attach。**未実装**(指定すると warning `connect-under-reset-unimplemented` を出し、通常の attach をする) |
 | `--json` | | off | 結果を JSON で stdout へ(§3.5) |
 | `--progress <bar\|ndjson\|none>` | | bar(tty)/none | 進捗の出力形式。ndjson は stderr へ |
 | `--non-interactive` | | off | 対話プロンプトを全て拒否に変える |
@@ -267,7 +267,7 @@ ch32rv recover --method power-off|nrst|unprotect|unbrick
 - **power-off の注意(診断・auto が表示)**: 効くのは target が probe の 3V3/5V から給電されている場合だけ(別電源のボードは電源が落ちない)。また UART(TX→RX)や SWDIO/SWCLK のプルアップ経由で target に電源が回り込み、電源断が成立しない可能性がある。結果は `read --blank-check` か通常の attach で確かめる。
 - **特殊消去(`power-off` / `nrst`)の確認**: probe の応答 status を見て、`0x00`(消えていない)なら最大 3 回まで繰り返す。`0x0f`(CH32X035 で消去を確認した値)が返れば完了、返らなければ warning `special-erase-unconfirmed` を出して `read --blank-check` を案内する(他 family の応答は未記録なので exit は 0)。JSON は `attempts` / `answers` / `confirmed`。
 - **CH32X035 の attach 停止**: HPRE の bit 3(CFGR0 bit 7: HCLK /2 や /4)を立てて走る X035 は WCH-LinkE の attach で止まり、以後 no target になる(option bytes は変わらない。`docs/protocol/wch-link.ja.md` §7a)。診断は `--chip` 無しか X035 のとき、`unreachable` の note でこれを挙げる。復旧は power-off。
-- 診断が見ない brick: `RST_MODE` 等の**多 bit USER field は DB に無い**ため `option-nonstandard` として検出できない(CH32X035 の `RST_MODE=00` で PA21 を外部 reset にして保持され attach 不能になった例は `unreachable` 扱い)。reset 直後/電源投入直後の窓に attach して消去せずに option を直す経路は後続(第 2 段)。
+- 診断が見ない brick: `RST_MODE` 等の**多 bit USER field は DB に無い**ため `option-nonstandard` として検出できない(CH32X035 の `RST_MODE=00` で PA21 を外部 reset にして保持され attach 不能になった例は `unreachable` 扱い)。reset 直後/電源投入直後の窓に attach して消去せずに option を直す経路(第 2 段)は、**WCH-LinkE(fw 2.22)では作れない**と分かった(wch-protocols E166): 電源投入直後の窓は特殊消去の中にしか無く(その中で flash は消える)、`probe power 3v3 off` は target の電源を切らず、AttachChip が成功していないと DmiOp は target に届かない(`0xffffffff` / status 3)。消さずに直すには、NRST の配線か、host が target の電源を切れる配線が要る(OEP probe など)。
 
 - **`recover` の option 書込(2026-09-06 修正)**: `unprotect` と `unbrick` の保護解除は、**現在の option bytes を読んで RDPR だけ `0xA5` に差し替える**(他の byte は一切変えない)。読めない/補数が整合しない場合のみ一律 image(RDPR off + `0xff`)へ fallback し、警告を出す。保護解除が SRAM 分割や NRST の機能を書き換えないための措置。
 - `recover` の method は別 operation として固定する: `power-off`(給電断 erase)、`nrst`(RST ピン erase。配線要件を事前表示)、`unprotect`(RDP 解除 = 全消去。確認プロンプト)、`unbrick`(電源サイクル + DM 連打 + option 工場値 + 全消去。minichlink 手順の移植)。
@@ -289,6 +289,7 @@ ch32rv probe firmware exit-iap                     IAP mode の probe を、何�
 ch32rv probe vendor <hex...>                      隠し。backend 固有 command の escape hatch
 ```
 
+- **`probe power` は target の電源を切れないことがある**: WCH-LinkE fw 2.22 は `3v3 off` / `5v off` を受理する(rc 0)が、LinkE から給電している CH32L103 / V203 / V003 / X035 で、off の間も target は走り続けた(UART が途切れず、X035 は loop counter も連続。wch-protocols E166)。回り込みか LinkE 側のスイッチかは未確認。特殊消去(`recover --method power-off`)の中では target は reset されている(havereset が立つ)ので、LinkE は別の方法を使っている。
 - firmware 版は **raw byte・正規化表記(2.12)・WCH 表記(v32)を常に併記**し、比較は正規化値で行う(表記系の混同と probe-rs の版比較バグを構造的に避ける)。
 - `firmware update` は IAP mode(`4348:55e0`)への遷移・書込・再 enumeration 待ち・版確認までを 1 操作にする(protocol は docs/protocol/wch-link.ja.md §6.1)。**既に IAP に滞留した個体はそのまま書ける**(entry 不要)ので、中断した更新の復旧経路が同じコマンドになる。image は同梱しない(user-supplied)。
 - **image は同梱しない**。WCH の [WCH-LinkUtility](https://www.wch.cn/downloads/WCH-LinkUtility_ZIP.html)(**中文サイトのみ**。英語サイトの同名ページは開いても内容が出ない)を展開した `Firmware_Link/` に平文で入っている(WCH-LinkE = `FIRMWARE_CH32V305.bin`)。MounRiver Studio 同梱版でも同じ。`--help`・エラー hint からもこの入手先を案内する。

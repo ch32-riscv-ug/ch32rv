@@ -236,14 +236,15 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
                     .to_owned(),
             );
         }
-        if cli.connect_under_reset {
-            notes.push("--connect-under-reset was already tried".to_owned());
-        } else {
-            notes.push(
-                "if the probe's RST line is wired to the target's NRST, retry with --connect-under-reset, or use --method nrst"
-                    .to_owned(),
-            );
-        }
+        // en: No "retry with --connect-under-reset": the flag is not implemented. And there is no
+        // erase-free route through a WCH-LinkE (fw 2.22): its only post-power-up window is inside
+        // the special erase, `probe power 3v3 off` does not cut the target's power, and DmiOp does
+        // not reach a target without a successful AttachChip (wch-protocols E166).
+        // ja: --connect-under-reset は未実装なので勧めない。LinkE では消さずに直す経路も無い(E166)。
+        notes.push(
+            "if the probe's RST line is wired to the target's NRST, --method nrst erases through it; through a WCH-LinkE there is no way back that keeps the flash"
+                .to_owned(),
+        );
         return Ok(Diagnosis {
             state: State::Unreachable,
             action: recommend(State::Unreachable, power_capable),
