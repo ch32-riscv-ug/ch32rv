@@ -232,8 +232,10 @@ option bytes は通常 page と手順が違う(専用 unlock と OPTPG/OPTER)。
 | cmd | payload | 意味 | 状態 |
 |---|---|---|---|
 | `0x0c` | `family speed` | SetSpeed(先に必要) | verified |
-| `0x0d` | `0x0f family` | EraseCodeFlash By Power off。probe が target を電源再投入(**LinkE/LinkW のみ**、target を probe 給電していること) | verified(コマンド受理を実機確認) |
+| `0x0d` | `0x0f family` | EraseCodeFlash By Power off。probe が target を電源再投入(**LinkE/LinkW のみ**、target を probe 給電していること)。応答 `82 0d 01 <status>`: CH32X035 では `0x0f` = 消えた、`0x00` = 消えていない(下記) | verified(コマンド受理を実機確認。応答の意味は X035 で確認) |
 | `0x0d` | `0x08 family` | EraseCodeFlash By RST pin。NRST を使う(RST 配線が要る) | attested(未実機) |
+
+**応答の status(wch-protocols E162 / E164、LinkE fw 2.22 + CH32X035)**: target が応答しなくなった後の 1 回目は毎回 `0x00`(約 2.1 s)で **flash は消えていない**。2 回目が `0x0f`(約 0.2 s)で消え、以後は通常どおり接続できた。ch32rv の `recover --method power-off|nrst` は `0x00` の間は最大 3 回まで繰り返し、`0x0f` を確認できなければ warning `special-erase-unconfirmed` を出す(他 family の応答は未記録なので失敗にはしない)。
 
 **実測の重要事実**: power-off erase 実行後、flash を debug 経由で読むと `39 e3 39 e3`(= `0xe339e339` の繰り返し)が返る。**これは wlink dump でも全く同じ**(独立ツールと一致)ので ch32rv のバグではなく、power-off erase 後の chip の debug-read 挙動そのもの(ちょうど ChipInfo の protection_raw と同じ値で、保護 fill の可能性)。RAM 読みと DMI 自体は正常。この状態でも **通常 flash を実行すれば即座に復旧**する(erase+program+verify OK を実機確認)。実運用の復旧経路「power-off erase → 通常 flash」は成立する。
 
@@ -385,6 +387,7 @@ probe → 00 00
 | SDI の有効化 `81 0d 02 ee 00` の後 | DMDATA0 を約 29 µs ごとに読み、0 以外なら(4 文字以上のときは DATA1 も読んで)DATA0 に 0 を書いて受領を返す | target 側の `SerialSDI` の framing の host 側。ch32rv の `monitor --source sdi` はこれを CDC で受けるだけ |
 | DmiOp `81 08 06 …` | **1 件 = 線上の DMI 1 frame**。LinkE は間に自分のアクセスを挟まない | 遅延の見積もり(約 0.4 ms / DmiOp)の前提が成り立つ |
 
+- **HPRE の bit 3 を立てて走る CH32X035 は、AttachChip で止まる**(wch-protocols E164、e07bef1): CFGR0 bit 7 = 1(HPRE `1000` = /2、`1001` = /4)で止まり、`0001`(/2)・`0101`(/6)では止まらない。分周比でなく bit で決まり、high でも low でも起きる。L103(CFGR0 `0x80`)では起きない。AttachChip 自体は成功して chip ID も正しいが、直後の ChipInfo の ESIG がすべて 0 になり、以後は no target。**option bytes は変わらない**。止まった後の特殊消去の窓では DMSTATUS は `0x000c0382`(halt 中)なのに abstract memory read が cmderr 6 で失敗する(sketch が残っているため)。復旧は特殊消去を `0x0f` が返るまで(§4.3)。attach の前に CFGR0 を読むこと自体が attach なので、事前には判定できない。
 - **SetSpeed の値と線上の SWCLK**(wch-protocols E163、LinkE fw 2.22 + CH32L103、50 MHz 収録、parity 誤り 0): high(`01`)は flash の Program 経路のデータ書込みだけ約 400 ns/clock(2.5 MHz)、単発の DMI・読出し・burst は約 1.12 µs(0.89 MHz)。medium(`02`)はどこでも約 1.12 µs、low(`03`)はどこでも約 2.12 µs(0.47 MHz)。**名目の 6 MHz / 4 MHz / 400 kHz のどれとも合わない**。値は実質 `03`(と `ff`)とそれ以外の 2 種類で、それ以外の中で high だけが Program 経路を速くする(`00`・`04`〜`06` は単発の DMI では high と同じ。flash では未試験)。範囲外の値も拒否されない(応答は常に `82 0c 01 01`)。接続時の区間は設定によらず long 3.04 µs・short 2.1 µs。DmiOp による単発の DMSTATUS 読出しはどの値でも約 2.1 µs。**high の Program 経路の速さは target の系統で違う**: CH32V203 では約 100 ns/clock(10 MHz。その中の DMSTATUS / DATA0 の読出しも約 130〜140 ns)で、pattern-4k の 4 KiB を書く区間は 51 ms、ch32rv 全体で 0.40 s(E163 追加分、wch-protocols bf35fc7)。L103 は 2.5 MHz。medium / low は V203 でも L103 と同じ(1.12 µs / 2.11 µs)。
 - SetSpeed を送る時点: ch32rv の attach(`Session::attach`)は接続前に placeholder family `0x01` で 1 回送るだけで、接続後に実 family で送り直さない。それで設定は効いている(上の表の (b) は全部この送り方)。接続後に実 family で送り直すとそれも効く(`03` → `0e:01` で 1.12 µs、`01` → `0e:03` で 2.12 µs)。SDI の有効化(§4.4)だけは wlink と同じく実 family での再送が要る(LinkE が forward する DM data の番地がそれで決まる)ので、`monitor --source sdi` と `gdb` は再送している。
 - SWCLK は SetSpeed の設定で決まり、走行クロックに合わせて詰めることはしない、と解釈している(PLL から HSI へ落ちる reset でも ch32rv の DMI reset-halt が化けない。V203 / V307 / V103 で 15/15)。走行クロックを変えて SWCLK を比べた直接の実測はまだ無い。
