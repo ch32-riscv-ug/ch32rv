@@ -678,7 +678,8 @@ impl WchLink {
     ///
     /// Returns the probe's status byte. On a CH32X035 (WCH-LinkE fw 2.22) `0x0f` means the erase
     /// took, and `0x00` (after ~2.1 s) that it did not - the first attempt after the target stopped
-    /// answering came back `0x00` every time and the second `0x0f` (wch-protocols E162 / E164).
+    /// answering has come back `0x00` and the second `0x0f` (wch-protocols E162 / E164; E165 saw
+    /// `0x0f` first time).
     /// Other families' answers are not recorded yet.
     /// ja: probe の status byte を返す。X035 では `0x0f` = 消えた、`0x00` = 消えていない(E162 / E164)。
     pub fn erase_code_flash_by_power_off(&mut self, family_byte: u8) -> Result<u8, WchLinkError> {
