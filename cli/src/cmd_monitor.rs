@@ -65,6 +65,28 @@ fn finish_ok(
     }
 }
 
+/// en: The warning every attaching monitor prints. A WCH-Link AttachChip reprograms the target's
+/// clock to a fixed per-family PLL setting and does not restore it (wire captures, 2026-09-25,
+/// `docs/protocol/wch-link.ja.md` §7a), so the firmware being watched keeps the probe's clock -
+/// UART baud rates, timers and PWM off - until it resets. ch32rv cannot undo it: the original values
+/// are overwritten inside AttachChip, before anything can read them. `how` says how to get a session
+/// at the firmware's own clock for this source.
+/// ja: attach する monitor が必ず出す警告。WCH-Link の AttachChip は target のクロックを系統ごとの
+/// 決まった PLL 設定に組み直して戻さない(2026-09-25 の線 capture、protocol §7a)ので、観測中の
+/// firmware は reset まで probe のクロックで走る(UART の baud・タイマ・PWM がずれる)。元の値は
+/// AttachChip の中で上書きされるので ch32rv は戻せない。`how` はこの source で firmware 自身の
+/// クロックのまま見る方法。
+fn attach_reclocks_warning(how: &str) -> ch32rv_contract::Warning {
+    ch32rv_contract::Warning {
+        code: "attach-reclocks-target".to_owned(),
+        msg: format!(
+            "attaching through a WCH-Link reprograms the target's clock and does not restore it: the \
+             running firmware now runs at the probe's clock (UART baud rates and timers may be off) \
+             until it resets. To watch it at its own clock, restart it after attaching: {how}"
+        ),
+    }
+}
+
 // ---- CDC serial backend ----
 
 /// Resolve the CDC serial port for a probe (explicit --port wins).
@@ -108,6 +130,9 @@ fn stream_port(
 ) -> ExitCode {
     if !cli.json {
         eprintln!("monitor: {label} on {port_path} @ {baud} baud (Ctrl-C to stop)");
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
     }
     let deadline = run_duration(cli).map(|d| Instant::now() + d);
     let mut sink = Sink::new(cli, label);
@@ -299,7 +324,7 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Ok(l) => l,
         Err(c) => return c,
     };
-    let (speed, warnings) = match parse::speed(&cli.speed) {
+    let (speed, mut warnings) = match parse::speed(&cli.speed) {
         Ok(v) => v,
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
@@ -341,6 +366,9 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
             Err(e) => return fail(cli, CMD, ErrorKind::AttachFailed, e.to_string(), None),
         };
         let _ = link.set_speed(attach.family_byte, speed);
+        warnings.push(attach_reclocks_warning(
+            "press the board's reset, or use `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`",
+        ));
         if let Err(e) = link.set_sdi_print_enabled(true) {
             return fail(
                 cli,
@@ -413,6 +441,10 @@ fn run_dmi(cli: &Cli, source: MonitorSource) -> ExitCode {
         Ok(s) => s,
         Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
+    warnings.push(attach_reclocks_warning(&format!(
+        "`ch32rv run <elf> --no-flash --source {}` (resets it, then streams)",
+        source.as_str()
+    )));
     let mut src = match DmiSource::open(&mut session, source, &mut warnings) {
         Ok(s) => s,
         Err(e) => return open_error(cli, CMD, e),
