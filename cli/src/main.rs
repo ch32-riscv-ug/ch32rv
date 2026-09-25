@@ -55,6 +55,11 @@ fn main() -> std::process::ExitCode {
             path.display()
         );
     }
+    if cli.connect_under_reset {
+        eprintln!(
+            "warning[connect-under-reset-unimplemented]: --connect-under-reset is not implemented yet and has no effect: the attach runs as usual"
+        );
+    }
     let code = run_command(&cli);
     // After a replay, note if the run diverged from the recording (a protocol change) or ran short.
     if let Some((divergences, underruns)) = ch32rv_usb::replay::summary()
