@@ -328,6 +328,7 @@ ch32rv monitor sdi <on|off>
 - **入力**: `uart` / `dmdata` / `dmseq` / `rtt` は stdin を target へ流す(端末なら行入力、pipe なら EOF で送信終了)。`sdi` は受信のみ。
 - **出力**: stdout へ生 byte。`--json` 時は §3.5 の `output` event(stderr)。
 - **終了**: Ctrl-C か `--duration`。device 喪失(CDC の EOF / DMI 失敗)は exit 0 ではなく 10 / 40 で終わる(wrapper が再起動を判断できるように)。再 enumeration の追従は持たない。
+- **attach は target のクロックを変える(2026-09-25)**: WCH-Link の AttachChip は target のクロックを系統ごとの決まった PLL 設定に組み直し、**元に戻さない**(線上で確認。protocol §7a)。`dmdata` / `dmseq` / `rtt` / `sdi` はどれも attach を通るので、観測中の firmware は **次の reset まで probe のクロックで走る**(UART の baud・タイマ・PWM がずれる。V20x / V30x で HSE + PREDIV / PLL2 を使う firmware は PLL の入力も変わる)。元の値は AttachChip の中で上書きされるので ch32rv は戻せない。monitor は開始時に warning `attach-reclocks-target` を出す。**firmware 自身のクロックのまま見たいときは attach のあとに reset する**: `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`(接続 → DMI reset-halt → 流す。firmware は再起動する)か、ボードの reset。attach しないのは `uart` だけ。同じことは `target info` / `read` / `dbg` / `arduino monitor` にも当てはまる(警告は monitor だけが出す)。
 - **rtt の channel**: control block の up[0] / down[0] のみ流す。複数 channel を持つ block は warning `rtt-channels` を出す(選択機能は需要待ち。release-plan.ja.md §5)。
 
 5 つの `--source` は「5 本の並列 port」ではなく、**2 種類の host 機構**に分かれる(ArduinoCore-CH32 の Serial / SerialSDI / SerialDMDATA / SerialRTT ライブラリが target 側の一次仕様)。
