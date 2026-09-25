@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.10.1 - 2026-09-25
+
 - (EN) Fix: `monitor --source sdi --duration N` now ends after N seconds even when the target prints nothing. The SDI stream reads the probe's CDC port with a plain blocking read - it has to: opening it non-blocking, or through the serialport crate, makes the WCH-LinkE stop forwarding after one line - and the deadline was only checked after a read returned, so a silent target kept the command open until something arrived: `--duration 4` ran for 34.8 s on a CH32L103 (reported from the ArduinoCore-CH32 bench). The read now runs on a thread of its own and the stream waits on it with a timeout, so the fd stays exactly as it was. Verified on a WCH-LinkE: an erased (silent) CH32L103 stops at 4.0 s after the 0.27 s setup, 3/3, and a CH32V203 running `SerialSDI`'s HelloSDI streams as before, its uptime counter strictly consecutive with no duplicate or missing line.
 - (JA) 修正: `monitor --source sdi --duration N` が、target が何も印字しなくても N 秒で終わるようになった。SDI の stream は probe の CDC port を素のブロッキング read で読む(そうしなければならない: 非ブロッキングで開くか serialport crate で開くと、WCH-LinkE は 1 行で forward を止める)が、締め切りを read が戻った後にしか確認していなかったため、無音の target では何か届くまでコマンドが終わらなかった — CH32L103 で `--duration 4` が 34.8 秒続いた(ArduinoCore-CH32 のベンチから報告)。read を専用スレッドに移し、stream は timeout 付きでそれを待つようにした(fd の扱いは一切変えていない)。WCH-LinkE で確認: 消去済み(無音)の CH32L103 は準備 0.27 秒のあと 4.0 秒ちょうどで止まる(3/3)、`SerialSDI` の HelloSDI を走らせた CH32V203 は従来どおり流れ、uptime の番号は重複も欠落もなく連続。
 
