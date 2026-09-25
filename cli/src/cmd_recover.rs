@@ -355,9 +355,14 @@ fn command_for(cli: &Cli, d: &Diagnosis, action: Action) -> Option<String> {
 }
 
 /// The hedged caveats of a power-off recovery, shown whenever it is recommended or run.
+// en: Hedged on purpose. Despite its name, a WCH-LinkE (fw 2.22) with no target was measured
+// keeping its 3V3 output up through this erase and pulsing RST instead (wch-protocols E167); how it
+// resets a target whose NRST is not wired (it did, on a CH32X035, E165) is not known yet.
+// ja: 意図的に「可能性」で書く。LinkE fw 2.22 は target なしの実測で、この消去の間も 3V3 を出し続け、
+// 代わりに RST を pulse した(E167)。NRST 未配線の target をどう reset したか(X035 で起きた)は未解明。
 const POWER_OFF_CAVEATS: [&str; 3] = [
-    "power-off works only when the target is powered from the probe's 3V3/5V pin; a board with its own supply never loses power",
-    "the target may stay partly powered through other connections (UART TX->RX, the SWDIO/SWCLK pull-ups), so the power cycle may not take",
+    "despite its name, a WCH-LinkE (fw 2.22) was measured keeping its 3V3 output on during this erase and pulsing its RST line instead; wiring RST to the target's NRST may make it more reliable",
+    "the erase needs the WCH-LinkE to catch the target right after a reset; whether it can without NRST wired depends on the board (it did on a probe-powered CH32X035)",
     "confirm the result with `ch32rv read --blank-check` (or a normal attach) afterwards",
 ];
 

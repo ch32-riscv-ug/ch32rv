@@ -50,8 +50,8 @@ probe → host:  0x82 | cmd | len | payload...   (成功)
 | `0x0d` | `0x03` | RedetectChip。target を **reset せずに** probe に把握し直させる(havereset sticky bit で確認済み)。壊れ読み値(§7)の復旧に使う | attested(board-identify 実測) | board-identify `wch_link.py` |
 | `0x0d` | `0xff` | DetachChip(OptEnd)。掴んだ core の解放とセッション前の状態クリアの両方に使う | **verified**(2026-09-01) | ch32rv 実装 + probe-rs, board-identify |
 | `0x11` | `0x05` | ChipInfo。**応答はフレームヘッダ無しの生 20 byte**: `[0:2]? / flash_kb(be16, [2:4]) / UUID([4:12]) / protection flags([12:16], 解釈未確立) / chip_id([16:20])`。UUID 全 0/全 ff は未応答 | **verified**(2026-09-01: V203C8T6 → flash 64KiB・UUID `b661abcd1e91bc63`・protection_raw `e339e339`。UUID は board-identify の独立読取と一致) | ch32rv 実装 + board-identify, wlink |
-| `0x0d 0x01` | `0x09`/`0x0a` | 3.3V 出力 on/off(`81 0d 01 09` / `0a`) | attested | minichlink `pgm-wch-linke.c:604-613`, wlink |
-| `0x0d 0x01` | `0x0b`/`0x0c` | 5V 出力 on/off | attested | minichlink `pgm-wch-linke.c:615-624` |
+| `0x0d 0x01` | `0x09`/`0x0a` | 3.3V 出力 on/off(`81 0d 01 09` / `0a`)。**受理されるが、LinkE fw 2.22 は `0a` の後も 3V3 が 3.24 V のまま**(target なし、ADC で実測。wch-protocols E167) | attested(切替そのものは実測で否定) | minichlink `pgm-wch-linke.c:604-613`, wlink |
+| `0x0d 0x01` | `0x0b`/`0x0c` | 5V 出力 on/off(`0c` の後も 3V3 は 3.24 V のまま。5V の線は未測定。E167) | attested | minichlink `pgm-wch-linke.c:615-624` |
 | `0x0d 0x01` | `0x0f 0x09` | 公式 unbrick | single-source | minichlink(**コメントアウト**。「X シリーズで不安定」と注記あり。採用判断は capture 後) |
 | `0x01` | `0x01` | CheckFlashProtection | attested | probe-rs, wlink |
 | `0x01` | `0x02` | UnprotectFlash | attested | probe-rs, wlink |
@@ -232,7 +232,7 @@ option bytes は通常 page と手順が違う(専用 unlock と OPTPG/OPTER)。
 | cmd | payload | 意味 | 状態 |
 |---|---|---|---|
 | `0x0c` | `family speed` | SetSpeed(先に必要) | verified |
-| `0x0d` | `0x0f family` | EraseCodeFlash By Power off。probe が target を電源再投入(**LinkE/LinkW のみ**、target を probe 給電していること)。応答 `82 0d 01 <status>`: CH32X035 では `0x0f` = 消えた、`0x00` = 消えていない(下記) | verified(コマンド受理を実機確認。応答の意味は X035 で確認) |
+| `0x0d` | `0x0f family` | EraseCodeFlash By Power off(**LinkE/LinkW のみ**)。**名前に反し、LinkE fw 2.22 は target なしで 3V3 を切らない**: 3V3 は 3.0 V 以上のまま、RST が約 43 ms で 1 になり、0.6〜2.35 s に low の pulse 67 回(幅約 4 ms、間隔約 30 ms)、約 2.45 s で 0 に戻る。その間 SWDIO / SWCLK も動く(E167)。NRST 未配線の X035 が reset された仕組み(E165)は未解明。応答 `82 0d 01 <status>`: CH32X035 では `0x0f` = 消えた、`0x00` = 消えていない(下記) | verified(コマンド受理を実機確認。応答の意味は X035 で確認) |
 | `0x0d` | `0x08 family` | EraseCodeFlash By RST pin。NRST を使う(RST 配線が要る) | attested(未実機) |
 
 **応答の status(wch-protocols E162 / E164、LinkE fw 2.22 + CH32X035)**: E162 / E164 では、target が応答しなくなった後の 1 回目が `0x00`(約 2.1 s)で **flash は消えておらず**、2 回目が `0x0f`(約 0.2 s)で消えて、以後は通常どおり接続できた。E165 では止まった X035 でも 1 回目から `0x0f`(4 本とも)、正常な X035 でも 1 回目から `0x0f`(0.2 s)。`0x00` がいつ返るかは未解明。ch32rv の `recover --method power-off|nrst` は `0x00` の間は最大 3 回まで繰り返し、`0x0f` を確認できなければ warning `special-erase-unconfirmed` を出す(他 family の応答は未記録なので失敗にはしない)。
