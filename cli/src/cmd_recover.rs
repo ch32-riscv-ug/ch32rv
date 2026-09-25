@@ -154,14 +154,18 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
     // and asking afterwards means reopening a device the failed attach has only just released.
     // ja: attach より前に probe を特定する(power-off の可否がこれで決まる)。失敗した attach の
     // 直後に開き直すと、解放直後の device を開くことになる。
+    let mut probe_errors = 0u32;
     let (probe, power_capable) = match crate::session::open_with_retry(&entry).and_then(|mut l| {
-        // A LinkE next to a wedged target has been seen answering GetProbeInfo with an
-        // error once (`81 55 01 02`) and normally the next time, so ask more than once.
+        // A LinkE has been seen answering GetProbeInfo with an error (`81 55 01 02`) while its
+        // target "stopped answering" - and a replug of the probe brought the target back with
+        // its option bytes untouched (CH32X035, 2026-09-25). So ask more than once, and remember
+        // that it failed: it points at the probe, not the target.
         let mut last = l.probe_info();
         for _ in 0..2 {
             if last.is_ok() {
                 break;
             }
+            probe_errors += 1;
             std::thread::sleep(Duration::from_millis(100));
             last = l.probe_info();
         }
@@ -204,9 +208,16 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
     }
 
     let Some((mut session, label)) = session else {
-        // Nothing answered. Whether power-off is on the table depends on the probe.
+        // Nothing answered. Whether power-off is on the table depends on the probe. Before any
+        // erase, rule out the cheap causes: a target that "died" has come back from a probe replug
+        // alone, option bytes and flash intact.
+        if probe_errors > 0 {
+            notes.push(format!(
+                "the probe itself answered with an error ({probe_errors}x on GetProbeInfo): unplug and replug the probe before anything else - the target may be fine"
+            ));
+        }
         notes.push(
-            "check first that the target is powered and SWDIO/SWCLK (or SWIO) and GND are wired: that is the common cause"
+            "check first that the target is powered and SWDIO/SWCLK (or SWIO) and GND are wired, and try unplugging and replugging the probe: those are the common causes, and power-off erases the flash"
                 .to_owned(),
         );
         if cli.connect_under_reset {
@@ -463,7 +474,7 @@ pub fn auto(cli: &Cli) -> ExitCode {
             }
             if let Err(why) = confirm_destructive(
                 cli,
-                "Power-cycle the target and erase its code flash (WCH special erase)?",
+                "Power-cycle the target and ERASE its code flash (WCH special erase)? If you have not yet replugged the probe and checked the wiring, answer no and do that first.",
             ) {
                 return fail(
                     cli,
