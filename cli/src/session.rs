@@ -222,7 +222,7 @@ fn attach_once(link: &mut WchLink, speed: Speed) -> Result<AttachInfo, SessionEr
     })
 }
 
-fn open_with_retry(entry: &Entry) -> Result<WchLink, WchLinkError> {
+pub(crate) fn open_with_retry(entry: &Entry) -> Result<WchLink, WchLinkError> {
     let mut last = WchLink::open(&entry.dev);
     for _ in 0..2 {
         match &last {

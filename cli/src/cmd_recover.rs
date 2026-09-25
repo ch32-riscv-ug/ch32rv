@@ -150,6 +150,33 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
     let mut warnings = Vec::new();
     let mut notes = Vec::new();
 
+    // en: Identify the probe before any attach: whether power-off is on the table depends on it,
+    // and asking afterwards means reopening a device the failed attach has only just released.
+    // ja: attach より前に probe を特定する(power-off の可否がこれで決まる)。失敗した attach の
+    // 直後に開き直すと、解放直後の device を開くことになる。
+    let (probe, power_capable) = match crate::session::open_with_retry(&entry).and_then(|mut l| {
+        // A LinkE next to a wedged target has been seen answering GetProbeInfo with an
+        // error once (`81 55 01 02`) and normally the next time, so ask more than once.
+        let mut last = l.probe_info();
+        for _ in 0..2 {
+            if last.is_ok() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            last = l.probe_info();
+        }
+        last
+    }) {
+        Ok(i) => (
+            i.variant.name(),
+            matches!(i.variant, Variant::LinkE | Variant::LinkW),
+        ),
+        Err(e) => {
+            notes.push(format!("could not identify the probe: {e}"));
+            ("unknown".to_owned(), false)
+        }
+    };
+
     // en: The requested speed first, then low: a target running at a slow or odd clock, or with a
     // long cable, can answer at low speed when it does not at high. Only "no target" falls back;
     // `--chip` conflicts and lock timeouts are real answers and are rendered as such.
@@ -178,14 +205,6 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
 
     let Some((mut session, label)) = session else {
         // Nothing answered. Whether power-off is on the table depends on the probe.
-        let (probe, power_capable) =
-            match ch32rv_wchlink::WchLink::open(&entry.dev).and_then(|mut l| l.probe_info()) {
-                Ok(i) => (
-                    i.variant.name(),
-                    matches!(i.variant, Variant::LinkE | Variant::LinkW),
-                ),
-                Err(_) => ("unknown".to_owned(), false),
-            };
         notes.push(
             "check first that the target is powered and SWDIO/SWCLK (or SWIO) and GND are wired: that is the common cause"
                 .to_owned(),
@@ -369,10 +388,20 @@ fn render(cli: &Cli, d: &Diagnosis) -> ExitCode {
             "nothing to recover: the target attaches, read protection is off, and the documented USER bits are at their reset values"
         ),
         (Action::Manual, _) => println!(
-            "recommended: the probe cannot switch the target's power; power-cycle it by hand while holding NRST, or wire NRST and use --method nrst"
+            "recommended: {}",
+            if d.probe == "unknown" {
+                "the probe could not be identified; if it is a WCH-LinkE / LinkW, try `ch32rv recover --method power-off --chip <family>`, otherwise power-cycle the target by hand, or wire NRST and use --method nrst"
+            } else {
+                "this probe cannot switch the target's power; power-cycle it by hand, or wire NRST and use --method nrst"
+            }
         ),
         (a, Some(c)) => {
-            println!("recommended: {c}   (or: ch32rv recover --method auto)");
+            let auto_chip = if a == Action::PowerOff {
+                " --chip <family>"
+            } else {
+                ""
+            };
+            println!("recommended: {c}   (or: ch32rv recover --method auto{auto_chip})");
             if a == Action::PowerOff {
                 for c in POWER_OFF_CAVEATS {
                     println!("caution: {c}");
