@@ -357,13 +357,15 @@ fn command_for(cli: &Cli, d: &Diagnosis, action: Action) -> Option<String> {
 
 /// The hedged caveats of a power-off recovery, shown whenever it is recommended or run.
 // en: Hedged on purpose. Despite its name, a WCH-LinkE (fw 2.22) keeps 3V3 up through this erase
-// and pulses RST (wch-protocols E167). With RST unwired, the wire shows no target reset at all: it
-// keeps sending haltreq until one gets through, then mass-erases (E165 re-read, 6d0c895).
+// and pulses RST (wch-protocols E167). With RST unwired the power never drops (E168): a healthy
+// target is halted and erased at once, and one stopped by an attach answers `0x00` first and
+// erases on a later attempt, after a reset whose source is not settled.
 // ja: 意図的に「可能性」で書く。LinkE fw 2.22 はこの消去の間も 3V3 を切らず RST を pulse する(E167)。
-// RST 未配線では target を reset した証拠は無く、haltreq を通るまで送り続けて halt を取り、全消去する。
+// RST 未配線でも電源は落ちない(E168)。正常な target は 1 回で消え、attach で止まった target は
+// 1 回目が `0x00` で、出どころ未確定の reset の後の回で消える。
 const POWER_OFF_CAVEATS: [&str; 3] = [
     "despite its name, a WCH-LinkE (fw 2.22) was measured keeping its 3V3 output on during this erase and pulsing its RST line; wiring RST to the target's NRST may make it more reliable",
-    "without NRST wired, the probe keeps sending halt requests until one gets through, then erases; whether it gets through depends on the target's state (it did on a CH32X035 stopped by an attach)",
+    "without NRST wired the power never drops: a healthy target is halted and erased at once, while a CH32X035 stopped by an attach answered 0x00 first and erased on a later attempt (ch32rv retries)",
     "confirm the result with `ch32rv read --blank-check` (or a normal attach) afterwards",
 ];
 

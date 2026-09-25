@@ -672,11 +672,13 @@ impl WchLink {
     /// en: "Clear All Code Flash - By Power off" (EraseCodeFlash `0x0f`): the recovery for a target
     /// a normal attach cannot reach. Requires SetSpeed(family) first. LinkE/LinkW. Despite the
     /// name, a WCH-LinkE fw 2.22 keeps 3V3 up and pulses RST (67 low pulses of ~4 ms over ~2 s,
-    /// wch-protocols E167); with RST unwired the wire shows no target reset, only haltreq sent
-    /// until one gets through and then a mass erase (E165 re-read, 6d0c895).
+    /// wch-protocols E167). With RST unwired the power never drops (E168): a healthy target is
+    /// halted in ~20 ms and mass-erased; one stopped by an attach answers `0x00` first and erases
+    /// on a later attempt, after a reset whose source is not settled.
     /// ja: 「Clear All Code Flash - By Power off」。通常の attach が届かない target の復旧。SetSpeed
     /// (family) が先に要る。名前に反し、LinkE fw 2.22 は 3V3 を切らず RST を pulse する(E167)。
-    /// RST 未配線では target の reset は見えず、haltreq を通るまで送って halt を取り、全消去する。
+    /// RST 未配線でも電源は落ちない(E168)。正常な target は約 20 ms で halt して全消去、attach で
+    /// 止まった target は 1 回目が `0x00` で、出どころ未確定の reset の後の回で消える。
     ///
     /// Returns the probe's status byte. On a CH32X035 (WCH-LinkE fw 2.22) `0x0f` means the erase
     /// took, and `0x00` (after ~2.1 s) that it did not - the first attempt after the target stopped

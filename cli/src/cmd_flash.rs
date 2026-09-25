@@ -1601,10 +1601,10 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
     // en: The probe answers `0x0f` when the erase took and `0x00` when it did not: on a CH32X035
     // the first attempt after the target stopped answering has come back `0x00` (~2.1 s) with the
     // flash untouched, and the second `0x0f` (~0.2 s) with it erased (wch-protocols E162 / E164;
-    // E165 got `0x0f` first time, so when `0x00` happens is not settled).
-    // A `0x00` is, by the wire (E165 re-read, wch-protocols 6d0c895), most likely an attempt that
-    // did not get the halt within its ~2.1 s - so repeat on `0x00`. Other families' answers are not recorded, so a run that never sees
-    // `0x0f` is reported as unconfirmed rather than failed.
+    // E165 got `0x0f` first time). A `0x00` is an attempt that did not get the halt; in the stopped
+    // state a reset without a power loss follows and the next attempt erases (E168) - so repeat
+    // on `0x00`. Other families' answers are not recorded, so a run that never sees `0x0f` is
+    // reported as unconfirmed rather than failed.
     // ja: probe は消えたら `0x0f`、消えていなければ `0x00` を返す(X035 で 1 回目が `00`、2 回目
     // `0f`。E162 / E164)。`00` なら繰り返す。他 family の応答は未記録なので、`0f` が一度も来なくても
     // 失敗ではなく「未確認」として報告する。
