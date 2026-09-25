@@ -103,7 +103,9 @@ policy_enum! {
 }
 
 policy_enum! {
-    /// Debug speed class (WCH-Link supports exactly three: 400 kHz / 4 MHz / 6 MHz).
+    /// Debug speed class. WCH-Link takes exactly three; their nominal 400 kHz / 4 MHz / 6 MHz are
+    /// not what the wire runs at (WCH-LinkE fw 2.22 + CH32L103: low ~0.47 MHz, medium ~0.89 MHz,
+    /// high ~0.89 MHz except ~2.5 MHz on the flash program path; docs/protocol/wch-link.ja.md §7a).
     SpeedClass {
         Low => "low",
         Medium => "medium",

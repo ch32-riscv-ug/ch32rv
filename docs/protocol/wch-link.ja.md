@@ -56,7 +56,7 @@ probe → host:  0x82 | cmd | len | payload...   (成功)
 | `0x01` | `0x01` | CheckFlashProtection | attested | probe-rs, wlink |
 | `0x01` | `0x02` | UnprotectFlash | attested | probe-rs, wlink |
 | `0x0b` | - | Reset(target) | attested | probe-rs, wlink |
-| `0x0c` | - | SetSpeed(payload `[family, speed]`)。attach 前は family 不明のため `0x01` を送る。speed は high=`0x01` / medium=`0x02` / low=`0x03`(逆順注意) | **verified**(2026-09-01) | ch32rv 実装 + probe-rs |
+| `0x0c` | - | SetSpeed(payload `[family, speed]`)。attach 前は family 不明のため `0x01` を送る。speed は high=`0x01` / medium=`0x02` / low=`0x03`(逆順注意)。線上の速さは公称(6 MHz / 4 MHz / 400 kHz)と合わない — §7a 末尾 | **verified**(2026-09-01) | ch32rv 実装 + probe-rs |
 | `0x08` | - | DmiOp。payload 6 byte `[addr, data_be32, op]`(op=0 nop/1 read/2 write)。応答 6 byte `[addr, data_be32, status]`(status=0 success/2 failed/3 busy)。busy は再試行 | **verified**(2026-09-01: DM 経由で V203/V103 の全 GPR・PC・flash/RAM を読み、wlink dump とバイト一致) | ch32rv 実装 + probe-rs, wlink, RINS |
 | `0xff` | `0x01 0x41` / `0x01 0x52` | **モード切替**。RISC-V→DAP は `81 ff 01 41` を通常の command EP へ、DAP→RISC-V は **DAP device(PID 0x8012)の interface 0 OUT EP `0x02`** へ `81 ff 01 52`。応答は返らず probe が再列挙する(PID `0x8010` ⇔ `0x8012`)。**LinkE 専用**(CH549 は fail-closed) | **verified**(2026-09-03、両方向を実機確認。再列挙後に新 PID を確認) | ch32rv `probe mode set` + wlink, cjacker/wchlinke-mode-switch |
 
@@ -385,6 +385,8 @@ probe → 00 00
 | SDI の有効化 `81 0d 02 ee 00` の後 | DMDATA0 を約 29 µs ごとに読み、0 以外なら(4 文字以上のときは DATA1 も読んで)DATA0 に 0 を書いて受領を返す | target 側の `SerialSDI` の framing の host 側。ch32rv の `monitor --source sdi` はこれを CDC で受けるだけ |
 | DmiOp `81 08 06 …` | **1 件 = 線上の DMI 1 frame**。LinkE は間に自分のアクセスを挟まない | 遅延の見積もり(約 0.4 ms / DmiOp)の前提が成り立つ |
 
+- **SetSpeed の値と線上の SWCLK**(wch-protocols E163、LinkE fw 2.22 + CH32L103、50 MHz 収録、parity 誤り 0): high(`01`)は flash の Program 経路のデータ書込みだけ約 400 ns/clock(2.5 MHz)、単発の DMI・読出し・burst は約 1.12 µs(0.89 MHz)。medium(`02`)はどこでも約 1.12 µs、low(`03`)はどこでも約 2.12 µs(0.47 MHz)。**名目の 6 MHz / 4 MHz / 400 kHz のどれとも合わない**。値は実質 `03`(と `ff`)とそれ以外の 2 種類で、それ以外の中で high だけが Program 経路を速くする(`00`・`04`〜`06` は単発の DMI では high と同じ。flash では未試験)。範囲外の値も拒否されない(応答は常に `82 0c 01 01`)。接続時の区間は設定によらず long 3.04 µs・short 2.1 µs。DmiOp による単発の DMSTATUS 読出しはどの値でも約 2.1 µs。V203 では high の一部の区間が 60〜100 ns 周期で(2026-09-25 fixture)、target により違う可能性がある。
+- SetSpeed を送る時点: ch32rv の attach(`Session::attach`)は接続前に placeholder family `0x01` で 1 回送るだけで、接続後に実 family で送り直さない。それで設定は効いている(上の表の (b) は全部この送り方)。接続後に実 family で送り直すとそれも効く(`03` → `0e:01` で 1.12 µs、`01` → `0e:03` で 2.12 µs)。SDI の有効化(§4.4)だけは wlink と同じく実 family での再送が要る(LinkE が forward する DM data の番地がそれで決まる)ので、`monitor --source sdi` と `gdb` は再送している。
 - SWCLK は SetSpeed の設定で決まり、走行クロックに合わせて詰めることはしない、と解釈している(PLL から HSI へ落ちる reset でも ch32rv の DMI reset-halt が化けない。V203 / V307 / V103 で 15/15)。走行クロックを変えて SWCLK を比べた直接の実測はまだ無い。
 
 ## 8. capture 計画(M0-M1)
