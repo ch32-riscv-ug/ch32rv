@@ -118,8 +118,7 @@ fn stream_port(
         use std::io::Read;
         // en: Plain blocking open, exactly like `cat`. Opening with O_NONBLOCK, or via the
         // serialport crate (which asserts DTR), makes the WCH-LinkE stop forwarding SDI after
-        // one line (measured); this blocking file read keeps it streaming. The deadline is
-        // checked after each returned chunk (real use ends with Ctrl-C).
+        // one line (measured); this blocking file read keeps it streaming.
         // ja: cat と同じ素のブロッキング open。O_NONBLOCK や serialport(DTR assert)だと LinkE の
         // SDI forward が 1 行で止まる(実測)。ブロッキング読みなら流れ続ける。
         let mut file = match std::fs::File::open(port_path) {
@@ -134,15 +133,41 @@ fn stream_port(
                 );
             }
         };
-        loop {
-            if let Some(dl) = deadline
-                && Instant::now() >= dl
-            {
-                sink.finish();
-                return finish_ok(cli, cmd, label, warnings);
+        // en: The read blocks until the probe forwards something, so it runs on a thread of its
+        // own and this loop waits on it with a timeout. `--duration` has to end the stream even
+        // while the target prints nothing: checked only after a read returned, a silent target
+        // kept `monitor --source sdi --duration 4` open for 34.8 s (CH32L103, 2026-09-25). The
+        // fd stays a plain blocking one (see above for why it must); on the deadline the reader
+        // is simply left blocked and goes away with the process.
+        // ja: read は probe が何か流すまで戻らないので専用スレッドで回し、このループは timeout 付きで
+        // 待つ。`--duration` は target が無音でも効かなければならない(read が戻った後にしか確認
+        // しない実装では、無音の L103 で `--duration 4` が 34.8 秒続いた)。fd は素のブロッキングの
+        // まま(理由は上)。締め切りでは reader をブロックさせたまま置いていき、プロセスと共に消える。
+        let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<Vec<u8>>>();
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 512];
+            loop {
+                let r = file.read(&mut chunk).map(|n| chunk[..n].to_vec());
+                let last = !matches!(&r, Ok(v) if !v.is_empty());
+                if tx.send(r).is_err() || last {
+                    break;
+                }
             }
-            match file.read(&mut buf) {
-                Ok(0) => {
+        });
+        loop {
+            let wait = match deadline {
+                Some(dl) => match dl.checked_duration_since(Instant::now()) {
+                    Some(left) if !left.is_zero() => left,
+                    _ => {
+                        sink.finish();
+                        return finish_ok(cli, cmd, label, warnings);
+                    }
+                },
+                None => Duration::from_secs(3600),
+            };
+            match rx.recv_timeout(wait) {
+                Ok(Ok(data)) if !data.is_empty() => sink.write(&data),
+                Ok(Ok(_)) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                     sink.finish();
                     return fail(
                         cli,
@@ -152,8 +177,7 @@ fn stream_port(
                         None,
                     );
                 }
-                Ok(n) => sink.write(&buf[..n]),
-                Err(e) => {
+                Ok(Err(e)) => {
                     sink.finish();
                     return fail(
                         cli,
@@ -163,6 +187,8 @@ fn stream_port(
                         None,
                     );
                 }
+                // Nothing yet: go round and re-check the deadline.
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
             }
         }
     }
