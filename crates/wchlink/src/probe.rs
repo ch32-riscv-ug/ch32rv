@@ -82,16 +82,20 @@ pub struct DmiReply {
 }
 
 /// en: Debug speed. WCH-Link supports exactly three steps; the wire encoding is inverted
-/// (High=0x01 ... Low=0x03).
+/// (High=0x01 ... Low=0x03). The per-variant figures are the nominal ones; on a WCH-LinkE
+/// fw 2.22 + CH32L103 the measured SWCLK is ~0.47 / ~0.89 / ~0.89 MHz, with High reaching
+/// ~2.5 MHz only on the flash program path (docs/protocol/wch-link.ja.md §7a).
 /// ja: debug 速度。WCH-Link は 3 段階のみで、wire 上の符号は逆順(High=0x01 ... Low=0x03)。
+/// 各 variant の値は公称。LinkE fw 2.22 + L103 の実測は約 0.47 / 0.89 / 0.89 MHz で、High が
+/// 約 2.5 MHz になるのは flash の Program 経路だけ(§7a)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum Speed {
-    /// 400 kHz
+    /// 400 kHz nominal
     Low = 0x03,
-    /// 4 MHz
+    /// 4 MHz nominal
     Medium = 0x02,
-    /// 6 MHz
+    /// 6 MHz nominal
     #[default]
     High = 0x01,
 }

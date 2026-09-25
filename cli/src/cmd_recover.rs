@@ -151,9 +151,9 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
     let mut notes = Vec::new();
 
     // en: The requested speed first, then low: a target running at a slow or odd clock, or with a
-    // long cable, can answer at 400 kHz when it does not at 6 MHz. Only "no target" falls back;
+    // long cable, can answer at low speed when it does not at high. Only "no target" falls back;
     // `--chip` conflicts and lock timeouts are real answers and are rendered as such.
-    // ja: 指定 speed → low の順。遅い/変なクロックや長い配線の target は 400 kHz なら応答することが
+    // ja: 指定 speed → low の順。遅い/変なクロックや長い配線の target は low なら応答することが
     // ある。fallback するのは「応答なし」だけで、`--chip` 矛盾や lock timeout はそのまま返す。
     let requested = cli.speed.as_str();
     let mut tries: Vec<&'static str> = Vec::new();
