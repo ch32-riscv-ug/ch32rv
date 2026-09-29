@@ -5,6 +5,7 @@
 //!   (`cargo xtask oep-gen`).
 //! - [`codec`]: framing (COBS + CRC-16 for serial transports, `length(u16)` for vendor bulk / HID /
 //!   TCP) and the message layer (headers, TLV).
+//! - [`config`]: `oep.probe.config` read side - the registered slots and their state.
 //! - [`link`]: one framed byte stream to one probe with the core §5 rules (corr, pipeline, resend,
 //!   resync).
 //! - [`session`]: discovery, open / end / keepalive / lock_state, typed rejections.
@@ -16,6 +17,7 @@
 //! [`registry`] は台帳から生成した番号、[`codec`] は framing と message 層。
 
 pub mod codec;
+pub mod config;
 pub mod link;
 pub mod session;
 pub mod stream;
