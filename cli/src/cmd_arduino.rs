@@ -233,12 +233,23 @@ use crate::source::{self, DmiSource};
 /// `uart`, which is what the IDE would do anyway.
 /// ja: serial port の source。先頭(`uart` = port をそのまま)が既定。WCH probe の無い素の serial
 /// port は `uart` だけ。
-const SERIAL_SOURCES: [MonitorSource; 5] = [
+const SERIAL_SOURCES: [MonitorSource; 6] = [
     MonitorSource::Uart,
     MonitorSource::Sdi,
     MonitorSource::Dmdata,
     MonitorSource::Dmseq,
     MonitorSource::Rtt,
+    MonitorSource::FixtureUart,
+];
+
+/// en: The sources an `oep://<probe>/<slot>` port offers: the slot's console (dmseq, the default,
+/// dmdata, sdi) and the probe's fixture UART.
+/// ja: `oep://` の port の source。スロットの console(dmseq 既定 / dmdata / sdi)と fixture の UART。
+const OEP_SOURCES: [MonitorSource; 4] = [
+    MonitorSource::Dmseq,
+    MonitorSource::Dmdata,
+    MonitorSource::Sdi,
+    MonitorSource::FixtureUart,
 ];
 
 /// en: The sources a `wchlink://` port offers (uart needs the user to pick the Link's CDC port,
@@ -283,10 +294,10 @@ struct Settings {
 
 impl Settings {
     fn new(protocol: &str, chip: Option<String>) -> Self {
-        let sources: &'static [MonitorSource] = if protocol == "wchlink" {
-            &WCHLINK_SOURCES
-        } else {
-            &SERIAL_SOURCES
+        let sources: &'static [MonitorSource] = match protocol {
+            "wchlink" => &WCHLINK_SOURCES,
+            "oep" => &OEP_SOURCES,
+            _ => &SERIAL_SOURCES,
         };
         // Line settings default to the builtin serial-monitor's.
         Settings {
@@ -537,6 +548,8 @@ pub fn monitor(cli: &Cli, protocol: &str) -> ExitCode {
 struct Resolved {
     entry: Option<Entry>,
     port: Option<String>,
+    /// An OEP probe's address (`oep://` or a serial port no WCH-Link owns).
+    oep: Option<crate::oep::OepAddr>,
 }
 
 /// en: `wchlink://<serial>` names a probe (its first CDC serves uart / sdi). Anything else is a
@@ -557,6 +570,15 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
         return Ok(Resolved {
             entry: Some(entry),
             port,
+            oep: None,
+        });
+    }
+    if address.starts_with("oep://") {
+        let a = crate::oep::resolve_oep_url(address)?;
+        return Ok(Resolved {
+            entry: None,
+            port: None,
+            oep: Some(a),
         });
     }
     let sel = ch32rv_usb::Selector::Port(address.to_owned());
@@ -573,9 +595,14 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
             owners.len()
         ));
     }
+    let entry = owners.pop();
+    let oep = entry
+        .is_none()
+        .then(|| crate::oep::OepAddr::Serial(address.to_owned()));
     Ok(Resolved {
-        entry: owners.pop(),
+        entry,
         port: Some(address.to_owned()),
+        oep,
     })
 }
 
@@ -597,6 +624,8 @@ enum Backend {
     Oep {
         console: Box<crate::oep::ConsoleSession>,
         source: MonitorSource,
+        /// The fixture UART's baud as last configured.
+        baud: u32,
     },
 }
 
@@ -628,27 +657,34 @@ impl Backend {
         // ja: WCH-Link のものでない serial port で debug の source なら OEP の probe(ブローカー経由)。
         // uart は port の素通しのまま(知らない port に OEP の confirm を送ると誰かの device に
         // バイトが入る。OEP の UART bridge の probe は bind した console をそこに生で流す)。
-        if r.entry.is_none() && s.source != MonitorSource::Uart {
+        if let Some(oep) = &r.oep
+            && (s.source != MonitorSource::Uart || matches!(oep, crate::oep::OepAddr::Slot { .. }))
+        {
+            use crate::oep::StreamWanted;
             use ch32rv_oep::stream::Mechanism;
-            let path = r.port.as_deref().ok_or("no serial port")?;
-            let mech = match s.source {
-                MonitorSource::Sdi => Mechanism::Sdi,
-                MonitorSource::Dmdata => Mechanism::Dmdata,
-                MonitorSource::Dmseq => Mechanism::Dmseq,
-                _ => {
+            let wanted = match s.source {
+                MonitorSource::Sdi => StreamWanted::Console(Mechanism::Sdi),
+                MonitorSource::Dmdata => StreamWanted::Console(Mechanism::Dmdata),
+                MonitorSource::Dmseq => StreamWanted::Console(Mechanism::Dmseq),
+                MonitorSource::FixtureUart => StreamWanted::FixtureUart(s.baud),
+                MonitorSource::Uart | MonitorSource::Rtt => {
                     return Err(format!(
-                        "{} is not available on an OEP probe (its console has sdi, dmdata and dmseq)",
+                        "{} is not available on an OEP probe (it offers dmseq, dmdata, sdi and fixture-uart)",
                         s.source.as_str()
                     ));
                 }
             };
-            let c = crate::oep::ConsoleSession::open(path, mech, s.chip.as_deref())?;
+            let c = crate::oep::ConsoleSession::open(oep, wanted, s.chip.as_deref())?;
             return Ok(Backend::Oep {
                 console: Box::new(c),
                 source: s.source,
+                baud: s.baud,
             });
         }
         match s.source {
+            MonitorSource::FixtureUart => {
+                Err("fixture-uart is an OEP probe's source (this port is not one)".to_owned())
+            }
             MonitorSource::Uart => {
                 let path = r
                     .port
@@ -769,9 +805,20 @@ impl Backend {
                         }
                     }
                 }
-                Backend::Oep { console, source } => {
+                Backend::Oep {
+                    console,
+                    source,
+                    baud,
+                } => {
                     if now.source != *source {
                         return Leave::Switch;
+                    }
+                    // The fixture UART follows the IDE's baud live, like a serial monitor.
+                    if *source == MonitorSource::FixtureUart && now.baud != *baud {
+                        if let Err(e) = console.set_baud(now.baud) {
+                            return Leave::Failed(format!("fixture UART baud: {e}"));
+                        }
+                        *baud = now.baud;
                     }
                     if !pending.is_empty() {
                         match console.write(&pending) {

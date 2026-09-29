@@ -88,6 +88,8 @@ policy_enum! {
         Dmdata => "dmdata",
         Dmseq => "dmseq",
         Rtt => "rtt",
+        /// An OEP probe's fixture UART (`oep.fixture.uart`), at the monitor's baud rate.
+        FixtureUart => "fixture-uart",
     }
 }
 
