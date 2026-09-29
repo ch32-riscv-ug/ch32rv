@@ -61,8 +61,96 @@ pub fn discovery(_cli: &Cli) -> ExitCode {
 /// so it never disturbs an in-flight upload/monitor on the same probe).
 fn list_ports() -> Vec<Value> {
     let mut ports = wchlink_ports();
+    ports.extend(oep_ports());
     ports.extend(hid_ports());
     ports
+}
+
+/// en: OEP probes (`crate::oep::is_oep_device`) as one `oep://<probe>/<slot>` port per registered
+/// slot. The slots are read lock-free - through the probe's broker when one runs (never started
+/// here), else on its serial port opened briefly - and when the probe cannot be read (another tool
+/// holds the port), the last listing is shown again. Plain serial ports are never opened.
+/// ja: OEP の probe を、登録スロットごとに `oep://<probe>/<slot>` で出す。スロットは lock 無しで読む
+/// (ブローカーが動いていればそこ経由、ここでは起動しない。無ければ serial port を短く開く)。読めなければ
+/// 前回の一覧。普通の serial port は開かない。
+fn oep_ports() -> Vec<Value> {
+    let mut out = Vec::new();
+    for dev in crate::oep::oep_devices() {
+        let Some(path) = crate::oep::oep_port(&dev) else {
+            continue;
+        };
+        let cache = crate::broker::listing_cache(&path);
+        match read_oep_listing(&dev, &path) {
+            Some(ports) => {
+                let _ = std::fs::write(&cache, Value::Array(ports.clone()).to_string());
+                out.extend(ports);
+            }
+            None => {
+                if let Some(Value::Array(ports)) = std::fs::read_to_string(&cache)
+                    .ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                {
+                    out.extend(ports);
+                }
+            }
+        }
+    }
+    out
+}
+
+fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<Value>> {
+    let mut link = match crate::broker::existing_link(path) {
+        Some(l) => l,
+        None => ch32rv_oep::link::open_serial(path).ok()?,
+    };
+    // A LIST must stay quick: a probe that does not answer (older firmware, another framing) costs
+    // two short waits, not the usual reply timeout twice.
+    link.set_timeout(std::time::Duration::from_millis(300));
+    let mut p = ch32rv_oep::session::Probe::connect(link).ok()?;
+    let slots = ch32rv_oep::config::slots(&mut p).ok()?;
+    let states = ch32rv_oep::config::slot_states(&mut p).unwrap_or_default();
+    let id = crate::oep::probe_id(dev);
+    let db = ch32rv_target::Db::builtin();
+    Some(
+        slots
+            .iter()
+            .map(|s| {
+                let st = states.iter().find(|x| x.slot == s.slot);
+                let family =
+                    st.and_then(|x| x.wch_chip_id())
+                        .and_then(|c| match db.resolve_by_chip_id(c) {
+                            ch32rv_target::Resolution::Sku(k) => Some(k.family.clone()),
+                            ch32rv_target::Resolution::Family(f, _) => Some(f),
+                            ch32rv_target::Resolution::Unknown => None,
+                        });
+                let state = match st.map(|x| x.state) {
+                    Some(0) => "connected",
+                    Some(1) => "absent",
+                    Some(2) => "lock-mismatch",
+                    Some(3) => "no-target-id",
+                    _ => "unknown",
+                };
+                json!({
+                    "address": format!("oep://{id}/{}", s.name),
+                    "label": match &family {
+                        Some(f) => format!("{} ({f}) on OEP probe {id}", s.name),
+                        None => format!("{} on OEP probe {id}", s.name),
+                    },
+                    "protocol": "oep",
+                    "protocolLabel": "OEP probe",
+                    "hardwareId": format!("{id}/{}", s.name),
+                    "properties": {
+                        "vid": format!("0x{:04x}", dev.vid()),
+                        "pid": format!("0x{:04x}", dev.pid()),
+                        "slot": s.name,
+                        "state": state,
+                        "chip": family,
+                        "port": path,
+                    },
+                })
+            })
+            .collect(),
+    )
 }
 
 /// WCH-Links as `wchlink://<serial>`.

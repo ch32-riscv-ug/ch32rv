@@ -55,10 +55,11 @@
 
 ### 3.3 USB の口の見つけ方
 
-- **OEP の probe の見分け方(WF §3.3、2026-09-29 の決定)**: 専用 PID(pid.codes で取る予定)はまだ無い。PID を取るまでは、**USB の interface の名前(iInterface)が `OEP` で始まる device を OEP の probe とみなす**。PID を取ったら、名前での判定をやめて PID だけにする。
-  - 判定は 1 つの関数(`is_oep_device`)にまとめ、後で PID の判定に差し替えられるようにする。discovery(`oep://`)も、serial port を選んだときの「専用 PID の probe なら raw の serial port の upload は断る」(§6)も、この関数を使う。
-  - 名前は device を開かずに読む。Linux は sysfs の `<dev>:<cfg>.<if>/interface` を読む(P4 43c6 では `OEP control (CDC)` などが見える)。Windows は interface ごとの Bus reported device description、macOS は IORegistry の USB Interface Name で読める見込み(未確認)。
-- 口の選び方: `OEP` で始まる interface のうち、vendor bulk、HID、CDC の順に試す(core §3.3)。
+- **OEP の probe の見分け方(oep-core §3.3、2026-09-29 の決定、oep-spec 0f94e21 で訂正)**: 専用 PID(pid.codes で取る予定)はまだ無い。PID を取るまでは、**device の iProduct が `OEP` で始まる**ことで見分ける(interface の名前では見分けない)。今の P4 の HS device は 303a:0002、iProduct `OEP probe (P4 HS)`、serial `<MAC>-hs`。PID を取ったら、名前での判定をやめて PID だけにする。
+  - 判定は 1 つの関数(`is_oep_device`)にまとめ、後で PID の判定に差し替えられるようにする。discovery(`oep://`)も、serial port を選んだときの「OEP の probe なら raw の serial port の upload は断る」(§6)も、この関数を使う。
+  - 名前は device を開かずに読む(nusb の列挙が持つ product の文字列)。
+  - fn 0 の describe の `oep_pid` = 1 は「この形で列挙している device がある」という意味で、USJ などから開いたときにも分かる。
+- 口は interface の種類で選ぶ(core §3.3): CDC(ACM)はすべて OEP を受ける serial port、vendor class の bulk の組は vendor bulk、vendor 定義の HID は HID。DFU や Mass Storage は OEP の外。vendor bulk、HID、serial port の順に試す(ch32rv が今使えるのは serial port だけ)。
 - vendor bulk は nusb で扱う。
   - IN は専用 thread で汲み続ける(汲まないと OUT が詰まる、参照 client の E160)。
   - wMaxPacketSize の倍数の書き込みの後には ZLP を送る。
@@ -183,7 +184,7 @@ binary の扱い:
 
 - serial port の path が WCH-Link のものでなければ、その port を開いて confirm を送る(利用者がその port を選んだので、開いてよい)。
   - `OEP!` が返らなければ「OEP の probe ではない」として exit 10。
-  - OEP の probe(§3.3 の `is_oep_device`。今は iInterface の名前、PID を取ったら PID)の port なら、upload は常に断る(`oep://` を選ぶよう案内する)。
+  - OEP の probe(§3.3 の `is_oep_device`。今は iProduct の名前、PID を取ったら PID)の port なら、upload は常に断る(`oep://` を選ぶよう案内する)。
 - **スロットの選び方**(WF §3.4):
   - 板の家系(`--chip`、monitor では `chip` の設定)に合うスロットが 1 つなら、そこを使う。
   - 接続済みのスロットの chip は、describe のスロットの状態から読む。未接続のスロットは、止めない attach で読む。
