@@ -39,6 +39,8 @@ use crate::oep::OepAddr;
 const FIRST_CLIENT_WAIT: Duration = Duration::from_secs(10);
 /// How long a client waits for a broker it started to publish its endpoint.
 const START_WAIT: Duration = Duration::from_secs(5);
+/// How often a client that finds no endpoint starts a broker again while it waits.
+const RESPAWN_EVERY: Duration = Duration::from_millis(400);
 /// The broker's own lease on the probe, renewed by keepalive while no client talks.
 const LEASE_MS: u32 = 3000;
 const KEEPALIVE_EVERY: Duration = Duration::from_millis(1000);
@@ -53,6 +55,29 @@ fn key_for(path: &str) -> String {
 
 fn endpoint_file(key: &str) -> PathBuf {
     ch32rv_usb::runtime_dir().join(format!("{key}.oep"))
+}
+
+/// The broker's log file for runtime key `key`.
+pub(crate) fn log_path(key: &str) -> PathBuf {
+    ch32rv_usb::runtime_dir().join(format!("{key}.broker.log"))
+}
+
+/// en: A line in the broker's log (`<runtime>/<key>.broker.log`): its stderr goes nowhere, and
+/// how it ended is what a client that saw its connection close needs. Kept under 256 KiB.
+/// ja: ブローカーの log に 1 行(stderr はどこにも出ないので、終わり方はここで分かる)。256 KiB まで。
+pub(crate) fn broker_log(key: &str, msg: &str) {
+    use std::io::Write as _;
+    let path = log_path(key);
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 256 * 1024) {
+        let _ = std::fs::rename(&path, path.with_extension("log.1"));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{} pid {} {msg}", now_ms(), std::process::id());
+    }
 }
 
 fn now_ms() -> u64 {
@@ -115,7 +140,7 @@ impl BrokerTarget {
         }
     }
 
-    fn key(&self) -> String {
+    pub(crate) fn key(&self) -> String {
         match self {
             BrokerTarget::Serial(p) => key_for(p),
             BrokerTarget::Wch { id, .. } => ch32rv_usb::sanitize_key(&format!("wch-{id}")),
@@ -163,9 +188,17 @@ fn spawn_broker(target: &BrokerTarget) -> Result<(), String> {
 /// ja: `target` のブローカーへの link。答えるブローカーが無ければ起動する。
 pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, String> {
     let key = target.key();
+    // en: A connection counts only if the endpoint still names the same broker once connected: a
+    // broker about to end takes its endpoint down first and then still accepts for a moment, so a
+    // client that read the file just before would otherwise talk to a process on its way out.
+    // ja: つないだ後も endpoint が同じブローカーを指すときだけ有効。終わりかけのブローカーは先に
+    // endpoint を下ろしてからも少し受け付けるので、その直前に読んだ client が消えるプロセスと話さないように。
     let try_connect = |v: &Value| -> Option<Link> {
         let port = v.get("port")?.as_u64()?;
-        ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")).ok()
+        let pid = v.get("pid")?.as_u64()?;
+        let l = ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")).ok()?;
+        let still = read_endpoint(&key).and_then(|w| w.get("pid")?.as_u64()) == Some(pid);
+        still.then_some(l)
     };
     if let Some(v) = read_endpoint(&key)
         && let Some(l) = try_connect(&v)
@@ -174,6 +207,7 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, String> {
     }
     let t0 = now_ms();
     spawn_broker(target)?;
+    let mut spawned = Instant::now();
     let deadline = Instant::now() + START_WAIT;
     while Instant::now() < deadline {
         if let Some(v) = read_endpoint(&key) {
@@ -184,6 +218,11 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, String> {
             if fresh && let Some(e) = v.get("error").and_then(Value::as_str) {
                 return Err(e.to_owned());
             }
+        } else if spawned.elapsed() >= RESPAWN_EVERY {
+            // The one we started may have found the old broker still holding the probe (its lock)
+            // and left; start another now that the old one may be gone.
+            spawn_broker(target)?;
+            spawned = Instant::now();
         }
         std::thread::sleep(Duration::from_millis(30));
     }
@@ -377,6 +416,7 @@ fn serve_target(
         return ExitCode::from(ErrorKind::DeviceOpenFailed.exit_code());
     }
 
+    broker_log(&key, &format!("up on 127.0.0.1:{port} over {transport}"));
     let (tx, rx) = mpsc::channel::<Ev>();
     std::thread::spawn(move || accept_loop(listener, tx));
 
@@ -386,8 +426,14 @@ fn serve_target(
         wires,
         clients: HashMap::new(),
         ledger: Ledger::default(),
+        key: key.clone(),
+        endpoint: json!({"port": port, "pid": std::process::id(), "time": now_ms(), "transport": transport}),
     };
     let r = b.run(&rx);
+    match &r {
+        Ok(()) => broker_log(&key, "down: no client left"),
+        Err(e) => broker_log(&key, &format!("down on an upstream error: {e}")),
+    }
     // Remove the endpoint only if it is still ours, then end the probe session.
     if read_endpoint(&key).and_then(|v| v.get("pid")?.as_u64())
         == Some(u64::from(std::process::id()))
@@ -514,22 +560,37 @@ struct Broker {
     wires: BTreeSet<u16>,
     clients: HashMap<u64, TcpStream>,
     ledger: Ledger,
+    /// The runtime key and what the endpoint file says, to take it down and put it back.
+    key: String,
+    endpoint: Value,
 }
+
+/// How long a broker about to end still takes a new connection (after its endpoint is gone).
+const LEAVE_GRACE: Duration = Duration::from_millis(150);
 
 impl Broker {
     fn run(&mut self, rx: &mpsc::Receiver<Ev>) -> Result<(), String> {
         let started = Instant::now();
         let mut had_client = false;
         let mut last_upstream = Instant::now();
+        let mut carried: Option<Ev> = None;
         loop {
             let wait = self.up.tick();
-            let ev = match rx.recv_timeout(wait) {
+            let got = match carried.take() {
+                Some(ev) => Ok(ev),
+                None => rx.recv_timeout(wait),
+            };
+            let ev = match got {
                 Ok(ev) => ev,
                 Err(RecvTimeoutError::Timeout) => {
                     if self.clients.is_empty()
                         && (had_client || started.elapsed() > FIRST_CLIENT_WAIT)
                     {
-                        return Ok(());
+                        match self.leave(rx) {
+                            Some(ev) => carried = Some(ev),
+                            None => return Ok(()),
+                        }
+                        continue;
                     }
                     if last_upstream.elapsed() >= KEEPALIVE_EVERY {
                         self.up.keepalive()?;
@@ -548,6 +609,7 @@ impl Broker {
             for ev in batch {
                 match ev {
                     Ev::Connected(id, s) => {
+                        broker_log(&self.key, &format!("client {id} connected"));
                         self.clients.insert(id, s);
                     }
                     // A client counts once it has asked something: a connection that only checks
@@ -559,9 +621,16 @@ impl Broker {
                     Ev::Gone(id) => {
                         // Serve what it sent before it left, then release its share.
                         self.serve_batch(std::mem::take(&mut msgs))?;
-                        self.release(id)?;
+                        // en: A failed release (a detach the probe did not answer) must not end
+                        // the broker under the clients still here; the probe drops what it holds
+                        // when the broker's session ends anyway.
+                        // ja: release の失敗で、残っている client ごとブローカーを終わらせない。
+                        if let Err(e) = self.release(id) {
+                            broker_log(&self.key, &format!("client {id}: release failed: {e}"));
+                        }
                         self.up.client_gone(id);
                         self.clients.remove(&id);
+                        broker_log(&self.key, &format!("client {id} gone"));
                     }
                 }
             }
@@ -570,9 +639,34 @@ impl Broker {
                 last_upstream = Instant::now();
             }
             if had_client && self.clients.is_empty() {
-                return Ok(());
+                match self.leave(rx) {
+                    Some(ev) => carried = Some(ev),
+                    None => return Ok(()),
+                }
             }
         }
+    }
+
+    /// en: About to end with no client: take the endpoint down first, so no new client finds this
+    /// broker, then wait [`LEAVE_GRACE`] for a connection that read it just before. One that comes
+    /// cancels the end (the endpoint goes back up) and is handed back to the loop; `None` means
+    /// end. A client that still reaches the listener after this sees the endpoint gone and
+    /// starts a new broker ([`client_link_for`]).
+    /// ja: client 0 で終わる前に、まず endpoint を下ろし(新しい client に見つからないように)、直前に
+    /// それを読んだ接続を [`LEAVE_GRACE`] だけ待つ。来たら終わるのをやめて endpoint を戻し、その event を
+    /// loop に返す。`None` なら終わる。
+    fn leave(&mut self, rx: &mpsc::Receiver<Ev>) -> Option<Ev> {
+        let ours = read_endpoint(&self.key).and_then(|v| v.get("pid")?.as_u64())
+            == Some(u64::from(std::process::id()));
+        if ours {
+            let _ = std::fs::remove_file(endpoint_file(&self.key));
+        }
+        let ev = rx.recv_timeout(LEAVE_GRACE).ok()?;
+        broker_log(&self.key, "a client came while leaving: staying up");
+        if ours {
+            let _ = write_endpoint(&self.key, &self.endpoint);
+        }
+        Some(ev)
     }
 
     /// Answer `msgs` in order: session requests locally, the rest through one pipelined exchange.
