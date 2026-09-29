@@ -899,6 +899,8 @@ struct Attached<'a> {
     t: OepDtm<'a>,
     chip_id: Option<u32>,
     family: Option<String>,
+    /// The attach found a connection already there (another client's).
+    existing: bool,
 }
 
 /// en: Connect, open a session, attach at the place `choose_place` picks (halting when asked),
@@ -950,6 +952,7 @@ fn with_attached(
                 t,
                 chip_id: at.wch_chip_id,
                 family,
+                existing: at.existing,
             }),
             Err(e) => oep_fail(cli, cmd, e),
         };
@@ -958,6 +961,64 @@ fn with_attached(
     })();
     let _ = p.end();
     r
+}
+
+/// en: `gdb` on an OEP probe, or on a WCH-Link through its broker (docs/cli.ja.md §4.6): attach
+/// without halting, wait for GDB, halt when it connects, serve it, then take out any flash
+/// breakpoint, resume and detach. A connection another client holds (a monitor) is shared, so the
+/// console keeps streaming while GDB has the target stopped or running.
+/// ja: OEP の probe、またはブローカー経由の WCH-Link での `gdb`。止めずに attach し、GDB を待ち、
+/// つながったら止めて相手をし、最後に flash の breakpoint を外して走らせ、detach する。他の client
+/// (monitor)の接続は共有するので、GDB の間も console は流れ続ける。
+pub(crate) fn gdb(cli: &Cli, args: &crate::args::GdbArgs, a: &OepAddr) -> ExitCode {
+    const CMD: &str = "gdb";
+    with_attached(cli, CMD, a, false, |x| {
+        let profile = x
+            .family
+            .as_deref()
+            .and_then(ch32rv_flash::flash_controller_profile_for);
+        // en: Behind a WCH-Link broker the attach is the Link's AttachChip, which overwrites s1 on
+        // CH32V103: restart the program so it sets its registers again (as the direct gdb does).
+        // A connection already there was attached before, and is left as it is.
+        // ja: WCH-Link のブローカーの裏では attach が AttachChip で、CH32V103 では s1 を上書きする。
+        // 直接の gdb と同じく program を起動し直す。既にあった接続はそのまま。
+        if matches!(a, OepAddr::Wch(_))
+            && !x.existing
+            && profile.is_some_and(|p| p.attach_corrupts_regs)
+        {
+            let _ = x.t.reset(ResetMode::Run);
+            std::thread::sleep(Duration::from_millis(50));
+            eprintln!(
+                "gdb: reset after attach (this core's attach corrupts a register; the target restarted)"
+            );
+        }
+        let stream = match crate::cmd_gdb::listen(cli, args) {
+            Ok(s) => s,
+            Err(c) => return c,
+        };
+        let flash = profile
+            .filter(|p| p.gdb_breakpoints)
+            .map(|p| (p.page_size, p.mode));
+        let mut target = match ch32rv_debug::Ch32Target::new(&mut x.t, flash) {
+            Ok(t) => t,
+            Err(e) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::AttachFailed,
+                    format!("halt for gdb failed: {e}"),
+                    None,
+                );
+            }
+        };
+        let code = crate::cmd_gdb::run_session(cli, &mut target, stream);
+        // The direct path's detach resumes the core; an OEP detach leaves it as it is.
+        let mut dm = ch32rv_dmi::DebugModule::new(target.into_inner());
+        if dm.is_halted().unwrap_or(false) {
+            let _ = dm.resume();
+        }
+        code
+    })
 }
 
 /// The DB SKU of a chip id (flash / SRAM sizes).
