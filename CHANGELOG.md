@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Fix: GDB with an RV32E ELF (CH32V002/V003/V004/V005/V006/V007) stopped at the first register read with "Remote 'g' packet reply is too long": the server always sent 33 registers. On an RV32E hart it now sends x0..x15 and pc and a target description that says so, with or without the ELF. Verified on a CH32V006 through its broker, with a dmseq monitor open.
+- (JA) 修正: RV32E の ELF(CH32V002/V003/V004/V005/V006/V007)を読んだ GDB が、最初のレジスタの読み出しで "Remote 'g' packet reply is too long" で止まった(server がいつも 33 本を返していた)。RV32E の hart では x0..x15 と pc を返し、target description もそう出すので、ELF の有無によらず通る。CH32V006 でブローカー経由、dmseq の monitor を開いたまま確認。
+
 - (EN) `gdb` works on an OEP probe, and on a WCH-Link whose broker runs it no longer borrows the Link: it is a broker client, so a monitor open on the same probe keeps streaming through the debug session. Verified with riscv-none-elf-gdb (break, step, memory, detach) on the CH32X035 jig's OEP probe and on a LinkE + CH32V203, each with a dmseq monitor open.
 - (JA) `gdb` が OEP の probe で使え、ブローカーの動いている WCH-Link では Link を借りなくなった。ブローカーの client になるので、同じ probe で開いている monitor が debug の間も流れ続ける。CH32X035 の治具の OEP の probe と LinkE + CH32V203 で、dmseq の monitor を開いたまま riscv-none-elf-gdb(break、step、メモリ、detach)で確認。
 - (EN) Fix: gdb could leave an `ebreak` in flash. A session that ended while the hart ran (GDB gone mid-`continue`, a fatal error) restored its flash breakpoints with the hart running, which fails, and said nothing (found on a CH32V203). It now halts the hart for the restore, resumes it after, and warns about any page it could not restore.
