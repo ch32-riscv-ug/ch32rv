@@ -28,6 +28,8 @@ pub(crate) enum OepAddr {
     Slot { path: String, slot: String },
     /// `tcp:<host:port>`: a probe's TCP transport, or a ch32rv broker.
     Tcp(String),
+    /// A WCH-Link, reached through its broker (which maps OEP onto the Link).
+    Wch(crate::broker::BrokerTarget),
 }
 
 /// en: The one place that decides what an OEP probe is (docs/oep-host.ja.md §3.3, oep-core §3.3).
@@ -106,10 +108,27 @@ pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
                 .iter()
                 .enumerate()
                 .any(|(i, e)| sel.matches(&e.dev, i));
-            Ok((!owned).then_some(OepAddr::Serial(p)))
+            if owned {
+                return Ok(running_wch_broker(cli, cmd));
+            }
+            Ok(Some(OepAddr::Serial(p)))
         }
-        _ => Ok(None),
+        _ => Ok(running_wch_broker(cli, cmd)),
     }
+}
+
+/// en: The WCH-Link `--probe` names, when its broker is running (a monitor or another client holds
+/// the Link through it): the command then goes through the broker too, since the broker holds the
+/// Link. Otherwise None, and the command opens the Link directly as always.
+/// ja: `--probe` の WCH-Link のブローカーが動いていれば(monitor などが Link をブローカー経由で持って
+/// いる)、コマンドもブローカーを通す(Link はブローカーが持っている)。動いていなければ None で、今まで
+/// どおり直接開く。
+fn running_wch_broker(cli: &Cli, cmd: &str) -> Option<OepAddr> {
+    let sel = crate::cmd_probe::parse_selector(cli, cmd).ok()?;
+    let entries = crate::cmd_probe::wch_devices().ok()?;
+    let i = ch32rv_usb::resolve(sel.as_ref(), entries.iter().map(|e| &e.dev)).ok()?;
+    let t = crate::broker::BrokerTarget::wch(&entries[i]);
+    crate::broker::existing_link_for(&t).map(|_| OepAddr::Wch(t))
 }
 
 fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
@@ -147,6 +166,8 @@ fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
             })?,
         OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t)
             .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?,
+        OepAddr::Wch(t) => crate::broker::client_link_for(t)
+            .map_err(|m| fail(cli, cmd, ErrorKind::DeviceOpenFailed, m, None))?,
     };
     Probe::connect(link).map_err(|e| oep_fail(cli, cmd, e))
 }
@@ -610,6 +631,7 @@ impl ConsoleSession {
         let link = match a {
             OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => crate::broker::client_link(p)?,
             OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t).map_err(|e| e.to_string())?,
+            OepAddr::Wch(t) => crate::broker::client_link_for(t)?,
         };
         let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
         let owner = format!("ch32rv monitor pid {}", std::process::id());

@@ -657,7 +657,15 @@ impl Backend {
         // ja: WCH-Link のものでない serial port で debug の source なら OEP の probe(ブローカー経由)。
         // uart は port の素通しのまま(知らない port に OEP の confirm を送ると誰かの device に
         // バイトが入る。OEP の UART bridge の probe は bind した console をそこに生で流す)。
-        if let Some(oep) = &r.oep
+        // en: A WCH-Link's dmdata / dmseq also go through the Link's broker, so a gdb or a flash
+        // can use the same Link meanwhile (the broker polls the mailbox as the Link's console).
+        // rtt and sdi still open the Link themselves.
+        // ja: WCH-Link の dmdata / dmseq もブローカー経由(同じ Link を gdb や flash が同時に使える)。
+        let wch_via_broker = r.entry.as_ref().and_then(|e| {
+            matches!(s.source, MonitorSource::Dmdata | MonitorSource::Dmseq)
+                .then(|| crate::oep::OepAddr::Wch(crate::broker::BrokerTarget::wch(e)))
+        });
+        if let Some(oep) = wch_via_broker.as_ref().or(r.oep.as_ref())
             && (s.source != MonitorSource::Uart || matches!(oep, crate::oep::OepAddr::Slot { .. }))
         {
             use crate::oep::StreamWanted;

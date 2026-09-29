@@ -1,5 +1,5 @@
 //! en: The link and session layers against the spec side's fake probe (oep-client-python
-//! `v1.endpoint.Endpoint`), served over TCP by `tests/fake/serve.py`. The fake is the shared
+//! `endpoint.Endpoint`), served over TCP by `tests/fake/serve.py`. The fake is the shared
 //! "working spec" (ArduinoCore-CH32 decision, 2026-09-29); Python runs only here, through `uv`.
 //! Skipped, with a note, when uv or the client checkout is missing ($OEP_CLIENT_PYTHON, default
 //! `../dev_oep/oep-client-python` next to the ch32rv checkout's parent).
@@ -43,7 +43,7 @@ fn client_dir() -> PathBuf {
 /// ja: `fake_serve` を起動する。動かせない環境では None(skip)。
 fn fake_env(args: &[&str], env: &[(&str, &str)]) -> Option<Fake> {
     let dir = client_dir();
-    if !dir.join("src/oep_client/v1/fake_serve.py").exists() {
+    if !dir.join("src/oep_client/fake_serve.py").exists() {
         eprintln!(
             "skip: no oep-client-python with fake_serve at {}",
             dir.display()
@@ -55,7 +55,7 @@ fn fake_env(args: &[&str], env: &[(&str, &str)]) -> Option<Fake> {
     cmd.arg("run")
         .arg("--project")
         .arg(&dir)
-        .args(["python", "-m", "oep_client.v1.fake_serve"])
+        .args(["python", "-m", "oep_client.fake_serve"])
         .args(args)
         .arg("--run-hook")
         .arg(&hook)

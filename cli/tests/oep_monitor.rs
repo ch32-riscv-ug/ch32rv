@@ -28,7 +28,7 @@ fn fake_pty(args: &[&str]) -> Option<(Kill, String)> {
     let dir = std::env::var_os("OEP_CLIENT_PYTHON")
         .map(PathBuf::from)
         .unwrap_or_else(|| root().join("../../dev_oep/oep-client-python"));
-    if !dir.join("src/oep_client/v1/fake_serve.py").exists() {
+    if !dir.join("src/oep_client/fake_serve.py").exists() {
         eprintln!(
             "skip: no oep-client-python with fake_serve at {}",
             dir.display()
@@ -39,7 +39,7 @@ fn fake_pty(args: &[&str]) -> Option<(Kill, String)> {
         .arg("run")
         .arg("--project")
         .arg(&dir)
-        .args(["python", "-m", "oep_client.v1.fake_serve", "--pty"])
+        .args(["python", "-m", "oep_client.fake_serve", "--pty"])
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
