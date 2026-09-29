@@ -23,6 +23,7 @@ mod cmd_run;
 mod cmd_target;
 mod cmd_write;
 mod config;
+mod oep;
 mod parse;
 mod progress;
 mod session;

@@ -239,6 +239,13 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         }
     };
 
+    // An OEP probe (`tcp:`, or a serial port no WCH-Link owns) takes the OEP path.
+    match crate::oep::addr(cli, CMD) {
+        Ok(Some(a)) => return crate::oep::flash(cli, args, &bytes, &a),
+        Ok(None) => {}
+        Err(c) => return c,
+    }
+
     let entry = match select_entry(cli, CMD) {
         Ok(e) => e,
         Err(c) => return c,

@@ -18,7 +18,8 @@ use ch32rv_oep::session::{OepError, Probe, random_session_id};
 
 struct Fake {
     child: Child,
-    port: u16,
+    /// `PORT n` (TCP) or `PTY /dev/pts/N`.
+    at: String,
 }
 
 impl Drop for Fake {
@@ -36,25 +37,35 @@ fn client_dir() -> PathBuf {
         })
 }
 
-/// Start the fake, or `None` (skip) when it cannot run here.
-fn fake(args: &[&str]) -> Option<Fake> {
+/// en: Start oep-client-python's `fake_serve` with `args` (and `env` for the loader hook), or
+/// `None` (skip) when it cannot run here. `--run-hook` is always given: ch32rv's loader played in
+/// `tests/fake/loader_hook.py`.
+/// ja: `fake_serve` を起動する。動かせない環境では None(skip)。
+fn fake_env(args: &[&str], env: &[(&str, &str)]) -> Option<Fake> {
     let dir = client_dir();
-    if !dir.join("src/oep_client/v1/endpoint.py").exists() {
-        eprintln!("skip: no oep-client-python at {}", dir.display());
+    if !dir.join("src/oep_client/v1/fake_serve.py").exists() {
+        eprintln!(
+            "skip: no oep-client-python with fake_serve at {}",
+            dir.display()
+        );
         return None;
     }
-    let serve = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fake/serve.py");
-    let mut child = match Command::new("uv")
-        .arg("run")
+    let hook = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fake/loader_hook.py:loader");
+    let mut cmd = Command::new("uv");
+    cmd.arg("run")
         .arg("--project")
         .arg(&dir)
-        .arg("python")
-        .arg(&serve)
+        .args(["python", "-m", "oep_client.v1.fake_serve"])
         .args(args)
+        .arg("--run-hook")
+        .arg(&hook)
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-    {
+        .stderr(Stdio::inherit());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
             eprintln!("skip: cannot run uv: {e}");
@@ -65,17 +76,26 @@ fn fake(args: &[&str]) -> Option<Fake> {
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
         .unwrap();
-    let port = line
-        .trim()
-        .strip_prefix("PORT ")
-        .unwrap_or_else(|| panic!("serve.py said {line:?}"))
-        .parse()
-        .unwrap();
-    Some(Fake { child, port })
+    assert!(
+        line.starts_with("PORT ") || line.starts_with("PTY "),
+        "fake_serve said {line:?}"
+    );
+    Some(Fake {
+        child,
+        at: line.trim().to_owned(),
+    })
+}
+
+/// A TCP fake with `framing` (cobs / length) and extra `args`.
+fn fake(framing: &str, args: &[&str]) -> Option<Fake> {
+    let mut a = vec!["--tcp", "0", "--once", "--framing", framing];
+    a.extend_from_slice(args);
+    fake_env(&a, &[])
 }
 
 fn probe(f: &Fake, framing: Framing, timeout: Duration) -> Probe {
-    let s = TcpStream::connect(("127.0.0.1", f.port)).unwrap();
+    let port: u16 = f.at.strip_prefix("PORT ").unwrap().parse().unwrap();
+    let s = TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_nodelay(true).unwrap();
     let mut link = Link::new(Box::new(s), framing);
     link.set_timeout(timeout);
@@ -84,7 +104,7 @@ fn probe(f: &Fake, framing: Framing, timeout: Duration) -> Probe {
 
 #[test]
 fn discovery_and_session_over_cobs_with_console_noise() {
-    let Some(f) = fake(&["--framing", "cobs", "--noise", "uptime 3 s\r\n"]) else {
+    let Some(f) = fake("cobs", &["--noise", "uptime 3 s\r\n"]) else {
         return;
     };
     let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
@@ -137,7 +157,7 @@ fn discovery_and_session_over_cobs_with_console_noise() {
 #[test]
 fn a_lost_answer_is_resent_once_with_the_same_corr_on_length_framing() {
     // The 2nd request (the first after confirm) goes unanswered once.
-    let Some(f) = fake(&["--framing", "length", "--drop", "2"]) else {
+    let Some(f) = fake("length", &["--drop", "2"]) else {
         return;
     };
     let mut p = probe(&f, Framing::Length, Duration::from_millis(500));
@@ -148,7 +168,7 @@ fn a_lost_answer_is_resent_once_with_the_same_corr_on_length_framing() {
 
 #[test]
 fn a_lost_answer_is_resent_on_cobs_without_resync() {
-    let Some(f) = fake(&["--framing", "cobs", "--drop", "2"]) else {
+    let Some(f) = fake("cobs", &["--drop", "2"]) else {
         return;
     };
     let mut p = probe(&f, Framing::Cobs, Duration::from_millis(500));
@@ -158,7 +178,7 @@ fn a_lost_answer_is_resent_on_cobs_without_resync() {
 
 #[test]
 fn another_session_is_locked_out_until_it_forces() {
-    let Some(f) = fake(&["--framing", "cobs"]) else {
+    let Some(f) = fake("cobs", &[]) else {
         return;
     };
     let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
@@ -177,7 +197,7 @@ fn another_session_is_locked_out_until_it_forces() {
 
 #[test]
 fn pipelined_requests_answer_in_order() {
-    let Some(f) = fake(&["--framing", "length"]) else {
+    let Some(f) = fake("length", &[]) else {
         return;
     };
     let mut p = probe(&f, Framing::Length, Duration::from_secs(2));
@@ -206,7 +226,7 @@ use ch32rv_oep::target::{AttachOptions, OepDtm, WireKind, attach, detach};
 
 #[test]
 fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
-    let Some(f) = fake(&["--framing", "cobs", "--target-id", "0x20310500"]) else {
+    let Some(f) = fake("cobs", &["--target-id", "0x20310500"]) else {
         return;
     };
     let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
@@ -252,9 +272,10 @@ fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
             Duration::from_millis(200),
         )
         .unwrap();
+    // The loader hook plays ch32rv's loader: stop at +4 with a0 = 0.
     assert!(r.stopped);
-    assert_eq!(r.dpc, 0x2000_0010);
-    assert_eq!(r.outs, vec![5]);
+    assert_eq!(r.dpc, 0x2000_0004);
+    assert_eq!(r.outs, vec![0]);
 
     let rr = t.reset(ResetMode::HaltAtReset).unwrap();
     assert_eq!(rr.pc, 0);
@@ -264,8 +285,12 @@ fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
 
 #[test]
 fn a_resume_that_does_not_take_is_issued_again() {
-    // Two misses, like a CH32V006 now and then: the CH32 rule re-issues while dpc is unmoved.
-    let Some(f) = fake(&["--framing", "cobs", "--resume-misses", "2"]) else {
+    // Two misses, like a CH32V006 now and then (set up by the loader hook's first run): the CH32
+    // rule re-issues while dpc is unmoved.
+    let Some(f) = fake_env(
+        &["--tcp", "0", "--once", "--framing", "cobs"],
+        &[("CH32RV_FAKE_RESUME_MISSES", "2")],
+    ) else {
         return;
     };
     let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
@@ -281,14 +306,18 @@ fn a_resume_that_does_not_take_is_issued_again() {
     )
     .unwrap();
     let mut t = OepDtm::new(&mut p, a.connection).unwrap();
+    t.run_until_halt(0x2000_0000, &[], &[], Duration::from_millis(100))
+        .unwrap();
     let ran = resume_ch32(&mut t, |t| DebugModule::new(t).read_reg(RegName::Pc)).unwrap();
     assert!(ran);
 }
 
 // ---- flash through the RAM loader ----
 
-fn flash_through(args: &[&str]) -> Option<(ch32rv_flash::loader::LoaderReport, Vec<u32>, Vec<u8>)> {
-    let f = fake(args)?;
+fn flash_through(
+    env: &[(&str, &str)],
+) -> Option<(ch32rv_flash::loader::LoaderReport, Vec<u32>, Vec<u8>)> {
+    let f = fake_env(&["--tcp", "0", "--once", "--framing", "cobs"], env)?;
     let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
     p.open(random_session_id(), 3000, false, Some("ch32rv test"))
         .unwrap();
@@ -327,7 +356,7 @@ fn check_image(back: &[u32], image: &[u8]) {
 
 #[test]
 fn flash_through_the_loader() {
-    let Some((r, back, image)) = flash_through(&["--framing", "cobs", "--loader-sim"]) else {
+    let Some((r, back, image)) = flash_through(&[]) else {
         return;
     };
     assert_eq!(r.pages, 4);
@@ -337,18 +366,31 @@ fn flash_through_the_loader() {
 
 #[test]
 fn flash_reissues_a_run_that_did_not_start_and_rewrites_a_bad_page() {
-    let Some((r, back, image)) = flash_through(&[
-        "--framing",
-        "cobs",
-        "--loader-sim",
-        "--loader-nostart",
-        "2",
-        "--loader-garble",
-        "4", // runs 1-2 do not start; run 4 writes the second page wrong once
-    ]) else {
+    // Runs 1-2 do not start; run 4 writes the second page wrong once.
+    let Some((r, back, image)) =
+        flash_through(&[("CH32RV_FAKE_NOSTART", "2"), ("CH32RV_FAKE_GARBLE", "4")])
+    else {
         return;
     };
     assert_eq!(r.restarted_runs, 2);
     assert_eq!(r.rewritten, 1);
     check_image(&back, &image);
+}
+
+// ---- the serial path, on the fake's pty ----
+
+#[test]
+fn a_pty_is_opened_exclusively_and_speaks_cobs() {
+    let Some(f) = fake_env(&["--pty", "--noise", "boot text\r\n"], &[]) else {
+        return;
+    };
+    let path = f.at.strip_prefix("PTY ").unwrap().to_owned();
+    let mut p = Probe::connect(ch32rv_oep::link::open_serial(&path).unwrap()).unwrap();
+    assert_eq!(p.limits().revision, 1);
+    assert!(!p.list("oep").unwrap().is_empty());
+    // The first open made the tty exclusive: a second host cannot open it.
+    assert!(ch32rv_oep::link::open_serial(&path).is_err());
+    p.open(random_session_id(), 3000, false, Some("ch32rv test"))
+        .unwrap();
+    p.end().unwrap();
 }

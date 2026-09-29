@@ -122,6 +122,7 @@ dependencies = [
  "ch32rv-debug",
  "ch32rv-dmi",
  "ch32rv-flash",
+ "ch32rv-oep",
  "ch32rv-target",
  "ch32rv-usb",
  "ch32rv-wchlink",
@@ -212,6 +213,7 @@ version = "0.10.1"
 dependencies = [
  "ch32rv-dmi",
  "ch32rv-flash",
+ "serialport",
  "thiserror",
 ]
 
