@@ -211,6 +211,7 @@ name = "ch32rv-oep"
 version = "0.10.1"
 dependencies = [
  "ch32rv-dmi",
+ "ch32rv-flash",
  "thiserror",
 ]
 

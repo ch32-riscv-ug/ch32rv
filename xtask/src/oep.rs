@@ -312,3 +312,94 @@ pub fn check(spec: &Path, source: Source) -> Result<String, String> {
         Err(e) => Err(format!("read {OUT}: {e}")),
     }
 }
+
+// ---- the RAM loader (docs/oep-host.ja.md §5.1) ----
+
+pub const LOADER_SRC: &str = "crates/flash/loader/ch32_loader.S";
+pub const LOADER_BIN: &str = "crates/flash/loader/ch32_loader.bin";
+
+/// The toolchain's bin directory: $CH32_GCC_BIN, else ArduinoCore-CH32's vendored xpack gcc.
+fn gcc_bin() -> Result<std::path::PathBuf, String> {
+    if let Some(p) = std::env::var_os("CH32_GCC_BIN") {
+        return Ok(p.into());
+    }
+    let tools = Path::new("../ArduinoCore-CH32/.tools/xpack-riscv-none-elf-gcc");
+    let mut vers: Vec<_> = std::fs::read_dir(tools)
+        .map_err(|e| format!("{tools:?}: {e} (set CH32_GCC_BIN to a riscv-none-elf-gcc bin dir)"))?
+        .flatten()
+        .map(|e| e.path().join("bin"))
+        .filter(|p| p.join("riscv-none-elf-gcc").exists())
+        .collect();
+    vers.sort();
+    vers.pop()
+        .ok_or_else(|| format!("no riscv-none-elf-gcc under {tools:?}"))
+}
+
+/// Assemble the loader and return the flat binary.
+pub fn build_loader() -> Result<Vec<u8>, String> {
+    let bin = gcc_bin()?;
+    let dir = std::env::temp_dir().join(format!("ch32rv-loader-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{dir:?}: {e}"))?;
+    let elf = dir.join("loader.elf");
+    let flat = dir.join("loader.bin");
+    let run = |cmd: &Path, args: &[&std::ffi::OsStr]| -> Result<(), String> {
+        let out = std::process::Command::new(cmd)
+            .args(args)
+            .output()
+            .map_err(|e| format!("run {cmd:?}: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(format!(
+                "{cmd:?}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            ))
+        }
+    };
+    // RV32EC so the one binary runs on the RV32E parts as well; linked at 0 but position
+    // independent (relative branches only), placed anywhere by the host.
+    run(
+        &bin.join("riscv-none-elf-gcc"),
+        &[
+            "-march=rv32ec_zicsr".as_ref(),
+            "-mabi=ilp32e".as_ref(),
+            "-nostdlib".as_ref(),
+            "-nostartfiles".as_ref(),
+            "-Wl,-Ttext=0".as_ref(),
+            "-o".as_ref(),
+            elf.as_os_str(),
+            LOADER_SRC.as_ref(),
+        ],
+    )?;
+    run(
+        &bin.join("riscv-none-elf-objcopy"),
+        &[
+            "-O".as_ref(),
+            "binary".as_ref(),
+            elf.as_os_str(),
+            flat.as_os_str(),
+        ],
+    )?;
+    let bytes = std::fs::read(&flat).map_err(|e| format!("{flat:?}: {e}"))?;
+    let _ = std::fs::remove_dir_all(&dir);
+    Ok(bytes)
+}
+
+/// `loader-gen`: build and write the committed binary.
+pub fn loader_write() -> Result<String, String> {
+    let b = build_loader()?;
+    std::fs::write(LOADER_BIN, &b).map_err(|e| format!("write {LOADER_BIN}: {e}"))?;
+    Ok(format!("wrote {LOADER_BIN} ({} bytes)", b.len()))
+}
+
+/// `loader-check`: fail when the committed binary is not what the source builds to.
+pub fn loader_check() -> Result<String, String> {
+    let b = build_loader()?;
+    match std::fs::read(LOADER_BIN) {
+        Ok(on_disk) if on_disk == b => Ok(format!("up to date: {LOADER_BIN} matches {LOADER_SRC}")),
+        Ok(_) => Err(format!(
+            "{LOADER_BIN} is stale - run `cargo xtask loader-gen`"
+        )),
+        Err(e) => Err(format!("read {LOADER_BIN}: {e}")),
+    }
+}

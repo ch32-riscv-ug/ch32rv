@@ -27,9 +27,24 @@
 //! [`CODE_FLASH_START`](共通 flash 先頭 0x0800_0000)。
 
 pub mod image;
+pub mod loader;
 pub mod stub;
 
 pub use image::{Image, ImageError, Segment};
+
+/// en: Lay the bytes of `segments` that fall inside the page at `page_addr` over `content` (the
+/// page's current bytes), so a page rewrite keeps what lies outside the image.
+/// ja: `page_addr` の page に入る `segments` のバイトを `content`(page の今の中身)に重ねる。
+pub fn overlay(page_addr: u32, content: &mut [u8], segments: &[Segment]) {
+    let page_end = page_addr + content.len() as u32;
+    for seg in segments {
+        let lo = seg.addr.max(page_addr);
+        let hi = (seg.addr + seg.data.len() as u32).min(page_end);
+        for a in lo..hi {
+            content[(a - page_addr) as usize] = seg.data[(a - seg.addr) as usize];
+        }
+    }
+}
 
 use ch32rv_contract::policy::{ConfirmRunMode, EraseMode, Region, ResetPolicy, VerifyMode};
 use ch32rv_dmi::FlashProgMode;
