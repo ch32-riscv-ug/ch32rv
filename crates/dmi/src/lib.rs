@@ -34,7 +34,7 @@ pub mod access;
 pub mod dm;
 pub mod dmseq;
 
-pub use access::{ResetMode, ResetResult, RunResult, TargetAccess, resume_ch32};
+pub use access::{DmTarget, ResetMode, ResetResult, RunResult, TargetAccess, resume_ch32};
 pub use dm::{DebugModule, DmdataPoll, FlashProgMode, RegName};
 pub use dmseq::{DmSeq, DmSeqPoll};
 
