@@ -31,17 +31,25 @@ const FN_RVSWD: u16 = 1;
 const FN_SWIO: u16 = 2;
 const FN_DM: u16 = 3;
 const FN_CONSOLE: u16 = 4;
+/// ch32rv's own interface: lend the Link to a client for its direct (WCH stub) flash.
+const FN_WCHLINK: u16 = 5;
+/// The name of ch32rv's own interface (reverse DNS, core §12).
+pub(crate) const WCHLINK_IF: &str = "io.github.ch32-riscv-ug.wchlink";
+/// Its ops.
+pub(crate) const OP_LEND: u8 = 0x01;
+pub(crate) const OP_RECLAIM: u8 = 0x02;
 /// The one connection a Link has.
 const CONN: u16 = 1;
 /// A console keeps this much output for its readers.
 const CONSOLE_KEEP: usize = 64 * 1024;
 
-const INTERFACES: [(u16, &str); 5] = [
+const INTERFACES: [(u16, &str); 6] = [
     (oep_core::FN, oep_core::NAME),
     (FN_RVSWD, registry::wire_rvswd::NAME),
     (FN_SWIO, registry::wire_swio::NAME),
     (FN_DM, dm::NAME),
     (FN_CONSOLE, console::NAME),
+    (FN_WCHLINK, WCHLINK_IF),
 ];
 
 struct Console {
@@ -63,6 +71,9 @@ pub(crate) struct WchUpstream {
     consoles: HashMap<u16, Console>,
     next_stream: u16,
     lock_timeout: Duration,
+    /// The client the Link is lent to (its session dropped so the client can open the Link
+    /// directly), and whether a connection existed to be restored.
+    lent: Option<(u64, bool)>,
 }
 
 fn ok(payload: Vec<u8>) -> Reply {
@@ -122,6 +133,7 @@ impl WchUpstream {
             consoles: HashMap::new(),
             next_stream: 1,
             lock_timeout,
+            lent: None,
         }
     }
 
@@ -138,8 +150,20 @@ impl WchUpstream {
         vec![FN_RVSWD, FN_SWIO]
     }
 
-    /// Serve one request.
-    pub(crate) fn handle(&mut self, c: &Call) -> Reply {
+    /// Serve one request from client `id`.
+    pub(crate) fn handle(&mut self, id: u64, c: &Call) -> Reply {
+        if c.func == FN_WCHLINK {
+            return self.lending(id, c.op);
+        }
+        // While lent, only what needs no Link is served: the consoles' kept output, discovery.
+        if self.lent.is_some() {
+            let readable = c.func == oep_core::FN
+                || (c.func == FN_CONSOLE
+                    && [console::op::READ, console::op::MARKS, console::op::WRITE].contains(&c.op));
+            if !readable {
+                return rejected(reject_reasons::UNAVAILABLE);
+            }
+        }
         match c.func {
             f if f == oep_core::FN => self.core(c),
             FN_RVSWD | FN_SWIO => self.wire(c),
@@ -206,6 +230,78 @@ impl WchUpstream {
                 ok(out)
             }
             _ => rejected(reject_reasons::UNSUPPORTED),
+        }
+    }
+
+    /// en: Lend the Link to client `id` (drop the session: the core is detached and the probe lock
+    /// and vendor interface are free for that client's direct flash), or take it back (attach again
+    /// and reopen the consoles, which keep their positions).
+    /// ja: Link を client `id` に貸す(session を手放し、直接の flash のために lock と vendor の口を
+    /// 空ける)か、取り返す(attach し直し、console を開き直す。位置はそのまま)。
+    fn lending(&mut self, id: u64, op: u8) -> Reply {
+        match op {
+            OP_LEND => {
+                if self.lent.is_some() {
+                    return rejected(reject_reasons::UNAVAILABLE);
+                }
+                let had = self.session.take().is_some();
+                self.lent = Some((id, had));
+                ok(Vec::new())
+            }
+            OP_RECLAIM => {
+                if self.lent.map(|(who, _)| who) != Some(id) {
+                    return rejected(reject_reasons::UNAVAILABLE);
+                }
+                if self.reclaim() {
+                    ok(Vec::new())
+                } else {
+                    failed(vec![status::LINE])
+                }
+            }
+            _ => rejected(reject_reasons::UNKNOWN_OPERATION),
+        }
+    }
+
+    /// Take the Link back (after a lend); true when it is attached again or was not attached.
+    fn reclaim(&mut self) -> bool {
+        let Some((_, had)) = self.lent.take() else {
+            return true;
+        };
+        if !had && self.consoles.is_empty() {
+            return true;
+        }
+        let mut warnings = Vec::new();
+        let Ok(mut s) = Session::attach(
+            &self.entry,
+            Speed::High,
+            Duration::from_millis(1000),
+            self.lock_timeout,
+            None,
+            None,
+            &mut warnings,
+        ) else {
+            return false;
+        };
+        self.dirty = false;
+        for x in self.consoles.values_mut() {
+            let source = if x.mech == console::enums::mechanism::DMSEQ {
+                MonitorSource::Dmseq
+            } else {
+                MonitorSource::Dmdata
+            };
+            if let Ok(src) = DmiSource::open(&mut s, source, &mut warnings) {
+                x.src = src;
+            }
+        }
+        let _ = s.dm().resume();
+        self.session = Some(s);
+        true
+    }
+
+    /// A client left: a Link it still borrowed comes back.
+    pub(crate) fn client_gone(&mut self, id: u64) {
+        if self.lent.is_some_and(|(who, _)| who == id) {
+            let _ = self.reclaim();
         }
     }
 

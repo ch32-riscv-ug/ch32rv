@@ -278,7 +278,13 @@ impl Probe {
         if let Some(i) = self.fns.get(name) {
             return Ok(i.clone());
         }
-        for i in self.list("oep")? {
+        // The standard ones in one list; a name outside `oep` (a vendor's) by its own name.
+        let prefix = if name.starts_with("oep.") {
+            "oep"
+        } else {
+            name
+        };
+        for i in self.list(prefix)? {
             self.fns.entry(i.name.clone()).or_insert(i);
         }
         self.fns
