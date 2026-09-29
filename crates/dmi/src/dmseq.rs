@@ -97,6 +97,8 @@ pub struct DmSeq {
     bad_run: u8,
     /// A TO frame has been reported; cleared by the first frame without TO.
     to_reported: bool,
+    /// Consecutive reads, unsynced, of a probe's leftover all-ones word (see `dmseq_poll`).
+    leftover_run: u8,
     /// Frames discarded as duplicates (diagnostics).
     pub duplicates: u64,
     /// Words rejected as invalid - bad CRC or N > 6 (diagnostics).
@@ -220,6 +222,27 @@ impl<T: DtmAccess> DebugModule<'_, T> {
         if w0 & u32::from(BIT_T) == 0 {
             return Ok(DmSeqPoll::default());
         }
+        // en: A WCH-Link attach leaves the last ESIG word in DATA0 - 0xffffffff on a CH32V006 /
+        // X035 - which has bit 7 set, so a target that is waiting reads it as its own frame still
+        // posted, while the host reads an invalid word (N = 7) and does not answer: both wait.
+        // (0xe339e339 on a V20x has bit 7 clear, so there the target posts again at once.) When an
+        // unsynced host keeps reading it, the mailbox is handed back with a word that has bit 7
+        // clear and fails the target's check (M = 7), which makes the target post its frame again.
+        // All ones is never a frame, so nothing the target sent is lost.
+        // ja: WCH-Link の attach は DATA0 に最後の ESIG の語を残す(V006 / X035 では 0xffffffff)。
+        // bit 7 が 1 なので、待っている target は「自分のフレームがまだある」と読み、host は無効
+        // (N = 7)として答えず、双方が待つ。未同期の host がこれを読み続けたら、bit 7 が 0 で target
+        // の検査に通らない語で mailbox を返し、target にフレームを出し直させる。全 1 はフレームで
+        // ないので、target の出力は失われない。
+        if w0 == u32::MAX && !session.synced {
+            session.leftover_run = session.leftover_run.saturating_add(1);
+            if session.leftover_run >= 3 {
+                session.leftover_run = 0;
+                self.write(DMDATA0, 0x7f7f_7f7f)?;
+            }
+            return Ok(DmSeqPoll::default());
+        }
+        session.leftover_run = 0;
         let mut b = [0u8; 8];
         b[..4].copy_from_slice(&w0.to_le_bytes());
         let n = (b[0] & MASK_N) as usize;
@@ -262,6 +285,70 @@ mod tests {
         assert_eq!(crc8(&b[..1 + m]), b[1 + m], "answer CRC");
         assert_eq!(b[0] & BIT_T, 0, "an answer never sets bit 7");
         (b[0] & BIT_S != 0, b[0] & BIT_A != 0, b[1..1 + m].to_vec())
+    }
+
+    /// A DTM whose DATA0 reads `data0` and records writes.
+    struct Mailbox {
+        data0: u32,
+        writes: Vec<(u8, u32)>,
+    }
+
+    impl DtmAccess for Mailbox {
+        fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
+            Ok(if addr == DMDATA0 { self.data0 } else { 0 })
+        }
+        fn dmi_write(&mut self, addr: u8, value: u32) -> Result<(), DmiError> {
+            self.writes.push((addr, value));
+            if addr == DMDATA0 {
+                self.data0 = value;
+            }
+            Ok(())
+        }
+        fn dmi_nop(&mut self) -> Result<(), DmiError> {
+            Ok(())
+        }
+    }
+
+    /// The all-ones word a WCH-Link attach leaves (V006 / X035) is handed back after three reads,
+    /// so a waiting target posts its frame again instead of both sides waiting.
+    #[test]
+    fn a_leftover_all_ones_word_is_handed_back() {
+        let mut m = Mailbox {
+            data0: u32::MAX,
+            writes: Vec::new(),
+        };
+        let mut st = DmSeq::new();
+        for _ in 0..2 {
+            DebugModule::new(&mut m).dmseq_poll(&mut st, b"").unwrap();
+        }
+        assert!(m.writes.is_empty(), "two reads are not yet stuck");
+        DebugModule::new(&mut m).dmseq_poll(&mut st, b"").unwrap();
+        assert_eq!(m.writes, vec![(DMDATA0, 0x7f7f_7f7f)]);
+        // Bit 7 clear and M = 7: not a frame for the host, not an answer for the target.
+        let (poll, _) = (
+            DebugModule::new(&mut m).dmseq_poll(&mut st, b"").unwrap(),
+            (),
+        );
+        assert!(!poll.frame);
+    }
+
+    /// Once synced, an all-ones word is left to rule 1 (it may be our own answer garbled).
+    #[test]
+    fn a_synced_host_leaves_all_ones_to_rule_one() {
+        let mut m = Mailbox {
+            data0: 0,
+            writes: Vec::new(),
+        };
+        let mut st = DmSeq::new();
+        st.react(&frame(false, true, true, false, b"x"), b"");
+        m.data0 = u32::MAX;
+        for _ in 0..3 {
+            DebugModule::new(&mut m).dmseq_poll(&mut st, b"").unwrap();
+        }
+        assert!(
+            m.writes.iter().all(|&(_, v)| v != 0x7f7f_7f7f),
+            "the hand-back is for an unsynced host only"
+        );
     }
 
     /// The CRC is the one both sides compute (values taken from the agreed poly/init).
