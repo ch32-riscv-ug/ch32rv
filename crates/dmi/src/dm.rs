@@ -113,23 +113,6 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.write(DMABSTRACTCS, ABSTRACTCS_CMDERR_MASK)
     }
 
-    /// en: Wait until the abstract command is no longer busy, then surface cmderr.
-    /// ja: abstract command の busy 解除を待ち、cmderr を返す。
-    fn wait_abstract(&mut self) -> Result<(), DmiError> {
-        for _ in 0..64 {
-            let cs = self.read(DMABSTRACTCS)?;
-            if cs & ABSTRACTCS_BUSY == 0 {
-                let cmderr = (cs & ABSTRACTCS_CMDERR_MASK) >> ABSTRACTCS_CMDERR_SHIFT;
-                if cmderr != 0 {
-                    self.clear_cmderr()?;
-                    return Err(DmiError::OperationFailed(format!("cmderr {cmderr}")));
-                }
-                return Ok(());
-            }
-        }
-        Err(DmiError::Timeout)
-    }
-
     /// en: True if the hart is halted (DMSTATUS all/any-halted).
     /// ja: hart が halt 状態か(DMSTATUS all/any-halted)。
     pub fn is_halted(&mut self) -> Result<bool, DmiError> {
@@ -434,17 +417,33 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// ja: program buffer 経由で target メモリの 32bit を 1 word 読む(`lw x6,0(x5)`)。
     /// hart は halt 済みであること。wlink `read_mem32` から転記。
     pub fn read_mem32(&mut self, addr: u32) -> Result<u32, DmiError> {
-        self.write(DMPROGBUF0, 0x0002_a303)?; // lw x6, 0(x5)
-        self.write(DMPROGBUF1, 0x0010_0073)?; // ebreak
-        self.write(DMDATA0, addr)?; // data0 <- address
-        self.clear_cmderr()?;
-        // x5 <- data0, then execute progbuf (postexec).
-        self.write(DMCOMMAND, 0x0027_1005)?;
-        self.wait_abstract()?;
-        // data0 <- x6
-        self.write(DMCOMMAND, 0x0022_1006)?;
-        self.wait_abstract()?;
-        self.read(DMDATA0)
+        // en: One sequence (one request on a probe that takes a whole list, instead of ten round
+        // trips). A command that fails leaves cmderr set, which stops the next one too; both
+        // final ABSTRACTCS reads are checked.
+        // ja: 1 つの並び(一括で受ける probe では 10 往復が 1 要求)。失敗した command は cmderr を
+        // 残し次の command も走らないので、両方の最後の ABSTRACTCS を確かめる。
+        let v = self.dtm.dmi_sequence(&[
+            DmiOp::Write(DMPROGBUF0, 0x0002_a303), // lw x6, 0(x5)
+            DmiOp::Write(DMPROGBUF1, 0x0010_0073), // ebreak
+            DmiOp::Write(DMDATA0, addr),           // data0 <- address
+            DmiOp::Write(DMABSTRACTCS, ABSTRACTCS_CMDERR_MASK),
+            DmiOp::Write(DMCOMMAND, 0x0027_1005), // x5 <- data0, then execute progbuf
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+            DmiOp::Write(DMCOMMAND, 0x0022_1006), // data0 <- x6
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+            DmiOp::Read(DMDATA0),
+        ])?;
+        self.abstract_done(v.first().copied())?;
+        self.abstract_done(v.get(1).copied())?;
+        v.get(2).copied().ok_or(DmiError::Timeout)
     }
 
     /// en: One exchange cycle of the ch32fun/minichlink DMDATA terminal (SerialDMDATA).
@@ -515,16 +514,28 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// ja: program buffer 経由で target メモリへ 32bit を 1 word 書く(`sw x7,0(x5)`)。
     /// hart は halt 済みであること。wlink `write_mem32` から転記。
     pub fn write_mem32(&mut self, addr: u32, data: u32) -> Result<(), DmiError> {
-        self.write(DMPROGBUF0, 0x0072_a023)?; // sw x7, 0(x5)
-        self.write(DMPROGBUF1, 0x0010_0073)?; // ebreak
-        self.write(DMDATA0, addr)?; // data0 <- address
-        self.clear_cmderr()?;
-        self.write(DMCOMMAND, 0x0023_1005)?; // x5 <- data0
-        self.wait_abstract()?;
-        self.write(DMDATA0, data)?; // data0 <- data
-        self.clear_cmderr()?;
-        self.write(DMCOMMAND, 0x0027_1007)?; // x7 <- data0 + postexec (sw)
-        self.wait_abstract()
+        // One sequence, as in `read_mem32`.
+        let v = self.dtm.dmi_sequence(&[
+            DmiOp::Write(DMPROGBUF0, 0x0072_a023), // sw x7, 0(x5)
+            DmiOp::Write(DMPROGBUF1, 0x0010_0073), // ebreak
+            DmiOp::Write(DMDATA0, addr),           // data0 <- address
+            DmiOp::Write(DMABSTRACTCS, ABSTRACTCS_CMDERR_MASK),
+            DmiOp::Write(DMCOMMAND, 0x0023_1005), // x5 <- data0
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+            DmiOp::Write(DMDATA0, data),          // data0 <- data
+            DmiOp::Write(DMCOMMAND, 0x0027_1007), // x7 <- data0, then execute progbuf
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+        ])?;
+        self.abstract_done(v.first().copied())?;
+        self.abstract_done(v.get(1).copied())
     }
 
     /// en: Store one 16-bit halfword to target memory via program buffer (`sh x7,0(x5)`). The
@@ -533,16 +544,28 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// ja: program buffer 経由で 16bit halfword を store(`sh x7,0(x5)`)。CH32V103 の標準 flash
     /// programming は 16bit store ごとに controller が latch するため必要(32bit `sw` では不可)。
     pub fn write_mem16(&mut self, addr: u32, data: u16) -> Result<(), DmiError> {
-        self.write(DMPROGBUF0, 0x0072_9023)?; // sh x7, 0(x5)
-        self.write(DMPROGBUF1, 0x0010_0073)?; // ebreak
-        self.write(DMDATA0, addr)?; // data0 <- address
-        self.clear_cmderr()?;
-        self.write(DMCOMMAND, 0x0023_1005)?; // x5 <- data0
-        self.wait_abstract()?;
-        self.write(DMDATA0, u32::from(data))?; // data0 <- data
-        self.clear_cmderr()?;
-        self.write(DMCOMMAND, 0x0027_1007)?; // x7 <- data0 + postexec (sh)
-        self.wait_abstract()
+        // One sequence, as in `read_mem32`.
+        let v = self.dtm.dmi_sequence(&[
+            DmiOp::Write(DMPROGBUF0, 0x0072_9023), // sh x7, 0(x5)
+            DmiOp::Write(DMPROGBUF1, 0x0010_0073), // ebreak
+            DmiOp::Write(DMDATA0, addr),           // data0 <- address
+            DmiOp::Write(DMABSTRACTCS, ABSTRACTCS_CMDERR_MASK),
+            DmiOp::Write(DMCOMMAND, 0x0023_1005), // x5 <- data0
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+            DmiOp::Write(DMDATA0, u32::from(data)), // data0 <- data
+            DmiOp::Write(DMCOMMAND, 0x0027_1007),   // x7 <- data0, then execute progbuf
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+        ])?;
+        self.abstract_done(v.first().copied())?;
+        self.abstract_done(v.get(1).copied())
     }
 
     /// en: Write `data` to target memory starting at `addr`. Reads-modifies-writes the head

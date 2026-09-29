@@ -248,6 +248,21 @@ impl<'a> OepDtm<'a> {
 }
 
 impl DtmAccess for OepDtm<'_> {
+    /// en: The probe's own resume (with the CH32 retry rule): it is what lets the probe poll its
+    /// console again after the host drove the debug module through raw DMI.
+    /// ja: probe 自身の resume(CH32 の出し直しの規則つき)。raw DMI の後に probe が console の poll に
+    /// 戻るのはこれによる。
+    fn resume_hart(&mut self) -> Option<Result<(), DmiError>> {
+        let r = ch32rv_dmi::resume_ch32(self, |t| {
+            ch32rv_dmi::DebugModule::new(t).read_reg(ch32rv_dmi::RegName::Pc)
+        });
+        Some(match r {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(DmiError::OperationFailed("hart did not resume".to_owned())),
+            Err(e) => Err(e),
+        })
+    }
+
     fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
         let r = self.dmi_batch(&[DmiStep::Read { addr }])?;
         match (r.status, r.values.first()) {

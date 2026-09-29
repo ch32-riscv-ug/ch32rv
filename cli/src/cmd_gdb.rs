@@ -160,7 +160,8 @@ pub(crate) fn run_session<T: ch32rv_dmi::DtmAccess>(
             " (plain `break` on flash auto-uses a hardware trigger)".to_owned()
         } else if flash_bp {
             " (no trigger module; plain `break` on flash rewrites the flash page - flash wear; \
-             `set breakpoint always-inserted on` reduces it)"
+             `set breakpoint always-inserted on` reduces it; one page rewrite takes about 2 s, \
+             so give GDB `set remotetimeout 10`)"
                 .to_owned()
         } else {
             " (no trigger module and no verified flash profile; RAM software breakpoints only)"
@@ -170,7 +171,12 @@ pub(crate) fn run_session<T: ch32rv_dmi::DtmAccess>(
 
     let gdb = GdbStub::new(GdbConn(stream));
     let outcome = gdb.run_blocking::<Ch32EventLoop<T>>(target);
-    target.restore_flash_breakpoints();
+    for page in target.restore_flash_breakpoints() {
+        eprintln!(
+            "gdb: warning: could not restore the flash page at 0x{page:08x}; it may still hold a \
+             breakpoint (an `ebreak`) - flash the image again"
+        );
+    }
 
     match outcome {
         Ok(reason) => {

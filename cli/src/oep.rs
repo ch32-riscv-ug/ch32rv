@@ -1013,10 +1013,7 @@ pub(crate) fn gdb(cli: &Cli, args: &crate::args::GdbArgs, a: &OepAddr) -> ExitCo
         };
         let code = crate::cmd_gdb::run_session(cli, &mut target, stream);
         // The direct path's detach resumes the core; an OEP detach leaves it as it is.
-        let mut dm = ch32rv_dmi::DebugModule::new(target.into_inner());
-        if dm.is_halted().unwrap_or(false) {
-            let _ = dm.resume();
-        }
+        let _ = target.resume_if_halted();
         code
     })
 }
