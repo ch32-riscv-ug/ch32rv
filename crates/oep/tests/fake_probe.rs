@@ -366,9 +366,10 @@ fn flash_through_the_loader() {
 
 #[test]
 fn flash_reissues_a_run_that_did_not_start_and_rewrites_a_bad_page() {
-    // Runs 1-2 do not start; run 4 writes the second page wrong once.
+    // Runs 1-2 do not start; run 3 (the one run that writes all four pages) writes the first
+    // page wrong once, so that page alone is written again.
     let Some((r, back, image)) =
-        flash_through(&[("CH32RV_FAKE_NOSTART", "2"), ("CH32RV_FAKE_GARBLE", "4")])
+        flash_through(&[("CH32RV_FAKE_NOSTART", "2"), ("CH32RV_FAKE_GARBLE", "3")])
     else {
         return;
     };
