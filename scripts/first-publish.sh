@@ -31,6 +31,10 @@ CRATES=(contract usb-wch-win usb dmi target wchlink flash debug)
 # capture-free HID implementation from the 0.8.0-compatible source commit once; the Release
 # workflow can then publish the complete 0.9.0 crate through Trusted Publishing.
 BOOTSTRAP_BOOT_REV=fad0881
+# ch32rv-oep is new after 0.10.1. Current main's crate uses ch32rv-dmi APIs (TargetAccess,
+# dmi_sequence) that the published ch32rv-dmi 0.10.1 lacks, so its name is claimed from its first
+# commit, which depends on thiserror only; the Release workflow then publishes the full crate.
+BOOTSTRAP_OEP_REV=ac2b647
 bootstrap_root=""
 bootstrap_worktree=""
 
@@ -70,22 +74,26 @@ publish_one() {
   fi
 }
 
-publish_boot() {
-  if crate_exists ch32rv-boot; then
-    echo "skip  ch32rv-boot (already on crates.io - name already claimed)"
+# publish_bootstrap <crate dir> <rev> <why>: claim ch32rv-<crate dir> from an older commit.
+publish_bootstrap() {
+  local dir="$1" rev="$2" why="$3"
+  if crate_exists "ch32rv-$dir"; then
+    echo "skip  ch32rv-$dir (already on crates.io - name already claimed)"
     return
   fi
 
-  echo "publish ch32rv-boot (0.8.0-compatible bootstrap from $BOOTSTRAP_BOOT_REV)"
-  git rev-parse --verify "$BOOTSTRAP_BOOT_REV^{commit}" >/dev/null
+  echo "publish ch32rv-$dir ($why bootstrap from $rev)"
+  git rev-parse --verify "$rev^{commit}" >/dev/null
   bootstrap_root=$(mktemp -d)
   bootstrap_worktree="$bootstrap_root/ch32rv"
-  git worktree add --detach "$bootstrap_worktree" "$BOOTSTRAP_BOOT_REV"
-  sed -i 's/^publish = false$/publish = true/' "$bootstrap_worktree/crates/boot/Cargo.toml"
-  grep -q '^publish = true$' "$bootstrap_worktree/crates/boot/Cargo.toml"
+  git worktree add --detach "$bootstrap_worktree" "$rev"
+  sed -i 's/^publish = false$/publish = true/' "$bootstrap_worktree/crates/$dir/Cargo.toml"
+  if grep -q '^publish' "$bootstrap_worktree/crates/$dir/Cargo.toml"; then
+    grep -q '^publish = true$' "$bootstrap_worktree/crates/$dir/Cargo.toml"
+  fi
   (
     cd "$bootstrap_worktree"
-    cargo publish --allow-dirty -p ch32rv-boot
+    cargo publish --allow-dirty -p "ch32rv-$dir"
   )
   cleanup_bootstrap_worktree
   bootstrap_root=""
@@ -96,13 +104,14 @@ echo "== one-time crates.io bootstrap =="
 for c in "${CRATES[@]}"; do
   publish_one "ch32rv-$c"
 done
-publish_boot
+publish_bootstrap boot "$BOOTSTRAP_BOOT_REV" "0.8.0-compatible"
+publish_bootstrap oep "$BOOTSTRAP_OEP_REV" "dependency-free"
 publish_one "ch32rv"
 
 cat <<'EOF'
 
 == done. Now register the Trusted Publisher for each crate published above (one time, web UI) ==
-For this release, the only new crate should be ch32rv-boot. Open its crates.io
+For this release, the only new crate should be ch32rv-oep. Open its crates.io
 Settings -> Trusted Publishing -> Add, and enter:
   owner    : ch32-riscv-ug
   repo     : ch32rv
