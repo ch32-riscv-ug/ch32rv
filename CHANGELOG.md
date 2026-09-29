@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- (EN) `--probe port:` with nothing after it - what an IDE recipe sends when no port was picked (`arduino-cli upload` without `-p`) - now says no port was selected and how to pick one, instead of "empty value after `port:`" (still exit 2; no probe is guessed).
+- (JA) 空の `--probe port:`(port を選ばずに IDE の recipe が送る形。`-p` 無しの `arduino-cli upload`)は、port が選ばれていないことと選び方を言う(「`port:` の後が空」ではなく。exit 2 のまま、probe は推測しない)。
+- (EN) Windows: `arduino discovery` labels a WCH-Link whose device is bound to a driver ch32rv cannot open it through (usbipd's stub for a Link shared to WSL, anything but `usbccgp` / WinUSB / WCH's CH375) as "WCH-Link <sn> (cannot open: driver <name>)", with `driver` in its properties; it is still listed so the user sees it and why.
+- (JA) Windows: ch32rv が開けない driver が device に付いた WCH-Link(WSL へ共有中の usbipd の stub など、`usbccgp` / WinUSB / WCH の CH375 以外)を、`arduino discovery` は「WCH-Link <sn> (cannot open: driver <name>)」と出し、properties に `driver` を入れる(見えて理由が分かるよう、一覧には残す)。
+
 ## 0.12.0 - 2026-09-29
 
 - (EN) Fix: GDB with an RV32E ELF (CH32V002/V003/V004/V005/V006/V007) stopped at the first register read with "Remote 'g' packet reply is too long": the server always sent 33 registers. On an RV32E hart it now sends x0..x15 and pc and a target description that says so, with or without the ELF. Verified on a CH32V006 through its broker, with a dmseq monitor open.

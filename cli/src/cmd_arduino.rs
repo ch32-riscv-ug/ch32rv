@@ -162,9 +162,18 @@ fn wchlink_ports() -> Vec<Value> {
         .iter()
         .map(|e| {
             let serial = e.dev.serial().unwrap_or("unknown");
-            json!({
+            // en: Still listed when its driver keeps ch32rv out (the user sees it and why), with
+            // the driver named in the label and the properties.
+            // ja: driver のために開けない Link も出す(見えて、理由が分かるように)。label と properties に
+            // driver の名前。
+            let driver = e.dev.foreign_driver();
+            let label = match &driver {
+                Some(d) => format!("WCH-Link {serial} (cannot open: driver {d})"),
+                None => format!("WCH-Link {serial}"),
+            };
+            let mut v = json!({
                 "address": format!("wchlink://{serial}"),
-                "label": format!("WCH-Link {serial}"),
+                "label": label,
                 "protocol": "wchlink",
                 "protocolLabel": "WCH-Link (RISC-V debug)",
                 "hardwareId": serial,
@@ -174,7 +183,11 @@ fn wchlink_ports() -> Vec<Value> {
                     "pid": format!("0x{:04x}", e.dev.pid()),
                     "mode": crate::cmd_probe::mode_str(e.mode),
                 },
-            })
+            });
+            if let Some(d) = driver {
+                v["properties"]["driver"] = json!(d);
+            }
+            v
         })
         .collect()
 }
