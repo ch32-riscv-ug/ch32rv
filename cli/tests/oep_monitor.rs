@@ -161,3 +161,39 @@ fn a_debug_source_streams_the_oep_console_through_the_broker() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn fixture_uart_streams_at_the_monitors_baud() {
+    let Some((_fake, pty)) = fake_pty(&["--uart-plan", "--uart-rx", "rx %d\r\n", "--every", "50"])
+    else {
+        return;
+    };
+    let mut m = Monitor::start();
+    m.cmd("HELLO 1 \"test\"");
+    assert_eq!(m.cmd("CONFIGURE source fixture-uart")["message"], "OK");
+    assert_eq!(m.cmd("CONFIGURE baudrate 115200")["message"], "OK");
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = l.local_addr().unwrap();
+    let r = m.cmd(&format!("OPEN {at} {pty}"));
+    assert_eq!(r["message"], "OK", "{r}");
+    let (mut sock, _) = l.accept().unwrap();
+    sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+    let read_until = |sock: &mut std::net::TcpStream, what: &str| {
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        while !String::from_utf8_lossy(&got).contains(what) {
+            let n = sock.read(&mut buf).unwrap();
+            assert!(n > 0, "the monitor closed");
+            got.extend_from_slice(&buf[..n]);
+        }
+    };
+    read_until(&mut sock, "rx ");
+    // The baud changes while open (configure again), and the stream goes on.
+    assert_eq!(m.cmd("CONFIGURE baudrate 9600")["message"], "OK");
+    read_until(&mut sock, "rx ");
+    // Input goes to the UART's TX without breaking the stream.
+    sock.write_all(b"hello\n").unwrap();
+    read_until(&mut sock, "rx ");
+    drop(m.stdin.take());
+    let _ = m.child.wait();
+}
