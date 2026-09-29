@@ -423,3 +423,33 @@ fn the_console_streams_what_the_target_prints() {
     assert!((1..=3).contains(&taken), "{taken}");
     p.end().unwrap();
 }
+
+// ---- slots ----
+
+#[test]
+fn slots_and_their_state_are_read_without_the_lock() {
+    let Some(f) = fake(
+        "cobs",
+        &[
+            "--profile",
+            "p4-bench",
+            "--slot",
+            "x035",
+            "--slot",
+            "spare",
+            "--target-id",
+            "0x035e0601",
+        ],
+    ) else {
+        return;
+    };
+    let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
+    // No session opened: all of this is lock-free.
+    let slots = ch32rv_oep::config::slots(&mut p).unwrap();
+    let names: Vec<&str> = slots.iter().map(|s| s.name.as_str()).collect();
+    assert_eq!(names, ["x035", "spare"], "{slots:?}");
+    assert!(slots.iter().all(|s| s.wire_fn != 0));
+    let states = ch32rv_oep::config::slot_states(&mut p).unwrap();
+    assert_eq!(states.len(), 2, "{states:?}");
+    eprintln!("{slots:?}\n{states:?}");
+}

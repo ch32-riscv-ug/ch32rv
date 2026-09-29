@@ -177,6 +177,43 @@ impl UsbDeviceInfo {
         }
     }
 
+    /// en: The interfaces' names (iInterface) as the OS read them at enumeration, without opening
+    /// the device: `(interface number, name)`. What identifies an OEP probe until OEP has a PID.
+    /// ja: OS が列挙のときに読んだ interface の名前(iInterface)。device を開かずに読める。
+    pub fn interface_names(&self) -> Vec<(u8, String)> {
+        match &self.inner {
+            Inner::Nusb(d) => d
+                .interfaces()
+                .filter_map(|i| {
+                    i.interface_string()
+                        .map(|n| (i.interface_number(), n.to_owned()))
+                })
+                .collect(),
+            Inner::Replay(_) => Vec::new(),
+        }
+    }
+
+    /// en: The serial ports with the name of the USB interface each belongs to (Linux reads it from
+    /// sysfs; elsewhere the name is unknown), so the one that carries OEP can be picked.
+    /// ja: serial port と、それが属す USB interface の名前(Linux は sysfs、他 OS は不明)。
+    pub fn serial_ports_named(&self) -> Vec<(String, Option<String>)> {
+        self.serial_ports()
+            .into_iter()
+            .map(|p| {
+                #[cfg(target_os = "linux")]
+                let name = {
+                    let tty = p.trim_start_matches("/dev/");
+                    std::fs::read_to_string(format!("/sys/class/tty/{tty}/device/interface"))
+                        .ok()
+                        .map(|s| s.trim().to_owned())
+                };
+                #[cfg(not(target_os = "linux"))]
+                let name = None;
+                (p, name)
+            })
+            .collect()
+    }
+
     /// en: hidraw nodes belonging to this USB device (`/dev/hidraw3`), to pick the HID device
     /// at a given position. Linux only; elsewhere empty (HID paths there carry no position).
     /// ja: この USB device に属する hidraw ノード。位置で HID device を選ぶため。Linux のみ。

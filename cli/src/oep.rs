@@ -24,16 +24,86 @@ use crate::parse;
 pub(crate) enum OepAddr {
     /// A serial port no WCH-Link owns (COBS).
     Serial(String),
+    /// `oep://<probe>/<slot>`: a slot of an OEP probe (reached on its serial port `path`).
+    Slot { path: String, slot: String },
     /// `tcp:<host:port>`: a probe's TCP transport, or a ch32rv broker.
     Tcp(String),
 }
 
-/// en: Whether `--probe` names an OEP probe: `tcp:`, or `port:<path>` for a serial port that no
-/// WCH-Link owns. `None` leaves the command on the WCH-Link path.
-/// ja: `--probe` が OEP の probe を指すか(`tcp:`、または WCH-Link のものでない serial port)。
+/// en: The one place that decides what an OEP probe is (docs/oep-host.ja.md §3.3). Until OEP has
+/// its own USB PID: a device with an interface whose name (iInterface) starts with `OEP`, read
+/// without opening it. When the PID exists, this becomes a VID:PID check and nothing else changes.
+/// ja: OEP の probe の判定はここだけ。専用 PID を取るまでは、名前(iInterface)が `OEP` で始まる
+/// interface を持つ device。PID を取ったら VID:PID の判定に差し替える。
+pub(crate) fn is_oep_device(dev: &ch32rv_usb::UsbDeviceInfo) -> bool {
+    dev.interface_names()
+        .iter()
+        .any(|(_, n)| n.starts_with("OEP"))
+}
+
+/// The OEP probes on USB.
+pub(crate) fn oep_devices() -> Vec<ch32rv_usb::UsbDeviceInfo> {
+    ch32rv_usb::enumerate()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(is_oep_device)
+        .collect()
+}
+
+/// A probe's name in `oep://<probe>/…`: its USB serial number, else its USB position.
+pub(crate) fn probe_id(dev: &ch32rv_usb::UsbDeviceInfo) -> String {
+    dev.serial()
+        .map(str::to_owned)
+        .unwrap_or_else(|| dev.topology())
+}
+
+/// The serial port that carries OEP: the one on an interface named `OEP…`, else the first.
+pub(crate) fn oep_port(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<String> {
+    let ports = dev.serial_ports_named();
+    ports
+        .iter()
+        .find(|(_, n)| n.as_deref().is_some_and(|n| n.starts_with("OEP")))
+        .or(ports.first())
+        .map(|(p, _)| p.clone())
+}
+
+/// Whether the serial port `path` belongs to an OEP probe (as [`is_oep_device`] decides).
+fn port_of_oep_device(path: &str) -> bool {
+    let sel = Selector::Port(path.to_owned());
+    oep_devices()
+        .iter()
+        .enumerate()
+        .any(|(i, d)| sel.matches(d, i))
+}
+
+/// Resolve `oep://<probe>/<slot>` to the probe's serial port.
+fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
+    let rest = url.strip_prefix("oep://").unwrap_or(url);
+    let (id, slot) = rest
+        .split_once('/')
+        .filter(|(i, s)| !i.is_empty() && !s.is_empty())
+        .ok_or_else(|| format!("`{url}` is not oep://<probe>/<slot>"))?;
+    let dev = oep_devices()
+        .into_iter()
+        .find(|d| probe_id(d) == id)
+        .ok_or_else(|| format!("no OEP probe {id} is connected"))?;
+    let path = oep_port(&dev).ok_or_else(|| format!("OEP probe {id} has no serial port"))?;
+    Ok(OepAddr::Slot {
+        path,
+        slot: slot.to_owned(),
+    })
+}
+
+/// en: Whether `--probe` names an OEP probe: `tcp:`, `port:oep://<probe>/<slot>`, or
+/// `port:<path>` for a serial port that no WCH-Link owns. `None` leaves the command on the
+/// WCH-Link path.
+/// ja: `--probe` が OEP の probe を指すか(`tcp:`、`port:oep://…`、WCH-Link のものでない serial port)。
 pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
     match crate::cmd_probe::parse_selector(cli, cmd)? {
         Some(Selector::Tcp(a)) => Ok(Some(OepAddr::Tcp(a))),
+        Some(Selector::Port(p)) if p.starts_with("oep://") => resolve_oep_url(&p)
+            .map(Some)
+            .map_err(|m| fail(cli, cmd, ErrorKind::DeviceNotFound, m, None)),
         Some(Selector::Port(p)) if !p.starts_with("wchlink://") && !p.starts_with("hid://") => {
             let sel = Selector::Port(p.clone());
             let owned = crate::cmd_probe::wch_devices()
@@ -70,15 +140,16 @@ fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
 /// ja: 接続して confirm。serial port はブローカー経由(無ければ起動)。`tcp:` は直接つなぐ。
 fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
     let link = match a {
-        OepAddr::Serial(p) => crate::broker::client_link(p).map_err(|m| {
-            fail(
-                cli,
-                cmd,
-                ErrorKind::DeviceOpenFailed,
-                m,
-                Some("the probe's broker could not start or be reached"),
-            )
-        })?,
+        OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => crate::broker::client_link(p)
+            .map_err(|m| {
+                fail(
+                    cli,
+                    cmd,
+                    ErrorKind::DeviceOpenFailed,
+                    m,
+                    Some("the probe's broker could not start or be reached"),
+                )
+            })?,
         OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t)
             .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?,
     };
@@ -159,6 +230,116 @@ fn pick_wire(p: &mut Probe, chip: Option<&str>) -> Result<WireKind, OepError> {
     }
 }
 
+/// The wire kind a wire interface's fn is.
+fn wire_of_fn(p: &mut Probe, func: u16) -> Option<WireKind> {
+    [WireKind::Rvswd, WireKind::Swio]
+        .into_iter()
+        .find(|k| p.interface(k.interface()).is_ok_and(|i| i.func == func))
+}
+
+/// The DB family a WCH chip id resolves to.
+fn family_of_chip_id(id: u32) -> Option<String> {
+    match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
+        ch32rv_target::Resolution::Sku(s) => Some(s.family.clone()),
+        ch32rv_target::Resolution::Family(f, _) => Some(f),
+        ch32rv_target::Resolution::Unknown => None,
+    }
+}
+
+/// en: Where to attach (oep-workflow §3.4): `oep://…/<slot>` names the slot; on a probe with
+/// registered slots otherwise, the one slot whose target is of the board's family (`--chip`).
+/// A connected slot's chip comes from its state; an unconnected one is attached without halting
+/// to read it. None or several matching is an error listing the slots. A probe without slots
+/// attaches where it allows.
+/// ja: どこに attach するか。`oep://…/<slot>` はそのスロット。スロットのある probe では、板の家系
+/// (`--chip`)に合うスロットが 1 つならそこ。接続済みは状態から、未接続は止めない attach で chip を
+/// 読む。0 か 2 つ以上ならスロットの一覧つきで止める。スロットの無い probe は許す所に attach する。
+fn choose_place(
+    p: &mut Probe,
+    a: &OepAddr,
+    chip: Option<&str>,
+) -> Result<(WireKind, Option<(u16, u16)>), String> {
+    let slots = ch32rv_oep::config::slots(p).map_err(|e| e.to_string())?;
+    if let OepAddr::Slot { slot, .. } = a {
+        let s = slots
+            .iter()
+            .find(|s| s.name == *slot)
+            .ok_or_else(|| format!("the probe has no slot `{slot}`"))?;
+        let w = wire_of_fn(p, s.wire_fn)
+            .ok_or_else(|| format!("slot `{slot}` is on an unknown wire (fn {})", s.wire_fn))?;
+        return Ok((w, Some((s.swdio, s.swclk))));
+    }
+    if slots.is_empty() {
+        return pick_wire(p, chip)
+            .map(|w| (w, None))
+            .map_err(|e| e.to_string());
+    }
+    let states = ch32rv_oep::config::slot_states(p).map_err(|e| e.to_string())?;
+    struct Seen {
+        name: String,
+        wire: WireKind,
+        pins: (u16, u16),
+        family: Option<String>,
+    }
+    let mut seen: Vec<Seen> = Vec::new();
+    for s in &slots {
+        let Some(w) = wire_of_fn(p, s.wire_fn) else {
+            continue;
+        };
+        let pins = (s.swdio, s.swclk);
+        let from_state = states
+            .iter()
+            .find(|st| st.slot == s.slot)
+            .and_then(|st| st.wch_chip_id());
+        // Not connected: a non-halting attach reads the chip (the user asked to use the probe).
+        let id = from_state.or_else(|| {
+            let at = attach(
+                p,
+                w,
+                AttachOptions {
+                    halt: false,
+                    max_speed_hz: None,
+                    pins: Some(pins),
+                },
+            )
+            .ok()?;
+            let _ = detach(p, w, at.connection, false);
+            at.wch_chip_id
+        });
+        seen.push(Seen {
+            name: s.name.clone(),
+            wire: w,
+            pins,
+            family: id.and_then(family_of_chip_id),
+        });
+    }
+    let db = ch32rv_target::Db::builtin();
+    let wanted = chip.map(|c| db.families_for_chip_name(c));
+    let matches: Vec<&Seen> = seen
+        .iter()
+        .filter(|x| match (&wanted, &x.family) {
+            (Some(ws), Some(f)) => ws.iter().any(|w| w.eq_ignore_ascii_case(f)),
+            (None, Some(_)) => true,
+            _ => false,
+        })
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok((one.wire, Some(one.pins))),
+        _ => {
+            let list: Vec<String> = seen
+                .iter()
+                .map(|x| format!("{}: {}", x.name, x.family.as_deref().unwrap_or("no target")))
+                .collect();
+            Err(format!(
+                "{} slot(s) match {}: {}",
+                matches.len(),
+                chip.map_or("a target".to_owned(), |c| format!("--chip {c}")),
+                list.join(", ")
+            ))
+        }
+    }
+}
+
 /// The DB family of the attached target, checked against `--chip` (fail-closed).
 fn family(cli: &Cli, cmd: &str, chip_id: Option<u32>) -> Result<String, ExitCode> {
     let db = ch32rv_target::Db::builtin();
@@ -209,6 +390,19 @@ fn family(cli: &Cli, cmd: &str, chip_id: Option<u32>) -> Result<String, ExitCode
 /// `flash` on an OEP probe.
 pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> ExitCode {
     const CMD: &str = "flash";
+    // A probe that announces itself on USB is flashed by slot, never through its raw serial port
+    // (oep-workflow §3.4): the IDE lists its slots as oep:// ports.
+    if let OepAddr::Serial(p) = a
+        && port_of_oep_device(p)
+    {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            format!("{p} is an OEP probe's serial port; flash one of its slots instead"),
+            Some("pick its oep://<probe>/<slot> port (`ch32rv arduino discovery` lists them)"),
+        );
+    }
     let mut p = match connect(cli, CMD, a) {
         Ok(p) => p,
         Err(c) => return c,
@@ -217,17 +411,31 @@ pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> E
     if let Err(c) = open_session(cli, CMD, &mut p, serial) {
         return c;
     }
-    let r = flash_in_session(cli, args, bytes, &mut p);
+    let r = flash_in_session(cli, args, bytes, &mut p, a);
     // End on every path: the lock is released, the connection stays for the next open.
     let _ = p.end();
     r
 }
 
-fn flash_in_session(cli: &Cli, args: &FlashArgs, bytes: &[u8], p: &mut Probe) -> ExitCode {
+fn flash_in_session(
+    cli: &Cli,
+    args: &FlashArgs,
+    bytes: &[u8],
+    p: &mut Probe,
+    a: &OepAddr,
+) -> ExitCode {
     const CMD: &str = "flash";
-    let wire = match pick_wire(p, cli.chip.as_deref()) {
-        Ok(w) => w,
-        Err(e) => return oep_fail(cli, CMD, e),
+    let (wire, pins) = match choose_place(p, a, cli.chip.as_deref()) {
+        Ok(v) => v,
+        Err(m) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::TargetAmbiguous,
+                m,
+                Some("name the slot with oep://<probe>/<slot>, or the board's family with --chip"),
+            );
+        }
     };
     let max_speed_hz = match parse::speed(&cli.speed) {
         Ok((s, _)) => Some(match s {
@@ -243,7 +451,7 @@ fn flash_in_session(cli: &Cli, args: &FlashArgs, bytes: &[u8], p: &mut Probe) ->
         AttachOptions {
             halt: true,
             max_speed_hz,
-            pins: None,
+            pins,
         },
     ) {
         Ok(a) => a,

@@ -155,13 +155,13 @@ pub(crate) fn client_link(path: &str) -> Result<Link, String> {
 pub(crate) fn endpoint(cli: &Cli) -> ExitCode {
     const CMD: &str = "broker.endpoint";
     let a = match crate::oep::addr(cli, CMD) {
-        Ok(Some(OepAddr::Serial(p))) => p,
+        Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => p,
         Ok(_) => {
             return fail(
                 cli,
                 CMD,
                 ErrorKind::Usage,
-                "--probe must name an OEP probe's serial port (port:<path>)",
+                "--probe must name an OEP probe's serial port (port:<path>) or oep://<probe>/<slot>",
                 None,
             );
         }
