@@ -273,6 +273,10 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
 
+    if args.programmer == crate::args::ProgrammerChoice::Loader {
+        return flash_via_loader(cli, args, &bytes, session, warnings);
+    }
+
     let family = session.attach.family_byte;
     let programmer = match params_for_family(family) {
         Some(fp) => Programmer::Stub(Box::new(fp)),
@@ -826,6 +830,100 @@ fn finish_flash(
 /// heartbeat で実測: 修正前は `reset` が "running" と出しつつ UART 無音(3/3)・DMSTATUS `0x004c0382`
 /// (halted, havereset)、修正後は heartbeat 5/5・DMSTATUS `0x00430c82`(allrunning)。`flash` は verify
 /// で DM 経由の `halt`(reset 前に要求をクリア)を通るため症状が出なかった。
+/// en: `flash --programmer loader`: program through ch32rv's own RAM loader (the OEP path) over
+/// the WCH-Link's plain DMI, to check the loader and its procedure on real silicon. The family is
+/// resolved from the chip id (not the family byte), as on an OEP probe.
+/// ja: `flash --programmer loader`: ch32rv 自前の RAM loader(OEP の経路)で、WCH-Link の素の DMI 越し
+/// に書く。loader と手順を実機で確かめるため。family は OEP と同じく chip id から引く。
+fn flash_via_loader(
+    cli: &Cli,
+    args: &FlashArgs,
+    bytes: &[u8],
+    mut session: Session,
+    warnings: Vec<Warning>,
+) -> ExitCode {
+    const CMD: &str = "flash";
+    let family = crate::cmd_target::db_family_of(&mut session);
+    let Some(plan) = ch32rv_flash::loader::plan_for_family(&family) else {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            format!("the device DB has no loader plan for {family}"),
+            None,
+        );
+    };
+    let bin_offset = match &args.at {
+        Some(s) => match parse::u32_addr(s) {
+            Ok(a) => Some(a),
+            Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+        },
+        None => None,
+    };
+    let image = match parse_image(bytes, args.format, &args.file, bin_offset, CODE_FLASH_START) {
+        Ok(i) => i,
+        Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
+    };
+    let flash_size = session.chip.as_ref().map(|c| c.flash_bytes).unwrap_or(0);
+    if flash_size > 0
+        && let Err(e) = image.check_within_flash(CODE_FLASH_START, flash_size)
+    {
+        return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None);
+    }
+    // Halt before the first instruction, so a running watchdog cannot reset the part mid-write.
+    if let Err(e) = session.dm().reset_halt() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::TransferFailed,
+            format!("reset-halt: {e}"),
+            None,
+        );
+    }
+    let started = std::time::Instant::now();
+    let result = {
+        let mut t = ch32rv_dmi::DmTarget::new(session.link());
+        ch32rv_flash::loader::program(&mut t, plan, &image.segments, &mut |_, _| {})
+    };
+    let report = match result {
+        Ok(r) => r,
+        Err(e) => return fail(cli, CMD, ErrorKind::VerifyMismatch, e.to_string(), None),
+    };
+    let secs = started.elapsed().as_secs_f64();
+    if args.reset == ResetPolicy::Run
+        && let Err(e) = soft_reset_and_run(&mut session)
+    {
+        return fail(cli, CMD, ErrorKind::TransferFailed, e, None);
+    }
+    let total = image.total_len();
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "flash": {
+                "written": total,
+                "programmer": "loader",
+                "family": family,
+                "pages": report.pages,
+                "rewritten": report.rewritten,
+                "restarted_runs": report.restarted_runs,
+                "verify": "readback",
+                "seconds": secs,
+            }
+        }));
+        env.warnings = warnings;
+        crate::print_envelope(&env)
+    } else {
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
+        println!(
+            "flashed {total} bytes to {family} with the ch32rv loader in {secs:.2} s: {} page(s), {} rewritten, {} run(s) re-issued, verified",
+            report.pages, report.rewritten, report.restarted_runs
+        );
+        ExitCode::SUCCESS
+    }
+}
+
 fn soft_reset_and_run(session: &mut Session) -> Result<(), String> {
     session
         .link()

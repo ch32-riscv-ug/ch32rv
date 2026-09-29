@@ -34,8 +34,12 @@ const KEY1: u32 = 0x4567_0123;
 const KEY2: u32 = 0xCDEF_89AB;
 const CTLR_LOCK: u32 = 1 << 7;
 const CTLR_FLOCK: u32 = 1 << 15;
-/// One page takes a few ms; this bounds a controller that never clears BSY.
-const RUN_TIMEOUT: Duration = Duration::from_millis(200);
+/// en: Bounds a controller that never clears BSY. A page is not always quick: measured over a
+/// WCH-Link (host-side, DMI polling included), a CH32V307 page took about 22 ms and a CH32V103
+/// page about 0.2 s, so a 200 ms bound cut the V103 short. Kept well under the session lease.
+/// ja: BSY が落ちない controller の上限。page は速いとは限らない(WCH-Link 越しの host 側の実測で
+/// V307 は約 22 ms、V103 は約 0.2 s。200 ms では V103 が途中で切られた)。lease より十分短く。
+const RUN_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// The loader's programming mechanism (its `a3`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

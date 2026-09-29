@@ -103,3 +103,122 @@ pub fn resume_ch32<T: TargetAccess + ?Sized>(
     }
     Ok(false)
 }
+
+/// en: [`TargetAccess`] over plain DMI, for a probe with no block or run operations of its own
+/// (a WCH-Link, as far as ch32rv's loader is concerned): blocks go word by word through the
+/// Debug Module, and a run sets dcsr / dpc / the registers, resumes, and polls for the halt.
+/// ja: 自前の block / run を持たない probe(ch32rv の loader から見た WCH-Link)向けの、素の DMI の上の
+/// [`TargetAccess`]。block は Debug Module で 1 語ずつ、run は dcsr / dpc / レジスタを入れて resume し、
+/// halt を poll する。
+pub struct DmTarget<'a, T: DtmAccess> {
+    dtm: &'a mut T,
+}
+
+impl<'a, T: DtmAccess> DmTarget<'a, T> {
+    pub fn new(dtm: &'a mut T) -> Self {
+        DmTarget { dtm }
+    }
+
+    fn dm(&mut self) -> crate::DebugModule<'_, T> {
+        crate::DebugModule::new(self.dtm)
+    }
+}
+
+impl<T: DtmAccess> DtmAccess for DmTarget<'_, T> {
+    fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
+        self.dtm.dmi_read(addr)
+    }
+    fn dmi_write(&mut self, addr: u8, value: u32) -> Result<(), DmiError> {
+        self.dtm.dmi_write(addr, value)
+    }
+    fn dmi_nop(&mut self) -> Result<(), DmiError> {
+        self.dtm.dmi_nop()
+    }
+    fn dmi_sequence(&mut self, ops: &[crate::DmiOp]) -> Result<Vec<u32>, DmiError> {
+        self.dtm.dmi_sequence(ops)
+    }
+}
+
+impl<T: DtmAccess> TargetAccess for DmTarget<'_, T> {
+    fn max_block_words(&self) -> usize {
+        256
+    }
+
+    fn read_words(&mut self, addr: u32, count: usize) -> Result<Vec<u32>, DmiError> {
+        let b = self.dm().read_mem(addr, (count * 4) as u32)?;
+        Ok(b.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
+            .collect())
+    }
+
+    fn write_words(&mut self, addr: u32, words: &[u32]) -> Result<(), DmiError> {
+        let mut dm = self.dm();
+        for (i, w) in words.iter().enumerate() {
+            dm.write_mem32(addr + 4 * i as u32, *w)?;
+        }
+        Ok(())
+    }
+
+    fn run_until_halt(
+        &mut self,
+        pc: u32,
+        regs: &[(u16, u32)],
+        outs: &[u16],
+        timeout: Duration,
+    ) -> Result<RunResult, DmiError> {
+        use crate::RegName;
+        let mut dm = self.dm();
+        dm.halt()?;
+        for &(r, v) in regs {
+            dm.write_reg(RegName::Csr(r), v)?;
+        }
+        // ebreak enters debug mode, in machine mode (prv = M), like a probe's own run.
+        let dcsr = dm.read_reg(RegName::Csr(regno::DCSR))?;
+        dm.write_reg(RegName::Csr(regno::DCSR), dcsr | 0xB003)?;
+        dm.write_reg(RegName::Csr(regno::DPC), pc)?;
+        let start = std::time::Instant::now();
+        dm.resume()?;
+        let mut stopped = false;
+        while start.elapsed() < timeout {
+            if dm.is_halted()? {
+                stopped = true;
+                break;
+            }
+        }
+        if !stopped {
+            dm.halt()?;
+        }
+        let elapsed_us = u32::try_from(start.elapsed().as_micros()).unwrap_or(u32::MAX);
+        let dpc = dm.read_reg(RegName::Csr(regno::DPC))?;
+        let mut vals = Vec::with_capacity(outs.len());
+        for &r in outs {
+            vals.push(dm.read_reg(RegName::Csr(r))?);
+        }
+        Ok(RunResult {
+            stopped,
+            dpc,
+            elapsed_us,
+            outs: vals,
+        })
+    }
+
+    fn halt(&mut self) -> Result<(), DmiError> {
+        self.dm().halt()
+    }
+
+    fn resume_once(&mut self) -> Result<(), DmiError> {
+        self.dm().resume()
+    }
+
+    fn reset(&mut self, mode: ResetMode) -> Result<ResetResult, DmiError> {
+        let mut dm = self.dm();
+        dm.reset_halt()?;
+        let pc = dm.read_reg(crate::RegName::Pc)?;
+        if mode != ResetMode::HaltAtReset {
+            dm.resume()?;
+        }
+        Ok(ResetResult { pc })
+    }
+}

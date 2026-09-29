@@ -185,6 +185,16 @@ pub struct FlashArgs {
     /// Program repeatedly as targets are re-connected (production)
     #[arg(long)]
     pub repeat: bool,
+    /// Programming path: the probe's own (WCH stub / FLASH controller), or ch32rv's RAM loader
+    /// (the OEP path, run over plain DMI; for checking the loader on a WCH-Link)
+    #[arg(long, value_enum, default_value = "auto", hide = true)]
+    pub programmer: ProgrammerChoice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ProgrammerChoice {
+    Auto,
+    Loader,
 }
 
 #[derive(Args)]
