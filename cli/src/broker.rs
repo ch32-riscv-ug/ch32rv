@@ -430,10 +430,20 @@ impl Upstream {
         }
     }
 
-    fn exchange(&mut self, calls: Vec<Call>) -> Result<Vec<Reply>, String> {
+    /// Serve `calls` (each tagged with the client it came from), in order.
+    fn exchange(&mut self, calls: Vec<(u64, Call)>) -> Result<Vec<Reply>, String> {
         match self {
-            Upstream::Oep(p) => p.link().exchange(calls).map_err(|e| e.to_string()),
-            Upstream::Wch(w) => Ok(calls.iter().map(|c| w.handle(c)).collect()),
+            Upstream::Oep(p) => p
+                .link()
+                .exchange(calls.into_iter().map(|(_, c)| c).collect())
+                .map_err(|e| e.to_string()),
+            Upstream::Wch(w) => Ok(calls.iter().map(|(id, c)| w.handle(*id, c)).collect()),
+        }
+    }
+
+    fn client_gone(&mut self, id: u64) {
+        if let Upstream::Wch(w) = self {
+            w.client_gone(id);
         }
     }
 
@@ -548,6 +558,7 @@ impl Broker {
                         // Serve what it sent before it left, then release its share.
                         self.serve_batch(std::mem::take(&mut msgs))?;
                         self.release(id)?;
+                        self.up.client_gone(id);
                         self.clients.remove(&id);
                     }
                 }
@@ -574,13 +585,16 @@ impl Broker {
                 pending.push(Pending::Local(id, answer));
                 continue;
             }
-            calls.push(Call {
-                func: req.func,
-                op: req.op,
-                // Lock-free requests may come without a session; the rest run in the broker's.
-                session: req.session.map(|_| self.sid),
-                payload: req.payload.clone(),
-            });
+            calls.push((
+                id,
+                Call {
+                    func: req.func,
+                    op: req.op,
+                    // Lock-free requests may come without a session; the rest run in the broker's.
+                    session: req.session.map(|_| self.sid),
+                    payload: req.payload.clone(),
+                },
+            ));
             pending.push(Pending::Forward(id, req));
         }
         let mut replies = if calls.is_empty() {
@@ -719,12 +733,15 @@ impl Broker {
         let mut dead = Vec::new();
         for (&conn, (func, users)) in self.ledger.conns.iter_mut() {
             if users.remove(&id) && users.is_empty() {
-                calls.push(Call {
-                    func: *func,
-                    op: wire_rvswd::op::DETACH,
-                    session: Some(self.sid),
-                    payload: conn.to_le_bytes().to_vec(),
-                });
+                calls.push((
+                    id,
+                    Call {
+                        func: *func,
+                        op: wire_rvswd::op::DETACH,
+                        session: Some(self.sid),
+                        payload: conn.to_le_bytes().to_vec(),
+                    },
+                ));
                 dead.push(conn);
             }
         }
@@ -738,16 +755,63 @@ impl Broker {
             for f in fns {
                 p.extend_from_slice(&f.to_le_bytes());
             }
-            calls.push(Call {
-                func: oep_core::FN,
-                op: oep_core::op::PLAN_RELEASE,
-                session: Some(self.sid),
-                payload: p,
-            });
+            calls.push((
+                id,
+                Call {
+                    func: oep_core::FN,
+                    op: oep_core::op::PLAN_RELEASE,
+                    session: Some(self.sid),
+                    payload: p,
+                },
+            ));
         }
         if !calls.is_empty() {
             self.up.exchange(calls)?;
         }
         Ok(())
+    }
+}
+
+/// en: A WCH-Link borrowed from its broker for a direct flash: while this lives, the broker has
+/// let go of the Link (the command opens it itself, WCH's stub and all) and keeps serving its
+/// consoles' kept output; dropping it hands the Link back, and so does this process ending.
+/// ja: ブローカーから借りた WCH-Link(直接の flash のため)。生きている間ブローカーは Link を手放し、
+/// console の手元の出力だけを答える。drop で返す(プロセスが終わっても返る)。
+pub(crate) struct Lend {
+    probe: Probe,
+    func: u16,
+}
+
+/// Borrow the Link from its running broker.
+pub(crate) fn lend(target: &BrokerTarget) -> Result<Lend, String> {
+    let link = existing_link_for(target).ok_or("the Link's broker is not running")?;
+    let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
+    let owner = format!("ch32rv flash pid {}", std::process::id());
+    probe
+        .open(
+            ch32rv_oep::session::random_session_id(),
+            60_000,
+            false,
+            Some(&owner),
+        )
+        .map_err(|e| e.to_string())?;
+    let func = probe
+        .interface(crate::broker_wch::WCHLINK_IF)
+        .map_err(|e| e.to_string())?
+        .func;
+    let r = probe
+        .call(func, crate::broker_wch::OP_LEND, Vec::new())
+        .map_err(|e| e.to_string())?;
+    ch32rv_oep::session::check(r)
+        .map_err(|e| format!("the broker would not lend the Link: {e}"))?;
+    Ok(Lend { probe, func })
+}
+
+impl Drop for Lend {
+    fn drop(&mut self) {
+        let _ = self
+            .probe
+            .call(self.func, crate::broker_wch::OP_RECLAIM, Vec::new());
+        let _ = self.probe.end();
     }
 }

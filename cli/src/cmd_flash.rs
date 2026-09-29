@@ -239,12 +239,18 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         }
     };
 
-    // An OEP probe (`tcp:`, or a serial port no WCH-Link owns) takes the OEP path.
-    match crate::oep::addr(cli, CMD) {
+    // An OEP probe (`tcp:`, `oep://`, a serial port no WCH-Link owns) takes the OEP path. A
+    // WCH-Link whose broker runs (an open monitor) is borrowed from it for the direct path below -
+    // WCH's stub stays - and handed back when this returns.
+    let _lend = match crate::oep::addr(cli, CMD) {
+        Ok(Some(crate::oep::OepAddr::Wch(t))) => match crate::broker::lend(&t) {
+            Ok(l) => Some(l),
+            Err(m) => return fail(cli, CMD, ErrorKind::DeviceBusy, m, None),
+        },
         Ok(Some(a)) => return crate::oep::flash(cli, args, &bytes, &a),
-        Ok(None) => {}
+        Ok(None) => None,
         Err(c) => return c,
-    }
+    };
 
     let entry = match select_entry(cli, CMD) {
         Ok(e) => e,
