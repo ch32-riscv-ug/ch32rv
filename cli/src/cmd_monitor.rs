@@ -33,6 +33,14 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Some(MonitorCmd::Sdi { state }) => return sdi_toggle(cli, *state),
         None => {}
     }
+    // An OEP probe, or a WCH-Link whose broker runs: the console (or fixture UART) through it.
+    if args.source != MonitorSource::Uart && args.source != MonitorSource::Rtt {
+        match crate::oep::addr(cli, "monitor") {
+            Ok(Some(a)) => return run_oep(cli, args, &a),
+            Ok(None) => {}
+            Err(c) => return c,
+        }
+    }
     match args.source {
         MonitorSource::Uart => run_uart(cli, args),
         MonitorSource::Sdi => run_sdi(cli, args),
@@ -529,6 +537,72 @@ fn run_dmi(cli: &Cli, source: MonitorSource) -> ExitCode {
             format!("{} stream failed: {e}", src.name()),
             None,
         ),
+    }
+}
+
+/// en: The console (dmdata / dmseq / sdi) or the fixture UART of an OEP probe - or of a WCH-Link
+/// whose broker runs - through the probe's broker, to stdout (NDJSON `output` events under
+/// `--json`), stdin going back to the target, until `--duration` / Ctrl-C.
+/// ja: OEP の probe(かブローカーの動いている WCH-Link)の console / fixture UART をブローカー経由で
+/// stdout に流し、stdin を target に渡す。
+fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
+    use crate::oep::StreamWanted;
+    use ch32rv_oep::stream::Mechanism;
+    const CMD: &str = "monitor";
+    let wanted = match args.source {
+        MonitorSource::Dmdata => StreamWanted::Console(Mechanism::Dmdata),
+        MonitorSource::Dmseq => StreamWanted::Console(Mechanism::Dmseq),
+        MonitorSource::Sdi => StreamWanted::Console(Mechanism::Sdi),
+        MonitorSource::FixtureUart => StreamWanted::FixtureUart(args.baud),
+        MonitorSource::Uart | MonitorSource::Rtt => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::CapabilityUnsupported,
+                format!("{} is not served through a broker", args.source.as_str()),
+                None,
+            );
+        }
+    };
+    let mut c = match crate::oep::ConsoleSession::open(a, wanted, cli.chip.as_deref()) {
+        Ok(c) => c,
+        Err(m) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, m, None),
+    };
+    if !cli.json {
+        eprintln!(
+            "monitor: {} through the probe's broker (Ctrl-C to stop; stdin goes to the target)",
+            args.source.as_str()
+        );
+    }
+    let input = source::spawn_reader(std::io::stdin());
+    let mut pending = Vec::new();
+    let mut sink = Sink::new(cli, args.source.as_str());
+    let deadline = run_duration(cli).map(|d| Instant::now() + d);
+    loop {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            sink.finish();
+            return finish_ok(cli, CMD, args.source.as_str(), Vec::new());
+        }
+        source::drain_input(&input, &mut pending);
+        if !pending.is_empty() {
+            match c.write(&pending) {
+                Ok(n) => {
+                    pending.drain(..n.min(pending.len()));
+                }
+                Err(m) => {
+                    sink.finish();
+                    return fail(cli, CMD, ErrorKind::TransferFailed, m, None);
+                }
+            }
+        }
+        match c.poll() {
+            Ok(b) if b.is_empty() => std::thread::sleep(Duration::from_millis(20)),
+            Ok(b) => sink.write(&b),
+            Err(m) => {
+                sink.finish();
+                return fail(cli, CMD, ErrorKind::TransferFailed, m, None);
+            }
+        }
     }
 }
 
