@@ -20,6 +20,12 @@ use crate::session::Session;
 const CMD: &str = "target.info";
 
 pub fn info(cli: &Cli) -> ExitCode {
+    // An OEP probe (`tcp:`, `oep://`, or a serial port no WCH-Link owns) takes the OEP path.
+    match crate::oep::addr(cli, "target.info") {
+        Ok(Some(a)) => return crate::oep::target_info(cli, &a),
+        Ok(None) => {}
+        Err(c) => return c,
+    }
     let entry = match select_entry(cli, CMD) {
         Ok(e) => e,
         Err(code) => return code,

@@ -189,3 +189,52 @@ fn two_slots_of_the_family_stop_with_the_list() {
         "{v}"
     );
 }
+
+fn run(args: &[&str]) -> (bool, serde_json::Value) {
+    let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        .args(args)
+        .args(["--json", "--non-interactive"])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    (out.status.success(), v)
+}
+
+#[test]
+fn verify_read_reset_and_target_info_on_an_oep_probe() {
+    let Some(f) = fake(&["--pty", "--target-id", V203]) else {
+        return;
+    };
+    let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
+    let img = root().join("tests/fixtures/runtest-ch32v203.bin");
+    let img = img.to_str().unwrap();
+    let (ok, v) = run(&["flash", img, "--probe", &probe, "--progress", "none"]);
+    assert!(ok, "{v}");
+
+    let (ok, v) = run(&["verify", img, "--probe", &probe]);
+    assert!(ok, "{v}");
+    assert_eq!(v["result"]["verified"], true);
+    // Another image does not match what is on the part.
+    let other = root().join("tests/fixtures/runtest-ch32v307.bin");
+    let (ok, v) = run(&["verify", other.to_str().unwrap(), "--probe", &probe]);
+    assert!(!ok);
+    assert_eq!(v["error"]["kind"], "verify-mismatch", "{v}");
+
+    let (ok, v) = run(&["read", "--range", "0x08000000+16", "--probe", &probe]);
+    assert!(ok, "{v}");
+    let first16: String = std::fs::read(img).unwrap()[..16]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert!(v.to_string().contains(&first16), "{v}");
+
+    let (ok, v) = run(&["reset", "--probe", &probe, "--confirm-run"]);
+    assert!(ok, "{v}");
+    assert_eq!(v["result"]["running"], true);
+
+    let (ok, v) = run(&["target", "info", "--probe", &probe]);
+    assert!(ok, "{v}");
+    assert_eq!(v["result"]["target"]["family"], "CH32V20x");
+    assert_eq!(v["result"]["target"]["chip_id"], V203);
+}
