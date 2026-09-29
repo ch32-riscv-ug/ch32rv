@@ -16,11 +16,13 @@
 pub mod capture;
 pub mod device;
 pub mod lock;
+pub mod pipe;
 pub mod replay;
 pub mod selector;
 
 pub use device::{UsbDeviceInfo, UsbError, UsbInterface, enumerate};
 pub use lock::{DeviceLock, LockError, runtime_dir, sanitize as sanitize_key};
+pub use pipe::{BulkPipe, VendorBulkPlace};
 pub use selector::{
     ResolveError, Selector, SelectorParseError, SerialFilter, normalize_port, resolve,
 };

@@ -84,6 +84,138 @@ fn port_of_oep_device(path: &str) -> bool {
         .any(|(i, d)| sel.matches(d, i))
 }
 
+/// An OEP vendor bulk pair as a link's byte stream (`length(u16)` framing, oep-core §3.1).
+struct VendorBulk(ch32rv_usb::BulkPipe);
+
+impl ch32rv_oep::link::ByteStream for VendorBulk {
+    fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+        self.0
+            .write(data, Duration::from_secs(1))
+            .map_err(std::io::Error::other)
+    }
+
+    fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> std::io::Result<usize> {
+        self.0.read(buf, timeout).map_err(std::io::Error::other)
+    }
+}
+
+/// An OEP HID interface as a link's byte stream: the length-framed stream packed into its vendor
+/// reports (oep-core §3.1).
+struct OepHid {
+    dev: hidapi::HidDevice,
+    shape: ch32rv_oep::hid::ReportShape,
+    rx: std::collections::VecDeque<u8>,
+}
+
+impl OepHid {
+    /// The vendor HID interface of the OEP device `dev`, if it has one that opens.
+    fn open(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<OepHid> {
+        let api = hidapi::HidApi::new().ok()?;
+        for info in api.device_list() {
+            if info.vendor_id() != dev.vid()
+                || info.product_id() != dev.pid()
+                || info.serial_number() != dev.serial()
+                || info.usage_page() < 0xFF00
+            {
+                continue;
+            }
+            let Ok(h) = info.open_device(&api) else {
+                continue;
+            };
+            let mut desc = [0u8; 4096];
+            let Ok(n) = h.get_report_descriptor(&mut desc) else {
+                continue;
+            };
+            if let Some(shape) = ch32rv_oep::hid::vendor_report(&desc[..n]) {
+                return Some(OepHid {
+                    dev: h,
+                    shape,
+                    rx: std::collections::VecDeque::new(),
+                });
+            }
+        }
+        None
+    }
+}
+
+impl ch32rv_oep::link::ByteStream for OepHid {
+    fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
+        for r in self.shape.pack(data) {
+            self.dev.write(&r).map_err(std::io::Error::other)?;
+        }
+        Ok(())
+    }
+
+    fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> std::io::Result<usize> {
+        if self.rx.is_empty() {
+            let mut r = vec![0u8; 1 + self.shape.input];
+            let ms = i32::try_from(timeout.as_millis().max(1)).unwrap_or(i32::MAX);
+            let n = self
+                .dev
+                .read_timeout(&mut r, ms)
+                .map_err(std::io::Error::other)?;
+            if let Some(d) = self.shape.unpack(&r[..n]) {
+                self.rx.extend(d);
+            }
+        }
+        let n = buf.len().min(self.rx.len());
+        for (d, s) in buf.iter_mut().zip(self.rx.drain(..n)) {
+            *d = s;
+        }
+        Ok(n)
+    }
+}
+
+/// en: Connect (confirm) to the probe behind the serial port `path` by the transports in the order
+/// oep-core §3.3 gives: the vendor bulk pair of the OEP device that owns the port, its vendor HID,
+/// then the port itself. `timeout` shortens each reply wait (discovery). `CH32RV_OEP_TRANSPORT`
+/// (`vendor-bulk` / `hid` / `serial`) starts the order at that transport. Returns the probe and the
+/// transport's name.
+/// ja: serial port `path` の裏の probe に、§3.3 の順(その port を持つ OEP の device の vendor bulk、
+/// vendor の HID、port そのもの)でつなぐ(confirm まで)。`CH32RV_OEP_TRANSPORT` はその経路から始める。
+pub(crate) fn connect_upstream(
+    path: &str,
+    timeout: Option<Duration>,
+) -> Result<(Probe, &'static str), String> {
+    let start = std::env::var("CH32RV_OEP_TRANSPORT").unwrap_or_default();
+    let sel = Selector::Port(path.to_owned());
+    let dev = oep_devices()
+        .into_iter()
+        .enumerate()
+        .find(|(i, d)| sel.matches(d, *i))
+        .map(|(_, d)| d);
+    let try_link = |stream: Box<dyn ch32rv_oep::link::ByteStream>| {
+        let mut link = ch32rv_oep::link::Link::new(stream, ch32rv_oep::link::Framing::Length);
+        if let Some(t) = timeout {
+            link.set_timeout(t);
+        }
+        Probe::connect(link).ok()
+    };
+    if let Some(d) = &dev {
+        if !matches!(start.as_str(), "hid" | "serial")
+            && let Some(p) = d
+                .open_vendor_bulk()
+                .ok()
+                .flatten()
+                .and_then(|pipe| try_link(Box::new(VendorBulk(pipe))))
+        {
+            return Ok((p, "vendor-bulk"));
+        }
+        if start != "serial"
+            && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
+        {
+            return Ok((p, "hid"));
+        }
+    }
+    let mut link = ch32rv_oep::link::open_serial(path).map_err(|e| e.to_string())?;
+    if let Some(t) = timeout {
+        link.set_timeout(t);
+    }
+    Probe::connect(link)
+        .map(|p| (p, "serial"))
+        .map_err(|e| e.to_string())
+}
+
 /// Resolve `oep://<probe>/<slot>` to the probe's serial port.
 pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
     let rest = url.strip_prefix("oep://").unwrap_or(url);

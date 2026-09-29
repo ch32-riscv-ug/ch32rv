@@ -332,11 +332,8 @@ fn serve_target(
     };
     let (up, sid) = match (&target, wch_entry) {
         (BrokerTarget::Serial(path), _) => {
-            let mut probe = match ch32rv_oep::link::open_serial(path)
-                .map_err(|e| e.to_string())
-                .and_then(|l| Probe::connect(l).map_err(|e| e.to_string()))
-            {
-                Ok(p) => p,
+            let mut probe = match crate::oep::connect_upstream(path, None) {
+                Ok((p, _)) => p,
                 Err(m) => return report_error(format!("{path}: {m}")),
             };
             let serial = crate::oep::single_serial(&mut probe);

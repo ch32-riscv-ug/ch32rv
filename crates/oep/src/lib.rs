@@ -18,6 +18,7 @@
 
 pub mod codec;
 pub mod config;
+pub mod hid;
 pub mod link;
 pub mod session;
 pub mod stream;

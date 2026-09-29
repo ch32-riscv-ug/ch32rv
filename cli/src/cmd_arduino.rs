@@ -99,14 +99,16 @@ fn oep_ports() -> Vec<Value> {
 }
 
 fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<Value>> {
-    let mut link = match crate::broker::existing_link(path) {
-        Some(l) => l,
-        None => ch32rv_oep::link::open_serial(path).ok()?,
-    };
     // A LIST must stay quick: a probe that does not answer (older firmware, another framing) costs
     // two short waits, not the usual reply timeout twice.
-    link.set_timeout(std::time::Duration::from_millis(300));
-    let mut p = ch32rv_oep::session::Probe::connect(link).ok()?;
+    let quick = std::time::Duration::from_millis(300);
+    let mut p = match crate::broker::existing_link(path) {
+        Some(mut l) => {
+            l.set_timeout(quick);
+            ch32rv_oep::session::Probe::connect(l).ok()?
+        }
+        None => crate::oep::connect_upstream(path, Some(quick)).ok()?.0,
+    };
     let slots = ch32rv_oep::config::slots(&mut p).ok()?;
     let states = ch32rv_oep::config::slot_states(&mut p).unwrap_or_default();
     let id = crate::oep::probe_id(dev);

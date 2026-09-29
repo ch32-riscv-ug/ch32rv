@@ -129,6 +129,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "gdbstub",
+ "hidapi",
  "rustix",
  "serde_json",
  "serialport",

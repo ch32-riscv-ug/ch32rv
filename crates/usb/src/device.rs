@@ -41,7 +41,7 @@ pub enum UsbError {
     Transfer(String),
 }
 
-fn classify_open_error(e: impl Into<io::Error>) -> UsbError {
+pub(crate) fn classify_open_error(e: impl Into<io::Error>) -> UsbError {
     let e: io::Error = e.into();
     match e.kind() {
         io::ErrorKind::PermissionDenied => UsbError::AccessDenied(e.to_string()),
@@ -62,6 +62,16 @@ enum Inner {
     Nusb(nusb::DeviceInfo),
     /// A device reconstructed from a `--replay` capture fixture (no real hardware).
     Replay(crate::replay::ReplayDevice),
+}
+
+impl UsbDeviceInfo {
+    /// The nusb device behind this one (`None` under `--replay`).
+    pub(crate) fn nusb_info(&self) -> Option<&nusb::DeviceInfo> {
+        match &self.inner {
+            Inner::Nusb(d) => Some(d),
+            Inner::Replay(_) => None,
+        }
+    }
 }
 
 impl std::fmt::Debug for UsbDeviceInfo {
