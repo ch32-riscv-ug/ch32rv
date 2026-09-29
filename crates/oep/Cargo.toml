@@ -12,6 +12,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+ch32rv-dmi = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]
