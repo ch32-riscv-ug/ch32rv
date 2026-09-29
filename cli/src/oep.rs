@@ -350,3 +350,93 @@ fn flash_attached(
         ExitCode::SUCCESS
     }
 }
+
+/// en: `--chip` against a chip id, for callers that report in text (the Arduino monitor): the DB
+/// family when the id resolves, an error when it contradicts `chip`.
+/// ja: chip id と `--chip` の照合(文字で報告する呼び出し側向け)。
+fn check_family_text(chip_id: Option<u32>, chip: Option<&str>) -> Result<Option<String>, String> {
+    let db = ch32rv_target::Db::builtin();
+    let detected = chip_id.and_then(|id| match db.resolve_by_chip_id(id) {
+        ch32rv_target::Resolution::Sku(s) => Some(s.family.clone()),
+        ch32rv_target::Resolution::Family(f, _) => Some(f),
+        ch32rv_target::Resolution::Unknown => None,
+    });
+    if let (Some(d), Some(c)) = (&detected, chip) {
+        let fams = db.families_for_chip_name(c);
+        if !fams.iter().any(|f| f.eq_ignore_ascii_case(d)) {
+            return Err(format!(
+                "--chip {c} conflicts with the detected {d} (chip id 0x{:08x})",
+                chip_id.unwrap_or(0)
+            ));
+        }
+    }
+    Ok(detected)
+}
+
+/// en: A console stream on an OEP probe's target, through the probe's broker, for the Arduino
+/// monitor: attached without halting (a running target is watched, not stopped), read from the
+/// last reset mark. Dropping it detaches and ends the session (the broker would release both
+/// anyway when this client leaves).
+/// ja: OEP の probe の target の console(ブローカー経由、Arduino monitor 用)。止めずに attach し、
+/// 最後の reset の mark から読む。drop で detach と end(client が抜ければブローカーも外す)。
+pub(crate) struct ConsoleSession {
+    probe: Probe,
+    stream: ch32rv_oep::stream::PosStream,
+    wire: WireKind,
+    connection: u16,
+    max_read: u16,
+}
+
+impl ConsoleSession {
+    pub(crate) fn open(
+        path: &str,
+        mech: ch32rv_oep::stream::Mechanism,
+        chip: Option<&str>,
+    ) -> Result<Self, String> {
+        let link = crate::broker::client_link(path)?;
+        let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
+        let owner = format!("ch32rv monitor pid {}", std::process::id());
+        probe
+            .open(random_session_id(), 3000, false, Some(&owner))
+            .map_err(|e| e.to_string())?;
+        let wire = pick_wire(&mut probe, chip).map_err(|e| e.to_string())?;
+        let at = attach(&mut probe, wire, AttachOptions::default()).map_err(|e| e.to_string())?;
+        check_family_text(at.wch_chip_id, chip)?;
+        let mut stream =
+            ch32rv_oep::stream::PosStream::open_console(&mut probe, at.connection, mech)
+                .map_err(|e| e.to_string())?;
+        stream
+            .start_at_last_reset(&mut probe)
+            .map_err(|e| e.to_string())?;
+        let max_read = probe.limits().max_frame.saturating_sub(14).clamp(16, 1000);
+        Ok(ConsoleSession {
+            probe,
+            stream,
+            wire,
+            connection: at.connection,
+            max_read,
+        })
+    }
+
+    /// What the target printed since the last poll.
+    pub(crate) fn poll(&mut self) -> Result<Vec<u8>, String> {
+        self.stream
+            .poll(&mut self.probe, self.max_read)
+            .map(|c| c.data)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Send input; returns how many bytes were taken (resend the rest later).
+    pub(crate) fn write(&mut self, data: &[u8]) -> Result<usize, String> {
+        self.stream
+            .write(&mut self.probe, data)
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Drop for ConsoleSession {
+    fn drop(&mut self) {
+        let _ = detach(&mut self.probe, self.wire, self.connection, false);
+        let _ = self.probe.end();
+    }
+}

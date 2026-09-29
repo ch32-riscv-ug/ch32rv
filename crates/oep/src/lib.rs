@@ -8,6 +8,7 @@
 //! - [`link`]: one framed byte stream to one probe with the core §5 rules (corr, pipeline, resend,
 //!   resync).
 //! - [`session`]: discovery, open / end / keepalive / lock_state, typed rejections.
+//! - [`stream`]: position streams - the target console and the fixture UART.
 //! - [`target`]: `oep.wire.*` attach / detach, `oep.target.riscv-dm`, and [`target::OepDtm`]
 //!   behind `ch32rv-dmi`'s `DtmAccess` / `TargetAccess`.
 //!
@@ -17,6 +18,7 @@
 pub mod codec;
 pub mod link;
 pub mod session;
+pub mod stream;
 pub mod target;
 
 #[rustfmt::skip]

@@ -505,6 +505,11 @@ enum Backend {
         src: Box<DmiSource>,
         session: Box<Session>,
     },
+    /// A console stream on an OEP probe, through its broker.
+    Oep {
+        console: Box<crate::oep::ConsoleSession>,
+        source: MonitorSource,
+    },
 }
 
 /// Why a backend returned.
@@ -529,6 +534,32 @@ fn lock_for(entry: &Entry, env: &Env) -> Result<DeviceLock, String> {
 
 impl Backend {
     fn open(r: &Resolved, s: Settings, env: &Env) -> Result<Self, String> {
+        // en: A debug source on a serial port no WCH-Link owns: an OEP probe, through its broker.
+        // (uart stays the port as it is - opening an unknown port to send an OEP confirm would put
+        // bytes on someone's device; an OEP UART-bridge probe streams its bound console raw there.)
+        // ja: WCH-Link のものでない serial port で debug の source なら OEP の probe(ブローカー経由)。
+        // uart は port の素通しのまま(知らない port に OEP の confirm を送ると誰かの device に
+        // バイトが入る。OEP の UART bridge の probe は bind した console をそこに生で流す)。
+        if r.entry.is_none() && s.source != MonitorSource::Uart {
+            use ch32rv_oep::stream::Mechanism;
+            let path = r.port.as_deref().ok_or("no serial port")?;
+            let mech = match s.source {
+                MonitorSource::Sdi => Mechanism::Sdi,
+                MonitorSource::Dmdata => Mechanism::Dmdata,
+                MonitorSource::Dmseq => Mechanism::Dmseq,
+                _ => {
+                    return Err(format!(
+                        "{} is not available on an OEP probe (its console has sdi, dmdata and dmseq)",
+                        s.source.as_str()
+                    ));
+                }
+            };
+            let c = crate::oep::ConsoleSession::open(path, mech, s.chip.as_deref())?;
+            return Ok(Backend::Oep {
+                console: Box::new(c),
+                source: s.source,
+            });
+        }
         match s.source {
             MonitorSource::Uart => {
                 let path = r
@@ -650,6 +681,28 @@ impl Backend {
                         }
                     }
                 }
+                Backend::Oep { console, source } => {
+                    if now.source != *source {
+                        return Leave::Switch;
+                    }
+                    if !pending.is_empty() {
+                        match console.write(&pending) {
+                            Ok(n) => {
+                                pending.drain(..n.min(pending.len()));
+                            }
+                            Err(e) => return Leave::Failed(format!("console write failed: {e}")),
+                        }
+                    }
+                    match console.poll() {
+                        Ok(b) => {
+                            if b.is_empty() {
+                                std::thread::sleep(Duration::from_millis(20));
+                            }
+                            Ok(b)
+                        }
+                        Err(e) => Err(format!("console read failed: {e}")),
+                    }
+                }
                 Backend::Dmi { src, session } => {
                     if now.source.as_str() != src.name() {
                         return Leave::Switch;
@@ -740,7 +793,8 @@ fn session(
         return;
     }
     let input = source::spawn_reader(reader);
-    say_reclock(&mut sock, shared.settings().source);
+    let wch = resolved.entry.is_some();
+    say_reclock(&mut sock, shared.settings().source, wch);
     loop {
         match backend.run(shared, &mut sock, &input) {
             Leave::Stop => return,
@@ -750,7 +804,7 @@ fn session(
                 match Backend::open(&resolved, next.clone(), env) {
                     Ok(b) => {
                         backend = b;
-                        say_reclock(&mut sock, next.source);
+                        say_reclock(&mut sock, next.source, wch);
                     }
                     Err(m) => lost(&mut sock, &m),
                 }
@@ -769,8 +823,9 @@ fn session(
 /// families it happens to is not fully known.
 /// ja: `uart` 以外の source は WCH-Link の attach を通り、target のクロックを組み替えたままにする
 /// 可能性がある。IDE の利用者が読むのはモニタだけなので、そこに全 target で「可能性」として出す。
-fn say_reclock(sock: &mut TcpStream, source: MonitorSource) {
-    if source == MonitorSource::Uart {
+fn say_reclock(sock: &mut TcpStream, source: MonitorSource, wch_link: bool) {
+    // Only a WCH-Link's attach touches the clock; an OEP probe's does not.
+    if source == MonitorSource::Uart || !wch_link {
         return;
     }
     let _ = write!(
