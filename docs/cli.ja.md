@@ -74,9 +74,12 @@ ch32rv
 ├─ version                     tool/contract/DB/stub の版(--json)                 P0
 ├─ complete <shell>            shell 補完                                          P2
 │
-└─ arduino                     Arduino IDE 統合(machine 向け)
-   ├─ discovery                Pluggable Discovery(stdio JSON)                   P1
-   └─ monitor                  Pluggable Monitor(stdio JSON)                     P1
+├─ arduino                     Arduino IDE 統合(machine 向け)
+│  ├─ discovery                Pluggable Discovery(stdio JSON)                   P1
+│  └─ monitor                  Pluggable Monitor(stdio JSON)                     P1
+│
+└─ broker                      probe ごとのブローカー(§4.12)
+   └─ endpoint                 ブローカーの待ち受けの場所(--json)
 ```
 
 ## 3. 共通契約
@@ -485,6 +488,18 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
   - **attach のクロックの注意**(2026-09-29): attach する source(uart 以外)を開いたとき(OPEN と、開いたままの切り替え)に、`[ch32rv monitor] attaching may have changed the target clock (UART baud rate, millis, timers); reset the board to run at its own clock` を data の行で流す。`monitor` の warning `attach-reclocks-target` と同じく、全 target に「可能性」として出す(IDE の利用者が読むのはモニタの窓だけのため)。reset して離す設定(on-close)は入れない(要望が出たら)。
   - **lock**: attach する source(sdi / dmdata / dmseq / rtt)は probe 単位の lock を持つ(開いている間の flash は待つか exit 13)。`uart` は lock を取らない(CDC だけを使い、tty は排他)。
   - 実機検証(2026-09-29、WCH-LinkE fw 2.22、arduino-cli の代わりに protocol を話す試験 script): V006(K8U6)の SerialEcho を `uart` 115200 で往復、V203 の HelloSDI を `sdi`(serial port 経由・`wchlink://` 経由とも)、L103 の HelloDMDATA を `dmdata` で往復(小文字が大文字で戻る)、開いたままの `dmdata` → `uart` の切り替え、素の serial port(CH343)で `sdi` へ切り替えて理由の行を送って終わる、`chip` の不一致で OPEN が error、stdin の EOF で 0.1 秒以内に exit 0、開いている間は 2 つ目の open が EBUSY。`hid://` は UIAPduino が無く未検証。
+
+### 4.12 broker と OEP の probe
+
+```text
+ch32rv broker endpoint --probe <sel> [--json]   その probe のブローカーの待ち受け({"endpoint":"127.0.0.1:<port>"|null,"pid":…})
+ch32rv broker serve --probe <sel>               ブローカー本体(利用者向けではない。client が切り離して起動する)
+```
+
+- **ブローカー**(docs/oep-host.ja.md §7.2): probe ごとに 1 つの、誰の子でもないプロセス。probe の transport と session を持ち、ch32rv のコマンドと pytest の `oep_host` は 127.0.0.1 の TCP で OEP を話す client になる。client の session の要求はブローカーが自分で答え、残りは 1 回の pipeline にまとめて probe に送る。接続と plan は client ごとの台帳に持ち、抜けた client の分だけ外す。最後の client が抜けたらすぐ終わる。起動の取り合いは runtime dir の flock で 1 つに、待ち受けは `<runtime>/<key>.oep`(0600)。
+  - **OEP の probe**: serial port(`port:<path>`、`port:oep://…`)を使うコマンドは、すべてブローカーを通る(無ければ起動する)。`tcp:` は直接つなぐ。
+  - **WCH-Link**: ブローカーの裏に置け、OEP を Link に写す(attach は AttachChip、riscv-dm は DmiOp / Debug Module、console は dmdata / dmseq の mailbox をブローカーが poll する)。`arduino monitor` の dmdata / dmseq は LinkE でもブローカー経由。flash / verify / read / reset / target info は、その Link のブローカーが動いていればブローカーを通り、動いていなければ直接開く(flash は WCH の stub のまま)。uart / sdi / rtt / gdb / erase / dbg などは直接開く(LinkE のブローカーが動いている間は lock で断られる)。
+- **OEP の probe で使えるコマンド**(2026-09-29): `flash`(ch32rv の RAM loader)、`verify`、`read`、`reset`、`target info`、`arduino monitor`(console / fixture-uart)、`arduino discovery`(`oep://`)。`--probe` は `tcp:<host:port>`、`port:oep://<probe>/<slot>`、`port:<WCH-Link のものでない serial port>`。target の family は attach で読む chip id から引く。スロットのある probe の raw の serial port では、`--chip` の家系に合うスロットが 1 つならそこを使う(0 か 2 つ以上は一覧つきで exit 23)。
 
 ## 5. 呼び出し例
 
