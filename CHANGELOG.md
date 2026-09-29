@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.1 - 2026-09-29
+
 - (EN) `--probe port:` with nothing after it - what an IDE recipe sends when no port was picked (`arduino-cli upload` without `-p`) - now says no port was selected and how to pick one, instead of "empty value after `port:`" (still exit 2; no probe is guessed).
 - (JA) 空の `--probe port:`(port を選ばずに IDE の recipe が送る形。`-p` 無しの `arduino-cli upload`)は、port が選ばれていないことと選び方を言う(「`port:` の後が空」ではなく。exit 2 のまま、probe は推測しない)。
 - (EN) Windows: `arduino discovery` labels a WCH-Link whose device is bound to a driver ch32rv cannot open it through (usbipd's stub for a Link shared to WSL, anything but `usbccgp` / WinUSB / WCH's CH375) as "WCH-Link <sn> (cannot open: driver <name>)", with `driver` in its properties; it is still listed so the user sees it and why.
