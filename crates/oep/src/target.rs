@@ -420,7 +420,12 @@ impl TargetAccess for OepDtm<'_> {
             ResetMode::RunVerified => dm::enums::reset_mode::RUN_VERIFIED,
             ResetMode::HaltAtReset => dm::enums::reset_mode::HALT_AT_RESET,
         });
-        let a = completed(self.call(dm::op::RESET, pl)?)?;
+        let r = self.call(dm::op::RESET, pl)?;
+        // en: A reset that did not reach the mode is completed failed with the full answer
+        // (oep-if-debug §4.3); only the outcome tells it from success.
+        // ja: mode の状態に達しない reset は、同じ形の completed failed(§4.3)。outcome でだけ分かる。
+        let reached = r.succeeded();
+        let a = completed(r)?;
         if a.len() == 1 {
             return Err(failed("reset", a[0]));
         }
@@ -429,6 +434,12 @@ impl TargetAccess for OepDtm<'_> {
         }
         if a[0] != status::OK {
             return Err(failed("reset", a[0]));
+        }
+        if !reached {
+            return Err(DmiError::NotReached(format!(
+                "flags 0x{:02x}, {} attempt(s)",
+                a[1], a[2]
+            )));
         }
         Ok(ResetResult { pc: le32(&a, 3) })
     }

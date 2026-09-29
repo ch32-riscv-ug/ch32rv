@@ -444,9 +444,18 @@ impl WchUpstream {
                 };
                 match DmTarget::new(s.link()).reset(mode) {
                     Ok(r) => {
-                        let mut out = vec![status::OK, 1, 1];
+                        // en: flags bit0 = reached the mode, bit1 = checked it runs (mode 1 only,
+                        // and success needs it; oep-if-debug §4.3).
+                        // ja: bit0 = mode の状態に達した、bit1 = 走っているのを確かめた(mode 1 だけ)。
+                        let (reached, flags) = if mode == ResetMode::RunVerified {
+                            let running = s.dm().is_running().unwrap_or(false);
+                            (running, if running { 0b11 } else { 0 })
+                        } else {
+                            (true, 0b01)
+                        };
+                        let mut out = vec![status::OK, flags, 1];
                         out.extend_from_slice(&r.pc.to_le_bytes());
-                        ok(out)
+                        if reached { ok(out) } else { failed(out) }
                     }
                     Err(_) => failed(vec![status::FAULT]),
                 }

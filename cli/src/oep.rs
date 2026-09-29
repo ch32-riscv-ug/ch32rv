@@ -560,16 +560,34 @@ fn flash_attached(
         Err(e) => return fail(cli, CMD, ErrorKind::VerifyMismatch, e.to_string(), None),
     };
     let secs = started.elapsed().as_secs_f64();
-    if args.reset == ch32rv_contract::policy::ResetPolicy::Run
-        && let Err(e) = t.reset(ResetMode::RunVerified)
-    {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::TransferFailed,
-            format!("reset: {e}"),
-            None,
-        );
+    if args.reset == ch32rv_contract::policy::ResetPolicy::Run {
+        // `--confirm-run` asks the probe to check that the hart runs (exit 50 when it does not).
+        let mode = if args.confirm_run.is_some() {
+            ResetMode::RunVerified
+        } else {
+            ResetMode::Run
+        };
+        match t.reset(mode) {
+            Ok(_) => {}
+            Err(e @ ch32rv_dmi::DmiError::NotReached(_)) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::NotRunningAfterWrite,
+                    format!("target not running after reset: {e}"),
+                    None,
+                );
+            }
+            Err(e) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("reset: {e}"),
+                    None,
+                );
+            }
+        }
     }
     let total = image.total_len();
     if cli.json {
@@ -840,8 +858,7 @@ pub(crate) fn reset(cli: &Cli, args: &crate::args::ResetArgs, a: &OepAddr) -> Ex
         };
         let (ok, pc) = match x.t.reset(mode) {
             Ok(r) => (true, r.pc),
-            Err(e) if mode == ResetMode::RunVerified => {
-                let _ = e;
+            Err(ch32rv_dmi::DmiError::NotReached(_)) if mode == ResetMode::RunVerified => {
                 (false, 0)
             }
             Err(e) => {
