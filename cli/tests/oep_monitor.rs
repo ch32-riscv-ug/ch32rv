@@ -197,3 +197,36 @@ fn fixture_uart_streams_at_the_monitors_baud() {
     drop(m.stdin.take());
     let _ = m.child.wait();
 }
+
+#[test]
+fn the_cli_monitor_streams_an_oep_console() {
+    let Some((_fake, pty)) = fake_pty(&[
+        "--target-id",
+        "0x20310500",
+        "--console",
+        "uptime %d\r\n",
+        "--every",
+        "50",
+    ]) else {
+        return;
+    };
+    let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        .args([
+            "monitor",
+            "--source",
+            "dmseq",
+            "--probe",
+            &format!("port:{pty}"),
+            "--duration",
+            "1",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("uptime"));
+}
