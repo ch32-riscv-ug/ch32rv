@@ -30,9 +30,11 @@
 //! 読み書き・SerialDMDATA mailbox([`DebugModule::dmdata_poll`])・HW trigger 探索・直接
 //! FLASH controller の page erase/program・option byte 書込を提供する。
 
+pub mod access;
 pub mod dm;
 pub mod dmseq;
 
+pub use access::{ResetMode, ResetResult, RunResult, TargetAccess, resume_ch32};
 pub use dm::{DebugModule, DmdataPoll, FlashProgMode, RegName};
 pub use dmseq::{DmSeq, DmSeqPoll};
 
@@ -55,6 +57,57 @@ pub trait DtmAccess {
     /// ja: DMI nop。WCH-Link firmware には「nop が直前の read 結果を返す」quirk が報告
     /// されている。quirk の吸収は backend 側の責務とし、この trait の意味論は Debug Spec に従う。
     fn dmi_nop(&mut self) -> Result<(), DmiError>;
+
+    /// en: Run `ops` as one sequence and return the values the reads and polls produced, in order.
+    /// A probe that can take the whole list in one request (OEP `dmi`) overrides this, which keeps
+    /// an abstract-command sequence from being split by the probe's own console polling between
+    /// requests. The default runs them one by one. A poll that never sees its bits clear is
+    /// [`DmiError::Timeout`].
+    /// ja: `ops` を 1 つの並びとして実行し、read と poll の値を順に返す。1 要求で受けられる probe
+    /// (OEP の `dmi`)は上書きする(abstract command の一連が probe の console の poll で割られない)。
+    /// 既定は 1 つずつ。poll が最後まで満たされなければ Timeout。
+    fn dmi_sequence(&mut self, ops: &[DmiOp]) -> Result<Vec<u32>, DmiError> {
+        let mut out = Vec::new();
+        for op in ops {
+            match *op {
+                DmiOp::Write(addr, value) => self.dmi_write(addr, value)?,
+                DmiOp::Read(addr) => out.push(self.dmi_read(addr)?),
+                DmiOp::PollClear {
+                    addr,
+                    mask,
+                    max_reads,
+                } => {
+                    let mut last = 0;
+                    let mut clear = false;
+                    for _ in 0..max_reads.max(1) {
+                        last = self.dmi_read(addr)?;
+                        if last & mask == 0 {
+                            clear = true;
+                            break;
+                        }
+                    }
+                    out.push(last);
+                    if !clear {
+                        return Err(DmiError::Timeout);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// One step of a [`DtmAccess::dmi_sequence`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DmiOp {
+    Write(u8, u32),
+    Read(u8),
+    /// Read `addr` until `value & mask == 0`, at most `max_reads` times; yields the last value.
+    PollClear {
+        addr: u8,
+        mask: u32,
+        max_reads: u16,
+    },
 }
 
 #[derive(Debug, Error)]

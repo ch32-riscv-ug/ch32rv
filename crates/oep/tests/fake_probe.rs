@@ -190,3 +190,87 @@ fn pipelined_requests_answer_in_order() {
     assert_ne!(r[0].payload, r[1].payload);
     p.end().unwrap();
 }
+
+// ---- wire + riscv-dm ----
+
+use ch32rv_dmi::{DebugModule, RegName, ResetMode, TargetAccess, resume_ch32};
+use ch32rv_oep::target::{AttachOptions, OepDtm, WireKind, attach, detach};
+
+#[test]
+fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
+    let Some(f) = fake(&["--framing", "cobs", "--target-id", "0x20310500"]) else {
+        return;
+    };
+    let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
+    p.open(random_session_id(), 3000, false).unwrap();
+    let a = attach(
+        &mut p,
+        WireKind::Rvswd,
+        AttachOptions {
+            halt: true,
+            max_speed_hz: Some(1_000_000),
+            pins: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(a.wch_chip_id, Some(0x2031_0500));
+    assert!(a.speed_hz <= 1_000_000);
+    assert!(!a.existing);
+    // Attaching again gets the same connection back, marked existing.
+    let again = attach(&mut p, WireKind::Rvswd, AttachOptions::default()).unwrap();
+    assert_eq!(again.connection, a.connection);
+    assert!(again.existing);
+
+    let mut t = OepDtm::new(&mut p, a.connection).unwrap();
+    let max = t.max_block_words();
+    assert!((1..=256).contains(&max));
+    // More words than one block holds: split and pipelined, read back the same.
+    let words: Vec<u32> = (0..(max as u32 * 2 + 7))
+        .map(|i| i.wrapping_mul(0x9E37_79B9))
+        .collect();
+    t.write_words(0x2000_0000, &words).unwrap();
+    assert_eq!(t.read_words(0x2000_0000, words.len()).unwrap(), words);
+
+    // The Debug Module code runs on it unchanged: the pc through an abstract command.
+    let pc = DebugModule::new(&mut t).read_reg(RegName::Pc).unwrap();
+    assert_eq!(pc, 0x100);
+
+    let r = t
+        .run_until_halt(
+            0x2000_0000,
+            &[(ch32rv_dmi::access::regno::A0, 5)],
+            &[ch32rv_dmi::access::regno::A0],
+            Duration::from_millis(200),
+        )
+        .unwrap();
+    assert!(r.stopped);
+    assert_eq!(r.dpc, 0x2000_0010);
+    assert_eq!(r.outs, vec![5]);
+
+    let rr = t.reset(ResetMode::HaltAtReset).unwrap();
+    assert_eq!(rr.pc, 0);
+    detach(&mut p, WireKind::Rvswd, a.connection, false).unwrap();
+    p.end().unwrap();
+}
+
+#[test]
+fn a_resume_that_does_not_take_is_issued_again() {
+    // Two misses, like a CH32V006 now and then: the CH32 rule re-issues while dpc is unmoved.
+    let Some(f) = fake(&["--framing", "cobs", "--resume-misses", "2"]) else {
+        return;
+    };
+    let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
+    p.open(random_session_id(), 3000, false).unwrap();
+    let a = attach(
+        &mut p,
+        WireKind::Rvswd,
+        AttachOptions {
+            halt: true,
+            ..AttachOptions::default()
+        },
+    )
+    .unwrap();
+    let mut t = OepDtm::new(&mut p, a.connection).unwrap();
+    let ran = resume_ch32(&mut t, |t| DebugModule::new(t).read_reg(RegName::Pc)).unwrap();
+    assert!(ran);
+}

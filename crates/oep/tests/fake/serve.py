@@ -8,6 +8,8 @@ against (ArduinoCore-CH32 decision, 2026-09-29), so this file only adds a byte s
   --noise TEXT      also write TEXT (console bytes) before every answer, to exercise the host's filtering
   --drop N          do not answer the N-th request (1-based) once, to exercise the host's resend
   --profile NAME    p4_x035 (default) or esp32_v003
+  --target-id HEX   the WCH DMI 0x7F value attach reports (target_id scheme 1)
+  --resume-misses N the first N resumes do not take (a CH32V006 now and then)
 
 Prints "PORT <n>" on stdout once listening, serves one connection, then exits.
 Run with: uv run --project <oep-client-python> python serve.py ...
@@ -30,11 +32,15 @@ def main() -> None:
     ap.add_argument("--noise", default="")
     ap.add_argument("--drop", type=int, default=0)
     ap.add_argument("--profile", default="p4_x035")
+    ap.add_argument("--target-id", type=lambda v: int(v, 0), default=None)
+    ap.add_argument("--resume-misses", type=int, default=0)
     a = ap.parse_args()
 
     probe = getattr(fake, a.profile)()
     start = time.monotonic()
     ep = endpoint.Endpoint(probe, lambda: int((time.monotonic() - start) * 1000))
+    ep.target_id = a.target_id
+    ep.target.resume_misses = a.resume_misses
 
     srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

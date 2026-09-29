@@ -8,7 +8,7 @@
 //! 沿い、QingKe debug manual と突き合わせた。abstract command の符号は wlink から転記し
 //! 実機で裏を取る。memory access は program buffer 命令(`lw`/`sw` + `ebreak`)を使う。
 
-use crate::{DmiError, DtmAccess};
+use crate::{DmiError, DmiOp, DtmAccess};
 
 /// en: Encode up to 3 host->target bytes into a data0 word with bit7 clear (the target's
 /// poll() takes them). The count is biased by 4 like the target->host direction (minichlink
@@ -264,22 +264,50 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// en: Read an abstract register (GPR/CSR/PC). The hart must be halted.
     /// ja: abstract register(GPR/CSR/PC)を読む。hart は halt 済みであること。
     pub fn read_reg(&mut self, reg: RegName) -> Result<u32, DmiError> {
-        self.clear_cmderr()?;
-        self.write(DMDATA0, 0)?;
-        // access register, transfer, read (0x0022_0000 | regno).
-        self.write(DMCOMMAND, 0x0022_0000 | u32::from(reg.abstract_regno()))?;
-        self.wait_abstract()?;
-        self.read(DMDATA0)
+        // One sequence: clear cmderr, access register / transfer / read (0x0022_0000 | regno),
+        // wait for not-busy, read DATA0 (see `DtmAccess::dmi_sequence` for why it stays whole).
+        let v = self.dtm.dmi_sequence(&[
+            DmiOp::Write(DMABSTRACTCS, ABSTRACTCS_CMDERR_MASK),
+            DmiOp::Write(DMDATA0, 0),
+            DmiOp::Write(DMCOMMAND, 0x0022_0000 | u32::from(reg.abstract_regno())),
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+            DmiOp::Read(DMDATA0),
+        ])?;
+        self.abstract_done(v.first().copied())?;
+        v.get(1).copied().ok_or(DmiError::Timeout)
+    }
+
+    /// cmderr of an abstract command whose final ABSTRACTCS read is `cs` (cleared if set).
+    fn abstract_done(&mut self, cs: Option<u32>) -> Result<(), DmiError> {
+        let cs = cs.ok_or(DmiError::Timeout)?;
+        let cmderr = (cs & ABSTRACTCS_CMDERR_MASK) >> ABSTRACTCS_CMDERR_SHIFT;
+        if cmderr != 0 {
+            self.clear_cmderr()?;
+            return Err(DmiError::OperationFailed(format!("cmderr {cmderr}")));
+        }
+        Ok(())
     }
 
     /// en: Write an abstract register (GPR/CSR/PC). The hart must be halted.
     /// ja: abstract register(GPR/CSR/PC)へ書く。hart は halt 済みであること。
     pub fn write_reg(&mut self, reg: RegName, value: u32) -> Result<(), DmiError> {
-        self.clear_cmderr()?;
-        self.write(DMDATA0, value)?;
-        // access register, transfer, write (0x0023_0000 | regno).
-        self.write(DMCOMMAND, 0x0023_0000 | u32::from(reg.abstract_regno()))?;
-        self.wait_abstract()
+        // One sequence: clear cmderr, DATA0, access register / transfer / write
+        // (0x0023_0000 | regno), wait for not-busy.
+        let v = self.dtm.dmi_sequence(&[
+            DmiOp::Write(DMABSTRACTCS, ABSTRACTCS_CMDERR_MASK),
+            DmiOp::Write(DMDATA0, value),
+            DmiOp::Write(DMCOMMAND, 0x0023_0000 | u32::from(reg.abstract_regno())),
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+        ])?;
+        self.abstract_done(v.first().copied())
     }
 
     /// en: Make `ebreak` enter Debug Mode (halt) instead of trapping, by setting dcsr
