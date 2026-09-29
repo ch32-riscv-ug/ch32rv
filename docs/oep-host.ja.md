@@ -232,6 +232,8 @@ binary の扱い:
   - `oep.target.console` はブローカーの中で dmdata / dmseq / rtt の mailbox を poll して、位置付きのストリームにする(mechanism は OEP の番号)。
   - WCH の stub での書き込みは、ch32rv 独自の interface(例 `io.github.ch32-riscv-ug.wchlink`)に置く。今の `flash` の速さを保つため。
   - これで gdb と dmseq などの monitor が同じ LinkE を同時に使える。
+  - **実装済み(2026-09-29)**: `broker serve --probe serial:<sn>|usb:<topology>|port:<Link の CDC>` で LinkE を裏に置く。`arduino monitor` の dmdata / dmseq は LinkE でもブローカー経由。1 回だけのコマンド(flash / verify / read / reset / target info)は、その LinkE のブローカーが動いていればブローカーを通し、動いていなければ今までどおり直接開く(WCH の stub の速い書き込みを保つため)。ブローカー経由の flash は ch32rv の loader を DMI で走らせるので遅い(V003 で 2.6 KB に約 20 秒)。WCH の stub の interface は未実装。rtt / sdi / gdb / erase / dbg などは、まだブローカーを通らない(LinkE のブローカーが動いている間は lock で断られる)。
+  - **LinkE の高速の read(`read_mem`)は memory 専用で、書いた直後は古い値を返す**(CH32V003 で実測): 周辺の register(FLASH_CTLR)では直前に書いた鍵の値を返し、DMI で書いた直後の SRAM と、loader で書いた直後の flash も古い値を返した。ブローカーは、code flash の範囲で、しかもその attach の間に何も書いていないときだけ高速の read を使い、それ以外は Debug Module で読む。
   - **uart の source の monitor は CDC だけを使い、ブローカーにも probe の lock にも触れない**(実装済み、e66f7cf)。
 - **時間の制約**: `arduino monitor` の OPEN は、ブローカーの起動・transport の open・attach まで含めて、arduino-cli の待ちの内に返す。実測では、OPEN の返事が 6 秒遅れても通り、9 秒遅れるとエラー無しで閉じる。目標は 3 秒以内。
 - **確かめること**:

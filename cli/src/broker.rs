@@ -88,11 +88,53 @@ fn write_endpoint(key: &str, v: &Value) -> std::io::Result<()> {
 
 // ---- the client side ----
 
-/// Start `ch32rv broker serve` for `path`, detached from this process and its group.
-fn spawn_broker(path: &str) -> Result<(), String> {
+/// Which probe a broker serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BrokerTarget {
+    /// An OEP probe on this serial port.
+    Serial(String),
+    /// A WCH-Link, named by its USB serial (else its position).
+    Wch { id: String, selector: String },
+}
+
+impl BrokerTarget {
+    /// The WCH-Link behind `entry`.
+    pub(crate) fn wch(entry: &crate::cmd_probe::Entry) -> Self {
+        match entry.dev.serial() {
+            Some(sn) => BrokerTarget::Wch {
+                id: sn.to_owned(),
+                selector: format!("serial:{sn}"),
+            },
+            None => {
+                let t = entry.dev.topology();
+                BrokerTarget::Wch {
+                    id: t.clone(),
+                    selector: format!("usb:{t}"),
+                }
+            }
+        }
+    }
+
+    fn key(&self) -> String {
+        match self {
+            BrokerTarget::Serial(p) => key_for(p),
+            BrokerTarget::Wch { id, .. } => ch32rv_usb::sanitize_key(&format!("wch-{id}")),
+        }
+    }
+
+    fn selector(&self) -> String {
+        match self {
+            BrokerTarget::Serial(p) => format!("port:{p}"),
+            BrokerTarget::Wch { selector, .. } => selector.clone(),
+        }
+    }
+}
+
+/// Start `ch32rv broker serve` for `target`, detached from this process and its group.
+fn spawn_broker(target: &BrokerTarget) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.args(["broker", "serve", "--probe", &format!("port:{path}")])
+    cmd.args(["broker", "serve", "--probe", &target.selector()])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -115,12 +157,12 @@ fn spawn_broker(path: &str) -> Result<(), String> {
         .map_err(|e| format!("start the broker: {e}"))
 }
 
-/// en: A link to the broker of the probe on serial port `path`, starting the broker when none
-/// answers. An endpoint the broker wrote before this call counts only if it answers; an error it
-/// wrote counts only if it is newer than our start.
-/// ja: serial port `path` の probe のブローカーへの link。答えるブローカーが無ければ起動する。
-pub(crate) fn client_link(path: &str) -> Result<Link, String> {
-    let key = key_for(path);
+/// en: A link to the broker of `target`, starting the broker when none answers. An endpoint the
+/// broker wrote before this call counts only if it answers; an error it wrote counts only if it
+/// is newer than our start.
+/// ja: `target` のブローカーへの link。答えるブローカーが無ければ起動する。
+pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, String> {
+    let key = target.key();
     let try_connect = |v: &Value| -> Option<Link> {
         let port = v.get("port")?.as_u64()?;
         ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")).ok()
@@ -131,7 +173,7 @@ pub(crate) fn client_link(path: &str) -> Result<Link, String> {
         return Ok(l);
     }
     let t0 = now_ms();
-    spawn_broker(path)?;
+    spawn_broker(target)?;
     let deadline = Instant::now() + START_WAIT;
     while Instant::now() < deadline {
         if let Some(v) = read_endpoint(&key) {
@@ -146,16 +188,27 @@ pub(crate) fn client_link(path: &str) -> Result<Link, String> {
         std::thread::sleep(Duration::from_millis(30));
     }
     Err(format!(
-        "the broker for {path} did not start within {} s",
+        "the broker for {} did not start within {} s",
+        target.selector(),
         START_WAIT.as_secs()
     ))
 }
 
-/// A link to the probe's broker if one runs; never starts one (discovery only looks).
-pub(crate) fn existing_link(path: &str) -> Option<Link> {
-    let v = read_endpoint(&key_for(path))?;
+/// The broker of the OEP probe on serial port `path` (started if needed).
+pub(crate) fn client_link(path: &str) -> Result<Link, String> {
+    client_link_for(&BrokerTarget::Serial(path.to_owned()))
+}
+
+/// A link to `target`'s broker if one runs; never starts one.
+pub(crate) fn existing_link_for(target: &BrokerTarget) -> Option<Link> {
+    let v = read_endpoint(&target.key())?;
     let port = v.get("port")?.as_u64()?;
     ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")).ok()
+}
+
+/// A link to the OEP probe's broker if one runs; never starts one (discovery only looks).
+pub(crate) fn existing_link(path: &str) -> Option<Link> {
+    existing_link_for(&BrokerTarget::Serial(path.to_owned()))
 }
 
 /// The runtime file discovery keeps a probe's last listing in (for when the probe is busy).
@@ -166,20 +219,25 @@ pub(crate) fn listing_cache(path: &str) -> PathBuf {
 /// `broker endpoint --probe <sel> [--json]`: where the probe's broker listens, if it runs.
 pub(crate) fn endpoint(cli: &Cli) -> ExitCode {
     const CMD: &str = "broker.endpoint";
-    let a = match crate::oep::addr(cli, CMD) {
-        Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => p,
-        Ok(_) => {
+    let target = match crate::oep::addr(cli, CMD) {
+        Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => BrokerTarget::Serial(p),
+        Ok(Some(OepAddr::Wch(t))) => t,
+        Ok(Some(OepAddr::Tcp(_))) => {
             return fail(
                 cli,
                 CMD,
                 ErrorKind::Usage,
-                "--probe must name an OEP probe's serial port (port:<path>) or oep://<probe>/<slot>",
+                "a tcp: endpoint has no broker",
                 None,
             );
         }
+        Ok(None) => match crate::cmd_probe::select_entry(cli, CMD) {
+            Ok(e) => BrokerTarget::wch(&e),
+            Err(c) => return c,
+        },
         Err(c) => return c,
     };
-    let v = read_endpoint(&key_for(&a));
+    let v = read_endpoint(&target.key());
     let live = v.as_ref().and_then(|v| {
         let port = v.get("port")?.as_u64()?;
         TcpStream::connect(("127.0.0.1", port as u16)).ok()?;
@@ -228,20 +286,38 @@ enum Pending {
 /// `broker serve --probe port:<path>` (not for users; clients start it).
 pub(crate) fn serve(cli: &Cli) -> ExitCode {
     const CMD: &str = "broker.serve";
-    let path = match crate::oep::addr(cli, CMD) {
-        Ok(Some(OepAddr::Serial(p))) => p,
-        Ok(_) => {
+    // An OEP probe's serial port, else a WCH-Link (any selector that resolves to one).
+    let target = match crate::oep::addr(cli, CMD) {
+        Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => BrokerTarget::Serial(p),
+        // A broker for this Link already answers: this one leaves (the flock would say so too).
+        Ok(Some(OepAddr::Wch(_))) => return ExitCode::SUCCESS,
+        Ok(Some(OepAddr::Tcp(_))) => {
             return fail(
                 cli,
                 CMD,
                 ErrorKind::Usage,
-                "--probe must name an OEP probe's serial port",
+                "a tcp: endpoint needs no broker",
                 None,
             );
         }
+        Ok(None) => match crate::cmd_probe::select_entry(cli, CMD) {
+            Ok(e) => {
+                let t = BrokerTarget::wch(&e);
+                return serve_target(cli, t, Some(e));
+            }
+            Err(c) => return c,
+        },
         Err(c) => return c,
     };
-    let key = key_for(&path);
+    serve_target(cli, target, None)
+}
+
+fn serve_target(
+    cli: &Cli,
+    target: BrokerTarget,
+    wch_entry: Option<crate::cmd_probe::Entry>,
+) -> ExitCode {
+    let key = target.key();
     // One broker per probe: a second one started in a race leaves quietly.
     let Ok(_guard) = ch32rv_usb::DeviceLock::acquire(&format!("{key}.broker"), Duration::ZERO)
     else {
@@ -254,22 +330,36 @@ pub(crate) fn serve(cli: &Cli) -> ExitCode {
         );
         ExitCode::from(ErrorKind::DeviceOpenFailed.exit_code())
     };
-    let mut probe = match ch32rv_oep::link::open_serial(&path)
-        .map_err(|e| e.to_string())
-        .and_then(|l| Probe::connect(l).map_err(|e| e.to_string()))
-    {
-        Ok(p) => p,
-        Err(m) => return report_error(format!("{path}: {m}")),
+    let (up, sid) = match (&target, wch_entry) {
+        (BrokerTarget::Serial(path), _) => {
+            let mut probe = match ch32rv_oep::link::open_serial(path)
+                .map_err(|e| e.to_string())
+                .and_then(|l| Probe::connect(l).map_err(|e| e.to_string()))
+            {
+                Ok(p) => p,
+                Err(m) => return report_error(format!("{path}: {m}")),
+            };
+            let serial = crate::oep::single_serial(&mut probe);
+            let owner = format!("ch32rv broker pid {}", std::process::id());
+            let sid = match crate::oep::open_with_lock_rule(&mut probe, serial, &owner, LEASE_MS) {
+                Ok(s) => s,
+                Err(e) => return report_error(e.to_string()),
+            };
+            (Upstream::Oep(Box::new(probe)), sid)
+        }
+        (BrokerTarget::Wch { .. }, Some(entry)) => (
+            Upstream::Wch(Box::new(crate::broker_wch::WchUpstream::new(
+                entry,
+                Duration::from_secs(cli.lock_timeout),
+            ))),
+            0,
+        ),
+        (BrokerTarget::Wch { .. }, None) => return report_error("no WCH-Link entry".to_owned()),
     };
-    let serial = crate::oep::single_serial(&mut probe);
-    let owner = format!("ch32rv broker pid {}", std::process::id());
-    let sid = match crate::oep::open_with_lock_rule(&mut probe, serial, &owner, LEASE_MS) {
-        Ok(s) => s,
-        Err(e) => return report_error(e.to_string()),
-    };
-    let wires: BTreeSet<u16> = match probe.list("oep.wire") {
-        Ok(l) => l.into_iter().map(|i| i.func).collect(),
-        Err(e) => return report_error(e.to_string()),
+    let mut up = up;
+    let wires: BTreeSet<u16> = match up.wires() {
+        Ok(w) => w,
+        Err(e) => return report_error(e),
     };
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(l) => l,
@@ -289,7 +379,7 @@ pub(crate) fn serve(cli: &Cli) -> ExitCode {
     std::thread::spawn(move || accept_loop(listener, tx));
 
     let mut b = Broker {
-        probe,
+        up,
         sid,
         wires,
         clients: HashMap::new(),
@@ -302,10 +392,70 @@ pub(crate) fn serve(cli: &Cli) -> ExitCode {
     {
         let _ = std::fs::remove_file(endpoint_file(&key));
     }
-    let _ = b.probe.end();
+    b.up.end();
     match r {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => ExitCode::from(ErrorKind::TransferFailed.exit_code()),
+    }
+}
+
+/// What the broker serves its clients from: an OEP probe's session, or a WCH-Link it maps OEP onto.
+enum Upstream {
+    Oep(Box<Probe>),
+    Wch(Box<crate::broker_wch::WchUpstream>),
+}
+
+impl Upstream {
+    fn limits(&self) -> ch32rv_oep::link::Limits {
+        match self {
+            Upstream::Oep(p) => p.limits(),
+            Upstream::Wch(w) => w.limits(),
+        }
+    }
+
+    fn boot_id(&self) -> u32 {
+        match self {
+            Upstream::Oep(p) => p.boot_id().unwrap_or(0),
+            Upstream::Wch(_) => 0,
+        }
+    }
+
+    fn wires(&mut self) -> Result<BTreeSet<u16>, String> {
+        match self {
+            Upstream::Oep(p) => p
+                .list("oep.wire")
+                .map(|l| l.into_iter().map(|i| i.func).collect())
+                .map_err(|e| e.to_string()),
+            Upstream::Wch(w) => Ok(w.wires().into_iter().collect()),
+        }
+    }
+
+    fn exchange(&mut self, calls: Vec<Call>) -> Result<Vec<Reply>, String> {
+        match self {
+            Upstream::Oep(p) => p.link().exchange(calls).map_err(|e| e.to_string()),
+            Upstream::Wch(w) => Ok(calls.iter().map(|c| w.handle(c)).collect()),
+        }
+    }
+
+    fn keepalive(&mut self) -> Result<(), String> {
+        match self {
+            Upstream::Oep(p) => p.keepalive().map_err(|e| e.to_string()),
+            Upstream::Wch(_) => Ok(()),
+        }
+    }
+
+    /// Work between requests (a WCH-Link's consoles are polled here); how soon to come back.
+    fn tick(&mut self) -> Duration {
+        match self {
+            Upstream::Oep(_) => Duration::from_millis(250),
+            Upstream::Wch(w) => w.tick(),
+        }
+    }
+
+    fn end(&mut self) {
+        if let Upstream::Oep(p) = self {
+            let _ = p.end();
+        }
     }
 }
 
@@ -347,7 +497,7 @@ fn read_loop(id: u64, mut s: TcpStream, tx: mpsc::Sender<Ev>) {
 }
 
 struct Broker {
-    probe: Probe,
+    up: Upstream,
     sid: u32,
     wires: BTreeSet<u16>,
     clients: HashMap<u64, TcpStream>,
@@ -360,7 +510,8 @@ impl Broker {
         let mut had_client = false;
         let mut last_upstream = Instant::now();
         loop {
-            let ev = match rx.recv_timeout(Duration::from_millis(250)) {
+            let wait = self.up.tick();
+            let ev = match rx.recv_timeout(wait) {
                 Ok(ev) => ev,
                 Err(RecvTimeoutError::Timeout) => {
                     if self.clients.is_empty()
@@ -369,7 +520,7 @@ impl Broker {
                         return Ok(());
                     }
                     if last_upstream.elapsed() >= KEEPALIVE_EVERY {
-                        self.probe.keepalive().map_err(|e| e.to_string())?;
+                        self.up.keepalive()?;
                         last_upstream = Instant::now();
                     }
                     continue;
@@ -435,10 +586,7 @@ impl Broker {
         let mut replies = if calls.is_empty() {
             Vec::new()
         } else {
-            self.probe
-                .link()
-                .exchange(calls)
-                .map_err(|e| e.to_string())?
+            self.up.exchange(calls)?
         }
         .into_iter();
         for p in pending {
@@ -467,7 +615,7 @@ impl Broker {
             let op = req.op;
             return match op {
                 o if o == oep_core::op::CONFIRM => {
-                    let l = self.probe.limits();
+                    let l = self.up.limits();
                     let mut p = registry::constants::CONFIRM_RESULT_MAGIC
                         .as_bytes()
                         .to_vec();
@@ -486,7 +634,7 @@ impl Broker {
                         .unwrap_or(LEASE_MS)
                         .clamp(1000, 60_000);
                     let mut p = lease.to_le_bytes().to_vec();
-                    p.extend_from_slice(&self.probe.boot_id().unwrap_or(0).to_le_bytes());
+                    p.extend_from_slice(&self.up.boot_id().to_le_bytes());
                     p.push(0);
                     Some(ok(&p))
                 }
@@ -598,10 +746,7 @@ impl Broker {
             });
         }
         if !calls.is_empty() {
-            self.probe
-                .link()
-                .exchange(calls)
-                .map_err(|e| e.to_string())?;
+            self.up.exchange(calls)?;
         }
         Ok(())
     }
