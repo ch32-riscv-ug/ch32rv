@@ -289,11 +289,8 @@ fn run_uart(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Ok(e) => e,
         Err(c) => return c,
     };
-    // Hold the per-probe lock while streaming so a concurrent flash/attach waits (docs §3.7).
-    let _lock = match crate::cmd_probe::lock_probe(cli, CMD, &entry) {
-        Ok(l) => l,
-        Err(c) => return c,
-    };
+    // No probe lock: the UART bridge is the CDC, not the debug interface, and the tty is opened
+    // exclusively; a flash or gdb on the same probe may run meanwhile (docs/cli.ja.md §3.7).
     let port = match resolve_port(cli, CMD, &entry, &args.port) {
         Ok(p) => p,
         Err(c) => return c,

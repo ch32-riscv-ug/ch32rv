@@ -496,7 +496,6 @@ enum Backend {
     Uart {
         port: Box<dyn SerialPort>,
         applied: Settings,
-        _lock: Option<DeviceLock>,
     },
     Sdi {
         rx: Receiver<std::io::Result<Vec<u8>>>,
@@ -536,7 +535,10 @@ impl Backend {
                     .port
                     .as_deref()
                     .ok_or("this probe has no serial port for uart")?;
-                let lock = r.entry.as_ref().map(|e| lock_for(e, env)).transpose()?;
+                // en: No probe lock: uart uses only the CDC (a separate interface from the
+                // debug one), and the tty itself is exclusive. A gdb or flash on the same probe
+                // may run meanwhile.
+                // ja: probe の lock は取らない。uart は CDC(debug の口とは別)だけを使い、tty は排他。
                 // The serialport crate opens exclusively (TIOCEXCL) on unix; Windows always does.
                 let mut port = serialport::new(path, s.baud)
                     .timeout(TICK)
@@ -544,11 +546,7 @@ impl Backend {
                     .map_err(|e| format!("open {path}: {e}"))?;
                 let _ = port.write_data_terminal_ready(s.dtr);
                 let _ = port.write_request_to_send(s.rts);
-                Ok(Backend::Uart {
-                    port,
-                    applied: s,
-                    _lock: lock,
-                })
+                Ok(Backend::Uart { port, applied: s })
             }
             MonitorSource::Sdi => {
                 let entry = r
