@@ -167,14 +167,7 @@ fn resolve_erase(
 /// が覆う byte はその値、他は元の `content` のまま。`--restore-unwritten` で page 全体を再 program
 /// するのに使う。
 pub(crate) fn overlay_page(page_addr: u32, content: &mut [u8], segments: &[Segment]) {
-    let page_end = page_addr + content.len() as u32;
-    for seg in segments {
-        let lo = seg.addr.max(page_addr);
-        let hi = (seg.addr + seg.data.len() as u32).min(page_end);
-        for a in lo..hi {
-            content[(a - page_addr) as usize] = seg.data[(a - seg.addr) as usize];
-        }
-    }
+    ch32rv_flash::overlay(page_addr, content, segments);
 }
 
 pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {

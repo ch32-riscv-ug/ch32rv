@@ -284,3 +284,71 @@ fn a_resume_that_does_not_take_is_issued_again() {
     let ran = resume_ch32(&mut t, |t| DebugModule::new(t).read_reg(RegName::Pc)).unwrap();
     assert!(ran);
 }
+
+// ---- flash through the RAM loader ----
+
+fn flash_through(args: &[&str]) -> Option<(ch32rv_flash::loader::LoaderReport, Vec<u32>, Vec<u8>)> {
+    let f = fake(args)?;
+    let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
+    p.open(random_session_id(), 3000, false, Some("ch32rv test"))
+        .unwrap();
+    let a = attach(
+        &mut p,
+        WireKind::Rvswd,
+        AttachOptions {
+            halt: true,
+            ..AttachOptions::default()
+        },
+    )
+    .unwrap();
+    let mut t = OepDtm::new(&mut p, a.connection).unwrap();
+    // 700 bytes from mid-page (100..800): four 256-byte pages, the bytes around the image preserved.
+    let base = 0x0800_0000u32;
+    let image: Vec<u8> = (0..700u32).map(|i| (i * 7 + 3) as u8).collect();
+    let seg = ch32rv_flash::Segment {
+        addr: base + 100,
+        data: image.clone(),
+    };
+    let plan = ch32rv_flash::loader::plan_for_family("CH32X035").unwrap();
+    let mut seen = 0;
+    let report = ch32rv_flash::loader::program(&mut t, plan, &[seg], &mut |d, _| seen = d).unwrap();
+    assert_eq!(seen, 4);
+    let back = t.read_words(base, 256 * 4 / 4).unwrap();
+    Some((report, back, image))
+}
+
+fn check_image(back: &[u32], image: &[u8]) {
+    let bytes: Vec<u8> = back.iter().flat_map(|w| w.to_le_bytes()).collect();
+    assert_eq!(&bytes[100..800], image);
+    // Outside the image: what the (blank, zero) fake held before.
+    assert!(bytes[..100].iter().all(|&b| b == 0));
+    assert!(bytes[800..].iter().all(|&b| b == 0));
+}
+
+#[test]
+fn flash_through_the_loader() {
+    let Some((r, back, image)) = flash_through(&["--framing", "cobs", "--loader-sim"]) else {
+        return;
+    };
+    assert_eq!(r.pages, 4);
+    assert_eq!(r.rewritten, 0);
+    check_image(&back, &image);
+}
+
+#[test]
+fn flash_reissues_a_run_that_did_not_start_and_rewrites_a_bad_page() {
+    let Some((r, back, image)) = flash_through(&[
+        "--framing",
+        "cobs",
+        "--loader-sim",
+        "--loader-nostart",
+        "2",
+        "--loader-garble",
+        "4", // runs 1-2 do not start; run 4 writes the second page wrong once
+    ]) else {
+        return;
+    };
+    assert_eq!(r.restarted_runs, 2);
+    assert_eq!(r.rewritten, 1);
+    check_image(&back, &image);
+}
