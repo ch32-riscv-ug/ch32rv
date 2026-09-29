@@ -199,36 +199,44 @@ binary の扱い:
   - UART の速さは、monitor の `baudrate`(と、足すなら `format`)を `oep.fixture.uart` の configure で probe に送って決める。OPEN のときと、開いたまま CONFIGURE で変わったときに送る。probe の CDC の line coding を target の UART に写す機能は spec から消え、probe.config にも保存しない(2026-09-29、dev-oep-07 の決定)。
 - 接続を失う(link-lost の mark、boot_id が変わる、transport が消える)と、`[ch32rv monitor] stopped: …` を流して終わる(§1 の規則のまま)。
 
-### 7.2 ブローカー
+### 7.2 ブローカー(2026-09-29 の決定、ArduinoCore-CH32 oep-workflow §7.2)
 
-- monitor(と、次の作業では gdb server)は、probe との 1 本の session を持ち、127.0.0.1 の TCP を 1 つ待ち受ける。
-  - 待ち受けの場所は `<runtime>/<key>.oep` に書く。key は unit_id。runtime は DeviceLock と同じ利用者ごとのディレクトリ。
-  - 中身は port、pid、起動時刻。file は 0600。
-  - `ch32rv broker endpoint --probe <sel> --json` がこれを返す。無ければ `{"endpoint":null}` で exit 0。
+**probe ごとに、誰の子でもないブローカーを 1 つ置く。ch32rv の各コマンド(flash、monitor、gdb、1 回だけの read / reset)と pytest の `oep_host` は、どれもブローカーの client になる。** 経路は 1 つで、立ち上がる順で形は変わらない。
+
+- **起動**:
+  - client は、まず `<runtime>/<key>.oep`(待ち受けの場所)を見てつなぐ。key は probe の同一性(OEP は unit_id、LinkE は USB の serial か位置)、runtime は DeviceLock と同じ利用者ごとのディレクトリ。
+  - 無ければ `ch32rv broker serve --probe <sel>`(利用者向けではない subcommand)を切り離して起動する。Linux / macOS は double fork + setsid、Windows は DETACHED_PROCESS と job object からの breakaway。stdio は捨てる。
+  - 起動の取り合いは `<runtime>/<key>.broker.lock` の flock で 1 つにする。取れなかったほうは起動をやめ、`<key>.oep` が現れるのを待ってつなぐ。
+- **待ち受け**: 127.0.0.1 の TCP を 1 つ(port 0 で選ぶ)。`<key>.oep` には port、pid、起動時刻を書き、file は 0600 にする。`ch32rv broker endpoint --probe <sel> --json` がこれを返す(無ければ `{"endpoint":null}`)。認証は無い(OEP の TCP の注意どおり)。
+- **終わり方**: **client が 0 になったらすぐ終わる**(待ち時間なし)。transport を閉じ、`<key>.oep` を消す。probe を失ったとき(抜かれた、boot_id が変わった)は、client に切断で知らせてから終わる。
 - **client から見ると OEP そのもの**(spec の TCP の形 `length(u16) message`)。ブローカーは次のことをする。
   - client ごとに corr を付け替え、probe への pipeline に混ぜる。応答は元の corr に戻して、その client にだけ返す。
-  - client の `open` / `end` / `keepalive` / `lock_state` は受け止めて、自分で答える。open は `resumed = 0` と本物の boot_id を返し、lease はブローカーの値を返す。
+  - client の `open` / `end` / `keepalive` / `lock_state` は受け止めて、自分で答える。open は `resumed = 0` と本物の boot_id を返す。client の owner の名前は台帳に持ち、`broker endpoint --json` で一覧できるようにする。
   - confirm / list / describe は、ブローカーが持っている写しで答える(boot_id が変わったら取り直す)。
-  - **client ごとの資源の台帳**を持つ。
-    - 接続: attach の応答の connection。参照は client ごとに数え、monitor 自身も 1 人の利用者とする。
-    - plan: plan_apply の fn。
-    - console の stream: open したもの。
-    - hart の状態: halt したか、run の途中か(gdb 用。§8)。
-  - client が切れたら、その client の分だけ外す。plan は plan_release する。接続は、利用者が他にいなくなったときだけ detach する。halt したままなら resume する。
   - 1 つの client の要求の並びは崩さない(probe は順に処理する)。client をまたいだ並びは到着順。
-- **他の ch32rv コマンドはブローカーを通す**。flash / read / reset などは、`<key>.oep` があればそこへつなぎ、transport を開かない。
-  - flash の最中も、monitor は console を読み続ける(probe は riscv-dm の要求を実行している間だけ console の poll を止める)。
-  - reset の mark で、monitor は続きから読む。
-- **ブローカーは monitor と一緒に死ぬ**。単体のデーモンは作らない。
-- 認証は無い(OEP の TCP の注意どおり)。127.0.0.1 に限り、endpoint の file を 0600 にする。同じ PC の他の利用者からつながれる余地は残るので、§10 の 8 に入れる。
+- **client ごとの資源の台帳**:
+  - 接続: attach の応答の connection。参照は client ごとに数え、利用者が他にいなくなったときだけ detach する。
+  - plan(plan_apply の fn)、console の stream(open したもの)。
+  - hart の状態: halt したか、run の途中か、置いた trigger(gdb 用、§8)。
+  - client が落ちたら、その client の分だけ外す。plan は plan_release、halt したままなら resume、trigger は外す。昇格や台帳の申告し直しは無い。
+- **LinkE もブローカーの裏に置く**。ブローカーが LinkE の debug の口(vendor)を持ち、client には OEP を見せて、interface を WCH-Link の操作に写す。
+  - `oep.wire.rvswd` / `swio` の attach は AttachChip(target_id は chip_id)。
+  - `oep.target.riscv-dm` の dmi / halt / resume / reset / block / run は DmiOp と DebugModule(`DmTarget`)。
+  - `oep.target.console` はブローカーの中で dmdata / dmseq / rtt の mailbox を poll して、位置付きのストリームにする(mechanism は OEP の番号)。
+  - WCH の stub での書き込みは、ch32rv 独自の interface(例 `io.github.ch32-riscv-ug.wchlink`)に置く。今の `flash` の速さを保つため。
+  - これで gdb と dmseq などの monitor が同じ LinkE を同時に使える。
+  - **uart の source の monitor は CDC だけを使い、ブローカーにも probe の lock にも触れない**(実装済み、e66f7cf)。
+- **時間の制約**: `arduino monitor` の OPEN は、ブローカーの起動・transport の open・attach まで含めて、arduino-cli の待ちの内に返す。実測では、OPEN の返事が 6 秒遅れても通り、9 秒遅れるとエラー無しで閉じる。目標は 3 秒以内。
+- **確かめること**:
+  - Windows / macOS で、arduino-cli が止まったときに切り離した子が一緒に消えないか(WF §10)。
+  - 1 回だけのコマンドがブローカーを通る分の遅れ(起動を含む)。
+  - flash の最中も monitor が console を読み続けられること(probe は riscv-dm の要求を実行している間だけ console の poll を止める)。reset の mark から続きを読めること。
 
 ## 8. デバッグの余地(今回は実装しない)
 
-- (a) `OepDtm` が `DtmAccess` と §4.2 の `TargetAccess` を実装するので、`ch32rv-debug` の `Ch32Target<T: DtmAccess>` は、そのまま OEP の上で動く。
+- (a) `OepDtm` が `DtmAccess` と §4.2 の `TargetAccess` を実装するので、`ch32rv-debug` の `Ch32Target<T: DtmAccess>` は、そのまま OEP の上で動く。ブローカーの client として話す `DtmAccess` も同じ形(TCP の上の `OepDtm`)。
 - (b) ブローカーの台帳に、client ごとの「hart を止めている」「breakpoint を置いた trigger」を持たせる。gdb の client が切れたら、trigger を外して resume する。
-- (c) **gdb が monitor と同じ probe を使う形: 先に probe を開いた長寿命のプロセスがブローカーになり、後から来たほうは client になる**。
-  - monitor が先なら、gdb server はブローカーの client になる。gdb が先なら、gdb server がブローカーを持ち、後から開いた monitor が client になる。
-  - どちらが先に死んでも、残ったほうがそのまま続けられるよう、ブローカーの役を引き継ぐ手順が要る。引き継ぎは、end して資源を残し、次の open に渡す(core §9 の「end で残し、次の open に移る」)。これも設計に含める。
+- (c) **gdb も monitor も、同じブローカーの client**(§7.2)。どちらが先でも同じで、IDE 2.3.10 は debug の開始で monitor に触れない(同梱の bundle で確認済み、b2)。3 つ以上でも同じ。
   - 注意: gdb が hart を止めている間、monitor には何も流れない(spec の規則)。
 - UART bridge の probe で DMI の往復が実用になるかは、実装のときに測る(参照の実測は 1 往復 5.7 ms)。
 
