@@ -59,13 +59,14 @@
   - 判定は 1 つの関数(`is_oep_device`)にまとめ、後で PID の判定に差し替えられるようにする。discovery(`oep://`)も、serial port を選んだときの「OEP の probe なら raw の serial port の upload は断る」(§6)も、この関数を使う。
   - 名前は device を開かずに読む(nusb の列挙が持つ product の文字列)。
   - fn 0 の describe の `oep_pid` = 1 は「この形で列挙している device がある」という意味で、USJ などから開いたときにも分かる。
-- 口は interface の種類で選ぶ(core §3.3): CDC(ACM)はすべて OEP を受ける serial port、vendor class の bulk の組は vendor bulk、vendor 定義の HID は HID。DFU や Mass Storage は OEP の外。vendor bulk、HID、serial port の順に試す(ch32rv が今使えるのは serial port だけ)。
-- vendor bulk は nusb で扱う。
-  - IN は専用 thread で汲み続ける(汲まないと OUT が詰まる、参照 client の E160)。
+- 口は interface の種類で選ぶ(core §3.3): CDC(ACM)はすべて OEP を受ける serial port、vendor class の bulk の組は vendor bulk、vendor 定義の HID は HID。DFU や Mass Storage は OEP の外。vendor bulk、HID、serial port の順に試す(2026-09-29 実装、`oep::connect_upstream`)。ブローカーと discovery は、`port:<path>` / `oep://` の serial port を持つ OEP の device の vendor bulk → vendor HID → その serial port の順に開き、confirm が通った最初の経路を使う(開けない・答えないものは次へ。Linux で udev の規則が無く USB のノードに書けないときも serial port に落ちる)。`CH32RV_OEP_TRANSPORT=vendor-bulk|hid|serial` でその経路から始める(比較と切り分け用)。ブローカーの key は serial port の path のまま。
+- vendor bulk は nusb で扱う(`ch32rv_usb::BulkPipe`)。alt 0 の vendor class(0xFF)の interface で、bulk の OUT と IN を持つ最初のもの。
+  - IN の転送を 2 本出したままにする(read の timeout で cancel しない。cancel すると、その瞬間に届いた分を落とす)。汲み続けるので OUT も詰まらない(参照 client の E160)。
   - wMaxPacketSize の倍数の書き込みの後には ZLP を送る。
 - HID は hidapi で扱う。
-  - vendor の report(usage page 0xFF00 以上)を descriptor から探す。
-  - report ID があれば、output にも ID を付ける。
+  - 同じ VID:PID と serial で、usage page 0xFF00 以上の HID を開き、report 記述子から vendor の report(input と output を持つもの)の ID と大きさを読む(`ch32rv_oep::hid`)。P4 は ID 6、511 byte。
+  - report ID があれば、output にも ID を付ける。input は ID を確かめてから count の分を取る。
+- Linux の権限: `60-ch32rv.rules`(`doctor --emit-udev`)に、product の文字列が `OEP` で始まる device の USB のノードと hidraw を足した(PID を取ったら VID:PID に替える)。
 
 ### 3.4 link の規則(core §5、§9 の MUST をそのまま)
 
