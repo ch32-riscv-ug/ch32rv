@@ -1,0 +1,18 @@
+[package]
+name = "ch32rv-oep"
+description = "OEP v1 (Open Embedded Probe) host for the ch32rv tool suite: wire codec, transports, session"
+keywords = ["oep", "debug-probe", "riscv", "embedded", "ch32"]
+categories = ["embedded", "hardware-support"]
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

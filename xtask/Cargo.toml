@@ -9,5 +9,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[dependencies]
+sha2 = "0.10"
+toml = { workspace = true }
+
 [lints]
 workspace = true

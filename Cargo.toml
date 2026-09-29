@@ -5,6 +5,7 @@ members = [
     "crates/usb",
     "crates/usb-wch-win",
     "crates/wchlink",
+    "crates/oep",
     "crates/dmi",
     "crates/target",
     "crates/flash",
@@ -30,6 +31,7 @@ ch32rv-contract = { path = "crates/contract", version = "0.10.1" }
 ch32rv-usb = { path = "crates/usb", version = "0.10.1" }
 ch32rv-usb-wch-win = { path = "crates/usb-wch-win", version = "0.10.1" }
 ch32rv-wchlink = { path = "crates/wchlink", version = "0.10.1" }
+ch32rv-oep = { path = "crates/oep", version = "0.10.1" }
 ch32rv-dmi = { path = "crates/dmi", version = "0.10.1" }
 ch32rv-target = { path = "crates/target", version = "0.10.1" }
 ch32rv-flash = { path = "crates/flash", version = "0.10.1" }
