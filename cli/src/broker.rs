@@ -151,6 +151,18 @@ pub(crate) fn client_link(path: &str) -> Result<Link, String> {
     ))
 }
 
+/// A link to the probe's broker if one runs; never starts one (discovery only looks).
+pub(crate) fn existing_link(path: &str) -> Option<Link> {
+    let v = read_endpoint(&key_for(path))?;
+    let port = v.get("port")?.as_u64()?;
+    ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")).ok()
+}
+
+/// The runtime file discovery keeps a probe's last listing in (for when the probe is busy).
+pub(crate) fn listing_cache(path: &str) -> PathBuf {
+    ch32rv_usb::runtime_dir().join(format!("{}.slots.json", key_for(path)))
+}
+
 /// `broker endpoint --probe <sel> [--json]`: where the probe's broker listens, if it runs.
 pub(crate) fn endpoint(cli: &Cli) -> ExitCode {
     const CMD: &str = "broker.endpoint";

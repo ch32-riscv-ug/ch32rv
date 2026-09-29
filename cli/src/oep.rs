@@ -30,15 +30,14 @@ pub(crate) enum OepAddr {
     Tcp(String),
 }
 
-/// en: The one place that decides what an OEP probe is (docs/oep-host.ja.md §3.3). Until OEP has
-/// its own USB PID: a device with an interface whose name (iInterface) starts with `OEP`, read
-/// without opening it. When the PID exists, this becomes a VID:PID check and nothing else changes.
-/// ja: OEP の probe の判定はここだけ。専用 PID を取るまでは、名前(iInterface)が `OEP` で始まる
-/// interface を持つ device。PID を取ったら VID:PID の判定に差し替える。
+/// en: The one place that decides what an OEP probe is (docs/oep-host.ja.md §3.3, oep-core §3.3).
+/// Until OEP has its own USB PID: a device whose product string (iProduct) starts with `OEP`,
+/// read without opening it. When the PID exists, this becomes a VID:PID check and nothing else
+/// changes.
+/// ja: OEP の probe の判定はここだけ。専用 PID を取るまでは、iProduct が `OEP` で始まる device
+/// (開かずに読める)。PID を取ったら VID:PID の判定に差し替える。
 pub(crate) fn is_oep_device(dev: &ch32rv_usb::UsbDeviceInfo) -> bool {
-    dev.interface_names()
-        .iter()
-        .any(|(_, n)| n.starts_with("OEP"))
+    dev.product().is_some_and(|p| p.starts_with("OEP"))
 }
 
 /// The OEP probes on USB.
@@ -57,14 +56,10 @@ pub(crate) fn probe_id(dev: &ch32rv_usb::UsbDeviceInfo) -> String {
         .unwrap_or_else(|| dev.topology())
 }
 
-/// The serial port that carries OEP: the one on an interface named `OEP…`, else the first.
+/// The serial port that carries OEP: every CDC interface of an OEP probe takes OEP (core §3.3),
+/// so the first.
 pub(crate) fn oep_port(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<String> {
-    let ports = dev.serial_ports_named();
-    ports
-        .iter()
-        .find(|(_, n)| n.as_deref().is_some_and(|n| n.starts_with("OEP")))
-        .or(ports.first())
-        .map(|(p, _)| p.clone())
+    dev.serial_ports().into_iter().next()
 }
 
 /// Whether the serial port `path` belongs to an OEP probe (as [`is_oep_device`] decides).
