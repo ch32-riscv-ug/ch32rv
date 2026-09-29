@@ -197,6 +197,8 @@ binary の扱い:
 
 - `arduino monitor` の address が OEP の probe(serial port か `oep://`)で source が sdi / dmdata / dmseq なら、ブローカーの client として `oep.target.console` を開く(実装済み)。止めずに attach する。`rtt` は OEP の console に無いので断る。
 - source `uart` は、OEP の probe の port でも素通しのまま。どの device か分からない port に OEP の confirm を送らないため(実装済み)。
+- **source `fixture-uart`**(2026-09-29 の決定、実装済み): ブローカー経由の session で `oep.fixture.uart` を開き、monitor の `baudrate` を configure で送る(OPEN のときと、開いたまま変わったとき)。ストリームを読み、入力は書き戻す。「IDE の baud は ch32rv が fixture.uart の configure で届ける」(spec で line coding の写しを消した代わり)はこの source で満たす。fixture の UART にピンの plan が無ければ、OPEN が理由つきの error。
+- **`oep://<probe>/<slot>` の port**(protocol `oep`): source は dmseq(既定)/ dmdata / sdi / fixture-uart。console はそのスロットのピンの組で attach する(実装済み)。
 - rev 1 は push が無いので、read を poll する。読み出しは lock-free。
 - 読み始める位置は、最後の reset mark から(書き込みの直後に開いたとき、最初の行を落とさない)。
 - IDE の入力は console write で送る(dmseq は 1 回に 2 byte まで。残りは送り直す)。

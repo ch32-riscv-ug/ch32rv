@@ -263,7 +263,9 @@ impl DmiSource {
                 })))
             }
             MonitorSource::Rtt => Self::open_rtt(session, warnings),
-            MonitorSource::Uart | MonitorSource::Sdi => Err(OpenError::NotDmi),
+            MonitorSource::Uart | MonitorSource::Sdi | MonitorSource::FixtureUart => {
+                Err(OpenError::NotDmi)
+            }
         }
     }
 

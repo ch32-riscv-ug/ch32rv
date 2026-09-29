@@ -72,7 +72,7 @@ fn port_of_oep_device(path: &str) -> bool {
 }
 
 /// Resolve `oep://<probe>/<slot>` to the probe's serial port.
-fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
+pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
     let rest = url.strip_prefix("oep://").unwrap_or(url);
     let (id, slot) = rest
         .split_once('/')
@@ -576,52 +576,92 @@ fn check_family_text(chip_id: Option<u32>, chip: Option<&str>) -> Result<Option<
     Ok(detected)
 }
 
-/// en: A console stream on an OEP probe's target, through the probe's broker, for the Arduino
-/// monitor: attached without halting (a running target is watched, not stopped), read from the
-/// last reset mark. Dropping it detaches and ends the session (the broker would release both
-/// anyway when this client leaves).
-/// ja: OEP の probe の target の console(ブローカー経由、Arduino monitor 用)。止めずに attach し、
-/// 最後の reset の mark から読む。drop で detach と end(client が抜ければブローカーも外す)。
+/// What the Arduino monitor streams from an OEP probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StreamWanted {
+    /// The target's console, by mechanism (needs a connection).
+    Console(ch32rv_oep::stream::Mechanism),
+    /// The fixture's UART at this baud (no connection needed).
+    FixtureUart(u32),
+}
+
+/// en: A stream on an OEP probe, through the probe's broker, for the Arduino monitor: the target
+/// console (attached without halting - a running target is watched, not stopped - at the slot the
+/// address or the board's family picks, read from the last reset mark) or the fixture UART (its
+/// speed set by `oep.fixture.uart` configure). Dropping it detaches and ends the session (the
+/// broker would release both anyway when this client leaves).
+/// ja: OEP の probe のストリーム(ブローカー経由、Arduino monitor 用)。target の console(止めずに
+/// attach、場所は address か板の家系で選ぶ、最後の reset の mark から読む)か fixture の UART(速さは
+/// configure で決める)。drop で detach と end(client が抜ければブローカーも外す)。
 pub(crate) struct ConsoleSession {
     probe: Probe,
     stream: ch32rv_oep::stream::PosStream,
-    wire: WireKind,
-    connection: u16,
+    /// The connection to detach at the end (the console's), if any.
+    attached: Option<(WireKind, u16)>,
     max_read: u16,
 }
 
 impl ConsoleSession {
     pub(crate) fn open(
-        path: &str,
-        mech: ch32rv_oep::stream::Mechanism,
+        a: &OepAddr,
+        wanted: StreamWanted,
         chip: Option<&str>,
     ) -> Result<Self, String> {
-        let link = crate::broker::client_link(path)?;
+        let link = match a {
+            OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => crate::broker::client_link(p)?,
+            OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t).map_err(|e| e.to_string())?,
+        };
         let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
         let owner = format!("ch32rv monitor pid {}", std::process::id());
         probe
             .open(random_session_id(), 3000, false, Some(&owner))
             .map_err(|e| e.to_string())?;
-        let wire = pick_wire(&mut probe, chip).map_err(|e| e.to_string())?;
-        let at = attach(&mut probe, wire, AttachOptions::default()).map_err(|e| e.to_string())?;
-        check_family_text(at.wch_chip_id, chip)?;
-        let mut stream =
-            ch32rv_oep::stream::PosStream::open_console(&mut probe, at.connection, mech)
+        let (stream, attached) = match wanted {
+            StreamWanted::FixtureUart(baud) => {
+                let (s, _) = ch32rv_oep::stream::PosStream::open_uart(&mut probe, baud).map_err(
+                    |e| match e {
+                        OepError::Rejected { reason, .. }
+                            if reason == ch32rv_oep::registry::reject_reasons::UNAVAILABLE =>
+                        {
+                            "the probe's fixture UART has no pins assigned (set its plan in the probe's configuration)".to_owned()
+                        }
+                        OepError::NoInterface(_) => "this OEP probe has no fixture UART".to_owned(),
+                        e => format!("fixture UART: {e}"),
+                    },
+                )?;
+                (s, None)
+            }
+            StreamWanted::Console(mech) => {
+                let (wire, pins) = choose_place(&mut probe, a, chip)?;
+                let at = attach(
+                    &mut probe,
+                    wire,
+                    AttachOptions {
+                        halt: false,
+                        max_speed_hz: None,
+                        pins,
+                    },
+                )
                 .map_err(|e| e.to_string())?;
-        stream
-            .start_at_last_reset(&mut probe)
-            .map_err(|e| e.to_string())?;
+                check_family_text(at.wch_chip_id, chip)?;
+                let mut s =
+                    ch32rv_oep::stream::PosStream::open_console(&mut probe, at.connection, mech)
+                        .map_err(|e| e.to_string())?;
+                s.start_at_last_reset(&mut probe)
+                    .map_err(|e| e.to_string())?;
+                (s, Some((wire, at.connection)))
+            }
+        };
         let max_read = probe.limits().max_frame.saturating_sub(14).clamp(16, 1000);
         Ok(ConsoleSession {
             probe,
             stream,
-            wire,
-            connection: at.connection,
+            attached,
             max_read,
         })
     }
 
-    /// What the target printed since the last poll.
+    /// What arrived since the last poll.
     pub(crate) fn poll(&mut self) -> Result<Vec<u8>, String> {
         self.stream
             .poll(&mut self.probe, self.max_read)
@@ -635,11 +675,21 @@ impl ConsoleSession {
             .write(&mut self.probe, data)
             .map_err(|e| e.to_string())
     }
+
+    /// The fixture UART's new speed (the monitor's baudrate changed while open).
+    pub(crate) fn set_baud(&mut self, baud: u32) -> Result<(), String> {
+        self.stream
+            .configure_baud(&mut self.probe, baud)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
 }
 
 impl Drop for ConsoleSession {
     fn drop(&mut self) {
-        let _ = detach(&mut self.probe, self.wire, self.connection, false);
+        if let Some((wire, conn)) = self.attached {
+            let _ = detach(&mut self.probe, wire, conn, false);
+        }
         let _ = self.probe.end();
     }
 }

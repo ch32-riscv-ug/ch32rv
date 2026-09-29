@@ -39,6 +39,13 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         MonitorSource::Dmdata | MonitorSource::Dmseq | MonitorSource::Rtt => {
             run_dmi(cli, args.source)
         }
+        MonitorSource::FixtureUart => fail(
+            cli,
+            "monitor",
+            ErrorKind::CapabilityUnsupported,
+            "fixture-uart is an OEP probe's source, served by `arduino monitor`",
+            None,
+        ),
     }
 }
 
