@@ -8,6 +8,7 @@
 //! monitor、target/probe/db/capabilities、arduino)。isp/boot/dap は exit 70(unimplemented)。
 
 mod args;
+mod broker;
 mod cmd_arduino;
 mod cmd_boot;
 mod cmd_capabilities;
@@ -124,6 +125,8 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Arduino(ArduinoCmd::Discovery) => cmd_arduino::discovery(cli),
         Command::Arduino(ArduinoCmd::Monitor { protocol }) => cmd_arduino::monitor(cli, protocol),
         Command::Run(args) => cmd_run::run(cli, args),
+        Command::Broker(BrokerCmd::Serve) => broker::serve(cli),
+        Command::Broker(BrokerCmd::Endpoint) => broker::endpoint(cli),
         Command::Boot(BootCmd::Hid(HidBootCmd::Flash { file, usb_id })) => {
             cmd_boot::hid_flash(cli, file, usb_id.as_deref())
         }
@@ -308,6 +311,10 @@ fn canonical_name(cmd: &Command) -> &'static str {
         Command::Doctor(_) => "doctor",
         Command::Version => "version",
         Command::Complete(_) => "complete",
+        Command::Broker(b) => match b {
+            BrokerCmd::Serve => "broker.serve",
+            BrokerCmd::Endpoint => "broker.endpoint",
+        },
         Command::Arduino(a) => match a {
             ArduinoCmd::Discovery => "arduino.discovery",
             ArduinoCmd::Monitor { .. } => "arduino.monitor",

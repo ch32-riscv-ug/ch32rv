@@ -72,8 +72,14 @@ impl DeviceLock {
     }
 }
 
+/// en: The per-user runtime directory ch32rv keeps its lock files (and the broker's endpoint
+/// files) in. ja: ch32rv が lock ファイル(とブローカーの endpoint ファイル)を置く利用者ごとの dir。
 /// The directory that holds the lock files: `$XDG_RUNTIME_DIR/ch32rv` when set (per-user, tmpfs,
 /// cleared on logout), else a stable subdir of the system temp dir.
+pub fn runtime_dir() -> PathBuf {
+    lock_dir()
+}
+
 fn lock_dir() -> PathBuf {
     if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR")
         && !rt.is_empty()
@@ -84,7 +90,7 @@ fn lock_dir() -> PathBuf {
 }
 
 /// Make `key` a safe single path component: keep `[A-Za-z0-9._-]`, replace the rest with `_`.
-fn sanitize(key: &str) -> String {
+pub fn sanitize(key: &str) -> String {
     let mut out: String = key
         .chars()
         .map(|c| {

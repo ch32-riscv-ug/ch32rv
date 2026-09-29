@@ -330,6 +330,53 @@ impl Request {
     }
 }
 
+impl Request {
+    /// en: Decode a request (the broker's side: a client sends it). `None` when it is not a
+    /// request or is shorter than its header.
+    /// ja: 要求を解く(ブローカーの側で、client が送ったもの)。要求でないか header より短ければ None。
+    pub fn decode(m: &[u8]) -> Option<Request> {
+        let role = *m.first()?;
+        let session_flag = registry::constants::ROLE_SESSION_FLAG;
+        if role & !session_flag != registry::roles::REQUEST || m.len() < 6 {
+            return None;
+        }
+        let corr = u16::from_le_bytes([m[1], m[2]]);
+        let func = u16::from_le_bytes([m[3], m[4]]);
+        let op = m[5];
+        let (session, at) = if role & session_flag != 0 {
+            if m.len() < 10 {
+                return None;
+            }
+            (Some(u32::from_le_bytes([m[6], m[7], m[8], m[9]])), 10)
+        } else {
+            (None, 6)
+        };
+        Some(Request {
+            corr,
+            func,
+            op,
+            session,
+            payload: m[at..].to_vec(),
+        })
+    }
+}
+
+/// A result message: `0x02 corr resolution detail payload` (the broker answers its clients).
+pub fn encode_result(corr: u16, resolution: Resolution, payload: &[u8]) -> Vec<u8> {
+    let (res, detail) = match resolution {
+        Resolution::Rejected(r) => (registry::resolutions::REJECTED, r),
+        Resolution::Completed(o) => (registry::resolutions::COMPLETED, o),
+        Resolution::Unknown(a, b) => (a, b),
+    };
+    let mut out = Vec::with_capacity(5 + payload.len());
+    out.push(registry::roles::RESULT);
+    out.extend_from_slice(&corr.to_le_bytes());
+    out.push(res);
+    out.push(detail);
+    out.extend_from_slice(payload);
+    out
+}
+
 /// How the probe resolved a request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Resolution {
@@ -530,6 +577,35 @@ mod tests {
         assert_eq!(
             Incoming::decode(&[0x03, 0, 0]),
             Err(DecodeError::UnknownRole(3))
+        );
+    }
+
+    #[test]
+    fn request_decode_and_result_encode_round_trip() {
+        let r = Request {
+            corr: 7,
+            func: 3,
+            op: 5,
+            session: Some(0xAABB_CCDD),
+            payload: vec![1, 2],
+        };
+        assert_eq!(Request::decode(&r.encode()), Some(r));
+        let plain = Request {
+            corr: 1,
+            func: 0,
+            op: 1,
+            session: None,
+            payload: vec![],
+        };
+        assert_eq!(Request::decode(&plain.encode()), Some(plain));
+        let m = encode_result(9, Resolution::Completed(0), &[4]);
+        assert_eq!(
+            Incoming::decode(&m).unwrap(),
+            Incoming::Result {
+                corr: 9,
+                resolution: Resolution::Completed(0),
+                payload: vec![4]
+            }
         );
     }
 
