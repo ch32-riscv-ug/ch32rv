@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `broker endpoint --json` also reports the broker's `transport` (`vendor-bulk`, `hid`, `serial` or `wchlink`). Verified on the ESP32-P4 OEP probe of the CH32X035 jig: vendor bulk, HID and the serial port each flashed a 4.9 KB image in 0.20-0.22 s and streamed dmseq, and vendor bulk is the one picked by default.
+- (JA) `broker endpoint --json` がブローカーの `transport`(`vendor-bulk` / `hid` / `serial` / `wchlink`)も返す。CH32X035 の治具の ESP32-P4 の OEP の probe で確認: vendor bulk、HID、serial port のどれでも 4.9 KB を 0.20〜0.22 秒で書き、dmseq が流れた。既定で選ばれるのは vendor bulk。
+
 ## 0.11.0 - 2026-09-29
 
 - (EN) An OEP probe on USB is reached by its vendor bulk pair first, then its vendor HID, then the serial port (oep-core §3.3): the broker and discovery open the OEP device behind the serial port that `port:<path>` or `oep://` names, and use the first transport that answers confirm. Vendor bulk keeps its IN transfers submitted instead of cancelling them on a read timeout (a cancelled transfer drops what arrived with it); HID packs the length-framed stream into the vendor report the report descriptor declares. `CH32RV_OEP_TRANSPORT=vendor-bulk|hid|serial` starts the order elsewhere. The Linux udev rules (`doctor --emit-udev`) now cover OEP probes, matched by a product string starting `OEP` until OEP has its own PID; without them the serial port is used as before.
