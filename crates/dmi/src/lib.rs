@@ -117,6 +117,10 @@ pub enum DmiError {
     Transport(String),
     #[error("dmi operation failed (op state: {0})")]
     OperationFailed(String),
+    /// A reset finished but the hart is not in the state asked for (not running after a verified
+    /// run, not halted at reset).
+    #[error("the target did not reach the requested state after reset ({0})")]
+    NotReached(String),
     #[error("timeout")]
     Timeout,
     #[error("cancelled")]
