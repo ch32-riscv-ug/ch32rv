@@ -6,6 +6,8 @@
 //! 生成する(§3)。生成物は commit し、target crate は `include_str!` で読むのでビルドは隣接 repo に
 //! 依存しない。
 
+mod oep;
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -16,17 +18,34 @@ fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     let task = args.next();
     // Data repo path: arg, else CH32_DEVICE_DATA env, else the sibling checkout.
-    let data = args
-        .next()
-        .map(PathBuf::from)
+    let data_arg = args.next().map(PathBuf::from);
+    let data = data_arg
+        .clone()
         .or_else(|| std::env::var_os("CH32_DEVICE_DATA").map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("../ch32-device-data"));
+    // oep-gen / oep-check take the oep-spec checkout: arg, else OEP_SPEC env, else the sibling.
+    // `--worktree` (anywhere after the task) reads uncommitted registry edits instead of HEAD.
+    let rest: Vec<String> = std::env::args().skip(2).collect();
+    let source = if rest.iter().any(|a| a == "--worktree") {
+        oep::Source::Worktree
+    } else {
+        oep::Source::Head
+    };
+    let spec = || {
+        rest.iter()
+            .find(|a| !a.starts_with("--"))
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("OEP_SPEC").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("../../dev_oep/oep-spec"))
+    };
     match task.as_deref() {
+        Some("oep-gen") => run(oep::write(&spec(), source)),
+        Some("oep-check") => run(oep::check(&spec(), source)),
         Some("db-gen") => run(db_write(&data)),
         Some("db-check") => run(db_check(&data)),
         _ => {
             eprintln!(
-                "usage: cargo xtask <task> [DATA_DIR]\n\ntasks:\n  db-gen     generate crates/target/generated/ from ch32-device-data\n  db-check   verify the committed generated files match a fresh generation (CI)\n\n(DATA_DIR default: $CH32_DEVICE_DATA or ../ch32-device-data)"
+                "usage: cargo xtask <task> [DATA_DIR]\n\ntasks:\n  db-gen     generate crates/target/generated/ from ch32-device-data\n  db-check   verify the committed generated files match a fresh generation (CI)\n  oep-gen    generate crates/oep/src/registry.rs from oep-spec's committed HEAD (DIR default: $OEP_SPEC or\n             ../../dev_oep/oep-spec; --worktree reads uncommitted edits)\n  oep-check  verify the committed registry.rs matches the registry (CI)\n\n(DATA_DIR default: $CH32_DEVICE_DATA or ../ch32-device-data)"
             );
             ExitCode::from(2)
         }
