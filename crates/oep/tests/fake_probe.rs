@@ -394,3 +394,32 @@ fn a_pty_is_opened_exclusively_and_speaks_cobs() {
         .unwrap();
     p.end().unwrap();
 }
+
+// ---- position streams ----
+
+use ch32rv_oep::stream::{Mechanism, PosStream};
+
+#[test]
+fn the_console_streams_what_the_target_prints() {
+    let Some(f) = fake("cobs", &["--console", "uptime %d\r\n", "--every", "50"]) else {
+        return;
+    };
+    let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
+    p.open(random_session_id(), 3000, false, Some("ch32rv test"))
+        .unwrap();
+    // Do not stop a running target to watch it.
+    let a = attach(&mut p, WireKind::Rvswd, AttachOptions::default()).unwrap();
+    let mut s = PosStream::open_console(&mut p, a.connection, Mechanism::Dmseq).unwrap();
+    s.start_at_last_reset(&mut p).unwrap();
+    let mut got = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !String::from_utf8_lossy(&got).contains("uptime") {
+        assert!(std::time::Instant::now() < deadline, "no console output");
+        got.extend(s.poll(&mut p, 512).unwrap().data);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // The host's input goes back; a dmseq write takes at most 2 bytes per request.
+    let taken = s.write(&mut p, b"ok\n").unwrap();
+    assert!((1..=3).contains(&taken), "{taken}");
+    p.end().unwrap();
+}
