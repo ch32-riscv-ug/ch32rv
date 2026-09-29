@@ -117,14 +117,18 @@ fn discovery_and_session_over_cobs_with_console_noise() {
     );
 
     let sid = random_session_id();
-    let o = p.open(sid, 3000, false).unwrap();
+    let o = p.open(sid, 3000, false, Some("ch32rv test")).unwrap();
     assert!(!o.resumed);
-    assert!(p.lock_state().unwrap().0);
+    assert!(p.lock_state().unwrap().locked);
     p.keepalive().unwrap();
     p.end().unwrap();
-    assert!(!p.lock_state().unwrap().0);
+    assert!(!p.lock_state().unwrap().locked);
     // The same id takes the lock back and is told so.
-    assert!(p.open(sid, 3000, false).unwrap().resumed);
+    assert!(
+        p.open(sid, 3000, false, Some("ch32rv test"))
+            .unwrap()
+            .resumed
+    );
     p.end().unwrap();
     // Noise and the leading 0x00 of every answer were filtered, never mistaken for answers.
     assert_eq!(p.link().resyncs, 0);
@@ -158,12 +162,15 @@ fn another_session_is_locked_out_until_it_forces() {
         return;
     };
     let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
-    p.open(0x1111_1111, 5000, false).unwrap();
-    match p.open(0x2222_2222, 5000, false) {
-        Err(OepError::Locked { remaining_ms }) => assert!(remaining_ms > 0 && remaining_ms <= 5000),
+    p.open(0x1111_1111, 5000, false, Some("ch32rv test"))
+        .unwrap();
+    match p.open(0x2222_2222, 5000, false, Some("ch32rv test")) {
+        Err(OepError::Locked { remaining_ms, .. }) => {
+            assert!(remaining_ms > 0 && remaining_ms <= 5000)
+        }
         other => panic!("expected Locked, got {other:?}"),
     }
-    let o = p.open(0x2222_2222, 5000, true).unwrap();
+    let o = p.open(0x2222_2222, 5000, true, None).unwrap();
     assert!(!o.resumed);
     p.end().unwrap();
 }
@@ -174,7 +181,8 @@ fn pipelined_requests_answer_in_order() {
         return;
     };
     let mut p = probe(&f, Framing::Length, Duration::from_secs(2));
-    p.open(random_session_id(), 3000, false).unwrap();
+    p.open(random_session_id(), 3000, false, Some("ch32rv test"))
+        .unwrap();
     // More than max_inflight (4) requests: the link must hold back and keep the order.
     let calls = (0..10)
         .map(|i| {
@@ -202,7 +210,8 @@ fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
         return;
     };
     let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
-    p.open(random_session_id(), 3000, false).unwrap();
+    p.open(random_session_id(), 3000, false, Some("ch32rv test"))
+        .unwrap();
     let a = attach(
         &mut p,
         WireKind::Rvswd,
@@ -260,7 +269,8 @@ fn a_resume_that_does_not_take_is_issued_again() {
         return;
     };
     let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
-    p.open(random_session_id(), 3000, false).unwrap();
+    p.open(random_session_id(), 3000, false, Some("ch32rv test"))
+        .unwrap();
     let a = attach(
         &mut p,
         WireKind::Rvswd,

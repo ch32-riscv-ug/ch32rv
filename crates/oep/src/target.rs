@@ -149,10 +149,8 @@ pub struct OepDtm<'a> {
 
 /// en: The most words one block request may carry: what fits `max_frame` (session header 10,
 /// connection + address + count 8, or on the answer 5 + done/status 3), the describe `max_length`
-/// if declared (taken as bytes, the reference probe's unit, until the spec states it), and the
-/// reference probe's 256-word buffer.
-/// ja: 1 回の block の語数の上限: max_frame に入る数、describe の max_length(spec が単位を書くまでは
-/// 参照 probe どおり byte とみなす)、参照 probe の 256 語。
+/// (bytes, oep-if-debug) if declared, and the reference probe's 256-word buffer.
+/// ja: 1 回の block の語数の上限: max_frame に入る数、describe の max_length(byte 数)、参照 probe の 256 語。
 fn block_words(max_frame: u16, max_length: Option<u16>) -> usize {
     let by_frame = (usize::from(max_frame).saturating_sub(18)) / 4;
     let by_decl = max_length.map_or(usize::MAX, |b| usize::from(b) / 4);
