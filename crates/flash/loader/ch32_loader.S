@@ -1,4 +1,4 @@
-/* ch32rv RAM loader: erase and program one fast page of CH32 code flash (docs/oep-host.ja.md §5.1).
+/* ch32rv RAM loader: erase and program fast pages of CH32 code flash (docs/oep-host.ja.md §5.1).
  *
  * One binary for every family: only RV32EC instructions and x1..x15, so it runs on the RV32EC
  * parts (V003 / V00x) and on every RV32IMAC one; position independent (relative branches only).
@@ -8,12 +8,16 @@
  *   a3 = 1  pgstart  : FTPG, per word store (wait WRBSY), then PGSTART (V20x, V30x)
  *   a3 = 2  v103     : PG, halfword stores, then the V103 commit        (V103)
  *
- * In:  a0 = page address (aligned to a2), a1 = source buffer in RAM, a2 = page bytes (the fast page
- *      size: 64 / 128 / 256), a3 = mode, a4 = FLASH base (0x40022000). FLASH already unlocked,
- *      fast mode included (KEYR + MODEKEYR), and mstatus.MIE clear - the host does both.
- * Out: a0 = 0, or 0x80000000 | STATR when the controller reported a write-protect error.
+ * In:  a0 = first page address (aligned to a2), a1 = source buffer in RAM (a5 pages back to back),
+ *      a2 = page bytes (the fast page size: 64 / 128 / 256), a3 = mode, a5 = page count (>= 1).
+ *      a4 is set here to the FLASH base (0x40022000), one register less in the run request so it
+ *      fits a probe's smallest frame (64 bytes). FLASH already unlocked, fast mode included (KEYR +
+ *      MODEKEYR), and mstatus.MIE clear - the host does both.
+ * Out: a0 = 0, or 0x80000000 | STATR when the controller reported a write-protect error (the
+ *      pages before it are written).
  * Stop: always at the ebreak at offset 4 (`done`), so the host checks dpc == base + 4 and a0.
  * A controller that never clears BSY leaves the loader spinning; the host's run timeout halts it.
+ * Registers: s0 / s1 walk the page's destination / source, ra marks the end of its source.
  */
     .equ STATR,   0x0C
     .equ CTLR,    0x10
@@ -30,6 +34,15 @@
     bnez    t1, 1b
     .endm
 
+    /* CH32V103 commit: *(FLASH + 0x34) = *((a0 & ~3) ^ 0x1000). Clobbers t0, t1. */
+    .macro COMMIT
+    andi    t0, a0, -4
+    li      t1, 0x1000
+    xor     t0, t0, t1
+    lw      t0, 0(t0)
+    sw      t0, MAGIC(a4)
+    .endm
+
     .text
     .globl  _start
     .option norvc
@@ -40,6 +53,8 @@ done:
     .option rvc
 
 main:
+    lui     a4, 0x40022         /* FLASH base */
+page:
     /* ---- erase the page: FTER, ADDR, FTER|STRT ---- */
     lui     t0, 0x20            /* FTER = 1 << 17 */
     sw      t0, CTLR(a4)
@@ -53,11 +68,11 @@ main:
     sw      t2, STATR(a4)       /* write the flags back to clear them (EOP) */
     li      t0, 2
     bne     a3, t0, 2f
-    jal     commit              /* V103: the commit follows the erase too */
+    COMMIT                      /* V103: the commit follows the erase too */
 2:
     mv      s0, a0              /* destination */
     mv      s1, a1              /* source */
-    add     a5, a1, a2          /* source end */
+    add     ra, a1, a2          /* source end */
     beqz    a3, buffered
     li      t0, 1
     beq     a3, t0, pgstart
@@ -71,9 +86,9 @@ v103:
     WAIT    BSY
     addi    s0, s0, 2
     addi    s1, s1, 2
-    bltu    s1, a5, 3b
+    bltu    s1, ra, 3b
     sw      zero, CTLR(a4)
-    jal     commit
+    COMMIT
     j       finish
 
 /* ---- V003 / V00x / X035 / L103: buffered fast page ---- */
@@ -83,15 +98,14 @@ buffered:
     lui     t0, 0x90            /* FTPG | BUFRST (1 << 19) */
     sw      t0, CTLR(a4)
     WAIT    BSY
-    lui     t0, 0x50            /* FTPG | BUFLOAD (1 << 18) */
 4:  lw      t2, 0(s1)
     sw      t2, 0(s0)
+    lui     t0, 0x50            /* FTPG | BUFLOAD (1 << 18) */
     sw      t0, CTLR(a4)
     WAIT    BSY
-    lui     t0, 0x50
     addi    s0, s0, 4
     addi    s1, s1, 4
-    bltu    s1, a5, 4b
+    bltu    s1, ra, 4b
     sw      a0, ADDR(a4)
     lui     t0, 0x10
     addi    t0, t0, 0x40        /* FTPG | STRT */
@@ -108,7 +122,7 @@ pgstart:
     WAIT    WRBSY
     addi    s0, s0, 4
     addi    s1, s1, 4
-    bltu    s1, a5, 5b
+    bltu    s1, ra, 5b
     lui     t0, 0x210           /* FTPG | PGSTART (1 << 21) */
     sw      t0, CTLR(a4)
     WAIT    BSY
@@ -119,6 +133,11 @@ finish:
     andi    t1, t2, WRPRTERR
     bnez    t1, fail
     sw      t2, STATR(a4)
+    /* next page */
+    add     a0, a0, a2
+    add     a1, a1, a2
+    addi    a5, a5, -1
+    bnez    a5, page
     li      a0, 0
     j       done
 
@@ -128,12 +147,3 @@ fail:
     lui     a0, 0x80000
     or      a0, a0, t2
     j       done
-
-/* CH32V103 commit: *(FLASH + 0x34) = *((a0 & ~3) ^ 0x1000). Clobbers t0, t1. */
-commit:
-    andi    t0, a0, -4
-    li      t1, 0x1000
-    xor     t0, t0, t1
-    lw      t0, 0(t0)
-    sw      t0, MAGIC(a4)
-    ret

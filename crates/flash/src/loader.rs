@@ -34,12 +34,16 @@ const KEY1: u32 = 0x4567_0123;
 const KEY2: u32 = 0xCDEF_89AB;
 const CTLR_LOCK: u32 = 1 << 7;
 const CTLR_FLOCK: u32 = 1 << 15;
-/// en: Bounds a controller that never clears BSY. A page is not always quick: measured over a
-/// WCH-Link (host-side, DMI polling included), a CH32V307 page took about 22 ms and a CH32V103
-/// page about 0.2 s, so a 200 ms bound cut the V103 short. Kept well under the session lease.
-/// ja: BSY が落ちない controller の上限。page は速いとは限らない(WCH-Link 越しの host 側の実測で
-/// V307 は約 22 ms、V103 は約 0.2 s。200 ms では V103 が途中で切られた)。lease より十分短く。
-const RUN_TIMEOUT: Duration = Duration::from_millis(1000);
+/// en: Bounds one run (up to [`MAX_BATCH_PAGES`] pages) and a controller that never clears BSY. A
+/// page is not always quick: measured over a WCH-Link (host-side, DMI polling included), a
+/// CH32V307 page took about 22 ms and a CH32V103 page about 0.2 s, so 8 V103 pages take about
+/// 1.6 s. Kept under the 3 s session lease: the probe answers nothing while a run is in progress.
+/// ja: 1 回の run(最大 [`MAX_BATCH_PAGES`] page)の上限。V103 は 1 page 約 0.2 s なので 8 page で
+/// 約 1.6 s。run の間 probe は答えないので、3 s の lease より短く。
+const RUN_TIMEOUT: Duration = Duration::from_millis(2500);
+/// One run's buffer: its pages back to back after the loader (SRAM is 2 KiB on the smallest part).
+const BATCH_BYTES: usize = 1024;
+const MAX_BATCH_PAGES: usize = 8;
 
 /// The loader's programming mechanism (its `a3`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,49 +159,71 @@ fn place_loader<T: TargetAccess + ?Sized>(t: &mut T) -> Result<(), LoaderError> 
     Err(LoaderError::LoaderGarbled)
 }
 
-/// The outcome of one page's run.
-enum PageRun {
+/// The outcome of one run.
+enum Run {
     Ok,
     /// Did not complete (timeout, stopped elsewhere): write again.
     Retry,
     WriteProtected(u32),
 }
 
-fn run_page<T: TargetAccess + ?Sized>(
+/// en: Write `count` consecutive pages starting at `addr` in one loader run: their content goes to
+/// the buffer back to back, and the loader erases and programs each in turn (fewer round trips,
+/// which is what bounds a slow link such as a 115200 UART bridge).
+/// ja: `addr` から連続する `count` page を 1 回の run で書く(往復が減る。115200 の UART bridge の
+/// ような遅いリンクの律速はここ)。
+fn run_batch<T: TargetAccess + ?Sized>(
     t: &mut T,
     plan: LoaderPlan,
     addr: u32,
     content: &[u8],
+    count: u32,
     report: &mut LoaderReport,
-) -> Result<PageRun, LoaderError> {
+) -> Result<Run, LoaderError> {
     t.write_words(BUFFER, &words(content))?;
     let regs = [
         (regno::A0, addr),
         (regno::A1, BUFFER),
         (regno::A2, plan.page),
         (regno::A3, plan.mode as u32),
-        (regno::A4, FLASH_BASE),
+        (regno::A5, count),
         (regno::MSTATUS, 0),
     ];
     // The probe issues a run once and never again: a run that did not start (dpc still at the
-    // entry) is safe to issue again, since erase + program of one page is idempotent.
+    // entry) is safe to issue again, since erase + program of whole pages is idempotent.
     for _ in 0..3 {
         let r = t.run_until_halt(SRAM, &regs, &[regno::A0], RUN_TIMEOUT)?;
         let a0 = r.outs.first().copied().unwrap_or(u32::MAX);
         if r.stopped && r.dpc == SRAM + DONE_OFFSET {
             return Ok(match a0 {
-                0 => PageRun::Ok,
-                v if v & 0x8000_0000 != 0 => PageRun::WriteProtected(v & 0x7FFF_FFFF),
-                _ => PageRun::Retry,
+                0 => Run::Ok,
+                v if v & 0x8000_0000 != 0 => Run::WriteProtected(v & 0x7FFF_FFFF),
+                _ => Run::Retry,
             });
         }
         if r.dpc == SRAM {
             report.restarted_runs += 1;
             continue;
         }
-        return Ok(PageRun::Retry);
+        return Ok(Run::Retry);
     }
-    Ok(PageRun::Retry)
+    Ok(Run::Retry)
+}
+
+/// Runs of consecutive entries of `idx` (indices into `pages`), each at most `max` long.
+fn batches(pages: &[(u32, Vec<u8>)], idx: &[usize], page: u32, max: usize) -> Vec<Vec<usize>> {
+    let mut out: Vec<Vec<usize>> = Vec::new();
+    for &i in idx {
+        match out.last_mut() {
+            Some(b)
+                if b.len() < max && b.last().is_some_and(|&j| pages[j].0 + page == pages[i].0) =>
+            {
+                b.push(i)
+            }
+            _ => out.push(vec![i]),
+        }
+    }
+    out
 }
 
 /// en: Program `segments` (flash addresses) with `plan`. The hart must be halted - reset-halt it
@@ -226,8 +252,9 @@ fn program_unlocked<T: TargetAccess + ?Sized>(
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<LoaderReport, LoaderError> {
     let page = plan.page;
-    // The pages the image touches, each as its final content: what the flash holds now with the
-    // image laid over it.
+    let words_per_page = (page / 4) as usize;
+    // The pages the image touches, each as its final content. Only a page the image covers in
+    // part is read first (to keep the bytes around the image); a whole page is the image's.
     let mut addrs: Vec<u32> = segments
         .iter()
         .flat_map(|s| {
@@ -239,7 +266,19 @@ fn program_unlocked<T: TargetAccess + ?Sized>(
     addrs.dedup();
     let mut pages: Vec<(u32, Vec<u8>)> = Vec::with_capacity(addrs.len());
     for &a in &addrs {
-        let mut content = bytes(&t.read_words(a, (page / 4) as usize)?);
+        let mut covered = vec![false; page as usize];
+        for seg in segments {
+            let lo = seg.addr.max(a);
+            let hi = (seg.addr + seg.data.len() as u32).min(a + page);
+            for x in lo..hi {
+                covered[(x - a) as usize] = true;
+            }
+        }
+        let mut content = if covered.iter().all(|&c| c) {
+            vec![0xFF; page as usize]
+        } else {
+            bytes(&t.read_words(a, words_per_page)?)
+        };
         crate::overlay(a, &mut content, segments);
         pages.push((a, content));
     }
@@ -250,31 +289,39 @@ fn program_unlocked<T: TargetAccess + ?Sized>(
     };
     place_loader(t)?;
     let total = pages.len();
+    let per_run = (BATCH_BYTES / page as usize).clamp(1, MAX_BATCH_PAGES);
     let mut todo: Vec<usize> = (0..total).collect();
+    let mut done = 0;
     for pass in 0..3 {
         if pass > 0 {
             report.rewritten += todo.len();
             place_loader(t)?;
         }
         let mut again = Vec::new();
-        for (n, &i) in todo.iter().enumerate() {
-            let (a, ref c) = pages[i];
-            match run_page(t, plan, a, c, &mut report)? {
-                PageRun::Ok => {}
-                PageRun::Retry => again.push(i),
-                PageRun::WriteProtected(statr) => {
-                    return Err(LoaderError::WriteProtected { addr: a, statr });
+        for b in batches(&pages, &todo, page, per_run) {
+            let first = pages[b[0]].0;
+            let content: Vec<u8> = b.iter().flat_map(|&i| pages[i].1.iter().copied()).collect();
+            match run_batch(t, plan, first, &content, b.len() as u32, &mut report)? {
+                Run::Ok => {}
+                Run::Retry => again.extend(&b),
+                Run::WriteProtected(statr) => {
+                    return Err(LoaderError::WriteProtected { addr: first, statr });
                 }
             }
             if pass == 0 {
-                progress(n + 1, total);
+                done += b.len();
+                progress(done, total);
             }
         }
-        // Read everything written this pass back; a page that differs is written again.
-        for &i in &todo {
-            let (a, ref c) = pages[i];
-            if !again.contains(&i) && bytes(&t.read_words(a, (page / 4) as usize)?) != *c {
-                again.push(i);
+        // Read back what this pass wrote, a consecutive run at a time; a page that differs is
+        // written again.
+        for b in batches(&pages, &todo, page, usize::MAX) {
+            let got = bytes(&t.read_words(pages[b[0]].0, words_per_page * b.len())?);
+            for (k, &i) in b.iter().enumerate() {
+                let off = k * page as usize;
+                if !again.contains(&i) && got[off..off + page as usize] != pages[i].1[..] {
+                    again.push(i);
+                }
             }
         }
         again.sort_unstable();
