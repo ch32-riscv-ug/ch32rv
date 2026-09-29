@@ -78,15 +78,33 @@ impl PosStream {
         })
     }
 
-    /// The fixture's UART (the first `oep.fixture.uart`), set to `baud`; returns the real baud.
+    /// en: The fixture's UART, set to `baud`; returns the real baud. A probe may offer several
+    /// `oep.fixture.uart`, and only one with pins planned takes a configure (the others answer
+    /// unavailable), so each is tried in order and the first that takes it is used.
+    /// ja: fixture の UART を `baud` にして開く。`oep.fixture.uart` が複数あり、configure を受けるのは
+    /// ピンの plan のあるものだけ(ほかは unavailable)なので、順に試して最初に受けたものを使う。
     pub fn open_uart(p: &mut Probe, baud: u32) -> Result<(Self, u32), OepError> {
-        let func = p.interface(fixture_uart::NAME)?.func;
-        let s = PosStream {
-            kind: Kind::Uart { func },
-            pos: 0,
-        };
-        let real = s.configure_baud(p, baud)?;
-        Ok((s, real))
+        let uarts: Vec<u16> = p
+            .list(fixture_uart::NAME)?
+            .into_iter()
+            .filter(|i| i.name == fixture_uart::NAME)
+            .map(|i| i.func)
+            .collect();
+        if uarts.is_empty() {
+            return Err(OepError::NoInterface(fixture_uart::NAME.to_owned()));
+        }
+        let mut last = None;
+        for func in uarts {
+            let s = PosStream {
+                kind: Kind::Uart { func },
+                pos: 0,
+            };
+            match s.configure_baud(p, baud) {
+                Ok(real) => return Ok((s, real)),
+                Err(e) => last = Some(e),
+            }
+        }
+        Err(last.unwrap_or_else(|| OepError::NoInterface(fixture_uart::NAME.to_owned())))
     }
 
     /// `oep.fixture.uart` configure (the UART's speed is set only here, never by a line coding).
@@ -151,12 +169,48 @@ impl PosStream {
     /// ja: 最後の reset の mark に読み手を置く(書き込み直後に開いた monitor が最初の行から読める)。
     /// mark が無ければ「今」。
     pub fn start_at_last_reset(&mut self, p: &mut Probe) -> Result<(), OepError> {
+        // en: From the marks list, not `read(LastMark)`: a stream with no reset mark answers that
+        // read at its oldest byte (measured on a fixture UART), which would replay old output.
+        // ja: marks の一覧から探す(reset の mark が無いストリームは LastMark の read に一番古い位置
+        // を返し、古い出力をもう一度流してしまう。fixture UART で実測)。
         let reset = console::enums::mark_kind::RESET;
-        self.pos = match self.read(p, From::LastMark(reset), 0) {
-            Ok((start, _)) => start,
-            Err(_) => self.read(p, From::Now, 0)?.0,
+        self.pos = match self.last_mark(p, reset)? {
+            Some(pos) => pos,
+            None => self.read(p, From::Now, 0)?.0,
         };
         Ok(())
+    }
+
+    /// The position of the last mark of `kind`, following `more` (lock-free).
+    fn last_mark(&self, p: &mut Probe, kind: u8) -> Result<Option<u64>, OepError> {
+        let (func, head) = self.head();
+        let op = match self.kind {
+            Kind::Console { .. } => console::op::MARKS,
+            Kind::Uart { .. } => fixture_uart::op::MARKS,
+        };
+        let mut from: u32 = 0;
+        let mut found = None;
+        for _ in 0..64 {
+            let mut pl = head.clone();
+            pl.extend_from_slice(&from.to_le_bytes());
+            let a = check(p.call(func, op, pl)?)?;
+            let (Some(&more), Some(&count)) = (a.first(), a.get(1)) else {
+                return Ok(found);
+            };
+            // serial u32, position u64, kind u8, time_ms u32, detail u8 (18 bytes)
+            for m in a[2..].as_chunks::<18>().0.iter().take(usize::from(count)) {
+                let serial = u32::from_le_bytes([m[0], m[1], m[2], m[3]]);
+                let pos = u64::from_le_bytes([m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]]);
+                if m[12] == kind {
+                    found = Some(pos);
+                }
+                from = serial.wrapping_add(1);
+            }
+            if more == 0 || count == 0 {
+                break;
+            }
+        }
+        Ok(found)
     }
 
     /// Read what has come since the position (at most `max`), advancing it.
