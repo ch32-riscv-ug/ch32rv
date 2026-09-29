@@ -67,6 +67,10 @@ pub enum HidBootError {
     Init(String),
     #[error("HID bootloader {0:04x}:{1:04x} was not found")]
     NotFound(u16, u16),
+    #[error("no HID bootloader at USB position {0}")]
+    NotAt(String),
+    #[error("{0} HID bootloaders are connected and this OS cannot tell them apart by position")]
+    Ambiguous(usize),
     #[error("HID transfer failed: {0}")]
     Transfer(String),
     #[error("HID stub did not complete")]
@@ -106,6 +110,18 @@ enum HidBackend {
 
 impl HidBoot {
     pub fn open(usb_id: Option<(u16, u16)>) -> Result<Self, HidBootError> {
+        Self::open_at(usb_id, None)
+    }
+
+    /// en: Open the bootloader at USB position `topology` (`<bus>-<ports>`, the `hid://` address
+    /// discovery gives), or the first one found when `None`. Linux matches the position through
+    /// the device's hidraw nodes; elsewhere HID paths carry no position, so the ID must be unique.
+    /// ja: USB の位置 `topology`(discovery の `hid://` の値)の bootloader を開く。`None` なら最初の
+    /// 1 台。Linux は hidraw ノードで位置を照合、他 OS は位置が取れないので ID が一意であること。
+    pub fn open_at(
+        usb_id: Option<(u16, u16)>,
+        topology: Option<&str>,
+    ) -> Result<Self, HidBootError> {
         let ids: &[(u16, u16)] = match usb_id.as_ref() {
             Some(id) => std::slice::from_ref(id),
             None => &DEFAULT_HID_IDS,
@@ -127,11 +143,38 @@ impl HidBoot {
         }
 
         let api = HidApi::new().map_err(|e| HidBootError::Init(e.to_string()))?;
+        // The hidraw nodes of the USB device at `topology` (Linux), to pick that one.
+        let at: Option<Vec<String>> = match topology {
+            None => None,
+            Some(t) => {
+                let devs =
+                    ch32rv_usb::enumerate().map_err(|e| HidBootError::Init(e.to_string()))?;
+                let dev = devs
+                    .into_iter()
+                    .find(|d| d.topology() == t && ids.contains(&(d.vid(), d.pid())))
+                    .ok_or_else(|| HidBootError::NotAt(t.to_owned()))?;
+                Some(dev.hidraw_nodes())
+            }
+        };
         for &(vid, pid) in ids {
-            if let Some(info) = api
+            let mut found = api
                 .device_list()
-                .find(|d| d.vendor_id() == vid && d.product_id() == pid)
-            {
+                .filter(|d| d.vendor_id() == vid && d.product_id() == pid)
+                .filter(|d| match &at {
+                    Some(nodes) if !nodes.is_empty() => {
+                        nodes.iter().any(|n| *n == d.path().to_string_lossy())
+                    }
+                    _ => true,
+                });
+            let first = found.next();
+            if at.as_ref().is_some_and(Vec::is_empty) {
+                // A position was asked for but this OS cannot see it: only a unique ID will do.
+                let more = found.count();
+                if more > 0 {
+                    return Err(HidBootError::Ambiguous(more + 1));
+                }
+            }
+            if let Some(info) = first {
                 ch32rv_usb::capture::record_hid_device(
                     vid,
                     pid,

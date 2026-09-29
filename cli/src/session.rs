@@ -51,6 +51,21 @@ pub enum SessionError {
     Busy(LockError),
 }
 
+/// One line for places that can only show text (the Arduino monitor's data stream).
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SessionError::Open(e) | SessionError::ProbeInfo(e) => write!(f, "{e}"),
+            SessionError::NoTarget => f.write_str("no target detected on the debug pins"),
+            SessionError::Attach(m)
+            | SessionError::ChipMismatch(m)
+            | SessionError::ChipNotInDb(m)
+            | SessionError::DbOverlay(m) => f.write_str(m),
+            SessionError::Busy(e) => write!(f, "{e} (another ch32rv is using this probe)"),
+        }
+    }
+}
+
 impl Session {
     /// en: Open + clear state + attach. `warnings` accumulates non-fatal notes (corrupted
     /// readback recovery, etc.). Retries the open per docs/cli.ja.md §3.7. When `chip` (`--chip`)
@@ -90,51 +105,11 @@ impl Session {
         let attach = attach_once(&mut link, speed)?;
 
         // Validate an explicit --chip against the detected target (fail-closed on a family conflict).
-        if let Some(requested) = chip {
-            let db = &db;
-            let req_fams = db.families_for_chip_name(requested);
-            let detected_fam = match db.resolve_by_chip_id(attach.chip_id) {
-                ch32rv_target::Resolution::Sku(s) => s.family.clone(),
-                ch32rv_target::Resolution::Family(f, _) => f,
-                ch32rv_target::Resolution::Unknown => {
-                    family_name(attach.family_byte).unwrap_or("").to_owned()
-                }
-            };
-            // en: A name the DB does not know cannot be checked against anything, so accepting it
-            // would silently program whatever happens to be on the pins - exactly what `--chip`
-            // exists to prevent, and what its "fail-closed on ambiguity" contract promises. The
-            // gap series (V205/V407/V467/X305/X315/M030/M103) land here, which is the point: a
-            // downstream IDE that offers them must hear "not in the DB", not flash a different
-            // part. Auto-detection still works with `--chip` omitted.
-            // ja: DB が知らない名前は何とも突き合わせられないので、受け入れると「刺さっている別の
-            // チップに黙って書く」ことになる。`--chip` の存在意義と help の fail-closed 宣言に反する。
-            // 未発売の gap series がここに落ちるのが狙いどおりで、`--chip` を省けば自動検出で動く。
-            if req_fams.is_empty() {
-                let _ = link.detach_chip();
-                return Err(SessionError::ChipNotInDb(format!(
-                    "--chip {requested} is not in the target DB (detected {} from chip_id 0x{:08x})",
-                    if detected_fam.is_empty() {
-                        "an unknown part"
-                    } else {
-                        &detected_fam
-                    },
-                    attach.chip_id
-                )));
-            }
-            // Reject a clear conflict: none of the requested name's families match the detected one.
-            if !req_fams.is_empty()
-                && !detected_fam.is_empty()
-                && !req_fams
-                    .iter()
-                    .any(|f| f.eq_ignore_ascii_case(&detected_fam))
-            {
-                let _ = link.detach_chip();
-                return Err(SessionError::ChipMismatch(format!(
-                    "--chip {requested} (family {}) conflicts with the detected {detected_fam} (chip_id 0x{:08x})",
-                    req_fams.join("/"),
-                    attach.chip_id
-                )));
-            }
+        if let Some(requested) = chip
+            && let Err(e) = check_chip(&db, requested, &attach)
+        {
+            let _ = link.detach_chip();
+            return Err(e);
         }
 
         // en: Read ChipInfo, recovering once from the known LinkE corrupted-readback state.
@@ -208,6 +183,59 @@ impl Drop for Session {
         // Always release the core, on every path.
         let _ = self.link.detach_chip();
     }
+}
+
+/// en: Check an explicit `--chip` against what AttachChip found: fail-closed on a name the DB
+/// does not know and on a family conflict. The caller detaches on `Err`.
+/// ja: 明示の `--chip` を AttachChip の結果と突き合わせる。DB に無い名前と family の矛盾は
+/// fail-closed。`Err` のとき detach は呼び出し側。
+pub(crate) fn check_chip(
+    db: &ch32rv_target::Db,
+    requested: &str,
+    attach: &AttachInfo,
+) -> Result<(), SessionError> {
+    let req_fams = db.families_for_chip_name(requested);
+    let detected_fam = match db.resolve_by_chip_id(attach.chip_id) {
+        ch32rv_target::Resolution::Sku(s) => s.family.clone(),
+        ch32rv_target::Resolution::Family(f, _) => f,
+        ch32rv_target::Resolution::Unknown => {
+            family_name(attach.family_byte).unwrap_or("").to_owned()
+        }
+    };
+    // en: A name the DB does not know cannot be checked against anything, so accepting it
+    // would silently program whatever happens to be on the pins - exactly what `--chip`
+    // exists to prevent, and what its "fail-closed on ambiguity" contract promises. The
+    // gap series (V205/V407/V467/X305/X315/M030/M103) land here, which is the point: a
+    // downstream IDE that offers them must hear "not in the DB", not flash a different
+    // part. Auto-detection still works with `--chip` omitted.
+    // ja: DB が知らない名前は何とも突き合わせられないので、受け入れると「刺さっている別の
+    // チップに黙って書く」ことになる。`--chip` の存在意義と help の fail-closed 宣言に反する。
+    // 未発売の gap series がここに落ちるのが狙いどおりで、`--chip` を省けば自動検出で動く。
+    if req_fams.is_empty() {
+        return Err(SessionError::ChipNotInDb(format!(
+            "--chip {requested} is not in the target DB (detected {} from chip_id 0x{:08x})",
+            if detected_fam.is_empty() {
+                "an unknown part"
+            } else {
+                &detected_fam
+            },
+            attach.chip_id
+        )));
+    }
+    // Reject a clear conflict: none of the requested name's families match the detected one.
+    if !req_fams.is_empty()
+        && !detected_fam.is_empty()
+        && !req_fams
+            .iter()
+            .any(|f| f.eq_ignore_ascii_case(&detected_fam))
+    {
+        return Err(SessionError::ChipMismatch(format!(
+            "--chip {requested} (family {}) conflicts with the detected {detected_fam} (chip_id 0x{:08x})",
+            req_fams.join("/"),
+            attach.chip_id
+        )));
+    }
+    Ok(())
 }
 
 fn attach_once(link: &mut WchLink, speed: Speed) -> Result<AttachInfo, SessionError> {

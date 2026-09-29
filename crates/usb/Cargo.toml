@@ -23,5 +23,10 @@ serde_json = { workspace = true }
 [target.'cfg(windows)'.dependencies]
 ch32rv-usb-wch-win = { workspace = true }
 
+# en: serial port -> USB device on the platforms without sysfs (`port:` selector)
+# ja: sysfs の無い OS で serial port → USB device を引く(`port:` selector)
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+serialport = { workspace = true }
+
 [lints]
 workspace = true

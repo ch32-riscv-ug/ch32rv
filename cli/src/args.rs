@@ -26,7 +26,7 @@ pub struct Cli {
 
     // en: Global options (docs/cli.ja.md §3.1).
     // ja: グローバルオプション(docs/cli.ja.md §3.1)。
-    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | usb:<bus>-<ports> | index:<n>
+    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | usb:<bus>-<ports> | port:<address> | index:<n>
     #[arg(long, global = true, env = "CH32RV_PROBE")]
     pub probe: Option<String>,
     /// Target SKU or family (auto-detected when omitted; fail-closed on ambiguity)
@@ -709,5 +709,9 @@ pub enum ArduinoCmd {
     /// Pluggable Discovery protocol (stdio JSON)
     Discovery,
     /// Pluggable Monitor protocol (stdio JSON)
-    Monitor,
+    Monitor {
+        /// The `protocol` DESCRIBE reports (the platform's `pluggable_monitor.pattern.<protocol>`)
+        #[arg(long, default_value = "serial")]
+        protocol: String,
+    },
 }

@@ -6,6 +6,8 @@
 //! serial:<sn>           select by serial only
 //! name:<alias>          alias from the config file
 //! usb:<bus>-<ports>     USB topology (physical port on a fixed hub; for HIL lanes)
+//! port:<address>        an IDE port address: a probe's serial port (/dev/ttyACM0, COM3),
+//!                       wchlink://<serial> or hid://<topology>
 //! index:<n>             enumeration order (discouraged; rejected under --non-interactive)
 //! ```
 
@@ -27,6 +29,9 @@ pub enum Selector {
     Name(String),
     /// `usb:<bus>-<ports>` (e.g. `3-1.4.2`)
     Topology(String),
+    /// `port:<address>`: an IDE port address - the probe that owns this serial port
+    /// (`/dev/ttyACM0`, `COM3`), or discovery's `wchlink://<serial>` / `hid://<topology>`.
+    Port(String),
     /// `index:<n>` (discouraged; rejected under `--non-interactive`)
     Index(usize),
 }
@@ -53,7 +58,7 @@ pub enum SelectorParseError {
     #[error("empty value after `{0}:`")]
     EmptyValue(&'static str),
     #[error(
-        "unrecognized selector `{0}` (expected VID:PID[:SERIAL], serial:<sn>, name:<alias>, usb:<bus>-<ports>, or index:<n>)"
+        "unrecognized selector `{0}` (expected VID:PID[:SERIAL], serial:<sn>, name:<alias>, usb:<bus>-<ports>, port:<path>, or index:<n>)"
     )]
     Unrecognized(String),
 }
@@ -73,6 +78,9 @@ impl FromStr for Selector {
         }
         if let Some(v) = s.strip_prefix("usb:") {
             return keyword_value(v, "usb").map(Selector::Topology);
+        }
+        if let Some(v) = s.strip_prefix("port:") {
+            return keyword_value(v, "port").map(Selector::Port);
         }
         if let Some(v) = s.strip_prefix("index:") {
             return v
@@ -131,9 +139,43 @@ impl Selector {
             }
             Selector::Serial(sn) => dev.serial() == Some(sn.as_str()),
             Selector::Topology(t) => dev.topology() == *t,
+            // en: The IDE's port addresses, so a recipe can pass `port:{upload.port.address}`
+            // whatever the user picked: `wchlink://<serial>` and `hid://<topology>` (discovery's
+            // own addresses) name the device directly; anything else is a serial port path.
+            // ja: IDE の port address。recipe が何を選ばれても `port:{upload.port.address}` を渡せる
+            // ように、discovery 自身の address(`wchlink://<serial>` / `hid://<topology>`)は device を
+            // 直接指し、それ以外は serial port の path。
+            Selector::Port(p) => {
+                if let Some(sn) = p.strip_prefix("wchlink://") {
+                    return dev.serial() == Some(sn);
+                }
+                if let Some(t) = p.strip_prefix("hid://") {
+                    return dev.topology() == t;
+                }
+                let want = normalize_port(p);
+                dev.serial_ports().iter().any(|q| normalize_port(q) == want)
+            }
             Selector::Index(i) => index == *i,
             Selector::Name(_) => false,
         }
+    }
+}
+
+/// en: A serial-port path in a comparable form: symlinks resolved on unix
+/// (`/dev/serial/by-id/...` names the same port as `/dev/ttyACM0`), `\\.\` stripped and case
+/// folded on Windows (`com3` is `COM3`).
+/// ja: 比較用の serial port の path。unix は symlink を解く(by-id の名前も同じ port)、Windows は
+/// `\\.\` を外して大文字小文字を畳む。
+pub fn normalize_port(path: &str) -> String {
+    #[cfg(windows)]
+    {
+        path.trim_start_matches(r"\\.\").to_ascii_uppercase()
+    }
+    #[cfg(not(windows))]
+    {
+        std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_owned())
     }
 }
 
@@ -248,6 +290,14 @@ mod tests {
             Selector::Topology("3-1.4.2".into())
         );
         assert_eq!("index:2".parse::<Selector>().unwrap(), Selector::Index(2));
+        assert_eq!(
+            "port:/dev/ttyACM0".parse::<Selector>().unwrap(),
+            Selector::Port("/dev/ttyACM0".into())
+        );
+        assert_eq!(
+            "port:COM3".parse::<Selector>().unwrap(),
+            Selector::Port("COM3".into())
+        );
     }
 
     #[test]

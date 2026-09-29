@@ -21,4 +21,6 @@ pub mod selector;
 
 pub use device::{UsbDeviceInfo, UsbError, UsbInterface, enumerate};
 pub use lock::{DeviceLock, LockError};
-pub use selector::{ResolveError, Selector, SelectorParseError, SerialFilter, resolve};
+pub use selector::{
+    ResolveError, Selector, SelectorParseError, SerialFilter, normalize_port, resolve,
+};

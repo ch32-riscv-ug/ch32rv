@@ -136,8 +136,12 @@ chip = "CH32V203C8T6"
   serial:<sn>           serial だけで指定
   name:<alias>          設定ファイルの別名
   usb:<bus>-<ports>     USB topology(固定 hub の物理 port。HIL lane 用)
+  port:<address>        IDE の port address。probe の serial port(/dev/ttyACM0、COM3。symlink 可)、
+                        wchlink://<serial>、hid://<bus>-<ports>
   index:<n>             列挙順(非推奨)。--non-interactive では拒否
 ```
+
+- **`port:`(2026-09-29、ArduinoCore-CH32 `docs/oep-workflow.ja.md` §3.2)**: recipe が利用者の選んだ IDE port を問わず `--probe port:{upload.port.address}` を渡せるようにするもの。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial、`hid://` は位置で device を直接指す(`boot hid flash` は `usb:` と `port:hid://` だけを受ける)。どの probe の port でもなければ exit 10。
 
 - serial を持たない device(ISP mode 等)は `VID:PID:` (空 serial)と topology で選ぶ。
 - 解決結果が 0 台なら exit 10、2 台以上なら exit 14 で候補一覧を出す。
@@ -454,15 +458,29 @@ ch32rv complete <bash|zsh|fish|powershell>          補完スクリプトを std
 ### 4.11 arduino
 
 ```text
-ch32rv arduino discovery       Pluggable Discovery protocol(stdio JSON)。probe を wchlink://<serial> の port として公開し、
-                               ISP device・CDC monitor port(uart/sdi の役割判定付き)も列挙する
-ch32rv arduino monitor         Pluggable Monitor protocol(stdio JSON)。DMI source(dmdata|rtt)を双方向に wrap する。
-                               uart/sdi は IDE の builtin serial-monitor が CDC を直接開くので wrap しない
+ch32rv arduino discovery       Pluggable Discovery protocol(stdio JSON)。WCH-Link を wchlink://<serial>、
+                               rv003usb / UIAPduino の HID bootloader を hid://<bus>-<ports> で出す
+ch32rv arduino monitor [--protocol <p>]
+                               Pluggable Monitor protocol(stdio JSON)。serial port・wchlink:// の port を
+                               受け、source(uart|sdi|dmdata|dmseq|rtt)を双方向に wrap する
 ```
 
 Arduino 専用の書き込みロジックは持たない。recipe は §5 の通常 command を呼ぶ。
 
-- **実装状況(2026-09-02)**: cmd_arduino.rs。`discovery` は HELLO/START/LIST/START_SYNC/STOP/QUIT に応答、probe を `wchlink://<serial>` port(protocol=`wchlink`、properties に serial/vid/pid/mode)として列挙。**USB descriptor だけから列挙**し AttachChip しないので、同一 probe への upload/monitor 実行中でも乱さない(A-2 lock 前提)。START_SYNC は現在 port を `add` で一度出す(USB hotplug 監視は後続、IDE の再 LIST に委ねる)。`monitor` は HELLO/DESCRIBE/CONFIGURE/OPEN/CLOSE/QUIT、**OPEN で IDE 指定の `<host:port>` へ TCP client 接続**し、別スレッドで source を双方向に pipe(`dmdata` / `rtt`。IDE の送信欄の入力は target の `read()` へ届く。uart/sdi は builtin serial-monitor が CDC を直接開くので wrap しない)。実機検証: discovery が接続5 probe を JSON port として LIST、monitor が全ハンドシェイク完了し L103 の SerialDMDATA を local TCP へ pipe。ISP device・CDC port の列挙は ISP/uart 実装と合わせて後続。
+- **discovery**: HELLO/START/LIST/START_SYNC/STOP/QUIT。**USB descriptor だけから列挙**し AttachChip しない(同一 probe への upload/monitor 中でも乱さない。LinkE の attach は target のクロックを組み替える)。**普通の serial port は開かない**(組み込みの serial discovery が出す)。START_SYNC は現在の port を `add` で一度出す(hotplug 監視は後続、IDE の再 LIST に委ねる)。
+  - `wchlink://<serial>`: protocol `wchlink`、properties に serial / vid / pid / mode。
+  - `hid://<topology>`(2026-09-29): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --probe port:hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology(boards.txt の `upload_port.N.vid/pid` で板名が出る)。
+- **monitor(2026-09-29 に組み直し、ArduinoCore-CH32 `docs/oep-workflow.ja.md` §6)**: platform.txt の `pluggable_monitor.pattern.<protocol>` に登録し、protocol を `--protocol` で渡す(既定 `serial`)。arduino-cli 1.3.1 は DESCRIBE の `protocol` を port の protocol と照合し、違うと OPEN の前に止まる(ArduinoCore-CH32 の実測)。
+  - **DESCRIBE**: キーは `port_description`、列挙の値は `value`(arduino-cli が読むキー。0.10.1 までの `port_descriptor` / `values` は arduino-cli に読まれなかった)。設定は `source` / `baudrate` / `dtr` / `rts` / `chip`。
+    - `source`: protocol `serial` は `uart`(既定)/ `sdi` / `dmdata` / `dmseq` / `rtt`、`wchlink` は `dmdata`(既定)/ `sdi` / `dmseq` / `rtt`(uart は Link の CDC を選んで使う)。
+    - `baudrate` / `dtr` / `rts`: `uart` 用。値と既定は組み込みの serial-monitor と同じ(9600、on、on)。他の source でも受けて無視する。開いたまま変えるとすぐ効く。
+    - `chip`: `--chip` と同じ意味(板の `monitor_port.serial.chip` を IDE が渡す入口)。値は `auto`(既定、= 指定なし)と DB の family / SKU(`--chip`・core の `build.ch32rv_chip` と同じ綴り)。attach する source(sdi / dmdata / dmseq / rtt)で fail-closed に照合し、合わなければ OPEN が error。`uart` は attach しないので照合しない。
+  - **OPEN の address**: `wchlink://<serial>`、または serial port の path(`port:` と同じ逆引きで WCH probe を引く)。probe の無い素の serial port は `uart` だけが使え、他の source は OPEN が error。解決・source の open・TCP 接続までを OPEN の中で済ませ、失敗は OPEN の error(arduino-cli は exit 1 で message を出す)。
+  - **source**: `uart` = serial port の素通し(双方向、serialport crate で排他 open)。`sdi` = LinkE の SDI 転送を有効にして CDC を読む(受信のみ。DTR を立てない素の open + TIOCEXCL + raw termios)。`dmdata` / `dmseq` / `rtt` = attach して DMI で(双方向)。開いたまま `source` を変えると同じ TCP のまま backend を替える。
+  - **終わり方**: **stdin の EOF で必ず終わる**(arduino-cli は CLOSE / QUIT を送らずに死ぬことがあり、tool は別のプロセスグループなので killpg も届かない)。開いた後に続けられなくなったとき(読み書きの失敗、切り替え先の source が開けない)は `\r\n[ch32rv monitor] stopped: <理由>\r\n` を data として送ってからプロセスごと終わる(arduino-cli は tool の stderr を見せず、落ちても exit 0 で終わるため)。
+  - **attach のクロックの注意**(2026-09-29): attach する source(uart 以外)を開いたとき(OPEN と、開いたままの切り替え)に、`[ch32rv monitor] attaching may have changed the target clock (UART baud rate, millis, timers); reset the board to run at its own clock` を data の行で流す。`monitor` の warning `attach-reclocks-target` と同じく、全 target に「可能性」として出す(IDE の利用者が読むのはモニタの窓だけのため)。reset して離す設定(on-close)は入れない(要望が出たら)。
+  - **lock**: probe のある port では probe 単位の lock を持つ(uart も。開いている間の flash は待つか exit 13)。
+  - 実機検証(2026-09-29、WCH-LinkE fw 2.22、arduino-cli の代わりに protocol を話す試験 script): V006(K8U6)の SerialEcho を `uart` 115200 で往復、V203 の HelloSDI を `sdi`(serial port 経由・`wchlink://` 経由とも)、L103 の HelloDMDATA を `dmdata` で往復(小文字が大文字で戻る)、開いたままの `dmdata` → `uart` の切り替え、素の serial port(CH343)で `sdi` へ切り替えて理由の行を送って終わる、`chip` の不一致で OPEN が error、stdin の EOF で 0.1 秒以内に exit 0、開いている間は 2 つ目の open が EBUSY。`hid://` は UIAPduino が無く未検証。
 
 ## 5. 呼び出し例
 
