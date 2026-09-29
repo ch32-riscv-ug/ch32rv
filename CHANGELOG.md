@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.0 - 2026-09-29
+
 - (EN) Fix: GDB with an RV32E ELF (CH32V002/V003/V004/V005/V006/V007) stopped at the first register read with "Remote 'g' packet reply is too long": the server always sent 33 registers. On an RV32E hart it now sends x0..x15 and pc and a target description that says so, with or without the ELF. Verified on a CH32V006 through its broker, with a dmseq monitor open.
 - (JA) 修正: RV32E の ELF(CH32V002/V003/V004/V005/V006/V007)を読んだ GDB が、最初のレジスタの読み出しで "Remote 'g' packet reply is too long" で止まった(server がいつも 33 本を返していた)。RV32E の hart では x0..x15 と pc を返し、target description もそう出すので、ELF の有無によらず通る。CH32V006 でブローカー経由、dmseq の monitor を開いたまま確認。
 
