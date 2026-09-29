@@ -807,11 +807,69 @@ pub(crate) fn lend(target: &BrokerTarget) -> Result<Lend, String> {
     Ok(Lend { probe, func })
 }
 
+impl Lend {
+    /// en: Hand the Link back and have the broker reset the target right after it has reopened
+    /// its consoles, so the monitor's polling is already running when the firmware starts (dmseq
+    /// drops what a target writes while no host answers). Returns whether the target was seen
+    /// running.
+    /// ja: Link を返し、ブローカーに console を開き直した直後に target を reset させる(firmware が
+    /// 起動する時点で monitor の poll が動いている。dmseq は host が答えない間の出力を捨てる)。
+    fn hand_back_with_reset(mut self) -> Option<bool> {
+        let r = self
+            .probe
+            .call(self.func, crate::broker_wch::OP_RECLAIM, vec![1])
+            .ok()?;
+        let running = ch32rv_oep::session::check(r)
+            .ok()
+            .and_then(|p| p.first().map(|&b| b != 0));
+        let _ = self.probe.end();
+        self.func = 0; // handed back: the drop sends nothing more
+        running
+    }
+}
+
 impl Drop for Lend {
     fn drop(&mut self) {
+        if self.func == 0 {
+            return;
+        }
         let _ = self
             .probe
             .call(self.func, crate::broker_wch::OP_RECLAIM, Vec::new());
         let _ = self.probe.end();
     }
+}
+
+thread_local! {
+    /// The Link this command has borrowed, if any (see [`LendScope`]).
+    static LENT: std::cell::RefCell<Option<Lend>> = const { std::cell::RefCell::new(None) };
+}
+
+/// en: Keeps a borrowed Link for the rest of a command; dropping it hands the Link back (unless
+/// [`hand_back_with_reset`] already did).
+/// ja: 借りた Link をコマンドの終わりまで持つ。drop で返す(`hand_back_with_reset` が返していなければ)。
+pub(crate) struct LendScope;
+
+impl LendScope {
+    pub(crate) fn new(l: Lend) -> Self {
+        LENT.with(|c| *c.borrow_mut() = Some(l));
+        LendScope
+    }
+}
+
+impl Drop for LendScope {
+    fn drop(&mut self) {
+        LENT.with(|c| drop(c.borrow_mut().take()));
+    }
+}
+
+/// Whether this command holds a Link borrowed from its broker.
+pub(crate) fn lend_active() -> bool {
+    LENT.with(|c| c.borrow().is_some())
+}
+
+/// Hand the borrowed Link back with a reset by the broker; `None` when none is borrowed or the
+/// broker did not answer.
+pub(crate) fn hand_back_with_reset() -> Option<bool> {
+    LENT.with(|c| c.borrow_mut().take())?.hand_back_with_reset()
 }

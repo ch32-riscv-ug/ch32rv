@@ -244,7 +244,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
     // WCH's stub stays - and handed back when this returns.
     let _lend = match crate::oep::addr(cli, CMD) {
         Ok(Some(crate::oep::OepAddr::Wch(t))) => match crate::broker::lend(&t) {
-            Ok(l) => Some(l),
+            Ok(l) => Some(crate::broker::LendScope::new(l)),
             Err(m) => return fail(cli, CMD, ErrorKind::DeviceBusy, m, None),
         },
         Ok(Some(a)) => return crate::oep::flash(cli, args, &bytes, &a),
@@ -745,6 +745,40 @@ fn finish_flash(
     monitor: Option<MonitorSource>,
 ) -> ExitCode {
     let mut running = None;
+    // en: A Link borrowed from its broker (a monitor is open) is handed back with the reset: the
+    // broker reopens its consoles first, so the firmware's first output is polled.
+    // ja: ブローカーから借りた Link は reset ごと返す(ブローカーが console を開き直してから reset
+    // するので、firmware の最初の出力を汲める)。
+    if reset == ResetPolicy::Run && crate::broker::lend_active() {
+        let family = session.family();
+        drop(session);
+        running = crate::broker::hand_back_with_reset();
+        if confirm.is_some() && running != Some(true) {
+            return finish_lent(
+                cli,
+                cmd,
+                &family,
+                total,
+                erase_scope,
+                skipped,
+                verified,
+                running,
+                warnings,
+            );
+        }
+        return finish_lent_ok(
+            cli,
+            cmd,
+            &family,
+            total,
+            erase_scope,
+            skipped,
+            verified,
+            running,
+            warnings,
+            monitor,
+        );
+    }
     match reset {
         ResetPolicy::Run => {
             if let Err(msg) = soft_reset_and_run(&mut session) {
@@ -757,7 +791,7 @@ fn finish_flash(
                     return finish(
                         cli,
                         cmd,
-                        &mut session,
+                        &session.family(),
                         total,
                         erase_scope,
                         skipped,
@@ -795,7 +829,7 @@ fn finish_flash(
     let exit = finish(
         cli,
         cmd,
-        &mut session,
+        &session.family(),
         total,
         erase_scope,
         skipped,
@@ -809,6 +843,74 @@ fn finish_flash(
     // its USB handle is released and the monitor backend can open the probe / its CDC port.
     if let Some(source) = monitor {
         drop(session);
+        let margs = crate::args::MonitorArgs {
+            cmd: None,
+            source,
+            port: None,
+            baud: 115_200,
+        };
+        return crate::cmd_monitor::monitor(cli, &margs);
+    }
+    exit
+}
+
+/// The flash's result after a reset the broker did, failing (exit 50) when it was not seen running.
+#[allow(clippy::too_many_arguments)]
+fn finish_lent(
+    cli: &Cli,
+    cmd: &str,
+    family: &str,
+    total: u64,
+    erase_scope: &str,
+    skipped: bool,
+    verified: Option<bool>,
+    running: Option<bool>,
+    warnings: Vec<Warning>,
+) -> ExitCode {
+    finish(
+        cli,
+        cmd,
+        family,
+        total,
+        erase_scope,
+        skipped,
+        verified,
+        running,
+        warnings,
+        Some((
+            ErrorKind::NotRunningAfterWrite,
+            "programmed and verified, but the target is not running after the broker's reset"
+                .to_owned(),
+        )),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_lent_ok(
+    cli: &Cli,
+    cmd: &str,
+    family: &str,
+    total: u64,
+    erase_scope: &str,
+    skipped: bool,
+    verified: Option<bool>,
+    running: Option<bool>,
+    warnings: Vec<Warning>,
+    monitor: Option<MonitorSource>,
+) -> ExitCode {
+    let exit = finish(
+        cli,
+        cmd,
+        family,
+        total,
+        erase_scope,
+        skipped,
+        verified,
+        running,
+        warnings,
+        None,
+    );
+    if let Some(source) = monitor {
         let margs = crate::args::MonitorArgs {
             cmd: None,
             source,
@@ -937,7 +1039,7 @@ fn flash_via_loader(
     }
 }
 
-fn soft_reset_and_run(session: &mut Session) -> Result<(), String> {
+pub(crate) fn soft_reset_and_run(session: &mut Session) -> Result<(), String> {
     session
         .link()
         .soft_reset()
@@ -983,7 +1085,7 @@ fn confirm_run(session: &mut Session, mode: ConfirmRunMode) -> bool {
 fn finish(
     cli: &Cli,
     cmd: &str,
-    session: &mut Session,
+    family: &str,
     total_bytes: u64,
     erase_scope: &str,
     skipped: bool,
@@ -1001,7 +1103,7 @@ fn finish(
         };
         env.result = Some(serde_json::json!({
             "bytes": total_bytes,
-            "family": session.family(),
+            "family": family,
             "skipped": skipped,
             "scope": erase_scope,
             "verified": verified,
@@ -1015,7 +1117,7 @@ fn finish(
                 // --preverify: the target already held the image, so nothing was erased/programmed.
                 println!("preverify: target already matches - skipped");
             } else {
-                println!("flashed {total_bytes} bytes to {}", session.family());
+                println!("flashed {total_bytes} bytes to {family}");
                 println!("erase:   {erase_scope}");
                 if let Some(v) = verified {
                     println!(
@@ -1198,7 +1300,7 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
             "len": len,
             "pages": pages,
             "page_size": page,
-            "family": session.family(),
+            "family": family,
         }));
         crate::print_envelope(&env)
     } else {

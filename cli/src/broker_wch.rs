@@ -153,7 +153,7 @@ impl WchUpstream {
     /// Serve one request from client `id`.
     pub(crate) fn handle(&mut self, id: u64, c: &Call) -> Reply {
         if c.func == FN_WCHLINK {
-            return self.lending(id, c.op);
+            return self.lending(id, c.op, &c.payload);
         }
         // While lent, only what needs no Link is served: the consoles' kept output, discovery.
         if self.lent.is_some() {
@@ -238,7 +238,7 @@ impl WchUpstream {
     /// and reopen the consoles, which keep their positions).
     /// ja: Link を client `id` に貸す(session を手放し、直接の flash のために lock と vendor の口を
     /// 空ける)か、取り返す(attach し直し、console を開き直す。位置はそのまま)。
-    fn lending(&mut self, id: u64, op: u8) -> Reply {
+    fn lending(&mut self, id: u64, op: u8, payload: &[u8]) -> Reply {
         match op {
             OP_LEND => {
                 if self.lent.is_some() {
@@ -252,11 +252,37 @@ impl WchUpstream {
                 if self.lent.map(|(who, _)| who) != Some(id) {
                     return rejected(reject_reasons::UNAVAILABLE);
                 }
-                if self.reclaim() {
-                    ok(Vec::new())
-                } else {
-                    failed(vec![status::LINE])
+                if !self.reclaim() {
+                    return failed(vec![status::LINE]);
                 }
+                // A reset asked with the reclaim runs now, with the consoles open again, so the
+                // next tick polls them while the firmware starts.
+                if payload.first() == Some(&1) {
+                    if self.session.is_none() {
+                        let mut warnings = Vec::new();
+                        match Session::attach(
+                            &self.entry,
+                            Speed::High,
+                            Duration::from_millis(1000),
+                            self.lock_timeout,
+                            None,
+                            None,
+                            &mut warnings,
+                        ) {
+                            Ok(s) => self.session = Some(s),
+                            Err(_) => return failed(vec![status::LINE]),
+                        }
+                    }
+                    let Some(s) = self.session.as_mut() else {
+                        return failed(vec![status::LINE]);
+                    };
+                    if crate::cmd_flash::soft_reset_and_run(s).is_err() {
+                        return failed(vec![status::FAULT]);
+                    }
+                    let running = s.dm().is_running().unwrap_or(false);
+                    return ok(vec![u8::from(running)]);
+                }
+                ok(Vec::new())
             }
             _ => rejected(reject_reasons::UNKNOWN_OPERATION),
         }
