@@ -33,7 +33,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 
 手順:
 
-1. **(新規 crate ごとに一度きり・ユーザー、CLI)** crates.ioでAPIトークンを発行 → `cargo login <token>` → **`scripts/first-publish.sh`**（依存順にpublish、既存crateは自動skip、最後に手順2の登録先を表示）。**現況: 既存9 crateは登録済み。0.9.0で公開対象へ昇格する`ch32rv-boot`だけ初回publishとTrusted Publisher登録が必要。** 現在のmainはまだ0.8.0で、`ch32rv-boot`のcapture/replay実装が未公開の`ch32rv-usb` APIを使うため、そのままでは0.8.0のpackage verifyが成立しない。スクリプトはbootに限り、capture依存を足す前の0.8.0互換commit (`fad0881`)を一時worktreeへ展開して名前を確保する。mainや作業treeは変更しない。
+1. **(新規 crate ごとに一度きり・ユーザー、CLI)** crates.ioでAPIトークンを発行 → `cargo login <token>` → **`scripts/first-publish.sh`**（依存順にpublish、既存crateは自動skip、最後に手順2の登録先を表示）。**現況(2026-09-29): 既存10 crate(`ch32rv-boot` 含む)は登録済み。0.10.1 の後に足した`ch32rv-oep`だけ初回publishとTrusted Publisher登録が必要。** mainの`ch32rv-oep`は未公開の`ch32rv-dmi` API(`TargetAccess`、`dmi_sequence`)を使うため、そのままでは公開済みの0.10.1に対するpackage verifyが成立しない。スクリプトは、依存が`thiserror`だけだった最初のcommit (`ac2b647`)を一時worktreeへ展開して名前を確保する(0.9.0 の`ch32rv-boot`を`fad0881`から確保したのと同じ形)。mainや作業treeは変更しない。
 
 2. **(初回一度きり・ユーザー、Web UI)** 各 crate の Settings → Trusted Publishing で GitHub を登録:
    owner=`ch32-riscv-ug` / repo=`ch32rv` / workflow=`release.yml`（environmentは任意）。既存9 crateは登録済みで、0.9.0前に`ch32rv-boot`を追加登録する。
@@ -129,13 +129,13 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 ### 7.1 初回リリース(0.2.0)= 実施済み(2026-09-02)
 初回は crates.io 制約(新規 crate の初回はトークン必須・TP は crate 存在後にしか登録できない)で特殊だった。8 crate をトークンで初回 publish → TP 登録 → Actions を `version=0.2.0` / `publish_crates=false` でバイナリ+Release、という順で完了。**記録として残す**。
 
-### 7.2 次リリース(Windows 対応込み)の実行順
-0.9.0では`ch32rv-boot`を公開対象へ昇格するため、この1 crateだけ初回bootstrapが要る。それ以外は通常フロー。
+### 7.2 次リリースの実行順
+0.11.0では`ch32rv-oep`が新しく入るため、この1 crateだけ初回bootstrapが要る(0.9.0 の`ch32rv-boot`と同じ手順)。それ以外は通常フロー。
 
 1. **未コミット分をコミット & push**(Windows crate / 自動化修正 / docs が `main` に載ること。ワークフローは `main` の release.yml を使う)。
-2. **新規 crate をbootstrap**: `cargo login <token>` → `scripts/first-publish.sh`（既存9 crateはskip、`ch32rv-boot`だけ0.8.0互換sourceでpublish）。
-3. **そのcrateのTrusted Publisher登録**（§1手順2、`ch32rv-boot`の1個）。
-4. **リリース起動**: Actions「Release」を **`level=minor` / `publish_crates=true`** で起動 → version bump → 10 crateをトークンレスpublish → 全OSバイナリ添付。
+2. **新規 crate をbootstrap**: `cargo login <token>` → `scripts/first-publish.sh`（既存10 crateはskip、`ch32rv-oep`だけ`ac2b647`のsourceでpublish）。
+3. **そのcrateのTrusted Publisher登録**（§1手順2、`ch32rv-oep`の1個）。
+4. **リリース起動**: Actions「Release」を **`level=minor` / `publish_crates=true`** で起動 → version bump → 11 crateをトークンレスpublish → 全OSバイナリ添付。
 5. これ以降は新規 crate を足さない限り **手順 4 だけ**(bootstrap 不要)。
 
 > メモ: 新規 crate を追加した回だけ手順 2・3 が要る(crates.io は新規 crate の初回 publish にトークンが要り、TP は後付けだから)。既存 crate の版上げは常にトークンレス。
