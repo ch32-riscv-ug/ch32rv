@@ -164,7 +164,18 @@ fn db_family(family_byte: u8) -> Option<&'static str> {
 /// mode = RM/EVT の編程手順、消去パターン = 消去済み読み出し値。未対応・`conflict`・page 消去なし・
 /// DMI で駆動できない手順はすべて None(fail-closed)。
 pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
-    let family = db_family(family_byte)?;
+    flash_controller_profile_for(db_family(family_byte)?)
+}
+
+/// en: [`flash_controller_profile`] by DB family name (a target identified by chip id, as on an OEP
+/// probe). Only the families [`db_family`] lists, for the same reason.
+/// ja: DB の family 名から引く版(OEP の probe のように chip id で target を知るとき)。対象は
+/// [`db_family`] の family だけ(同じ理由)。
+pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
+    let family = [0x01, 0x05, 0x06, 0x09, 0x0C, 0x0E, 0x4E]
+        .into_iter()
+        .filter_map(db_family)
+        .find(|f| *f == family)?;
     let geometry = ch32rv_target::flash_geometry(family)?;
     let method = ch32rv_target::flash_program_method(family)?;
     // The data repo flags rows whose RM and EVT driver disagree; do not guess on a flash writer.

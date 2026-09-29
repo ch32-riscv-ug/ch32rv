@@ -89,7 +89,6 @@ fn borrow_link(cli: &Cli) -> Option<broker::Lend> {
         Command::Dbg(_)
         | Command::Erase(_)
         | Command::Recover(_)
-        | Command::Gdb(_)
         | Command::Capabilities
         | Command::Write(_)
         | Command::Run(_) => true,

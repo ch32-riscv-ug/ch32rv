@@ -22,6 +22,13 @@ use crate::parse;
 
 pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
     const CMD: &str = "gdb";
+    // An OEP probe, or a WCH-Link whose broker runs: gdb is one of the broker's clients, so a
+    // monitor open on the same probe keeps streaming.
+    match crate::oep::addr(cli, CMD) {
+        Ok(Some(a)) => return crate::oep::gdb(cli, args, &a),
+        Ok(None) => {}
+        Err(c) => return c,
+    }
     let entry = match select_entry(cli, CMD) {
         Ok(e) => e,
         Err(c) => return c,
@@ -79,33 +86,10 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
         );
     }
 
-    // Listen for one GDB connection.
-    let listener = match TcpListener::bind(&args.listen) {
-        Ok(l) => l,
-        Err(e) => {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::Usage,
-                format!("bind {}: {e}", args.listen),
-                None,
-            );
-        }
+    let stream = match listen(cli, args) {
+        Ok(s) => s,
+        Err(c) => return c,
     };
-    let local = listener
-        .local_addr()
-        .map(|a| a.to_string())
-        .unwrap_or_else(|_| args.listen.clone());
-    eprintln!("gdb: listening on {local} (connect with: target remote {local})");
-    if args.no_flash {
-        eprintln!("gdb: --no-flash: vFlash (load) is not offered");
-    }
-
-    let (stream, peer) = match listener.accept() {
-        Ok(v) => v,
-        Err(e) => return fail(cli, CMD, ErrorKind::Usage, format!("accept: {e}"), None),
-    };
-    eprintln!("gdb: client connected from {peer}");
 
     // Flash software breakpoints need a verified controller profile (reset-after-attach already
     // handled above for families whose attach corrupts registers).
@@ -124,6 +108,50 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
             );
         }
     };
+    let code = run_session(cli, &mut target, stream);
+    let mut link = target.into_inner();
+    let _ = link.detach_chip();
+    code
+}
+
+/// en: Bind `--listen`, say where, and wait for the one GDB connection.
+/// ja: `--listen` で待ち受け、場所を出し、GDB の接続を 1 つ待つ。
+pub(crate) fn listen(cli: &Cli, args: &GdbArgs) -> Result<TcpStream, ExitCode> {
+    const CMD: &str = "gdb";
+    let listener = TcpListener::bind(&args.listen).map_err(|e| {
+        fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            format!("bind {}: {e}", args.listen),
+            None,
+        )
+    })?;
+    let local = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| args.listen.clone());
+    eprintln!("gdb: listening on {local} (connect with: target remote {local})");
+    if args.no_flash {
+        eprintln!("gdb: --no-flash: vFlash (load) is not offered");
+    }
+    let (stream, peer) = listener
+        .accept()
+        .map_err(|e| fail(cli, CMD, ErrorKind::Usage, format!("accept: {e}"), None))?;
+    eprintln!("gdb: client connected from {peer}");
+    Ok(stream)
+}
+
+/// en: Serve one GDB session on `stream` until the client leaves, then take out every flash
+/// breakpoint (so an interrupted session never leaves an `ebreak` in flash). The caller detaches.
+/// ja: `stream` で GDB の session を 1 つ、client が抜けるまで。最後に flash の breakpoint を
+/// すべて外す(途中で切れても flash に `ebreak` を残さない)。detach は呼び出し側。
+pub(crate) fn run_session<T: ch32rv_dmi::DtmAccess>(
+    cli: &Cli,
+    target: &mut Ch32Target<T>,
+    stream: TcpStream,
+) -> ExitCode {
+    const CMD: &str = "gdb";
     let hw = target.hw_trigger_count();
     let flash_bp = target.flash_breakpoints_supported();
     eprintln!(
@@ -140,14 +168,9 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
         }
     );
 
-    let conn = GdbConn(stream);
-    let gdb = GdbStub::new(conn);
-    let outcome = gdb.run_blocking::<Ch32EventLoop<WchLink>>(&mut target);
-    // Restore any flash pages we patched, so an interrupted session never leaves an `ebreak`
-    // baked into flash, then recover the link and detach cleanly (resumes the core).
+    let gdb = GdbStub::new(GdbConn(stream));
+    let outcome = gdb.run_blocking::<Ch32EventLoop<T>>(target);
     target.restore_flash_breakpoints();
-    let mut link = target.into_inner();
-    let _ = link.detach_chip();
 
     match outcome {
         Ok(reason) => {

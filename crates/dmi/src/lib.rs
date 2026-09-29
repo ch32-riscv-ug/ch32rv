@@ -97,6 +97,25 @@ pub trait DtmAccess {
     }
 }
 
+/// A borrowed transport is a transport (so an owner such as the gdb target can hold `&mut T`).
+impl<T: DtmAccess + ?Sized> DtmAccess for &mut T {
+    fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
+        (**self).dmi_read(addr)
+    }
+
+    fn dmi_write(&mut self, addr: u8, value: u32) -> Result<(), DmiError> {
+        (**self).dmi_write(addr, value)
+    }
+
+    fn dmi_nop(&mut self) -> Result<(), DmiError> {
+        (**self).dmi_nop()
+    }
+
+    fn dmi_sequence(&mut self, ops: &[DmiOp]) -> Result<Vec<u32>, DmiError> {
+        (**self).dmi_sequence(ops)
+    }
+}
+
 /// One step of a [`DtmAccess::dmi_sequence`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmiOp {
