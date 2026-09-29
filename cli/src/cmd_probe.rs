@@ -400,7 +400,7 @@ pub(crate) fn print_probe_human(report: &ProbeReport) {
 /// under --non-interactive (docs/cli.ja.md §3.3-§3.4).
 /// ja: --probe をパースする。`name:` は設定ファイルで解決し、`index:` は
 /// --non-interactive 時に拒否する。
-fn parse_selector(cli: &Cli, cmd: &str) -> Result<Option<Selector>, ExitCode> {
+pub(crate) fn parse_selector(cli: &Cli, cmd: &str) -> Result<Option<Selector>, ExitCode> {
     let Some(raw) = cli.probe.as_deref() else {
         return Ok(None);
     };

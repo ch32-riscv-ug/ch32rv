@@ -137,9 +137,9 @@ impl UsbDeviceInfo {
     }
 
     /// en: Serial-port device nodes (CDC etc.) belonging to this USB device, e.g.
-    /// "/dev/ttyACM5". Linux only for now (sysfs walk); other platforms return empty.
-    /// ja: この USB device に属する serial port ノード(CDC 等)。当面 Linux のみ
-    /// (sysfs 走査)。他 OS は空を返す(TODO M2: Windows COM / macOS cu.*)。
+    /// "/dev/ttyACM5". Linux walks sysfs; elsewhere the serialport list is matched by VID/PID/serial.
+    /// ja: この USB device に属する serial port ノード(CDC 等)。Linux は sysfs 走査、
+    /// 他 OS は VID/PID/serial で serialport の一覧と突き合わせる。
     pub fn serial_ports(&self) -> Vec<String> {
         let nusb = match &self.inner {
             Inner::Nusb(d) => d,
@@ -147,29 +147,76 @@ impl UsbDeviceInfo {
         };
         #[cfg(target_os = "linux")]
         {
-            let dev_path = match nusb.sysfs_path().canonicalize() {
-                Ok(p) => p,
-                Err(_) => return Vec::new(),
-            };
-            let Ok(entries) = std::fs::read_dir("/sys/class/tty") else {
+            let _ = nusb;
+            self.class_nodes("tty")
+        }
+        // en: Elsewhere the OS names the port (COM3, /dev/cu.usbmodem…) and reports the USB
+        // device behind it by VID/PID/serial only, not by position. Two serial-less devices with
+        // the same VID:PID then both claim both ports, which `port:` resolves as ambiguous.
+        // ja: 他 OS は port 名と、その裏の USB の VID/PID/serial しか教えない(位置は無い)。serial の
+        // 無い同 VID:PID が 2 台あると両方が両方の port を持ち、`port:` は曖昧として断る。
+        #[cfg(not(target_os = "linux"))]
+        {
+            let (vid, pid, serial) = (nusb.vendor_id(), nusb.product_id(), nusb.serial_number());
+            let Ok(all) = serialport::available_ports() else {
                 return Vec::new();
             };
-            let mut ports: Vec<String> = entries
-                .flatten()
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    let real = e.path().canonicalize().ok()?;
-                    real.starts_with(&dev_path).then(|| format!("/dev/{name}"))
+            let mut ports: Vec<String> = all
+                .into_iter()
+                .filter_map(|p| match p.port_type {
+                    serialport::SerialPortType::UsbPort(u)
+                        if u.vid == vid && u.pid == pid && u.serial_number.as_deref() == serial =>
+                    {
+                        Some(p.port_name)
+                    }
+                    _ => None,
                 })
                 .collect();
             ports.sort();
             ports
         }
+    }
+
+    /// en: hidraw nodes belonging to this USB device (`/dev/hidraw3`), to pick the HID device
+    /// at a given position. Linux only; elsewhere empty (HID paths there carry no position).
+    /// ja: この USB device に属する hidraw ノード。位置で HID device を選ぶため。Linux のみ。
+    pub fn hidraw_nodes(&self) -> Vec<String> {
+        match &self.inner {
+            Inner::Nusb(_) => {}
+            Inner::Replay(_) => return Vec::new(),
+        }
+        #[cfg(target_os = "linux")]
+        {
+            self.class_nodes("hidraw")
+        }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = nusb;
             Vec::new()
         }
+    }
+
+    /// Linux: the `/dev` nodes of `/sys/class/<class>` whose device lives under this USB device.
+    #[cfg(target_os = "linux")]
+    fn class_nodes(&self, class: &str) -> Vec<String> {
+        let Inner::Nusb(nusb) = &self.inner else {
+            return Vec::new();
+        };
+        let Ok(dev_path) = nusb.sysfs_path().canonicalize() else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(format!("/sys/class/{class}")) else {
+            return Vec::new();
+        };
+        let mut nodes: Vec<String> = entries
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let real = e.path().canonicalize().ok()?;
+                real.starts_with(&dev_path).then(|| format!("/dev/{name}"))
+            })
+            .collect();
+        nodes.sort();
+        nodes
     }
 
     /// en: Open the device and claim one interface with one bulk OUT/IN endpoint pair.

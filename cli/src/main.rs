@@ -121,7 +121,7 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Capabilities => cmd_capabilities::capabilities(cli),
         Command::Write(args) => cmd_write::write(cli, args),
         Command::Arduino(ArduinoCmd::Discovery) => cmd_arduino::discovery(cli),
-        Command::Arduino(ArduinoCmd::Monitor) => cmd_arduino::monitor(cli),
+        Command::Arduino(ArduinoCmd::Monitor { protocol }) => cmd_arduino::monitor(cli, protocol),
         Command::Run(args) => cmd_run::run(cli, args),
         Command::Boot(BootCmd::Hid(HidBootCmd::Flash { file, usb_id })) => {
             cmd_boot::hid_flash(cli, file, usb_id.as_deref())
@@ -309,7 +309,7 @@ fn canonical_name(cmd: &Command) -> &'static str {
         Command::Complete(_) => "complete",
         Command::Arduino(a) => match a {
             ArduinoCmd::Discovery => "arduino.discovery",
-            ArduinoCmd::Monitor => "arduino.monitor",
+            ArduinoCmd::Monitor { .. } => "arduino.monitor",
         },
     }
 }

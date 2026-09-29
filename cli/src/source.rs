@@ -174,6 +174,19 @@ pub(crate) enum OpenError {
     Dmi(DmiError),
 }
 
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::NotDmi => f.write_str("not a DMI source"),
+            OpenError::NoControlBlock { scan_len } => write!(
+                f,
+                "no SEGGER RTT control block in the first {scan_len} bytes of RAM (flash an RTT sketch first)"
+            ),
+            OpenError::Dmi(e) => write!(f, "{e}"),
+        }
+    }
+}
+
 impl From<DmiError> for OpenError {
     fn from(e: DmiError) -> Self {
         OpenError::Dmi(e)

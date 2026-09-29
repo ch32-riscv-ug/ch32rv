@@ -148,7 +148,7 @@ fn stream_port(
         // one line (measured); this blocking file read keeps it streaming.
         // ja: cat と同じ素のブロッキング open。O_NONBLOCK や serialport(DTR assert)だと LinkE の
         // SDI forward が 1 行で止まる(実測)。ブロッキング読みなら流れ続ける。
-        let mut file = match std::fs::File::open(port_path) {
+        let mut file = match open_raw(port_path) {
             Ok(f) => f,
             Err(e) => {
                 return fail(
@@ -330,6 +330,67 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Ok(v) => v,
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
+    match enable_sdi(&entry, speed, cli.chip.as_deref()) {
+        Ok(w) => warnings.extend(w),
+        Err(e) => return fail(cli, CMD, e.kind, e.msg, e.hint),
+    }
+    let port = match resolve_port(cli, CMD, &entry, &args.port) {
+        Ok(p) => p,
+        Err(c) => return c,
+    };
+    stream_port(cli, CMD, &port, args.baud, "sdi", true, warnings)
+}
+
+/// en: Open a tty as a plain blocking file (the SDI path, see [`stream_port`]) and make it
+/// exclusive (TIOCEXCL) like every other serial open, so no second process reads half the bytes.
+/// ja: tty を素のブロッキング file で開き(SDI の経路)、他の serial open と同じく排他(TIOCEXCL)に
+/// する(2 つ目のプロセスがバイトを半分持っていかないように)。
+#[cfg(unix)]
+pub(crate) fn open_raw(path: &str) -> std::io::Result<std::fs::File> {
+    let file = std::fs::File::open(path)?;
+    rustix::termios::ioctl_tiocexcl(&file)?;
+    // en: Raw line discipline: the tty keeps whatever the last user set, and in the cooked
+    // default ICRNL turns the target's `\r\n` into `\n\n`. Only the termios flags change (no
+    // modem lines, same speed).
+    // ja: 行規律を raw に。tty は前の利用者の設定のままで、既定の cooked では ICRNL が `\r\n` を
+    // `\n\n` にする。termios のフラグだけ替える(modem 線と速さは触らない)。
+    let mut t = rustix::termios::tcgetattr(&file)?;
+    t.make_raw();
+    rustix::termios::tcsetattr(&file, rustix::termios::OptionalActions::Now, &t)?;
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn open_raw(path: &str) -> std::io::Result<std::fs::File> {
+    // Windows opens a COM port exclusively by itself.
+    std::fs::File::open(path)
+}
+
+/// Why [`enable_sdi`] failed, in the terms `fail` reports.
+pub(crate) struct SdiError {
+    pub(crate) kind: ErrorKind,
+    pub(crate) msg: String,
+    pub(crate) hint: Option<&'static str>,
+}
+
+impl SdiError {
+    fn new(kind: ErrorKind, msg: String) -> Self {
+        Self {
+            kind,
+            msg,
+            hint: None,
+        }
+    }
+}
+
+/// en: Turn on the LinkE's SDI print forwarding to its CDC (shared by `monitor --source sdi` and
+/// `arduino monitor`). Returns the warnings to report.
+/// ja: LinkE の SDI print の CDC への転送を有効にする(`monitor --source sdi` と `arduino monitor` が共用)。
+pub(crate) fn enable_sdi(
+    entry: &Entry,
+    speed: ch32rv_wchlink::Speed,
+    chip: Option<&str>,
+) -> Result<Vec<ch32rv_contract::Warning>, SdiError> {
     // en: Minimal wlink-equivalent on a raw link (no ChipInfo read, no halt, no detach):
     // SetSpeed(placeholder) -> AttachChip (learn the family, does not halt) -> enable
     // forwarding. Then KEEP the link open while reading the CDC: dropping the nusb interface
@@ -337,25 +398,23 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
     // the whole session (the CDC is a separate interface on the same device).
     // ja: raw link で最小の wlink 相当。enable 後は link を保持したまま CDC を読む(nusb interface を
     // 途中で drop すると probe がリセットされ forward が止まるため)。
-    {
+    let warnings = {
         let mut link = match ch32rv_wchlink::WchLink::open(&entry.dev) {
             Ok(l) => l,
-            Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+            Err(e) => return Err(SdiError::new(ErrorKind::DeviceOpenFailed, e.to_string())),
         };
         match link.probe_info() {
             Ok(info) if matches!(info.variant, ch32rv_wchlink::Variant::LinkE) => {}
             Ok(_) => {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::CapabilityUnsupported,
-                    "SDI print forwarding is only available on a WCH-LinkE",
-                    Some(
+                return Err(SdiError {
+                    kind: ErrorKind::CapabilityUnsupported,
+                    msg: "SDI print forwarding is only available on a WCH-LinkE".to_owned(),
+                    hint: Some(
                         "use --source dmdata (host-side DMI) which works on any probe including the CH549 Link",
                     ),
-                );
+                });
             }
-            Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
+            Err(e) => return Err(SdiError::new(ErrorKind::DeviceOpenFailed, e.to_string())),
         }
         // en: Exactly wlink's `sdi-print enable` sequence (verified by usbmon): SetSpeed(0x01)
         // -> AttachChip (learn the family; does not halt) -> SetSpeed(real family, so the LinkE
@@ -365,29 +424,31 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         let _ = link.set_speed_default(speed);
         let attach = match link.attach_chip() {
             Ok(a) => a,
-            Err(e) => return fail(cli, CMD, ErrorKind::AttachFailed, e.to_string(), None),
+            Err(e) => return Err(SdiError::new(ErrorKind::AttachFailed, e.to_string())),
         };
+        if let Some(requested) = chip
+            && let Err(e) =
+                crate::session::check_chip(&ch32rv_target::Db::builtin(), requested, &attach)
+        {
+            let _ = link.detach_chip();
+            return Err(SdiError::new(ErrorKind::TargetAmbiguous, e.to_string()));
+        }
         let _ = link.set_speed(attach.family_byte, speed);
-        warnings.push(attach_reclocks_warning(
+        let warnings = vec![attach_reclocks_warning(
             "press the board's reset, or use `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`",
-        ));
+        )];
         if let Err(e) = link.set_sdi_print_enabled(true) {
-            return fail(
-                cli,
-                CMD,
+            return Err(SdiError::new(
                 ErrorKind::TransferFailed,
                 format!("enable SDI failed: {e}"),
-                None,
-            );
+            ));
         }
         // link drops here, releasing the vendor interface (wlink exits at this point too).
-    }
-    std::thread::sleep(Duration::from_millis(200));
-    let port = match resolve_port(cli, CMD, &entry, &args.port) {
-        Ok(p) => p,
-        Err(c) => return c,
+        warnings
     };
-    stream_port(cli, CMD, &port, args.baud, "sdi", true, warnings)
+    // Give the LinkE a moment to start forwarding before the CDC is opened.
+    std::thread::sleep(Duration::from_millis(200));
+    Ok(warnings)
 }
 
 // ---- DMI backend (dmdata / rtt) ----

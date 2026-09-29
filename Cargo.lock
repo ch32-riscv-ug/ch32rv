@@ -119,6 +119,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "gdbstub",
+ "rustix",
  "serde_json",
  "serialport",
  "toml",
@@ -214,6 +215,7 @@ dependencies = [
  "fs4",
  "nusb",
  "serde_json",
+ "serialport",
  "thiserror",
 ]
 

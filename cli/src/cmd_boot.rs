@@ -52,7 +52,28 @@ pub fn hid_flash(cli: &Cli, file: &std::path::Path, usb_id: Option<&str>) -> Exi
         return ExitCode::SUCCESS;
     }
 
-    let boot = match HidBoot::open(id) {
+    // en: `--probe usb:<topology>`, or the IDE's `port:hid://<topology>`, picks one bootloader
+    // by position; without it the first one found is used.
+    // ja: `--probe usb:<topology>` か IDE の `port:hid://<topology>` で位置の bootloader を選ぶ。
+    // 無ければ最初の 1 台。
+    let topology = match crate::cmd_probe::parse_selector(cli, CMD) {
+        Ok(None) => None,
+        Ok(Some(ch32rv_usb::Selector::Topology(t))) => Some(t),
+        Ok(Some(ch32rv_usb::Selector::Port(p))) if p.starts_with("hid://") => {
+            p.strip_prefix("hid://").map(str::to_owned)
+        }
+        Ok(Some(_)) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                "a HID bootloader is selected by position only",
+                Some("use --probe usb:<bus>-<ports> or port:hid://<bus>-<ports>"),
+            );
+        }
+        Err(c) => return c,
+    };
+    let boot = match HidBoot::open_at(id, topology.as_deref()) {
         Ok(boot) => boot,
         Err(e) => return hid_error(cli, CMD, e),
     };
@@ -97,7 +118,8 @@ fn parse_usb_id(value: &str) -> Result<(u16, u16), String> {
 
 fn hid_error(cli: &Cli, cmd: &str, error: HidBootError) -> ExitCode {
     let kind = match error {
-        HidBootError::NotFound(..) => ErrorKind::DeviceNotFound,
+        HidBootError::NotFound(..) | HidBootError::NotAt(_) => ErrorKind::DeviceNotFound,
+        HidBootError::Ambiguous(_) => ErrorKind::DeviceAmbiguous,
         HidBootError::Init(_) | HidBootError::Transfer(_) => ErrorKind::DeviceOpenFailed,
         HidBootError::ReadProtected(_) => ErrorKind::TargetProtected,
         HidBootError::Verify(_) => ErrorKind::VerifyMismatch,
