@@ -27,6 +27,9 @@ use gdbstub::target::ext::base::singlethread::{
 use gdbstub::target::ext::breakpoints::{
     Breakpoints, BreakpointsOps, HwBreakpoint, HwBreakpointOps, SwBreakpoint, SwBreakpointOps,
 };
+use gdbstub::target::ext::target_description_xml_override::{
+    TargetDescriptionXmlOverride, TargetDescriptionXmlOverrideOps,
+};
 use gdbstub::target::{Target, TargetError, TargetResult};
 
 use crate::arch::{Rv32, Rv32CoreRegs};
@@ -385,6 +388,29 @@ impl<T: DtmAccess> Target for Ch32Target<T> {
     fn support_breakpoints(&mut self) -> Option<BreakpointsOps<'_, Self>> {
         Some(self)
     }
+
+    fn support_target_description_xml_override(
+        &mut self,
+    ) -> Option<TargetDescriptionXmlOverrideOps<'_, Self>> {
+        // Only an RV32E hart differs from the Arch's default (x0..x31 and pc).
+        (self.gpr_count == 16).then_some(self)
+    }
+}
+
+impl<T: DtmAccess> TargetDescriptionXmlOverride for Ch32Target<T> {
+    fn target_description_xml(
+        &self,
+        _annex: &[u8],
+        offset: u64,
+        length: usize,
+        buf: &mut [u8],
+    ) -> TargetResult<usize, Self> {
+        let xml = crate::arch::RV32E_TARGET_XML.as_bytes();
+        let start = usize::try_from(offset).unwrap_or(usize::MAX).min(xml.len());
+        let n = (xml.len() - start).min(length).min(buf.len());
+        buf[..n].copy_from_slice(&xml[start..start + n]);
+        Ok(n)
+    }
 }
 
 impl<T: DtmAccess> SingleThreadBase for Ch32Target<T> {
@@ -392,6 +418,7 @@ impl<T: DtmAccess> SingleThreadBase for Ch32Target<T> {
         let gpr_count = self.gpr_count;
         let mut dm = self.dm();
         regs.x = [0; 32];
+        regs.rv32e = gpr_count == 16;
         // On RV32E only x0..x15 exist; leave x16..x31 as zero (touching them raises cmderr).
         for i in 1..gpr_count {
             regs.x[i as usize] = dm.read_reg(RegName::Gpr(i)).map_err(TargetError::Fatal)?;

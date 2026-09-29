@@ -13,7 +13,39 @@ use gdbstub::arch::{Arch, RegId, Registers};
 pub struct Rv32CoreRegs {
     pub x: [u32; 32],
     pub pc: u32,
+    /// en: An RV32E hart (x0..x15 only): GDB then works with 16 GPRs and pc (68 bytes, as it does
+    /// for an RV32E ELF and as [`RV32E_TARGET_XML`] says), not 33 registers.
+    /// ja: RV32E の hart(x0..x15 のみ)。GDB は GPR 16 本と pc(68 byte)で扱う。
+    pub rv32e: bool,
 }
+
+/// en: The target description of an RV32E hart: x0..x15 and pc (remote number 32, as GDB numbers
+/// the RISC-V pc), so GDB expects 17 registers whether or not it has the ELF.
+/// ja: RV32E の hart の target description。x0..x15 と pc(GDB の RISC-V の pc の番号 32)。ELF の
+/// 有無にかかわらず GDB は 17 本と見る。
+pub const RV32E_TARGET_XML: &str = concat!(
+    r#"<?xml version="1.0"?><!DOCTYPE target SYSTEM "gdb-target.dtd">"#,
+    r#"<target version="1.0"><architecture>riscv:rv32</architecture>"#,
+    r#"<feature name="org.gnu.gdb.riscv.cpu">"#,
+    r#"<reg name="zero" bitsize="32" type="int" regnum="0"/>"#,
+    r#"<reg name="ra" bitsize="32" type="code_ptr"/>"#,
+    r#"<reg name="sp" bitsize="32" type="data_ptr"/>"#,
+    r#"<reg name="gp" bitsize="32" type="data_ptr"/>"#,
+    r#"<reg name="tp" bitsize="32" type="data_ptr"/>"#,
+    r#"<reg name="t0" bitsize="32" type="int"/>"#,
+    r#"<reg name="t1" bitsize="32" type="int"/>"#,
+    r#"<reg name="t2" bitsize="32" type="int"/>"#,
+    r#"<reg name="fp" bitsize="32" type="data_ptr"/>"#,
+    r#"<reg name="s1" bitsize="32" type="int"/>"#,
+    r#"<reg name="a0" bitsize="32" type="int"/>"#,
+    r#"<reg name="a1" bitsize="32" type="int"/>"#,
+    r#"<reg name="a2" bitsize="32" type="int"/>"#,
+    r#"<reg name="a3" bitsize="32" type="int"/>"#,
+    r#"<reg name="a4" bitsize="32" type="int"/>"#,
+    r#"<reg name="a5" bitsize="32" type="int"/>"#,
+    r#"<reg name="pc" bitsize="32" type="code_ptr" regnum="32"/>"#,
+    r#"</feature></target>"#,
+);
 
 impl Registers for Rv32CoreRegs {
     type ProgramCounter = u32;
@@ -23,7 +55,8 @@ impl Registers for Rv32CoreRegs {
     }
 
     fn gdb_serialize(&self, mut write_byte: impl FnMut(Option<u8>)) {
-        for r in self.x.iter().chain(core::iter::once(&self.pc)) {
+        let gprs = if self.rv32e { 16 } else { 32 };
+        for r in self.x[..gprs].iter().chain(core::iter::once(&self.pc)) {
             for b in r.to_le_bytes() {
                 write_byte(Some(b));
             }
@@ -31,16 +64,18 @@ impl Registers for Rv32CoreRegs {
     }
 
     fn gdb_deserialize(&mut self, bytes: &[u8]) -> Result<(), ()> {
-        // 33 registers x 4 bytes = 132 bytes expected.
-        if bytes.len() < 33 * 4 {
+        // 33 registers x 4 bytes = 132 bytes, or on an RV32E hart 17 x 4 = 68.
+        let gprs = if bytes.len() >= 33 * 4 {
+            32
+        } else if bytes.len() >= 17 * 4 {
+            16
+        } else {
             return Err(());
-        }
-        for (i, chunk) in bytes.chunks(4).enumerate().take(33) {
-            if chunk.len() < 4 {
-                break;
-            }
+        };
+        self.rv32e = gprs == 16;
+        for (i, chunk) in bytes.as_chunks::<4>().0.iter().enumerate().take(gprs + 1) {
             let v = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-            if i < 32 {
+            if i < gprs {
                 self.x[i] = v;
             } else {
                 self.pc = v;
@@ -123,7 +158,25 @@ mod tests {
     #[test]
     fn deserialize_rejects_short_input() {
         let mut regs = Rv32CoreRegs::default();
-        assert!(regs.gdb_deserialize(&[0u8; 131]).is_err());
+        assert!(regs.gdb_deserialize(&[0u8; 67]).is_err());
+    }
+
+    #[test]
+    fn rv32e_has_16_gprs_and_pc() {
+        let mut regs = Rv32CoreRegs {
+            rv32e: true,
+            pc: 0x3cc,
+            ..Default::default()
+        };
+        regs.x[15] = 0xf;
+        let mut bytes = Vec::new();
+        regs.gdb_serialize(|b| bytes.extend(b));
+        assert_eq!(bytes.len(), 17 * 4);
+        assert_eq!(&bytes[60..64], &0xfu32.to_le_bytes()); // x15
+        assert_eq!(&bytes[64..68], &0x3ccu32.to_le_bytes()); // pc
+        let mut back = Rv32CoreRegs::default();
+        back.gdb_deserialize(&bytes).unwrap();
+        assert_eq!(back, regs);
     }
 
     #[test]
