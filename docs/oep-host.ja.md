@@ -45,9 +45,8 @@
 | HID | spec の report の詰め方(report ID + count(u16) + 長さ見出しの stream + 詰め物)。WF の「length(u16)+message」は、この stream の中身のことと読む | 長さ見出しと同じ |
 
 - decoder は、0xFF block で終わる data の後に空 block を付ける形(参照実装の癖)と、付けない形の両方を受ける。空のフレーム(0x00 の連続)は無視する。
-- **今の spec(core §3.1)は CDC / USJ を長さ見出しとしている**。WF の決定と食い違うので §10 の 1 に入れる。
-  - 移行の間、長さ見出しの firmware と話す手段を ch32rv が持つかは、決めてもらう(§11 の問 1)。
-  - 持つ場合は `--oep-framing cobs|length` の明示だけとし、自動判別はしない(serial port に OEP でないバイトが混ざる前提なので、判別が危うい)。
+- serial port の COBS の受け方は core §3.1 のとおり。開いた直後から最初の 0x00 までもフレームの候補にし、role か corr の合わないフレームは雑音として捨てる。
+- 長さ見出しの CDC / USJ の firmware と話す手段は持たない(移行の間だけの形は作らない。spec も CDC / USJ の長さ見出しを残さない)。
 
 ### 3.2 serial の開き方
 
@@ -241,30 +240,27 @@ binary の扱い:
 - ブローカー越しの flash の最中に monitor が行を落とさないこと。reset の mark から続くこと。
 - lock の奪い方: serial 1 本の probe で、前のプロセスを kill した直後に force で入れること。
 
-## 10. spec に無いので仮置きした所(oep-spec への依頼の一覧)
+## 10. spec との対応
 
-| # | 仮置きした形 | spec の今 |
-|---|---|---|
-| 1 | serial に見える transport(CDC / USJ / UART bridge)は、すべて COBS + CRC-16、0x00 区切り | core §3.1 は CDC / USJ を長さ見出し、COBS は bridge の VID:PID で選ぶ |
-| 2 | probe → PC は `0x00 <COBS> 0x00`(前にも区切り)。host は空のフレームを無視する | 区切りの位置は書かれていない(参照 encoder は後ろだけ) |
-| 3 | serial port を OEP と console の生のバイトで共用する(フレームの外は console へ、生の転送を止める port、終わったら最後の reset の位置から再開) | 無い。bind の data 口は OEP の口と別 |
-| 4 | fn 0 describe に経路の一覧の tag(0x49 と仮定、値は種類の u8 の並び: 1 UART bridge / 2 CDC / 3 USJ / 4 vendor bulk / 5 HID / 6 TCP) | 無い |
-| 5 | スロット(wire、pins、name、attach の方針、console の mechanism、target_id)、同時に持てる接続の数、接続の一覧の操作、describe のスロットの状態 | 1 つの wire interface に接続 1 つ。スロット無し |
-| 6 | bind の組み直し(複数のストリーム、last-reset / manual / mixed) | bind の port は CDC の data 口の番号 |
-| 7 | lock の持ち主の名指し | `lock_state` は locked と残り時間だけ。locked の拒否は持ち主の id を隠す。`locked` の値の意味(自分が持っているか)も書かれていない |
-| 8 | ブローカー(corr の付け替え、open / end の吸収、client ごとの資源) | TCP の複数 host は未決 |
-| 9 | lease の既定値・下限・上限と、0 の意味(参照 probe は 0 → 3000、上限 600000) | 無い |
-| 10 | reset の応答の `flags` / `attempts` の意味(参照 probe: bit0 running、bit1 pc で確認、bit2 やり直し、bit3 確認の halt / resume が失敗) | 定義が無い |
-| 11 | console の対応 mechanism、riscv-dm の block の方式を describe で宣言する | 無い |
-| 12 | confirm の前の frame の大きさの上限(最初の要求は 64 byte に収める) | 無い |
-| 13 | 専用 PID と、HID の口の推奨の作り | 未決(WF §10) |
+- 設計のときに仮置きした 13 項目は、すべて oep-spec 89879bc に入った。台帳は `cargo xtask oep-gen` で取り直してある。
+  - serial port の COBS と前後の 0x00(core §3.1)、serial port の共用(§3.4)、経路の一覧(describe 0x49、enum transport_kind)、専用 PID の宣言(0x4A `oep_pid`)
+  - スロット・接続の数・接続の一覧(wire の describe `max_connections`、op `connections`)
+  - bind の mode(probe.config の item slot / bind)
+  - 持ち主の名前(open の TLV `owner`、lock_state と locked の payload に返る)
+  - lease の範囲(1000〜60000 ms、0 は probe の既定、応答の lease_ms が正)
+  - reset の応答の flags
+  - console の mechanism の宣言(describe 0x40)
+  - `min_max_frame` = 64
+  - riscv-dm の `max_length` は byte 数。read_block はバスを通して読む(probe は写しを持たない)
+  - ブローカーは host の実装で spec の外
+- spec の外に残るもの: 専用 PID の番号の取得(OEP 側の作業)。
 
-## 11. b2 に決めてほしいこと
+## 11. 決まったこと
 
-1. 移行の間、CDC / USJ で長さ見出しの firmware と話す手段(`--oep-framing length`)を ch32rv が持つか。持たないなら、probe の firmware が COBS になるまで、USJ の X035 治具では ch32rv を試せない。
-2. RV32EC の loader 1 本にまとめ、wlink の V003 loader と参照の X035 loader は使わない方針でよいか(こちらは実機で速さを比べてから決めたい)。
-3. §8(c) の「先に開いた長寿命のプロセスがブローカー」でよいか。WF §7.2 の「ブローカーは monitor と一緒に死ぬ」を「ブローカーを持つプロセスと一緒に死ぬ」に広げることになる。
-4. 試験: `oep-client-python` の `fake.py`(偽の probe)を ch32rv の結合試験に使ってよいか(Python に依存するのは試験だけ)。使えないなら、Rust で同じものを作る。
+1. 長さ見出しの CDC / USJ の firmware と話す手段は持たない。USJ の X035 治具は、probe の firmware が COBS になってから使う。それまでは偽の probe(fake_serve の pty)と V003 治具(UART bridge、今も COBS)で試す。
+2. RAM loader は RV32EC の 1 本(buffered / direct)。wlink の V003 loader と参照の X035 loader は使わない。速さは「LinkE + ch32rv と大きく離れていなければよい、詰めるのは後」。実機で比べた結果は b2 に報告する(実機の試験は b2 の bench で、声をかけてから)。
+3. gdb と monitor が同じ probe を使うときの形(§8(c))は確認中。
+4. 結合試験は oep-client-python の偽の probe を使う(Python は試験のときだけ uv で動かす)。Rust で同じものは作らない。上流に fake_serve(pty と TCP)が入ったら、`crates/oep/tests/fake/serve.py` は消してそちらに乗り換える。
 
 ## 12. 実装の順
 

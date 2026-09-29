@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
 
-use crate::codec::{Resolution, Tlv, parse_tlvs};
+use crate::codec::{Resolution, Tlv, parse_tlvs, put_tlv};
 use crate::link::{Call, Limits, Link, LinkError, Reply};
 use crate::registry::{core, reject_reasons};
 
@@ -16,8 +16,15 @@ use crate::registry::{core, reject_reasons};
 pub enum OepError {
     #[error(transparent)]
     Link(#[from] LinkError),
-    #[error("the probe holds its lock for another session ({remaining_ms} ms of lease left)")]
-    Locked { remaining_ms: u32 },
+    #[error(
+        "the probe holds its lock for another session{} ({remaining_ms} ms of lease left)",
+        owner.as_deref().map(|o| format!(" ({o})")).unwrap_or_default()
+    )]
+    Locked {
+        remaining_ms: u32,
+        /// What the holder called itself in its open (core §6.4), if it did.
+        owner: Option<String>,
+    },
     #[error("the probe rejected the request: reason 0x{reason:02x}")]
     Rejected { reason: u8, payload: Vec<u8> },
     #[error("the request failed on the probe (outcome 0x{outcome:02x})")]
@@ -44,6 +51,24 @@ pub struct Opened {
     pub boot_id: u32,
     /// The same session id took the lock again (its resources are still there).
     pub resumed: bool,
+}
+
+/// What `lock_state` answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockState {
+    pub locked: bool,
+    pub remaining_ms: u32,
+    /// What the holder called itself (core §6.4), if it did.
+    pub owner: Option<String>,
+}
+
+/// The owner TLV in a TLV tail, if any (a broken tail just means no owner: it is display only).
+fn owner_in(tail: &[u8], tag: u8) -> Option<String> {
+    parse_tlvs(tail)
+        .ok()?
+        .into_iter()
+        .find(|t| t.tag == tag)
+        .map(|t| String::from_utf8_lossy(&t.value).into_owned())
 }
 
 /// A fresh random session id (never 0).
@@ -133,17 +158,24 @@ impl Probe {
         )?)
     }
 
-    /// `open`: take the lock with `session_id`. `force` steals it (the caller decides when).
+    /// en: `open`: take the lock with `session_id`. `force` steals it (the caller decides when).
+    /// `owner` names this host for others who find the probe locked (1..32 bytes; display only).
+    /// ja: `open`。`owner` はロックに阻まれた他の host に見せる名前(1〜32 byte、表示専用)。
     pub fn open(
         &mut self,
         session_id: u32,
         lease_ms: u32,
         force: bool,
+        owner: Option<&str>,
     ) -> Result<Opened, OepError> {
         let mut p = Vec::with_capacity(9);
         p.extend_from_slice(&session_id.to_le_bytes());
         p.extend_from_slice(&lease_ms.to_le_bytes());
         p.push(u8::from(force));
+        if let Some(o) = owner.filter(|o| !o.is_empty()) {
+            let b = &o.as_bytes()[..o.len().min(32)];
+            put_tlv(&mut p, core::tlvs::open::OWNER, false, b);
+        }
         let r = self.link.call(Call {
             func: core::FN,
             op: core::op::OPEN,
@@ -185,15 +217,19 @@ impl Probe {
         check(r).map(|_| ())
     }
 
-    /// `lock_state`: (locked, remaining_ms).
-    pub fn lock_state(&mut self) -> Result<(bool, u32), OepError> {
+    /// `lock_state`: whether the lock is held, the lease left, and the holder's owner name.
+    pub fn lock_state(&mut self) -> Result<LockState, OepError> {
         let p = self.core_call(core::op::LOCK_STATE, Vec::new())?;
         if p.len() < 5 {
             return Err(OepError::Malformed(
                 "lock_state answer shorter than 5 bytes".into(),
             ));
         }
-        Ok((p[0] != 0, le32(&p, 1)))
+        Ok(LockState {
+            locked: p[0] != 0,
+            remaining_ms: le32(&p, 1),
+            owner: owner_in(&p[5..], core::tlvs::lock_state_answer::OWNER),
+        })
     }
 
     /// `list` the interfaces under `prefix` (matched on label boundaries: `oep.wire` finds
@@ -279,13 +315,20 @@ pub fn check(r: Reply) -> Result<Vec<u8>, OepError> {
             outcome,
             payload: r.payload,
         }),
-        Resolution::Rejected(reason) if reason == reject_reasons::LOCKED => Err(OepError::Locked {
-            remaining_ms: if r.payload.len() >= 4 {
-                le32(&r.payload, 0)
+        Resolution::Rejected(reason) if reason == reject_reasons::LOCKED => {
+            let (remaining_ms, owner) = if r.payload.len() >= 4 {
+                (
+                    le32(&r.payload, 0),
+                    owner_in(&r.payload[4..], core::tlvs::locked_payload::OWNER),
+                )
             } else {
-                0
-            },
-        }),
+                (0, None)
+            };
+            Err(OepError::Locked {
+                remaining_ms,
+                owner,
+            })
+        }
         Resolution::Rejected(reason) => Err(OepError::Rejected {
             reason,
             payload: r.payload,
