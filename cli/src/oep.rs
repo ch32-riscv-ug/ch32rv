@@ -123,7 +123,7 @@ pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
 /// ja: `--probe` の WCH-Link のブローカーが動いていれば(monitor などが Link をブローカー経由で持って
 /// いる)、コマンドもブローカーを通す(Link はブローカーが持っている)。動いていなければ None で、今まで
 /// どおり直接開く。
-fn running_wch_broker(cli: &Cli, cmd: &str) -> Option<OepAddr> {
+pub(crate) fn running_wch_broker(cli: &Cli, cmd: &str) -> Option<OepAddr> {
     let sel = crate::cmd_probe::parse_selector(cli, cmd).ok()?;
     let entries = crate::cmd_probe::wch_devices().ok()?;
     let i = ch32rv_usb::resolve(sel.as_ref(), entries.iter().map(|e| &e.dev)).ok()?;
