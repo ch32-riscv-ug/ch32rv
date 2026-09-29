@@ -248,6 +248,7 @@ pub(crate) fn endpoint(cli: &Cli) -> ExitCode {
         env.result = Some(json!({
             "endpoint": live,
             "pid": live.as_ref().and(v.as_ref().and_then(|v| v.get("pid").cloned())),
+            "transport": live.as_ref().and(v.as_ref().and_then(|v| v.get("transport").cloned())),
         }));
         crate::print_envelope(&env)
     } else {
@@ -330,10 +331,14 @@ fn serve_target(
         );
         ExitCode::from(ErrorKind::DeviceOpenFailed.exit_code())
     };
+    let mut transport = "wchlink";
     let (up, sid) = match (&target, wch_entry) {
         (BrokerTarget::Serial(path), _) => {
             let mut probe = match crate::oep::connect_upstream(path, None) {
-                Ok((p, _)) => p,
+                Ok((p, t)) => {
+                    transport = t;
+                    p
+                }
                 Err(m) => return report_error(format!("{path}: {m}")),
             };
             let serial = crate::oep::single_serial(&mut probe);
@@ -365,7 +370,7 @@ fn serve_target(
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
     if write_endpoint(
         &key,
-        &json!({"port": port, "pid": std::process::id(), "time": now_ms()}),
+        &json!({"port": port, "pid": std::process::id(), "time": now_ms(), "transport": transport}),
     )
     .is_err()
     {

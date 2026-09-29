@@ -66,6 +66,7 @@
 - HID は hidapi で扱う。
   - 同じ VID:PID と serial で、usage page 0xFF00 以上の HID を開き、report 記述子から vendor の report(input と output を持つもの)の ID と大きさを読む(`ch32rv_oep::hid`)。P4 は ID 6、511 byte。
   - report ID があれば、output にも ID を付ける。input は ID を確かめてから count の分を取る。
+- 実機確認(2026-09-29、X035 治具の ESP32-P4 HS、oep-probe-arduino 71800ae): vendor bulk(interface 1)、HID(report ID 6)、serial port のどれでも、target info、TickBoth(4.9 KB)の flash が約 0.20〜0.22 秒で書けた。dmseq の monitor、monitor を開いたままの flash(reset の後も流れ続ける)も通った。既定では vendor bulk が選ばれる(`broker endpoint --json` の `transport`)。
 - Linux の権限: `60-ch32rv.rules`(`doctor --emit-udev`)に、product の文字列が `OEP` で始まる device の USB のノードと hidraw を足した(PID を取ったら VID:PID に替える)。
 
 ### 3.4 link の規則(core §5、§9 の MUST をそのまま)
