@@ -79,6 +79,16 @@ pub struct Ch32Target<T: DtmAccess> {
     flash_prog_mode: FlashProgMode,
     flash_bps: Vec<FlashBp>,
     flash_pages: Vec<FlashPage>,
+    /// en: DATA0 / DATA1 as the hart left them when it stopped. Register and memory access go
+    /// through DATA0, which is also a DM console's mailbox (dmdata / dmseq): a value left there
+    /// with bit 7 set reads to a dmseq target as its own frame still posted and to the host as an
+    /// invalid word, and the console stops for good (measured on a CH32X035 behind an OEP probe).
+    /// Put back just before the hart runs again.
+    /// ja: hart が止まった時の DATA0 / DATA1。register と memory は DATA0 を通すが、DATA0 は DM の
+    /// console の mailbox でもあり、bit 7 の立った値が残ると dmseq の target は自分のフレームがまだ
+    /// あると読み、host は無効な語と読んで、console が止まったままになる(OEP の probe の X035 で実測)。
+    /// 走らせる直前に戻す。
+    mailbox: Option<(u32, u32)>,
 }
 
 impl<T: DtmAccess> Ch32Target<T> {
@@ -105,8 +115,10 @@ impl<T: DtmAccess> Ch32Target<T> {
             flash_prog_mode: flash.map(|(_, m)| m).unwrap_or(FlashProgMode::PgStart),
             flash_bps: Vec::new(),
             flash_pages: Vec::new(),
+            mailbox: None,
         };
         t.dm().halt()?;
+        t.save_mailbox();
         // Make `ebreak` halt into debug mode so software breakpoints stop the core.
         let _ = t.dm().enable_ebreak_debug();
         t.hw_trigger_count = t.dm().hw_trigger_count();
@@ -132,16 +144,65 @@ impl<T: DtmAccess> Ch32Target<T> {
 
     /// True if the core is halted right now.
     pub fn is_halted(&mut self) -> Result<bool, DmiError> {
-        self.dm().is_halted()
+        let halted = self.dm().is_halted()?;
+        if halted {
+            self.save_mailbox();
+        }
+        Ok(halted)
     }
 
     /// Request a halt (used for Ctrl-C).
     pub fn halt(&mut self) -> Result<(), DmiError> {
-        self.dm().halt()
+        self.dm().halt()?;
+        self.save_mailbox();
+        Ok(())
     }
 
-    /// Recover the owned transport (to detach after the session).
-    pub fn into_inner(self) -> T {
+    /// en: Keep DATA0 / DATA1 the first time the hart is seen stopped (before any register
+    /// access overwrites them). Best-effort: a failed read keeps nothing to put back.
+    /// ja: 止まった hart を最初に見た時(register に触れる前)に DATA0 / DATA1 を覚える。
+    fn save_mailbox(&mut self) {
+        const DATA0: u8 = 0x04;
+        const DATA1: u8 = 0x05;
+        if self.mailbox.is_none()
+            && let (Ok(d0), Ok(d1)) = (self.dtm.dmi_read(DATA0), self.dtm.dmi_read(DATA1))
+        {
+            self.mailbox = Some((d0, d1));
+        }
+    }
+
+    /// Resume through the probe's run control when it has one ([`DtmAccess::resume_hart`]).
+    fn resume_hart(&mut self) -> Result<(), DmiError> {
+        match self.dtm.resume_hart() {
+            Some(r) => r,
+            None => self.dm().resume(),
+        }
+    }
+
+    /// en: Resume the hart if it is halted, with the console mailbox put back first: the end of a
+    /// session whose transport does not resume on detach.
+    /// ja: 止まっていれば(mailbox を戻してから)走らせる。detach で走らない transport の session の最後。
+    pub fn resume_if_halted(&mut self) -> Result<(), DmiError> {
+        if self.dm().is_halted()? {
+            self.restore_mailbox();
+            self.resume_hart()?;
+        }
+        Ok(())
+    }
+
+    /// Put DATA0 / DATA1 back as the hart left them (right before it runs again).
+    fn restore_mailbox(&mut self) {
+        if let Some((d0, d1)) = self.mailbox.take() {
+            let _ = self.dtm.dmi_write(0x05, d1);
+            let _ = self.dtm.dmi_write(0x04, d0);
+        }
+    }
+
+    /// en: Recover the owned transport (to detach after the session). The console mailbox is put
+    /// back first, since the caller's detach resumes the hart.
+    /// ja: transport を返す(後で detach するため)。detach で hart が走るので、先に mailbox を戻す。
+    pub fn into_inner(mut self) -> T {
+        self.restore_mailbox();
         self.dtm
     }
 
@@ -152,19 +213,40 @@ impl<T: DtmAccess> Ch32Target<T> {
 
     /// en: Restore every managed flash page to its pristine content (removing any `ebreak` still
     /// patched in). Call before detaching so an interrupted session never leaves a breakpoint
-    /// baked into flash. Best-effort.
-    /// ja: 管理中の flash page をすべて pristine に戻す(残った `ebreak` を消す)。detach 前に
-    /// 呼び、途中終了しても flash に breakpoint が焼き付かないようにする。best-effort。
-    pub fn restore_flash_breakpoints(&mut self) {
+    /// baked into flash. The session can end with the hart running (GDB gone mid-`continue`, a
+    /// fatal error), and the page rewrite needs it halted, so it is halted for the rewrite and
+    /// resumed after. Returns the pages it could not restore (they may still hold an `ebreak`).
+    /// ja: 管理中の flash page をすべて pristine に戻す(残った `ebreak` を消す)。detach 前に呼ぶ。
+    /// session は hart が走ったまま終わることがあり(continue 中に GDB が消えた、致命的な error)、
+    /// page の書き直しには止まった hart が要るので、止めて書き直し、走らせ直す。戻せなかった page を返す
+    /// (`ebreak` が残っているかもしれない)。
+    pub fn restore_flash_breakpoints(&mut self) -> Vec<u32> {
         let Some(page) = self.flash_page_size else {
-            return;
+            return Vec::new();
         };
         self.flash_bps.clear();
+        if self.flash_pages.is_empty() {
+            return Vec::new();
+        }
+        let running = !self.dm().is_halted().unwrap_or(true);
+        if running && self.halt().is_err() {
+            let left = self.flash_pages.iter().map(|p| p.page_addr).collect();
+            self.flash_pages.clear();
+            return left;
+        }
         let addrs: Vec<u32> = self.flash_pages.iter().map(|p| p.page_addr).collect();
+        let mut left = Vec::new();
         for page_addr in addrs {
-            let _ = self.reprogram_flash_page(page, page_addr);
+            if self.reprogram_flash_page(page, page_addr).is_err() {
+                left.push(page_addr);
+            }
         }
         self.flash_pages.clear();
+        if running {
+            self.restore_mailbox();
+            let _ = self.resume_hart();
+        }
+        left
     }
 
     /// en: Map a code address into the physical code-flash window. Programs run from the low
@@ -355,7 +437,8 @@ impl<T: DtmAccess> SingleThreadBase for Ch32Target<T> {
 
 impl<T: DtmAccess> SingleThreadResume for Ch32Target<T> {
     fn resume(&mut self, _signal: Option<Signal>) -> Result<(), Self::Error> {
-        self.dm().resume()
+        self.restore_mailbox();
+        self.resume_hart()
     }
 
     #[inline(always)]

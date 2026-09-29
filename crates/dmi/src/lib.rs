@@ -66,6 +66,18 @@ pub trait DtmAccess {
     /// ja: `ops` を 1 つの並びとして実行し、read と poll の値を順に返す。1 要求で受けられる probe
     /// (OEP の `dmi`)は上書きする(abstract command の一連が probe の console の poll で割られない)。
     /// 既定は 1 つずつ。poll が最後まで満たされなければ Timeout。
+    /// en: Resume the hart through the probe's own run control, for a probe that keeps a view of
+    /// the hart raw DMCONTROL writes bypass: an OEP probe stops polling its console from the host's
+    /// first raw DMI write until it resumes the hart itself, so a resume written over DMI leaves the
+    /// console stopped for good (measured on a CH32X035 jig). `None` (the default): resume over DMI.
+    /// ja: probe 自身の run control で hart を走らせる。raw の DMCONTROL が素通りする hart の見方を
+    /// probe が持つ場合のため(OEP の probe は host の最初の raw DMI の書き込みから、自分で resume
+    /// するまで console の poll を止めるので、DMI で走らせると console が止まったままになる。X035 で
+    /// 実測)。既定の `None` は DMI で走らせる。
+    fn resume_hart(&mut self) -> Option<Result<(), DmiError>> {
+        None
+    }
+
     fn dmi_sequence(&mut self, ops: &[DmiOp]) -> Result<Vec<u32>, DmiError> {
         let mut out = Vec::new();
         for op in ops {
@@ -113,6 +125,10 @@ impl<T: DtmAccess + ?Sized> DtmAccess for &mut T {
 
     fn dmi_sequence(&mut self, ops: &[DmiOp]) -> Result<Vec<u32>, DmiError> {
         (**self).dmi_sequence(ops)
+    }
+
+    fn resume_hart(&mut self) -> Option<Result<(), DmiError>> {
+        (**self).resume_hart()
     }
 }
 

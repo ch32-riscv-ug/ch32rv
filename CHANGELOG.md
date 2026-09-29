@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- (EN) `gdb` works on an OEP probe, and on a WCH-Link whose broker runs it no longer borrows the Link: it is a broker client, so a monitor open on the same probe keeps streaming through the debug session. Verified with riscv-none-elf-gdb (break, step, memory, detach) on the CH32X035 jig's OEP probe and on a LinkE + CH32V203, each with a dmseq monitor open.
+- (JA) `gdb` が OEP の probe で使え、ブローカーの動いている WCH-Link では Link を借りなくなった。ブローカーの client になるので、同じ probe で開いている monitor が debug の間も流れ続ける。CH32X035 の治具の OEP の probe と LinkE + CH32V203 で、dmseq の monitor を開いたまま riscv-none-elf-gdb(break、step、メモリ、detach)で確認。
+- (EN) Fix: gdb could leave an `ebreak` in flash. A session that ended while the hart ran (GDB gone mid-`continue`, a fatal error) restored its flash breakpoints with the hart running, which fails, and said nothing (found on a CH32V203). It now halts the hart for the restore, resumes it after, and warns about any page it could not restore.
+- (JA) 修正: gdb が flash に `ebreak` を残すことがあった。hart が走ったまま終わった session(continue 中に GDB が消えた、致命的な error)は、走ったまま flash breakpoint を戻そうとして失敗し、何も言わなかった(CH32V203 で発見)。戻す間は hart を止めて後で走らせ直し、戻せなかった page は警告する。
+- (EN) Fix: after a gdb session a DM console (dmdata / dmseq) could stop for good. Register access goes through DATA0, the console's mailbox; gdb now puts DATA0 / DATA1 back just before the hart runs again, and on an OEP probe it resumes with the probe's own resume, since the probe stops polling its console from the host's first raw DMI write until it resumes the hart itself.
+- (JA) 修正: gdb の後に DM の console(dmdata / dmseq)が止まったままになることがあった。register の読み書きは console の mailbox の DATA0 を通る。gdb は走らせる直前に DATA0 / DATA1 を戻し、OEP の probe では probe 自身の resume で走らせる(probe は host が raw DMI を書いてから自分で resume するまで console の poll を止める)。
+- (EN) Memory words over DMI (`read_mem32` / `write_mem32` / `write_mem16`) go as one DMI sequence each, one request on a probe that takes a whole list: a flash breakpoint through a WCH-Link's broker went from 3.7 s to 1.9 s. gdb's banner suggests `set remotetimeout 10` where a flash breakpoint rewrites a page (about 2 s).
+- (JA) DMI の 1 語の読み書き(`read_mem32` / `write_mem32` / `write_mem16`)を 1 つの DMI の並びにした(一括で受ける probe では 1 要求)。WCH-Link のブローカー経由の flash breakpoint が 3.7 秒から 1.9 秒に。flash breakpoint が page を書き直す core では、gdb の接続時の表示が `set remotetimeout 10` を勧める(約 2 秒かかる)。
+
 - (EN) `broker endpoint --json` also reports the broker's `transport` (`vendor-bulk`, `hid`, `serial` or `wchlink`). Verified on the ESP32-P4 OEP probe of the CH32X035 jig: vendor bulk, HID and the serial port each flashed a 4.9 KB image in 0.20-0.22 s and streamed dmseq, and vendor bulk is the one picked by default.
 - (JA) `broker endpoint --json` がブローカーの `transport`(`vendor-bulk` / `hid` / `serial` / `wchlink`)も返す。CH32X035 の治具の ESP32-P4 の OEP の probe で確認: vendor bulk、HID、serial port のどれでも 4.9 KB を 0.20〜0.22 秒で書き、dmseq が流れた。既定で選ばれるのは vendor bulk。
 
