@@ -1205,6 +1205,12 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
 }
 
 pub fn reset(cli: &Cli, args: &crate::args::ResetArgs) -> ExitCode {
+    // An OEP probe (`tcp:`, `oep://`, or a serial port no WCH-Link owns) takes the OEP path.
+    match crate::oep::addr(cli, "reset") {
+        Ok(Some(a)) => return crate::oep::reset(cli, args, &a),
+        Ok(None) => {}
+        Err(c) => return c,
+    }
     const CMD: &str = "reset";
     let mut session = match crate::cmd_probe::attach(cli, CMD) {
         Ok(s) => s,
@@ -1300,6 +1306,11 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
             );
         }
     };
+    match crate::oep::addr(cli, CMD) {
+        Ok(Some(a)) => return crate::oep::verify(cli, args, &bytes, &a),
+        Ok(None) => {}
+        Err(c) => return c,
+    }
     let bin_offset = match &args.at {
         Some(s) => match parse::u32_addr(s) {
             Ok(a) => Some(a),

@@ -286,6 +286,12 @@ fn simple_ok(
 }
 
 pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
+    // An OEP probe (`tcp:`, `oep://`, or a serial port no WCH-Link owns) takes the OEP path.
+    match crate::oep::addr(cli, "read") {
+        Ok(Some(a)) => return crate::oep::read(cli, args, &a),
+        Ok(None) => {}
+        Err(c) => return c,
+    }
     const CMD: &str = "read";
     let mut warnings = Vec::new();
     let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
@@ -465,7 +471,7 @@ fn unmapped_span(
     None
 }
 
-fn resolve_range(
+pub(crate) fn resolve_range(
     args: &ReadArgs,
     flash_bytes: u32,
     sram_bytes: u32,
@@ -480,7 +486,7 @@ fn resolve_range(
     }
 }
 
-fn output_data(
+pub(crate) fn output_data(
     cli: &Cli,
     cmd: &str,
     args: &ReadArgs,

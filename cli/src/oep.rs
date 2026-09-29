@@ -693,3 +693,331 @@ impl Drop for ConsoleSession {
         let _ = self.probe.end();
     }
 }
+
+// ---- other commands on an OEP probe ----
+
+/// What an attached command gets.
+struct Attached<'a> {
+    t: OepDtm<'a>,
+    chip_id: Option<u32>,
+    family: Option<String>,
+}
+
+/// en: Connect, open a session, attach at the place `choose_place` picks (halting when asked),
+/// run `f`, then detach and end on every path. `family` is the chip id's DB family, checked
+/// against `--chip`.
+/// ja: 接続して session を開き、`choose_place` の場所に attach し(指定があれば止めて)、`f` を
+/// 走らせ、どの経路でも detach と end をする。
+fn with_attached(
+    cli: &Cli,
+    cmd: &str,
+    a: &OepAddr,
+    halt: bool,
+    f: impl FnOnce(&mut Attached<'_>) -> ExitCode,
+) -> ExitCode {
+    let mut p = match connect(cli, cmd, a) {
+        Ok(p) => p,
+        Err(c) => return c,
+    };
+    let serial = matches!(a, OepAddr::Serial(_)) && single_serial(&mut p);
+    if let Err(c) = open_session(cli, cmd, &mut p, serial) {
+        return c;
+    }
+    let r = (|| {
+        let (wire, pins) = match choose_place(&mut p, a, cli.chip.as_deref()) {
+            Ok(v) => v,
+            Err(m) => return fail(cli, cmd, ErrorKind::TargetAmbiguous, m, None),
+        };
+        let at = match attach(
+            &mut p,
+            wire,
+            AttachOptions {
+                halt,
+                max_speed_hz: None,
+                pins,
+            },
+        ) {
+            Ok(a) => a,
+            Err(e) => return oep_fail(cli, cmd, e),
+        };
+        let family = match check_family_text(at.wch_chip_id, cli.chip.as_deref()) {
+            Ok(f) => f,
+            Err(m) => {
+                let _ = detach(&mut p, wire, at.connection, false);
+                return fail(cli, cmd, ErrorKind::TargetAmbiguous, m, None);
+            }
+        };
+        let r = match OepDtm::new(&mut p, at.connection) {
+            Ok(t) => f(&mut Attached {
+                t,
+                chip_id: at.wch_chip_id,
+                family,
+            }),
+            Err(e) => oep_fail(cli, cmd, e),
+        };
+        let _ = detach(&mut p, wire, at.connection, false);
+        r
+    })();
+    let _ = p.end();
+    r
+}
+
+/// The DB SKU of a chip id (flash / SRAM sizes).
+fn sku_of(chip_id: Option<u32>) -> Option<ch32rv_target::SkuRecord> {
+    match ch32rv_target::Db::builtin().resolve_by_chip_id(chip_id?) {
+        ch32rv_target::Resolution::Sku(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// `reset` on an OEP probe: run (confirmed with `--confirm-run`) or halt at reset.
+pub(crate) fn reset(cli: &Cli, args: &crate::args::ResetArgs, a: &OepAddr) -> ExitCode {
+    const CMD: &str = "reset";
+    if args.dm {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            "--dm is a WCH-Link operation; an OEP probe resets the target",
+            None,
+        );
+    }
+    with_attached(cli, CMD, a, false, |x| {
+        let mode = if args.halt {
+            ResetMode::HaltAtReset
+        } else if args.confirm_run.is_some() {
+            ResetMode::RunVerified
+        } else {
+            ResetMode::Run
+        };
+        let (ok, pc) = match x.t.reset(mode) {
+            Ok(r) => (true, r.pc),
+            Err(e) if mode == ResetMode::RunVerified => {
+                let _ = e;
+                (false, 0)
+            }
+            Err(e) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("reset: {e}"),
+                    None,
+                );
+            }
+        };
+        let running = (mode == ResetMode::RunVerified).then_some(ok);
+        if cli.json {
+            let mut env = if running == Some(false) {
+                ResultEnvelope::failure(
+                    CMD,
+                    ErrorKind::NotRunningAfterWrite,
+                    "target not running after reset",
+                )
+            } else {
+                ResultEnvelope::success(CMD)
+            };
+            env.result = Some(serde_json::json!({
+                "mode": if args.halt { "halt" } else { "run" },
+                "running": running,
+                "pc": format!("0x{pc:08x}"),
+            }));
+            crate::print_envelope(&env)
+        } else if running == Some(false) {
+            eprintln!("ch32rv: error[not-running-after-write]: target not running after reset");
+            ErrorKind::NotRunningAfterWrite.exit_code().into()
+        } else {
+            println!(
+                "{}",
+                if args.halt {
+                    "reset and halted"
+                } else {
+                    "reset, running"
+                }
+            );
+            ExitCode::SUCCESS
+        }
+    })
+}
+
+/// Resume a hart this command halted (the CH32 rule: re-issued while dpc has not moved).
+fn resume_after(t: &mut OepDtm<'_>) {
+    let _ = ch32rv_dmi::resume_ch32(t, |t| {
+        ch32rv_dmi::DebugModule::new(t).read_reg(ch32rv_dmi::RegName::Pc)
+    });
+}
+
+/// `verify` on an OEP probe: read the image's ranges back and compare.
+pub(crate) fn verify(
+    cli: &Cli,
+    args: &crate::args::VerifyArgs,
+    bytes: &[u8],
+    a: &OepAddr,
+) -> ExitCode {
+    const CMD: &str = "verify";
+    let bin_offset = match &args.at {
+        Some(s) => match parse::u32_addr(s) {
+            Ok(a) => Some(a),
+            Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+        },
+        None => None,
+    };
+    let image = match crate::cmd_flash::parse_image(
+        bytes,
+        args.format,
+        &args.file,
+        bin_offset,
+        ch32rv_flash::CODE_FLASH_START,
+    ) {
+        Ok(i) => i,
+        Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
+    };
+    with_attached(cli, CMD, a, true, |x| {
+        let mut first_bad = None;
+        for seg in &image.segments {
+            let (lo, hi) = (
+                seg.addr & !3,
+                (seg.addr + seg.data.len() as u32).div_ceil(4) * 4,
+            );
+            let got = match x.t.read_words(lo, ((hi - lo) / 4) as usize) {
+                Ok(w) => w.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>(),
+                Err(e) => {
+                    resume_after(&mut x.t);
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("read: {e}"),
+                        None,
+                    );
+                }
+            };
+            let off = (seg.addr - lo) as usize;
+            if let Some(i) = (0..seg.data.len()).find(|&i| got[off + i] != seg.data[i]) {
+                first_bad = Some(seg.addr + i as u32);
+                break;
+            }
+        }
+        resume_after(&mut x.t);
+        match first_bad {
+            Some(at) => fail(
+                cli,
+                CMD,
+                ErrorKind::VerifyMismatch,
+                format!("mismatch at {at:#010x}"),
+                None,
+            ),
+            None if cli.json => {
+                let mut env = ResultEnvelope::success(CMD);
+                env.result =
+                    Some(serde_json::json!({ "bytes": image.total_len(), "verified": true }));
+                crate::print_envelope(&env)
+            }
+            None => {
+                println!("verify: OK ({} bytes match)", image.total_len());
+                ExitCode::SUCCESS
+            }
+        }
+    })
+}
+
+/// `read` on an OEP probe: `--range` / `--region`, dumped or blank-checked.
+pub(crate) fn read(cli: &Cli, args: &crate::args::ReadArgs, a: &OepAddr) -> ExitCode {
+    const CMD: &str = "read";
+    with_attached(cli, CMD, a, true, |x| {
+        let sku = sku_of(x.chip_id);
+        let (flash, sram) = sku
+            .as_ref()
+            .map_or((0, 0), |s| (s.flash_bytes, s.sram_bytes));
+        let option_base = x
+            .family
+            .as_deref()
+            .and_then(ch32rv_target::option_bytes_layout)
+            .map(|l| l.base);
+        let (start, len) = match crate::cmd_dbg::resolve_range(args, flash, sram, option_base) {
+            Ok(v) => v,
+            Err(m) => {
+                resume_after(&mut x.t);
+                return fail(cli, CMD, ErrorKind::Usage, m, None);
+            }
+        };
+        let lo = start & !3;
+        let words = (start + len - lo).div_ceil(4) as usize;
+        let data = match x.t.read_words(lo, words) {
+            Ok(w) => {
+                let b: Vec<u8> = w.iter().flat_map(|w| w.to_le_bytes()).collect();
+                b[(start - lo) as usize..(start - lo + len) as usize].to_vec()
+            }
+            Err(e) => {
+                resume_after(&mut x.t);
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("read: {e}"),
+                    None,
+                );
+            }
+        };
+        resume_after(&mut x.t);
+        if args.blank_check {
+            let blank = data.iter().all(|&b| b == 0xff);
+            if cli.json {
+                let mut env = if blank {
+                    ResultEnvelope::success(CMD)
+                } else {
+                    ResultEnvelope::failure(CMD, ErrorKind::BlankCheckFailed, "region is not blank")
+                };
+                env.result = Some(serde_json::json!({
+                    "addr": format!("0x{start:08x}"), "len": len, "blank": blank,
+                }));
+                return crate::print_envelope(&env);
+            }
+            println!(
+                "blank check 0x{start:08x}+{len}: {}",
+                if blank { "BLANK" } else { "NOT BLANK" }
+            );
+            return if blank {
+                ExitCode::SUCCESS
+            } else {
+                ErrorKind::BlankCheckFailed.exit_code().into()
+            };
+        }
+        crate::cmd_dbg::output_data(cli, CMD, args, start, &data, Vec::new())
+    })
+}
+
+/// `target info` on an OEP probe: what the chip id says, without halting the target.
+pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
+    const CMD: &str = "target.info";
+    with_attached(cli, CMD, a, false, |x| {
+        let sku = sku_of(x.chip_id);
+        if cli.json {
+            let mut env = ResultEnvelope::success(CMD);
+            env.result = Some(serde_json::json!({
+                "probe": { "kind": "oep" },
+                "target": {
+                    "chip_id": x.chip_id.map(|c| format!("0x{c:08x}")),
+                    "family": x.family,
+                    "sku": sku.as_ref().map(|s| s.sku.clone()),
+                    "flash_bytes": sku.as_ref().map(|s| s.flash_bytes),
+                    "sram_bytes": sku.as_ref().map(|s| s.sram_bytes),
+                },
+            }));
+            crate::print_envelope(&env)
+        } else {
+            println!("probe:    OEP");
+            match x.chip_id {
+                Some(c) => println!("chip_id:  0x{c:08x}"),
+                None => println!("chip_id:  (the probe read none)"),
+            }
+            println!("family:   {}", x.family.as_deref().unwrap_or("unknown"));
+            if let Some(s) = &sku {
+                println!("sku:      {}", s.sku);
+                println!("flash:    {} KiB", s.flash_bytes / 1024);
+                println!("sram:     {} KiB", s.sram_bytes / 1024);
+            }
+            ExitCode::SUCCESS
+        }
+    })
+}
