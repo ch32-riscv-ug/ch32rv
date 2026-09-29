@@ -145,6 +145,9 @@ pub enum Command {
     /// Arduino IDE integration protocols (machine-facing)
     #[command(subcommand)]
     Arduino(ArduinoCmd),
+    /// The per-probe OEP broker (docs/oep-host.ja.md §7.2)
+    #[command(subcommand)]
+    Broker(BrokerCmd),
 }
 
 // en: §4.1 programming commands. / ja: §4.1 書き込み系。
@@ -712,6 +715,15 @@ pub enum Shell {
     Zsh,
     Fish,
     Powershell,
+}
+
+#[derive(Subcommand)]
+pub enum BrokerCmd {
+    /// Where the probe's broker listens (`--json`: {"endpoint": "127.0.0.1:<port>" | null})
+    Endpoint,
+    /// Run the broker (started by the commands that use the probe; not for users)
+    #[command(hide = true)]
+    Serve,
 }
 
 #[derive(Subcommand)]

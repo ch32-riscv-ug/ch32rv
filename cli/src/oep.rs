@@ -64,13 +64,24 @@ fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
     fail(cli, cmd, kind, e.to_string(), hint)
 }
 
-/// Connect and confirm.
+/// en: Connect and confirm. A serial port goes through its broker (started if it is not running,
+/// docs/oep-host.ja.md §7.2): the broker holds the port and the probe's session, and this command
+/// is one of its clients. `tcp:` is a direct connection (a probe's TCP transport, or a broker).
+/// ja: 接続して confirm。serial port はブローカー経由(無ければ起動)。`tcp:` は直接つなぐ。
 fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
     let link = match a {
-        OepAddr::Serial(p) => ch32rv_oep::link::open_serial(p),
-        OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t),
-    }
-    .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
+        OepAddr::Serial(p) => crate::broker::client_link(p).map_err(|m| {
+            fail(
+                cli,
+                cmd,
+                ErrorKind::DeviceOpenFailed,
+                m,
+                Some("the probe's broker could not start or be reached"),
+            )
+        })?,
+        OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t)
+            .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?,
+    };
     Probe::connect(link).map_err(|e| oep_fail(cli, cmd, e))
 }
 
@@ -80,7 +91,7 @@ fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
 /// several (the safe side).
 /// ja: probe の経路が serial 1 本だけか(describe `transport` が serial の種類 1 つ)。そうなら排他で
 /// 開けた時点で前の持ち主は居ないので、lock はすぐ奪ってよい。宣言の無い probe は複数とみなす。
-fn single_serial(p: &mut Probe) -> bool {
+pub(crate) fn single_serial(p: &mut Probe) -> bool {
     use ch32rv_oep::registry::core::enums::transport_kind as k;
     let Ok(tlvs) = p.describe(oep_core::FN) else {
         return false;
@@ -93,31 +104,39 @@ fn single_serial(p: &mut Probe) -> bool {
     matches!(kinds.as_slice(), [one] if [k::UART_BRIDGE, k::USB_CDC, k::USB_SERIAL_JTAG].contains(one))
 }
 
-/// en: Open a session. A lock held elsewhere is taken at once on a single-serial probe; otherwise
-/// the remaining lease is waited out (up to 5 s) and a holder that keeps renewing is named.
-/// ja: session を開く。serial 1 本の probe ならすぐ奪い、それ以外は残りの lease を待ち(最大 5 秒)、
-/// 更新し続ける持ち主は名指しでエラーにする。
-fn open_session(cli: &Cli, cmd: &str, p: &mut Probe, serial: bool) -> Result<(), ExitCode> {
-    let owner = format!("ch32rv {cmd} pid {}", std::process::id());
+/// en: Open a session named `owner` with the oep-workflow §4.3 lock rule: a lock held elsewhere is
+/// taken at once on a single-serial probe; otherwise the remaining lease is waited out (up to 5 s)
+/// and a holder that keeps renewing comes back as `Locked` (with its owner name).
+/// ja: `owner` の名で session を開く。serial 1 本の probe ならすぐ奪い、それ以外は残りの lease を
+/// 待ち(最大 5 秒)、更新し続ける持ち主は `Locked`(owner の名前つき)で返す。
+pub(crate) fn open_with_lock_rule(
+    p: &mut Probe,
+    serial: bool,
+    owner: &str,
+    lease_ms: u32,
+) -> Result<u32, OepError> {
     let sid = random_session_id();
     let deadline = Instant::now() + Duration::from_secs(5);
     let mut force = false;
     loop {
-        match p.open(sid, 3000, force, Some(&owner)) {
-            Ok(_) => return Ok(()),
+        match p.open(sid, lease_ms, force, Some(owner)) {
+            Ok(_) => return Ok(sid),
             Err(OepError::Locked { .. }) if serial && !force => force = true,
-            Err(OepError::Locked {
-                remaining_ms,
-                owner,
-            }) if Instant::now() < deadline => {
-                let _ = owner;
+            Err(OepError::Locked { remaining_ms, .. }) if Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(u64::from(
                     remaining_ms.clamp(50, 1000),
                 )));
             }
-            Err(e) => return Err(oep_fail(cli, cmd, e)),
+            Err(e) => return Err(e),
         }
     }
+}
+
+fn open_session(cli: &Cli, cmd: &str, p: &mut Probe, serial: bool) -> Result<(), ExitCode> {
+    let owner = format!("ch32rv {cmd} pid {}", std::process::id());
+    open_with_lock_rule(p, serial, &owner, 3000)
+        .map(|_| ())
+        .map_err(|e| oep_fail(cli, cmd, e))
 }
 
 /// The wire to attach on: the only one the probe has, else SWIO for the one-wire families named
