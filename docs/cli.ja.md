@@ -199,7 +199,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 ### 3.7 排他制御と再試行
 
 - **lock**: USB serial(無ければ topology)単位の advisory lock を OS の runtime dir に置く。`--lock-timeout` 待って取れなければ exit 13。異常終了した保持者の stale lock は起動時に回収する。
-  - **実装(2026-09-02、依頼 A-2)**: `ch32rv-usb::DeviceLock`。`$XDG_RUNTIME_DIR/ch32rv/<key>.lock`(無ければ temp dir)に `flock` を取り、probe を使う間だけ保持する。key は probe serial、無ければ bus topology。取れなければ `--lock-timeout` 待って exit 13(`device-busy`)。**stale は flock の性質で自動回収**(保持者が終了すれば OS が解放するので「起動時回収」の別処理は不要)。対象: attach 経路(`Session::attach` = flash/target/dbg/write/monitor dmdata/capabilities/arduino)、`gdb` server、`monitor --source uart`/`sdi`(`cmd_probe::lock_probe`)。同一プロセスで二重取得しないよう、直接 open 経路(gdb/uart/sdi)は `Session::attach` を経由しない。recover・probe list/info・`--repeat` の poll は非対象(read-only か短時間)。
+  - **実装(2026-09-02、依頼 A-2)**: `ch32rv-usb::DeviceLock`。`$XDG_RUNTIME_DIR/ch32rv/<key>.lock`(無ければ temp dir)に `flock` を取り、probe を使う間だけ保持する。key は probe serial、無ければ bus topology。取れなければ `--lock-timeout` 待って exit 13(`device-busy`)。**stale は flock の性質で自動回収**(保持者が終了すれば OS が解放するので「起動時回収」の別処理は不要)。対象: attach 経路(`Session::attach` = flash/target/dbg/write/monitor dmdata/capabilities/arduino)、`gdb` server、`monitor --source sdi`(`cmd_probe::lock_probe`)。同一プロセスで二重取得しないよう、直接 open 経路(gdb/sdi)は `Session::attach` を経由しない。**`uart`(`monitor --source uart`、`arduino monitor` の uart)は lock を取らない**(2026-09-29): LinkE の UART は CDC の別の口で debug の口に触れず、tty は排他で開く。uart を開いたまま同じ probe で flash / gdb を使える。recover・probe list/info・`--repeat` の poll は非対象(read-only か短時間)。
 - **open 再試行**: 挿抜直後は CDC interface が vendor interface より先に見える(実測)。open 失敗は 1 秒間隔で計 3 回まで再試行してから exit する。
 - **転送再試行**: chunk 単位の timeout→再試行(既定 3 回)。再試行が起きた事実は NDJSON event と JSON 結果(`retries`)に必ず出す。
 - **固まり検出**: 再試行が尽きて probe が応答しなくなったら、`USBDEVFS_RESET` は使わず、再接続手順(usbipd / 物理挿抜)を提示して exit 41。
@@ -479,7 +479,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
   - **source**: `uart` = serial port の素通し(双方向、serialport crate で排他 open)。`sdi` = LinkE の SDI 転送を有効にして CDC を読む(受信のみ。DTR を立てない素の open + TIOCEXCL + raw termios)。`dmdata` / `dmseq` / `rtt` = attach して DMI で(双方向)。開いたまま `source` を変えると同じ TCP のまま backend を替える。
   - **終わり方**: **stdin の EOF で必ず終わる**(arduino-cli は CLOSE / QUIT を送らずに死ぬことがあり、tool は別のプロセスグループなので killpg も届かない)。開いた後に続けられなくなったとき(読み書きの失敗、切り替え先の source が開けない)は `\r\n[ch32rv monitor] stopped: <理由>\r\n` を data として送ってからプロセスごと終わる(arduino-cli は tool の stderr を見せず、落ちても exit 0 で終わるため)。
   - **attach のクロックの注意**(2026-09-29): attach する source(uart 以外)を開いたとき(OPEN と、開いたままの切り替え)に、`[ch32rv monitor] attaching may have changed the target clock (UART baud rate, millis, timers); reset the board to run at its own clock` を data の行で流す。`monitor` の warning `attach-reclocks-target` と同じく、全 target に「可能性」として出す(IDE の利用者が読むのはモニタの窓だけのため)。reset して離す設定(on-close)は入れない(要望が出たら)。
-  - **lock**: probe のある port では probe 単位の lock を持つ(uart も。開いている間の flash は待つか exit 13)。
+  - **lock**: attach する source(sdi / dmdata / dmseq / rtt)は probe 単位の lock を持つ(開いている間の flash は待つか exit 13)。`uart` は lock を取らない(CDC だけを使い、tty は排他)。
   - 実機検証(2026-09-29、WCH-LinkE fw 2.22、arduino-cli の代わりに protocol を話す試験 script): V006(K8U6)の SerialEcho を `uart` 115200 で往復、V203 の HelloSDI を `sdi`(serial port 経由・`wchlink://` 経由とも)、L103 の HelloDMDATA を `dmdata` で往復(小文字が大文字で戻る)、開いたままの `dmdata` → `uart` の切り替え、素の serial port(CH343)で `sdi` へ切り替えて理由の行を送って終わる、`chip` の不一致で OPEN が error、stdin の EOF で 0.1 秒以内に exit 0、開いている間は 2 つ目の open が EBUSY。`hid://` は UIAPduino が無く未検証。
 
 ## 5. 呼び出し例
