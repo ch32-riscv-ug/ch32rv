@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-09-29
+
 - (EN) An OEP probe on USB is reached by its vendor bulk pair first, then its vendor HID, then the serial port (oep-core §3.3): the broker and discovery open the OEP device behind the serial port that `port:<path>` or `oep://` names, and use the first transport that answers confirm. Vendor bulk keeps its IN transfers submitted instead of cancelling them on a read timeout (a cancelled transfer drops what arrived with it); HID packs the length-framed stream into the vendor report the report descriptor declares. `CH32RV_OEP_TRANSPORT=vendor-bulk|hid|serial` starts the order elsewhere. The Linux udev rules (`doctor --emit-udev`) now cover OEP probes, matched by a product string starting `OEP` until OEP has its own PID; without them the serial port is used as before.
 - (JA) USB の OEP の probe には、vendor bulk、vendor の HID、serial port の順でつなぐ(oep-core §3.3)。ブローカーと discovery は、`port:<path>` や `oep://` の serial port を持つ OEP の device を開き、confirm に答えた最初の経路を使う。vendor bulk は IN の転送を出したままにする(read の timeout で cancel すると、その時に届いた分を落とす)。HID は長さ見出しのバイト列を、report 記述子の vendor の report に詰める。`CH32RV_OEP_TRANSPORT=vendor-bulk|hid|serial` で始める経路を変えられる。Linux の udev の規則(`doctor --emit-udev`)に OEP の probe を足した(OEP の PID を取るまでは product の文字列が `OEP` で始まる device)。規則が無ければ今までどおり serial port を使う。
 
