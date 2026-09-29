@@ -404,14 +404,27 @@ pub(crate) fn parse_selector(cli: &Cli, cmd: &str) -> Result<Option<Selector>, E
     let Some(raw) = cli.probe.as_deref() else {
         return Ok(None);
     };
-    let sel: Selector = raw.parse().map_err(|e| {
-        fail(
+    let sel: Selector = raw.parse().map_err(|e| match e {
+        // en: `port:` with nothing after it is what an IDE recipe sends when no port was picked
+        // (`{upload.port.address}` empty): say that, and stay fail-closed rather than guess a probe.
+        // ja: 空の `port:` は、port を選ばずに IDE の recipe が送る形。そう言い、probe は推測しない。
+        ch32rv_usb::SelectorParseError::EmptyValue("port") => fail(
+            cli,
+            cmd,
+            ErrorKind::Usage,
+            "no port selected (`--probe port:` is empty)",
+            Some(
+                "pick the board's port (the IDE's port menu, or `arduino-cli upload -p <port>`), \
+                 or name the probe with `--probe serial:<sn>` (`ch32rv probe list` lists them)",
+            ),
+        ),
+        e => fail(
             cli,
             cmd,
             ErrorKind::Usage,
             format!("invalid --probe selector: {e}"),
             None,
-        )
+        ),
     })?;
     let sel = match sel {
         Selector::Name(name) => match crate::config::probe_alias(&name) {

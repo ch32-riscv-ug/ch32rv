@@ -65,6 +65,28 @@ enum Inner {
 }
 
 impl UsbDeviceInfo {
+    /// en: The driver the OS bound to the whole device, when it is one ch32rv cannot open the
+    /// device through, read without opening it. Windows only: a composite probe that ch32rv can
+    /// use sits under `usbccgp` (its interfaces on WinUSB or WCH's CH375 driver); anything else at
+    /// the device level - typically usbipd's stub holding a device shared to WSL - fails the open
+    /// with "incompatible driver". `None` elsewhere and when the driver is unknown.
+    /// ja: OS が device 全体に付けた driver が、ch32rv が開けないものならその名前(開かずに読む)。
+    /// Windows のみ: 使える複合 probe は `usbccgp` の下(interface は WinUSB か WCH の CH375)。device
+    /// 全体に別の driver(WSL へ共有中の usbipd の stub など)が付いていると open が失敗する。
+    pub fn foreign_driver(&self) -> Option<String> {
+        #[cfg(windows)]
+        if let Inner::Nusb(d) = &self.inner {
+            return d
+                .driver()
+                .filter(|n| {
+                    let n = n.to_ascii_lowercase();
+                    n != "usbccgp" && n != "winusb" && !n.starts_with("ch375")
+                })
+                .map(str::to_owned);
+        }
+        None
+    }
+
     /// The nusb device behind this one (`None` under `--replay`).
     pub(crate) fn nusb_info(&self) -> Option<&nusb::DeviceInfo> {
         match &self.inner {
