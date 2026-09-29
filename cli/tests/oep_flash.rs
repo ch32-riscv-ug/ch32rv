@@ -107,7 +107,8 @@ fn flash_over_tcp() {
 
 #[test]
 fn flash_over_the_serial_path() {
-    let Some(f) = fake(&["--pty", "--target-id", V203]) else {
+    // A UART-bridge probe (no OEP USB device of its own, so its serial port is where it is flashed).
+    let Some(f) = fake(&["--pty", "--profile", "esp32-v003", "--target-id", V203]) else {
         return;
     };
     let pty = f.at.strip_prefix("PTY ").unwrap();
@@ -203,7 +204,8 @@ fn run(args: &[&str]) -> (bool, serde_json::Value) {
 
 #[test]
 fn verify_read_reset_and_target_info_on_an_oep_probe() {
-    let Some(f) = fake(&["--pty", "--target-id", V203]) else {
+    // A UART-bridge probe (no OEP USB device of its own, so its serial port is where it is flashed).
+    let Some(f) = fake(&["--pty", "--profile", "esp32-v003", "--target-id", V203]) else {
         return;
     };
     let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
@@ -237,4 +239,22 @@ fn verify_read_reset_and_target_info_on_an_oep_probe() {
     assert!(ok, "{v}");
     assert_eq!(v["result"]["target"]["family"], "CH32V20x");
     assert_eq!(v["result"]["target"]["chip_id"], V203);
+}
+
+#[test]
+fn a_raw_upload_to_a_probe_that_announces_its_oep_device_is_refused() {
+    // The P4 profile says oep_pid = 1: its slots are the IDE's ports, not this serial port.
+    let Some(f) = fake(&["--pty", "--target-id", V203]) else {
+        return;
+    };
+    let pty = f.at.strip_prefix("PTY ").unwrap();
+    let (ok, v) = flash_raw(&format!("port:{pty}"), None);
+    assert!(!ok);
+    assert!(
+        v["error"]["msg"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("slots"),
+        "{v}"
+    );
 }

@@ -64,6 +64,17 @@ pub(crate) fn oep_port(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<String> {
     dev.serial_ports().into_iter().next()
 }
 
+/// en: fn 0 describe `oep_pid` = 1: the probe also enumerates as an OEP device (the OEP VID:PID;
+/// until it is taken, a product string starting `OEP`), so host discovery lists its slots
+/// (oep-core §7.5, oep-spec cc34f9f).
+/// ja: fn 0 の describe `oep_pid` = 1(この probe は OEP の device としても列挙している)。
+fn announces_oep_device(p: &mut Probe) -> bool {
+    p.describe(oep_core::FN).is_ok_and(|tlvs| {
+        tlvs.iter()
+            .any(|t| t.tag == oep_core::tlvs::describe::OEP_PID && t.value.first() == Some(&1))
+    })
+}
+
 /// Whether the serial port `path` belongs to an OEP probe (as [`is_oep_device`] decides).
 fn port_of_oep_device(path: &str) -> bool {
     let sel = Selector::Port(path.to_owned());
@@ -423,6 +434,17 @@ pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> E
         Ok(p) => p,
         Err(c) => return c,
     };
+    // The same probe reached on another serial port (its USB-Serial/JTAG, a UART bridge) says so
+    // in describe `oep_pid`: it also enumerates in the OEP form, whose slots are the IDE's ports.
+    if matches!(a, OepAddr::Serial(_)) && announces_oep_device(&mut p) {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            "this serial port belongs to an OEP probe that also enumerates as an OEP device; flash one of its slots instead",
+            Some("pick its oep://<probe>/<slot> port (`ch32rv arduino discovery` lists them)"),
+        );
+    }
     let serial = matches!(a, OepAddr::Serial(_)) && single_serial(&mut p);
     if let Err(c) = open_session(cli, CMD, &mut p, serial) {
         return c;
