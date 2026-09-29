@@ -1,3 +1,4 @@
 /target
 # ch32-device-data checked out beside the tree for `cargo xtask db-check` (release workflow)
 .ch32-device-data/
+__pycache__/

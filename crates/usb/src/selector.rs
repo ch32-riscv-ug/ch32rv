@@ -6,6 +6,7 @@
 //! serial:<sn>           select by serial only
 //! name:<alias>          alias from the config file
 //! usb:<bus>-<ports>     USB topology (physical port on a fixed hub; for HIL lanes)
+//! tcp:<host:port>       an OEP endpoint over TCP (a probe's TCP transport, a ch32rv broker)
 //! port:<address>        an IDE port address: a probe's serial port (/dev/ttyACM0, COM3),
 //!                       wchlink://<serial> or hid://<topology>
 //! index:<n>             enumeration order (discouraged; rejected under --non-interactive)
@@ -29,6 +30,9 @@ pub enum Selector {
     Name(String),
     /// `usb:<bus>-<ports>` (e.g. `3-1.4.2`)
     Topology(String),
+    /// `tcp:<host:port>`: an OEP endpoint over TCP (a probe's TCP transport or a ch32rv broker).
+    /// Never a USB device, so it matches none here; the OEP layer opens it.
+    Tcp(String),
     /// `port:<address>`: an IDE port address - the probe that owns this serial port
     /// (`/dev/ttyACM0`, `COM3`), or discovery's `wchlink://<serial>` / `hid://<topology>`.
     Port(String),
@@ -58,7 +62,7 @@ pub enum SelectorParseError {
     #[error("empty value after `{0}:`")]
     EmptyValue(&'static str),
     #[error(
-        "unrecognized selector `{0}` (expected VID:PID[:SERIAL], serial:<sn>, name:<alias>, usb:<bus>-<ports>, port:<path>, or index:<n>)"
+        "unrecognized selector `{0}` (expected VID:PID[:SERIAL], serial:<sn>, name:<alias>, usb:<bus>-<ports>, port:<path>, tcp:<host:port>, or index:<n>)"
     )]
     Unrecognized(String),
 }
@@ -78,6 +82,9 @@ impl FromStr for Selector {
         }
         if let Some(v) = s.strip_prefix("usb:") {
             return keyword_value(v, "usb").map(Selector::Topology);
+        }
+        if let Some(v) = s.strip_prefix("tcp:") {
+            return keyword_value(v, "tcp").map(Selector::Tcp);
         }
         if let Some(v) = s.strip_prefix("port:") {
             return keyword_value(v, "port").map(Selector::Port);
@@ -156,7 +163,7 @@ impl Selector {
                 dev.serial_ports().iter().any(|q| normalize_port(q) == want)
             }
             Selector::Index(i) => index == *i,
-            Selector::Name(_) => false,
+            Selector::Name(_) | Selector::Tcp(_) => false,
         }
     }
 }

@@ -13,6 +13,7 @@ authors.workspace = true
 
 [dependencies]
 ch32rv-dmi = { workspace = true }
+serialport = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]

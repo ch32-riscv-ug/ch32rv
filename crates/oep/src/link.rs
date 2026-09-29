@@ -417,3 +417,48 @@ impl Link {
         Err(LinkError::Timeout(self.timeout))
     }
 }
+
+/// A serial port as an OEP transport (COBS framing).
+struct SerialStream(Box<dyn serialport::SerialPort>);
+
+impl ByteStream for SerialStream {
+    fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+        Write::write_all(&mut self.0, data)?;
+        self.0.flush()
+    }
+
+    fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+        self.0
+            .set_timeout(timeout.max(Duration::from_millis(1)))
+            .map_err(io::Error::other)?;
+        match Read::read(&mut self.0, buf) {
+            Ok(n) => Ok(n),
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => Ok(0),
+            Err(e) => Err(e),
+        }
+    }
+}
+
+/// en: Open a probe's serial port (USB CDC, USB-Serial/JTAG, UART bridge) as a COBS link: 115200
+/// (fixed for UART bridges, a number only on USB), exclusive (the serialport crate sets TIOCEXCL on
+/// unix; Windows is exclusive anyway), DTR and RTS asserted like the reference client, so a classic
+/// ESP32 bridge does not reboot. Modem lines a port does not have (a pty) are not an error.
+/// ja: probe の serial port を COBS の link として開く。115200、排他、DTR / RTS は立てる(classic
+/// ESP32 の bridge を再起動させない)。modem 線の無い port(pty)でも失敗にしない。
+pub fn open_serial(path: &str) -> Result<Link, LinkError> {
+    let mut port = serialport::new(path, 115_200)
+        .timeout(Duration::from_millis(20))
+        .open()
+        .map_err(|e| LinkError::Io(io::Error::other(format!("open {path}: {e}"))))?;
+    let _ = port.write_data_terminal_ready(true);
+    let _ = port.write_request_to_send(true);
+    Ok(Link::new(Box::new(SerialStream(port)), Framing::Cobs))
+}
+
+/// Connect to an OEP endpoint over TCP (`length(u16) message`): a probe's TCP transport, or the
+/// broker of a ch32rv that holds the probe.
+pub fn open_tcp(addr: &str) -> Result<Link, LinkError> {
+    let s = TcpStream::connect(addr)?;
+    s.set_nodelay(true)?;
+    Ok(Link::new(Box::new(s), Framing::Length))
+}
