@@ -1002,7 +1002,7 @@ fn flash_via_loader(
     };
     let report = match result {
         Ok(r) => r,
-        Err(e) => return fail(cli, CMD, ErrorKind::VerifyMismatch, e.to_string(), None),
+        Err(e) => return fail(cli, CMD, loader_error_kind(&e), e.to_string(), None),
     };
     let secs = started.elapsed().as_secs_f64();
     if args.reset == ResetPolicy::Run
@@ -1917,6 +1917,21 @@ pub(crate) fn family_byte_from_name(name: &str) -> Option<u8> {
         s if s.starts_with("H4") => 0xC6,
         _ => return None,
     })
+}
+
+/// en: The error kind of a RAM-loader failure: only a page that still differs after rewriting is
+/// a verify mismatch; the probe or its transport failing is a transfer failure (a broker that went
+/// away is not a corrupted write), a protect error is the target's protection.
+/// ja: RAM loader の失敗の種別。書き直しても違う page だけが verify-mismatch。probe や transport の
+/// 失敗は transfer の失敗(ブローカーが消えたのは書き込みの破損ではない)、書き込み保護は target の保護。
+pub(crate) fn loader_error_kind(e: &ch32rv_flash::loader::LoaderError) -> ErrorKind {
+    use ch32rv_flash::loader::LoaderError as L;
+    match e {
+        L::Verify { .. } => ErrorKind::VerifyMismatch,
+        L::WriteProtected { .. } | L::StillLocked(_) => ErrorKind::TargetProtected,
+        L::Probe(d) => crate::source::dmi_error_kind(d),
+        _ => ErrorKind::TransferFailed,
+    }
 }
 
 #[cfg(test)]

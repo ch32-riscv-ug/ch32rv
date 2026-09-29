@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- (EN) Fix: a RAM-loader flash that lost its probe (the broker gone, the transport failing) was reported as `verify-mismatch` (exit 30), as if the written data were wrong. Only a page that still differs after rewriting is a verify mismatch now; the probe or transport failing is `transfer-failed` (40) / `transport-timeout`, a protect error `target-protected`, and on an OEP probe the hint names the broker's log.
+- (JA) 修正: probe を失った RAM loader の flash(ブローカーが消えた、transport の失敗)が、書いた中身が違うかのように `verify-mismatch`(exit 30)になっていた。書き直しても違う page だけを verify-mismatch とし、probe / transport の失敗は `transfer-failed`(40)/ `transport-timeout`、書き込み保護は `target-protected`。OEP の probe では hint にブローカーの log の場所を出す。
+- (EN) The broker keeps a log (`<runtime>/<key>.broker.log`: up, clients, why it went down). About to end with no client left, it takes its endpoint down first and still takes a connection for 150 ms (one that comes keeps it up), a failed release of a departed client's share no longer ends it, and a client that finds no endpoint starts a broker again every 400 ms while it waits (the one it started may have found the old one still holding the probe).
+- (JA) ブローカーが log を持つ(`<runtime>/<key>.broker.log`: 起動、client、終わった理由)。client 0 で終わる前に endpoint を先に下ろし、150 ms は接続を受ける(来たら続ける)。抜けた client の分の release が失敗してもブローカーは終わらない。endpoint が見つからない client は、待つ間 400 ms ごとにブローカーを起こし直す(起こしたものが、まだ probe を持つ古いブローカーを見て去ったかもしれないため)。
+
 ## 0.12.1 - 2026-09-29
 
 - (EN) `--probe port:` with nothing after it - what an IDE recipe sends when no port was picked (`arduino-cli upload` without `-p`) - now says no port was selected and how to pick one, instead of "empty value after `port:`" (still exit 2; no probe is guessed).

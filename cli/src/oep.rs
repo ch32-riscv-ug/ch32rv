@@ -627,7 +627,16 @@ fn flash_in_session(
         Ok(a) => a,
         Err(e) => return oep_fail(cli, CMD, e),
     };
-    let r = flash_attached(cli, args, bytes, p, at.connection, at.wch_chip_id);
+    // A broker that went away says why in its log (its stderr goes nowhere).
+    let log_hint = match a {
+        OepAddr::Serial(path) | OepAddr::Slot { path, .. } => Some(format!(
+            "the probe's broker keeps a log: {}",
+            crate::broker::log_path(&crate::broker::BrokerTarget::Serial(path.clone()).key())
+                .display()
+        )),
+        _ => None,
+    };
+    let r = flash_attached(cli, args, bytes, p, at.connection, at.wch_chip_id, log_hint);
     let _ = detach(p, wire, at.connection, false);
     r
 }
@@ -639,6 +648,7 @@ fn flash_attached(
     p: &mut Probe,
     connection: u16,
     chip_id: Option<u32>,
+    log_hint: Option<String>,
 ) -> ExitCode {
     const CMD: &str = "flash";
     let family = match family(cli, CMD, chip_id) {
@@ -689,7 +699,11 @@ fn flash_attached(
     let report = match ch32rv_flash::loader::program(&mut t, plan, &image.segments, &mut |_, _| {})
     {
         Ok(r) => r,
-        Err(e) => return fail(cli, CMD, ErrorKind::VerifyMismatch, e.to_string(), None),
+        Err(e) => {
+            let kind = crate::cmd_flash::loader_error_kind(&e);
+            let hint = log_hint.filter(|_| kind != ErrorKind::VerifyMismatch);
+            return fail(cli, CMD, kind, e.to_string(), hint.as_deref());
+        }
     };
     let secs = started.elapsed().as_secs_f64();
     if args.reset == ch32rv_contract::policy::ResetPolicy::Run {
