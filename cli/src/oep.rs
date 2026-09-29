@@ -673,6 +673,10 @@ impl ConsoleSession {
                         e => format!("fixture UART: {e}"),
                     },
                 )?;
+                // Like the console: from the last reset mark (else now), not the oldest kept byte.
+                let mut s = s;
+                s.start_at_last_reset(&mut probe)
+                    .map_err(|e| e.to_string())?;
                 (s, None)
             }
             StreamWanted::Console(mech) => {
