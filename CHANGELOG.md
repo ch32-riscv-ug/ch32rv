@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `CH32RV_USB_TRACE=<file>` logs every OEP vendor bulk write and IN completion (time, pid, length, first bytes), for finding where a probe stops answering.
+- (JA) `CH32RV_USB_TRACE=<file>` で、OEP の vendor bulk の書き込みと IN の完了をすべて記録する(時刻、pid、長さ、先頭)。probe が答えなくなる所を探すため。
+
 - (EN) `arduino discovery` reads an OEP probe's slots through its HID first, then vendor bulk, then the serial port (oep-workflow §3.3): HID is held by no other tool, does not contend with a monitor for the serial port, and leaves no DTR on a bound CDC. The broker's own order stays vendor bulk, HID, serial port.
 - (JA) `arduino discovery` は OEP の probe のスロットを、HID、vendor bulk、serial port の順で読む(oep-workflow §3.3。HID は他の道具が握らず、monitor と serial port を取り合わず、bind のある CDC に DTR を残さない)。ブローカーの順は vendor bulk、HID、serial port のまま。
 
