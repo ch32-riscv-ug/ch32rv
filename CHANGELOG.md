@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The Linux udev rules (`60-ch32rv.rules`, `doctor --emit-udev`) also cover WCH's IAP / factory ISP (`4348:55e0`, `1a86:55e0`) and the HID bootloaders `boot hid flash` uses (`1209:b803` rv003usb, `1209:b003` UIAPduino; USB node and hidraw). ArduinoCore-CH32's CI compares the rules byte for byte, so it moves with this release.
+- (JA) Linux の udev の規則(`60-ch32rv.rules`、`doctor --emit-udev`)に、WCH の IAP / ISP(`4348:55e0`、`1a86:55e0`)と、`boot hid flash` が使う HID bootloader(`1209:b803` rv003usb、`1209:b003` UIAPduino。USB のノードと hidraw)を足した。ArduinoCore-CH32 の CI は規則を byte で比べるので、この版と同時に動く。
+
 - (EN) Breaking: accepted-but-unimplemented global flags are refused instead of ignored: `--core` other than 0 and `--connect-under-reset` exit 24 (capability-unsupported); the latter used to warn and attach as usual. The config's `[defaults] chip` now works as documented (used when neither `--chip` nor `CH32RV_CHIP` gives one), and the user config is looked up in the OS's own place (Linux `$XDG_CONFIG_HOME` or `~/.config`, macOS `~/Library/Application Support`, Windows `%APPDATA%`, then `ch32rv/config.toml`). `CH32RV_OEP_TRANSPORT` and `CH32RV_USB_TRACE` are listed in cli.ja.md §3.2 as diagnostics outside the contract.
 - (JA) 破壊的: 受け付けるが未実装の global は、無視せずに断る。0 以外の `--core` と `--connect-under-reset` は exit 24(capability-unsupported。後者は warning を出して通常の attach をしていた)。config の `[defaults] chip` が文書どおり効く(`--chip` も `CH32RV_CHIP` も無いとき)。ユーザーの config は OS ごとの場所で探す(Linux `$XDG_CONFIG_HOME` か `~/.config`、macOS `~/Library/Application Support`、Windows `%APPDATA%`、その下の `ch32rv/config.toml`)。`CH32RV_OEP_TRANSPORT` と `CH32RV_USB_TRACE` を、契約の外の切り分け用として cli.ja.md §3.2 に載せた。
 
