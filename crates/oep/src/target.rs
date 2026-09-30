@@ -80,7 +80,7 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
         v.extend_from_slice(&c.to_le_bytes());
         put_tlv(&mut pl, wire::tlvs::attach::PINS, true, &v);
     }
-    // Low only: high is the default, and a probe from before the TLV would refuse it (critical).
+    // Low only: high is the default, so the TLV says something only when it is low.
     if kind == WireKind::Rvswd && o.idle_clock == Some(wire::enums::idle_clock::LOW) {
         put_tlv(
             &mut pl,
