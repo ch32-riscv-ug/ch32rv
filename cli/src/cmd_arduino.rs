@@ -107,7 +107,7 @@ fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<V
             l.set_timeout(quick);
             ch32rv_oep::session::Probe::connect(l).ok()?
         }
-        None => crate::oep::connect_upstream(path, Some(quick)).ok()?.0,
+        None => crate::oep::connect_for_listing(path, quick).ok()?.0,
     };
     let slots = ch32rv_oep::config::slots(&mut p).ok()?;
     let states = ch32rv_oep::config::slot_states(&mut p).unwrap_or_default();
