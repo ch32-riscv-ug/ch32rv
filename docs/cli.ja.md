@@ -510,7 +510,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
 ### 4.12 broker と OEP の probe
 
 ```text
-ch32rv broker endpoint --probe <sel> [--json]   その probe のブローカーの待ち受け({"endpoint":"127.0.0.1:<port>"|null,"pid":…,"transport":"vendor-bulk"|"hid"|"serial"|"wchlink"})
+ch32rv broker endpoint --probe <sel> [--json]   その probe のブローカーの待ち受け(封筒の result = {"endpoint":"127.0.0.1:<port>"|null,"pid":…,"transport":"vendor-bulk"|"hid"|"serial"|"wchlink"})
 ch32rv broker serve --probe <sel>               ブローカー本体(利用者向けではない。client が切り離して起動する)
 ```
 

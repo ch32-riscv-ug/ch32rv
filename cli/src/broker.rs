@@ -47,10 +47,26 @@ const KEEPALIVE_EVERY: Duration = Duration::from_millis(1000);
 
 // ---- where a broker is ----
 
-/// The key a probe's broker files are named by: from the address alone, since the probe cannot
-/// be opened to learn more (the broker holds it).
+/// en: The key a probe's broker files are named by: the probe's identity, so every way to reach
+/// one probe (`oep://`, `port:` on either of its CDC ports) meets the same broker
+/// (docs/freeze-decisions.ja.md §4). An OEP USB device's serial is its unit id and is read
+/// without opening it; a serial port with no OEP USB device behind it (a UART bridge) is known
+/// only by its path, since the probe cannot be opened to learn more (the broker holds it).
+/// ja: ブローカーの file の key は probe の同一性。同じ probe へのどの道(`oep://`、どちらの CDC の
+/// `port:`)も同じブローカーに着く。OEP の USB device の serial は unit id で、開かずに読める。OEP の
+/// USB device を持たない serial port(UART bridge)は path でしか分からない。
 fn key_for(path: &str) -> String {
-    ch32rv_usb::sanitize_key(&format!("oep-{}", ch32rv_usb::normalize_port(path)))
+    let sel = ch32rv_usb::Selector::Port(path.to_owned());
+    let dev = crate::oep::oep_devices()
+        .into_iter()
+        .enumerate()
+        .find(|(i, d)| sel.matches(d, *i))
+        .map(|(_, d)| d);
+    let key = match dev.and_then(|d| d.port_id()) {
+        Some(id) => format!("oep-{id}"),
+        None => format!("oep-port-{}", ch32rv_usb::normalize_port(path)),
+    };
+    ch32rv_usb::sanitize_key(&key)
 }
 
 fn endpoint_file(key: &str) -> PathBuf {
@@ -125,7 +141,7 @@ pub(crate) enum BrokerTarget {
 impl BrokerTarget {
     /// The WCH-Link behind `entry`.
     pub(crate) fn wch(entry: &crate::cmd_probe::Entry) -> Self {
-        match entry.dev.serial() {
+        match entry.dev.serial().filter(|s| !s.is_empty()) {
             Some(sn) => BrokerTarget::Wch {
                 id: sn.to_owned(),
                 selector: format!("serial:{sn}"),
@@ -133,7 +149,7 @@ impl BrokerTarget {
             None => {
                 let t = entry.dev.topology();
                 BrokerTarget::Wch {
-                    id: t.clone(),
+                    id: format!("usb-{t}"),
                     selector: format!("usb:{t}"),
                 }
             }

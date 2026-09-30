@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Breaking: a probe's broker is keyed by the probe's identity, so every way to one probe (`oep://`, `port:` on either of its CDC ports) meets one broker: an OEP USB device by its serial (= unit id; `oep-<serial>`, else `oep-usb-<position>`), a serial port without an OEP USB device behind it (a UART bridge) by its path (`oep-port-<path>`), a WCH-Link by its serial (else `wch-usb-<position>`). The runtime files (`<key>.oep`, `<key>.broker.log`, the lock) change names accordingly. `broker endpoint --json`'s help and docs now give the shape it prints: the envelope's `result` is `{endpoint, pid, transport}`.
+- (JA) 破壊的: probe のブローカーの key を probe の同一性にした。同じ probe へのどの道(`oep://`、どちらの CDC の `port:`)も 1 つのブローカーに着く。OEP の USB device は serial(= unit id。`oep-<serial>`、無ければ `oep-usb-<位置>`)、OEP の USB device を持たない serial port(UART bridge)は path(`oep-port-<path>`)、WCH-Link は serial(無ければ `wch-usb-<位置>`)。runtime の file(`<key>.oep`、`<key>.broker.log`、lock)の名前もそれに合わせて変わる。`broker endpoint --json` の help と文書を、実際の形(封筒の `result` が `{endpoint, pid, transport}`)に合わせた。
+
 - (EN) The Linux udev rules (`60-ch32rv.rules`, `doctor --emit-udev`) also cover WCH's IAP / factory ISP (`4348:55e0`, `1a86:55e0`) and the HID bootloaders `boot hid flash` uses (`1209:b803` rv003usb, `1209:b003` UIAPduino; USB node and hidraw). ArduinoCore-CH32's CI compares the rules byte for byte, so it moves with this release.
 - (JA) Linux の udev の規則(`60-ch32rv.rules`、`doctor --emit-udev`)に、WCH の IAP / ISP(`4348:55e0`、`1a86:55e0`)と、`boot hid flash` が使う HID bootloader(`1209:b803` rv003usb、`1209:b003` UIAPduino。USB のノードと hidraw)を足した。ArduinoCore-CH32 の CI は規則を byte で比べるので、この版と同時に動く。
 
