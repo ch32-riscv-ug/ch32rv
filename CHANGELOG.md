@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- (EN) A `--chip` name the target DB does not know stops with target-not-in-db (exit 20) before any probe is opened; it used to stop only after the attach. An IDE board for a series ch32rv has no name for (ArduinoCore-CH32's "[compile only]" boards, which now pass the series name instead of `auto`) fails without touching the bench.
+- (JA) target DB に無い `--chip` の名前は、probe を開く前に target-not-in-db(exit 20)で止まる。以前は attach の後で止まっていた。ch32rv に名前の無い series の板(ArduinoCore-CH32 の「[compile only]」の板。`auto` をやめて series 名を渡すようになった)は、bench に触らずに失敗する。
+- (EN) `arduino monitor`'s DESCRIBE lists series names for `chip` too (CONFIGURE already took them).
+- (JA) `arduino monitor` の DESCRIBE の `chip` の一覧に series 名も出す(CONFIGURE は前から受けていた)。
+- (EN) result.schema.json describes `probe.kind` / `probe.variant`, `probe list`'s `result.probes[]` and `broker endpoint`'s `result.endpoint` / `pid` / `transport`, and the contract test checks them (the validator learns `allOf`). The docs lose stale bits: the probe-rs recipe in cli.ja.md §5 (now ArduinoCore-CH32's `--probe "port:{upload.port.address}"` line), `upload_port.N` in boards.txt, `CH32_PROBE_<name>`, and the old FQBN in testing.ja.md; `oep://<probe>` is the USB serial = the OEP unit_id (oep-spec v1-freeze #3).
+- (JA) result.schema.json に `probe.kind` / `probe.variant`、`probe list` の `result.probes[]`、`broker endpoint` の `result.endpoint` / `pid` / `transport` を書き、contract の試験で照合する(validator に `allOf` を足した)。文書の古い所を直した: cli.ja.md §5 の probe-rs の recipe(今の ArduinoCore-CH32 の `--probe "port:{upload.port.address}"` の行に)、boards.txt の `upload_port.N`、`CH32_PROBE_<名前>`、testing.ja.md の古い FQBN。`oep://<probe>` は USB の serial = OEP の unit_id(oep-spec v1-freeze #3)。
+
 ## 0.14.0 - 2026-09-30
 
 - (EN) `rtt` works on an OEP probe (CLI `monitor --source rtt` and `arduino monitor`'s `rtt`, now in the `oep` source list): the probe's console has no RTT mechanism, so ch32rv runs RTT itself over the probe's riscv-dm, as it does on a WCH-Link - it finds the SEGGER control block in RAM and, every 50 ms, halts the hart briefly (the probe's own halt / resume) to drain up[0] and feed down[0], using only the probe's block reads / writes in between (a raw DMI write there makes the probe firmware drop the s0 / s1 / a0 / a1 its block ops borrowed, and the target runs on with them clobbered). The RTT engine is one implementation behind a small `RttTarget` trait for both probes.

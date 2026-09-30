@@ -16,9 +16,9 @@
   - 完全一致だけにする(大小は無視)。前方一致をやめる。
   - family / series を指定したら family で照合する。SKU を指定したら、その SKU の chip id と照合する(DB に chip id が無い SKU は family で照合し、warning を出す)。
   - CLI の `--chip` と monitor の `chip` 設定は同じ照合を使う(monitor でも大小無視、series を受ける)。
-  - 空の `--chip` は usage の誤り(exit 2)。DB に無い名前は今までどおり exit 20。
-  - **`--chip auto`**(大小無視、2026-10-01 追加、ArduinoCore-CH32 の依頼): 「`--chip` 無し」と同じ正規の値。recipe は固定の 1 行で、値が空でも引数を消せないため、platform は DB に無い板に `auto` を書く。自動判定での失敗の形: pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。
-- **追従**: platform は空の値を渡さない(板に family が無いなら `--chip` を付けない)。文書の「空は 20」は「空は 2」に直す。
+  - 空の `--chip` は usage の誤り(exit 2)。DB に無い名前は今までどおり exit 20。2026-10-01 からは probe を開く前に止まる(bench に触らない)。
+  - **`--chip auto`**(大小無視、2026-10-01 追加、ArduinoCore-CH32 の依頼): 「`--chip` 無し」と同じ正規の値。recipe は固定の 1 行で、値が空でも引数を消せないために足した。ただし `auto` はつながっている chip を見つけてそこに書くので、**upload の recipe には使わない**(ArduinoCore-CH32 が「[compile only]」の板で試し、Generic CH32V205 の image が V203 に書けて exit 0 になった。2026-10-01)。自動判定での失敗の形: pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。
+- **追従**: platform は空の値を渡さない。板ごとに、ch32rv が知っている SKU、無ければ family、ch32rv に名前の無い series の板にはその series 名を渡す(ArduinoCore-CH32 f131155)。DB に無い series は `target-not-in-db`(exit 20)で書く前に止まる。`auto` は monitor の `chip` 設定の既定(板を決めずに開く)で使い、upload には使わない。文書の「空は 20」は「空は 2」に直す。
 
 ## 2. port の scheme と ID
 
@@ -26,7 +26,7 @@
 - **決定**:
   - `wchlink://<serial>`。serial の無い Link は `wchlink://usb-<bus>-<ports>`(位置)で出す。`unknown` は出さない。
   - topology は `<bus>-<ports>` だけ。port chain の取れない OS の `addrN` は「挿し直しで変わる」と文書に書き、discovery では出さない(その device は `--probe` で指定する)。
-  - `oep://<unit_id>/<slot>`(dev_oep の決定、2026-10-01): `<unit_id>` は describe の unit id(USB の probe は serial number を unit_id と同じにする。P4 の `-hs` は外す)、1〜32 byte の `a-z 0-9 -`。`<slot>` は 1〜32 byte の `a-z 0-9 - _`(probe-config §1.1)。どちらも仕様で文字を絞るので encode はしない。形が確定したら追従する。
+  - `oep://<unit_id>/<slot>`(dev_oep の決定、2026-10-01、oep-spec v1-freeze #3 で確定): `<unit_id>` は describe の unit id で、USB の probe は serial number = unit_id(P4 の `-hs` は外す)。ch32rv は USB の serial をそのまま使うので、これで unit_id になる。serial の無い device(UART bridge)だけ位置で出す。1〜32 byte の `a-z 0-9 -`。`<slot>` は 1〜32 byte の `a-z 0-9 - _`(probe-config §1.1)。どちらも仕様で文字を絞るので encode はしない。
   - OEP の probe の見分けは、専用の PID を取るまで iProduct の `OEP` 接頭辞。PID を取ったら PID だけにする(`is_oep_device` の 1 か所を差し替える。udev の規則も同時に変える、§11)。
   - monitor の `--port` の `path:` / `usb:` の文法は削る(ユーザー)。`--port` はシリアルの口のパスだけで、どの Link かは `--probe` で選ぶ。
 - **追従**: pytest プラグインと bench は `unknown` を当てにしない。

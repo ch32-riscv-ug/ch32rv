@@ -260,3 +260,21 @@ fn uart_on_an_oep_probe_says_so_and_rtt_looks_for_the_block() {
         "{v}"
     );
 }
+
+#[test]
+fn describe_lists_every_chip_name_configure_takes() {
+    // docs/freeze-decisions.ja.md §1: family, series and SKU, plus `auto`.
+    let mut m = Monitor::start();
+    m.cmd("HELLO 1 \"test\"");
+    let d = m.cmd("DESCRIBE");
+    let values: Vec<&str> = d["port_description"]["configuration_parameters"]["chip"]["value"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .collect();
+    for name in ["auto", "CH32V20x", "CH32V203", "CH32V203C8T6"] {
+        assert!(values.contains(&name), "{name} not in {values:?}");
+        assert_eq!(m.cmd(&format!("CONFIGURE chip {name}"))["message"], "OK");
+    }
+}
