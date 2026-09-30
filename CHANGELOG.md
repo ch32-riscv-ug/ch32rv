@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `probe list` also lists OEP probes on USB (`kind: "oep"`, `serial` = the unit id, `usb`, `topology`, `ports`, `model` from iProduct), from their USB descriptors alone - they are not opened, since a broker may hold them. Every entry now has `kind` (`wchlink` / `oep`). A UART-bridge OEP probe has no USB identity of its own and is not listed.
+- (JA) `probe list` に USB の OEP の probe も出す(`kind: "oep"`、`serial` = unit id、`usb`、`topology`、`ports`、`model` は iProduct)。USB の記述子だけから作り、開かない(ブローカーが持っているかもしれないため)。どの行にも `kind`(`wchlink` / `oep`)を付けた。USB の同一性の無い UART bridge の OEP の probe は出さない。
+
 ## 0.13.1 - 2026-09-30
 
 - (EN) `--chip auto` (any case; also through `CH32RV_CHIP` and `[defaults] chip`) means exactly "no `--chip`": detect the target and check it against nothing. An IDE recipe always passing `--chip {build.ch32rv_chip}` can now ask for auto-detection as a value (an empty value stays exit 2). Auto-detection's failures are part of the contract: nothing on the pins is `target-no-response` (20), a chip id the DB does not know is `target-not-in-db` (20; an OEP probe said target-no-response here), a detected family with no writer is `capability-unsupported` (24).

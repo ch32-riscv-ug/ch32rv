@@ -283,11 +283,39 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
                 );
             }
         };
-        if let (Some(err), Some(obj)) = (error, v.as_object_mut()) {
-            obj.insert("probe_error".to_owned(), serde_json::Value::String(err));
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("kind".to_owned(), serde_json::json!("wchlink"));
+            if let Some(err) = error {
+                obj.insert("probe_error".to_owned(), serde_json::Value::String(err));
+            }
         }
         probes_json.push(v);
         all_warnings.extend(warnings);
+    }
+    // en: OEP probes on USB too (`kind: "oep"`), from their USB descriptors only - never opened, as
+    // their broker may hold them. `serial` is the unit id. A UART-bridge OEP probe has no USB
+    // identity of its own and is not listed (it is reached by its serial port).
+    // ja: USB の OEP の probe も出す(`kind: "oep"`)。USB の記述子だけから作り、開かない(ブローカーが
+    // 持っているかもしれない)。`serial` は unit id。UART bridge の probe は USB の同一性が無いので出さない。
+    for dev in crate::oep::oep_devices() {
+        let v = serde_json::json!({
+            "kind": "oep",
+            "model": dev.product(),
+            "serial": dev.serial(),
+            "usb": dev.usb_id(),
+            "topology": dev.topology(),
+            "ports": dev.serial_ports(),
+        });
+        lines.push(format!(
+            "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} -",
+            "oep",
+            dev.usb_id(),
+            dev.serial().unwrap_or("-"),
+            dev.topology(),
+            dev.product().unwrap_or("OEP probe"),
+            dev.serial_ports().join(",")
+        ));
+        probes_json.push(v);
     }
 
     if cli.json {
@@ -296,8 +324,8 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         env.warnings = all_warnings;
         crate::print_envelope(&env)
     } else {
-        if entries.is_empty() {
-            eprintln!("no WCH-Link / ISP devices found (run `ch32rv doctor` for diagnostics)");
+        if lines.is_empty() {
+            eprintln!("no WCH-Link / ISP / OEP devices found (run `ch32rv doctor` for diagnostics)");
         } else {
             println!(
                 "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} FIRMWARE",
