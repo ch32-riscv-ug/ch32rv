@@ -21,6 +21,33 @@ use nusb::transfer::{Buffer, Bulk, Direction, In, Out};
 
 use crate::device::{UsbDeviceInfo, UsbError, classify_open_error};
 
+/// en: `CH32RV_USB_TRACE=<file>`: one line per OUT write and IN completion (time, length, first
+/// bytes), for finding where a probe stopped answering. Off by default.
+/// ja: `CH32RV_USB_TRACE=<file>` で、OUT の書き込みと IN の完了ごとに 1 行(時刻、長さ、先頭)。既定は無し。
+fn trace(dir: &str, data: &[u8]) {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("CH32RV_USB_TRACE") else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let head: String = data.iter().take(24).map(|b| format!("{b:02x}")).collect();
+        let _ = writeln!(
+            f,
+            "{t:.4} {} {dir} {:5} {head}",
+            std::process::id(),
+            data.len()
+        );
+    }
+}
+
 /// How many IN transfers stay submitted.
 const IN_FLIGHT: usize = 4;
 /// Packets per IN transfer.
@@ -68,8 +95,14 @@ fn drain_in(
             continue;
         };
         let item = match c.status {
-            Ok(()) => Ok(c.buffer[..c.actual_len].to_vec()),
-            Err(e) => Err(UsbError::Transfer(e.to_string())),
+            Ok(()) => {
+                trace("in ", &c.buffer[..c.actual_len]);
+                Ok(c.buffer[..c.actual_len].to_vec())
+            }
+            Err(e) => {
+                trace("in!", e.to_string().as_bytes());
+                Err(UsbError::Transfer(e.to_string()))
+            }
         };
         let failed = item.is_err();
         if (item.as_ref().is_ok_and(|d| d.is_empty()) || tx.send(item).is_ok()) && !failed {
@@ -155,6 +188,7 @@ impl BulkPipe {
     }
 
     fn send(&mut self, data: &[u8], timeout: Duration) -> Result<(), UsbError> {
+        trace("out", data);
         let mut buf = Buffer::new(data.len());
         buf.extend_from_slice(data);
         self.out.submit(buf);
