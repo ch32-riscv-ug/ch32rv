@@ -291,7 +291,9 @@ ch32rv recover --method power-off|nrst|unprotect|unbrick
 ### 4.2 probe
 
 ```text
-ch32rv probe list [--watch]                       --json に selector 全 key、Windows は interface ごとの bound driver 名
+ch32rv probe list [--watch]                       --json に selector 全 key、Windows は interface ごとの bound driver 名。
+                                                  各行に kind(wchlink / oep)。OEP の USB の probe は USB の記述子だけから出し、開かない
+                                                  (serial = unit id)。USB の同一性の無い UART bridge の OEP の probe は出さない(2026-10-01)
 ch32rv probe info [--probe <sel>]                 型番/HW/FW 版(raw・正規・WCH 表記)/mode/serial/interface 構成/使用中
 ch32rv probe power <3v3|5v> <on|off>
 ch32rv probe power cycle [--off-ms 300]
