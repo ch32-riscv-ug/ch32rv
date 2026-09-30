@@ -2,6 +2,7 @@
 
 - 運用開始: 2026-09-01
 - 方針の根拠: [architecture.ja.md §3](../architecture.ja.md)(データ調達の原則)
+- **読む場所(2026-10-01〜)**: ch32-device-data は公開面 `index/` の下だけを読む(ch32-device-data febe61f の契約: 列は名前で、固定は commit と `index/manifest.csv` の sha256、`index/VERSION` は列の削除・改名・書き方の変更の前に上がる)。`cargo xtask db-gen` は `index/` の device_ids / parts / debug_interfaces / flash_geometry / flash_program_method / option_bytes / option_byte_fields を読み、生成物の `# source:` 行に表ごとの sha256 を記録する。下の各依頼書に出てくる `evidence/` の path は、納品された時点の置き場所の記録
 
 ## 位置づけ
 

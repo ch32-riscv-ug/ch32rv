@@ -119,6 +119,72 @@ fn data_rows(s: &str) -> Vec<&str> {
         .collect()
 }
 
+/// en: One table of ch32-device-data's public surface, `index/<name>.csv` (its consumer contract,
+/// index/README.md "Contract for consumers": only `index/` is read, columns by name, the table is
+/// pinned by the repo commit plus its `index/manifest.csv` sha256, and `index/VERSION` moves
+/// before a column is removed / renamed / reformatted).
+/// ja: ch32-device-data の公開面の表 1 つ(`index/<name>.csv`)。読むのは `index/` だけ、列は名前で、
+/// 固定は commit と manifest の sha256、`index/VERSION` は列の削除・改名・書き方の変更の前に上がる。
+struct Table {
+    name: &'static str,
+    header: Vec<String>,
+    rows: Vec<Vec<String>>,
+    sha256: String,
+}
+
+/// The `index/VERSION` this generator is written against.
+const INDEX_VERSION: &str = "1";
+
+impl Table {
+    fn open(data: &Path, name: &'static str) -> Result<Table, String> {
+        let version_path = data.join("index/VERSION");
+        let version = std::fs::read_to_string(&version_path)
+            .map_err(|e| format!("read {version_path:?}: {e}"))?;
+        if version.trim() != INDEX_VERSION {
+            return Err(format!(
+                "ch32-device-data index/VERSION is {} (db-gen reads version {INDEX_VERSION}): \
+                 a column was removed, renamed or reformatted - update the generator",
+                version.trim()
+            ));
+        }
+        let path = data.join(format!("index/{name}.csv"));
+        let manifest = read_csv(&data.join("index/manifest.csv"))?;
+        let sha256 = manifest
+            .iter()
+            .find(|r| r.first().map(String::as_str) == Some(&format!("{name}.csv")))
+            .and_then(|r| r.get(2).cloned())
+            .unwrap_or_default();
+        Ok(Table {
+            name,
+            header: csv_header(&path)?,
+            rows: read_csv(&path)?,
+            sha256,
+        })
+    }
+
+    /// The column index of `col`, or an error naming the table.
+    fn col(&self, col: &str) -> Result<usize, String> {
+        self.header
+            .iter()
+            .position(|h| h == col)
+            .ok_or_else(|| format!("index/{}.csv: no column `{col}`", self.name))
+    }
+
+    /// The cell of `row` at column index `i` (trimmed; empty when missing).
+    fn cell(row: &[String], i: usize) -> &str {
+        row.get(i).map(|s| s.trim()).unwrap_or("")
+    }
+
+    /// `index/<name>.csv sha256:<first 12>` for a generated file's source line.
+    fn provenance(&self) -> String {
+        format!(
+            "index/{}.csv sha256:{}",
+            self.name,
+            &self.sha256[..self.sha256.len().min(12)]
+        )
+    }
+}
+
 /// One SKU's identity + geometry, joined from device_ids and parts.
 struct Sku {
     family: String,
@@ -131,62 +197,66 @@ struct Sku {
 
 /// Build the generated files' contents (no writes): a list of `(filename, content)`.
 fn generate(data: &Path) -> Result<Vec<(&'static str, String)>, String> {
-    let ids_path = data.join("evidence/device_ids.csv");
-    let parts_path = data.join("index/parts.csv");
-    let ids = read_csv(&ids_path)?;
-    let parts = read_csv(&parts_path)?;
+    let ids = Table::open(data, "device_ids")?;
+    let parts = Table::open(data, "parts")?;
+    let (p_pn, p_series, p_family, p_flash, p_sram) = (
+        parts.col("part_number")?,
+        parts.col("series")?,
+        parts.col("family")?,
+        parts.col("flash_bytes")?,
+        parts.col("sram_bytes")?,
+    );
+    let (i_pn, i_id, i_addr, i_dc) = (
+        ids.col("part_number")?,
+        ids.col("device_id")?,
+        ids.col("id_addr")?,
+        ids.col("dont_care_bits")?,
+    );
+    let cell = Table::cell;
 
-    // Geometry by part_number (flash_bytes, sram_bytes).
-    let mut geom: BTreeMap<String, (u64, u64)> = BTreeMap::new();
-    for row in &parts {
-        let (Some(pn), Some(flash), Some(sram)) = (row.first(), row.get(5), row.get(6)) else {
-            continue;
-        };
-        let flash = flash.parse::<u64>().unwrap_or(0);
-        let sram = sram.parse::<u64>().unwrap_or(0);
-        geom.insert(pn.clone(), (flash, sram));
-    }
-
-    // Join device_ids with geometry. Skip blank / all-zero ids. Dedup identical parts.
+    // Join device_ids with parts (series, family, geometry). Skip blank / all-zero ids.
     let mut skus: BTreeMap<String, Sku> = BTreeMap::new();
-    for row in &ids {
-        let (Some(pn), Some(did), Some(addr), Some(dc)) =
-            (row.first(), row.get(1), row.get(2), row.get(3))
-        else {
-            continue;
-        };
-        let did = did.trim();
-        if did.is_empty() || did.eq_ignore_ascii_case("0x00000000") {
+    for row in &ids.rows {
+        let pn = cell(row, i_pn);
+        let did = cell(row, i_id);
+        if pn.is_empty() || did.is_empty() || did.eq_ignore_ascii_case("0x00000000") {
             continue;
         }
         // Every delivered row uses don't-care bits [7:4]; the resolver hard-codes that mask, so
         // reject anything else rather than silently generating a record it cannot match.
-        if dc.trim() != "[7:4]" {
+        let dc = cell(row, i_dc);
+        if dc != "[7:4]" {
             return Err(format!(
                 "{pn}: unexpected dont_care_bits {dc:?} (expected [7:4])"
             ));
         }
         let device_id = parse_hex_u32(did).ok_or_else(|| format!("{pn}: bad device_id {did:?}"))?;
+        let addr = cell(row, i_addr);
         let id_addr = parse_hex_u32(addr).ok_or_else(|| format!("{pn}: bad id_addr {addr:?}"))?;
-        let (flash_bytes, sram_bytes) = geom.get(pn).copied().unwrap_or((0, 0));
-        let part_row = parts.iter().find(|r| r.first() == Some(pn));
-        // "family" (parts.csv col2) groups multiple series; "series" (col1) keys debug wiring and
-        // option fields. Fall back to the part-number series prefix when parts.csv lacks the row.
-        let family = part_row
-            .and_then(|r| r.get(2).cloned())
-            .unwrap_or_else(|| series_prefix(pn));
-        let series = part_row
-            .and_then(|r| r.get(1).cloned())
-            .unwrap_or_else(|| series_prefix(pn));
+        let part_row = parts.rows.iter().find(|r| cell(r, p_pn) == pn);
+        let num = |i: usize| {
+            part_row
+                .map(|r| cell(r, i))
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(0)
+        };
+        // "family" groups several series; "series" keys the debug wiring. Fall back to the
+        // part-number series prefix when parts.csv lacks the row.
+        let text = |i: usize| {
+            part_row
+                .map(|r| cell(r, i).to_owned())
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| series_prefix(pn))
+        };
         skus.insert(
-            pn.clone(),
+            pn.to_owned(),
             Sku {
-                family,
-                series,
+                family: text(p_family),
+                series: text(p_series),
                 device_id,
                 id_addr,
-                flash_bytes,
-                sram_bytes,
+                flash_bytes: num(p_flash),
+                sram_bytes: num(p_sram),
             },
         );
     }
@@ -213,7 +283,9 @@ fn generate(data: &Path) -> Result<Vec<(&'static str, String)>, String> {
     let n = skus.len();
     let mut out = String::new();
     out.push_str(&format!(
-        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} (evidence/device_ids.csv + index/parts.csv)\n# verified = this project confirmed the device_id on real silicon (docs/data-requests/measured/)\n# columns: sku,family,series,device_id,id_addr,flash_bytes,sram_bytes,verified\n"
+        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} ({} + {})\n# verified = this project confirmed the device_id on real silicon (docs/data-requests/measured/)\n# columns: sku,family,series,device_id,id_addr,flash_bytes,sram_bytes,verified\n",
+        ids.provenance(),
+        parts.provenance()
     ));
     for (pn, s) in &skus {
         let verified = MEASURED.contains(&pn.as_str());
@@ -238,35 +310,36 @@ fn generate(data: &Path) -> Result<Vec<(&'static str, String)>, String> {
 }
 
 /// Generate the per-family flash geometry (erase/program granularities + the erased-cell read
-/// value) from `evidence/flash_geometry.csv`. `fast_erase_bytes` is the granularity `erase --range`
+/// value) from `index/flash_geometry.csv`. `fast_erase_bytes` is the granularity `erase --range`
 /// / flash software breakpoints use. `erased_word` is the value a blank word reads back as, taken
 /// from `blank_check_word` (WCH's own IAP blank check, already normalised to 32 bits) and falling
 /// back to the RM's `erased_read_word` (which group A states as the byte `0xFF`).
 fn gen_flash_geometry(data: &Path, rev: &str) -> Result<(String, usize), String> {
-    let rows = read_csv(&data.join("evidence/flash_geometry.csv"))?;
-    let header = csv_header(&data.join("evidence/flash_geometry.csv"))?;
-    let col = |name: &str| header.iter().position(|h| h == name);
-    let (blank_check, erased_read) = (col("blank_check_word"), col("erased_read_word"));
-    let mut out = String::new();
-    out.push_str(&format!(
-        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} (evidence/flash_geometry.csv)\n# columns: family,page_erase,fast_erase,fast_program,block_erase,erased_word (0 = not applicable; erased_word empty = unknown)\n"
-    ));
+    let t = Table::open(data, "flash_geometry")?;
+    let (family_i, page_i, fast_i, prog_i, block_i, blank_i, erased_i) = (
+        t.col("family")?,
+        t.col("page_erase_bytes")?,
+        t.col("fast_erase_bytes")?,
+        t.col("fast_program_bytes")?,
+        t.col("block_erase_bytes")?,
+        t.col("blank_check_word")?,
+        t.col("erased_read_word")?,
+    );
+    let mut out = format!(
+        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} ({})\n# columns: family,page_erase,fast_erase,fast_program,block_erase,erased_word (0 = not applicable; erased_word empty = unknown)\n",
+        t.provenance()
+    );
     let mut n = 0;
-    for row in &rows {
-        // family,page_erase_bytes,fast_erase_bytes,fast_program_bytes,block_erase_bytes,...
-        let Some(family) = row.first() else {
+    for row in &t.rows {
+        let family = Table::cell(row, family_i);
+        if family.is_empty() {
             continue;
-        };
-        let num = |i: usize| {
-            row.get(i)
-                .and_then(|s| s.trim().parse::<u32>().ok())
-                .unwrap_or(0)
-        };
-        let cell = |i: Option<usize>| i.and_then(|i| row.get(i)).map(|s| s.trim()).unwrap_or("");
+        }
+        let num = |i: usize| Table::cell(row, i).parse::<u32>().unwrap_or(0);
         // `blank_check_word` is already a 32-bit value; `erased_read_word` follows the RM, which
         // writes group A's word as `0xFF` - widen that to the word it means.
-        let erased = parse_hex_u32(cell(blank_check))
-            .or_else(|| match parse_hex_u32(cell(erased_read)) {
+        let erased = parse_hex_u32(Table::cell(row, blank_i))
+            .or_else(|| match parse_hex_u32(Table::cell(row, erased_i)) {
                 Some(0xFF) => Some(0xFFFF_FFFF),
                 other => other,
             })
@@ -274,10 +347,10 @@ fn gen_flash_geometry(data: &Path, rev: &str) -> Result<(String, usize), String>
             .unwrap_or_default();
         out.push_str(&format!(
             "{family},{},{},{},{},{erased}\n",
-            num(1),
-            num(2),
-            num(3),
-            num(4)
+            num(page_i),
+            num(fast_i),
+            num(prog_i),
+            num(block_i)
         ));
         n += 1;
     }
@@ -285,33 +358,30 @@ fn gen_flash_geometry(data: &Path, rev: &str) -> Result<(String, usize), String>
 }
 
 /// Generate the per-family FLASH-controller programming procedure from
-/// `evidence/flash_program_method.csv` (R-32). The RM/EVT prose is reduced to what the controller
+/// `index/flash_program_method.csv` (R-32). The RM/EVT prose is reduced to what the controller
 /// driver needs to branch on: `buffered` (FTPG + BUFRST/BUFLOAD, then STRT) vs `direct`
 /// (FTPG, then PG_STRT), plus the width of one buffer load. Rows the data repo marks `conflict`
 /// are emitted with that confidence so the consumer can fail closed.
 fn gen_flash_program_method(data: &Path, rev: &str) -> Result<(String, usize), String> {
-    let path = data.join("evidence/flash_program_method.csv");
-    let rows = read_csv(&path)?;
-    let header = csv_header(&path)?;
-    let col = |name: &str| header.iter().position(|h| h == name);
-    let (Some(method_i), Some(commit_i)) = (col("program_method"), col("program_commit")) else {
-        return Err(format!("{path:?}: missing program_method / program_commit"));
-    };
-    let conf_i = col("confidence");
-    let bits_i = col("program_buffer_load_bits");
-    let mut out = String::new();
-    out.push_str(&format!(
-        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} (evidence/flash_program_method.csv)\n# columns: family,mode,commit,buffer_load_bits,confidence\n#   mode: buffered (FTPG + BUFRST/BUFLOAD, then STRT) | direct (FTPG, then PG_STRT)\n#   buffer_load_bits: width of one FLASH_BufLoad; a word-at-a-time DMI writer needs 32.\n"
-    ));
+    let t = Table::open(data, "flash_program_method")?;
+    let (family_i, method_i, commit_i, bits_i, conf_i) = (
+        t.col("family")?,
+        t.col("program_method")?,
+        t.col("program_commit")?,
+        t.col("program_buffer_load_bits")?,
+        t.col("confidence")?,
+    );
+    let mut out = format!(
+        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} ({})\n# columns: family,mode,commit,buffer_load_bits,confidence\n#   mode: buffered (FTPG + BUFRST/BUFLOAD, then STRT) | direct (FTPG, then PG_STRT)\n#   buffer_load_bits: width of one FLASH_BufLoad; a word-at-a-time DMI writer needs 32.\n",
+        t.provenance()
+    );
     let mut n = 0;
-    for row in &rows {
-        let Some(family) = row.first() else { continue };
-        let method = row.get(method_i).map(String::as_str).unwrap_or("");
-        let commit = row.get(commit_i).map(String::as_str).unwrap_or("");
-        let confidence = conf_i
-            .and_then(|i| row.get(i))
-            .map(String::as_str)
-            .unwrap_or("");
+    for row in &t.rows {
+        let family = Table::cell(row, family_i);
+        if family.is_empty() {
+            continue;
+        }
+        let method = Table::cell(row, method_i);
         let mode = if method.contains("buffer writes") {
             "buffered"
         } else if method.contains("direct writes") {
@@ -320,99 +390,81 @@ fn gen_flash_program_method(data: &Path, rev: &str) -> Result<(String, usize), S
             "" // not classified (e.g. the H417 RM/EVT conflict) - the consumer fails closed
         };
         // `STRT (bit6)` / `PG_STRT (bit21)` -> the bit name alone.
-        let commit = commit.split_whitespace().next().unwrap_or("");
-        let bits = bits_i
-            .and_then(|i| row.get(i))
-            .map(|s| s.trim())
-            .unwrap_or("")
-            .to_owned();
-        out.push_str(&format!("{family},{mode},{commit},{bits},{confidence}\n"));
-        n += 1;
-    }
-    Ok((out, n))
-}
-
-/// en: Generate the per-series debug-wiring table from `index/debug_interfaces.csv`, a table of
-/// ch32-device-data's public surface (its consumer contract: `catalog/`, `index/`, and the
-/// evidence tables its README marks stable). `wire` comes from `debug_if`: swio -> 1-wire,
-/// rvswd -> 2-wire, both -> 1-or-2-wire.
-/// ja: series ごとの配線の表を `index/debug_interfaces.csv`(公開面の表)から作る。`wire` は `debug_if` から。
-fn gen_debug_wiring(data: &Path, rev: &str) -> Result<(String, usize), String> {
-    let path = data.join("index/debug_interfaces.csv");
-    let rows = read_csv(&path)?;
-    let header = csv_header(&path)?;
-    let col = |name: &str| {
-        header
-            .iter()
-            .position(|h| h == name)
-            .ok_or_else(|| format!("{path:?}: no column `{name}`"))
-    };
-    let (c_series, c_if, c_dio, c_clk) = (
-        col("series")?,
-        col("debug_if")?,
-        col("swdio_pads")?,
-        col("swclk_pads")?,
-    );
-    let mut out = String::new();
-    out.push_str(&format!(
-        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} (index/debug_interfaces.csv)\n# columns: series,wire,swdio,swclk\n"
-    ));
-    let mut n = 0;
-    for row in &rows {
-        let get = |i: usize| row.get(i).map(|s| s.trim()).unwrap_or("");
-        let wire = match get(c_if) {
-            "swio" => "1-wire",
-            "rvswd" => "2-wire",
-            "both" => "1-or-2-wire",
-            _ => continue,
-        };
-        let swclk = if get(c_clk).is_empty() {
-            "-"
-        } else {
-            get(c_clk)
-        };
+        let commit = Table::cell(row, commit_i)
+            .split_whitespace()
+            .next()
+            .unwrap_or("");
         out.push_str(&format!(
-            "{},{wire},{},{swclk}\n",
-            get(c_series),
-            get(c_dio)
+            "{family},{mode},{commit},{},{}\n",
+            Table::cell(row, bits_i),
+            Table::cell(row, conf_i)
         ));
         n += 1;
     }
     Ok((out, n))
 }
 
-/// Generate the per-family option-byte block location from `evidence/option_bytes.csv` (R-30).
-/// The delivered table is one row per byte; what a writer needs is the block's base address (the
-/// `RDPR` row, offset 0) and how the family programs it. The base is NOT universal - most families
-/// put the block at `0x1FFFF800`, CH32M030 at `0x1FFFF300` - so a hard-coded base writes to the
-/// wrong address there.
-fn gen_option_bytes(data: &Path, rev: &str) -> Result<(String, usize), String> {
-    let path = data.join("evidence/option_bytes.csv");
-    let rows = read_csv(&path)?;
-    let header = csv_header(&path)?;
-    let col = |name: &str| header.iter().position(|h| h == name);
-    let (Some(addr_i), Some(off_i), Some(unit_i)) =
-        (col("address"), col("offset"), col("write_unit"))
-    else {
-        return Err(format!("{path:?}: missing address / offset / write_unit"));
-    };
-    let mut out = String::new();
-    out.push_str(&format!(
-        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} (evidence/option_bytes.csv, offset 0x00 row)\n# columns: family,base,write_method\n#   write_method: obpg (half-word, FLASH_CTLR.OPTPG) | ftpg (fast page, 32-bit buffer writes)\n"
-    ));
+/// en: Generate the per-series debug-wiring table from `index/debug_interfaces.csv`. `wire` comes
+/// from `debug_if`: swio -> 1-wire, rvswd -> 2-wire, both -> 1-or-2-wire.
+/// ja: series ごとの配線の表を `index/debug_interfaces.csv` から作る。`wire` は `debug_if` から。
+fn gen_debug_wiring(data: &Path, rev: &str) -> Result<(String, usize), String> {
+    let t = Table::open(data, "debug_interfaces")?;
+    let (series_i, if_i, dio_i, clk_i) = (
+        t.col("series")?,
+        t.col("debug_if")?,
+        t.col("swdio_pads")?,
+        t.col("swclk_pads")?,
+    );
+    let mut out = format!(
+        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} ({})\n# columns: series,wire,swdio,swclk\n",
+        t.provenance()
+    );
     let mut n = 0;
-    for row in &rows {
-        let Some(family) = row.first() else { continue };
-        // The block's base is the byte at offset 0 (RDPR).
-        if row.get(off_i).map(|s| s.trim()) != Some("0x00") {
+    for row in &t.rows {
+        let wire = match Table::cell(row, if_i) {
+            "swio" => "1-wire",
+            "rvswd" => "2-wire",
+            "both" => "1-or-2-wire",
+            _ => continue,
+        };
+        let clk = Table::cell(row, clk_i);
+        let swclk = if clk.is_empty() { "-" } else { clk };
+        out.push_str(&format!(
+            "{},{wire},{},{swclk}\n",
+            Table::cell(row, series_i),
+            Table::cell(row, dio_i)
+        ));
+        n += 1;
+    }
+    Ok((out, n))
+}
+
+/// Generate the per-family option-byte block location from `index/option_bytes.csv` (R-30):
+/// the block's base is the byte at offset 0 (RDPR), and the write unit says how it is written.
+fn gen_option_bytes(data: &Path, rev: &str) -> Result<(String, usize), String> {
+    let t = Table::open(data, "option_bytes")?;
+    let (family_i, addr_i, off_i, unit_i) = (
+        t.col("family")?,
+        t.col("address")?,
+        t.col("offset")?,
+        t.col("write_unit")?,
+    );
+    let mut out = format!(
+        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} ({}, offset 0x00 row)\n# columns: family,base,write_method\n#   write_method: obpg (half-word, FLASH_CTLR.OPTPG) | ftpg (fast page, 32-bit buffer writes)\n",
+        t.provenance()
+    );
+    let mut n = 0;
+    for row in &t.rows {
+        let family = Table::cell(row, family_i);
+        if family.is_empty() || Table::cell(row, off_i) != "0x00" {
             continue;
         }
-        let Some(base) = row.get(addr_i).and_then(|a| parse_hex_u32(a)) else {
+        let Some(base) = parse_hex_u32(Table::cell(row, addr_i)) else {
             return Err(format!(
                 "{family}: option-byte row 0x00 has no usable address"
             ));
         };
-        let unit = row.get(unit_i).map(String::as_str).unwrap_or("");
+        let unit = Table::cell(row, unit_i);
         let method = if unit.contains("OBPG") {
             "obpg"
         } else if unit.contains("FTPG") {
@@ -426,32 +478,37 @@ fn gen_option_bytes(data: &Path, rev: &str) -> Result<(String, usize), String> {
     Ok((out, n))
 }
 
-/// Generate the per-family USER-byte option field table from `evidence/option_byte_fields.csv`.
-/// Only the named USER bits are emitted (Reserved bits are skipped); these drive the structured
-/// decode in `target option get`.
+/// Generate the per-family USER-byte option field table from `index/option_byte_fields.csv`.
+/// Only the named single-bit USER fields are emitted (Reserved bits are skipped); these drive the
+/// structured decode in `target option get`.
 fn gen_option_fields(data: &Path, rev: &str) -> Result<(String, usize), String> {
-    let rows = read_csv(&data.join("evidence/option_byte_fields.csv"))?;
-    let mut out = String::new();
-    out.push_str(&format!(
-        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} (evidence/option_byte_fields.csv, byte=USER)\n# columns: family,bit,field,default\n"
-    ));
+    let t = Table::open(data, "option_byte_fields")?;
+    let (family_i, byte_i, bits_i, field_i, default_i) = (
+        t.col("family")?,
+        t.col("byte")?,
+        t.col("bits")?,
+        t.col("field")?,
+        t.col("default")?,
+    );
+    let mut out = format!(
+        "# GENERATED by `cargo xtask db-gen` - do not edit by hand.\n# source: ch32-device-data@{rev} ({}, byte=USER)\n# columns: family,bit,field,default\n",
+        t.provenance()
+    );
     let mut n = 0;
-    for row in &rows {
-        // family,byte,bits,field,default,...
-        let (Some(family), Some(byte), Some(bits), Some(field), Some(default)) =
-            (row.first(), row.get(1), row.get(2), row.get(3), row.get(4))
-        else {
-            continue;
-        };
-        if byte != "USER" || field.is_empty() || field == "Reserved" {
+    for row in &t.rows {
+        let field = Table::cell(row, field_i);
+        if Table::cell(row, byte_i) != "USER" || field.is_empty() || field == "Reserved" {
             continue;
         }
         // Only single-bit fields are decoded (a `[hi:lo]` multi-bit field is skipped for now).
-        let Ok(bit) = bits.parse::<u8>() else {
+        let Ok(bit) = Table::cell(row, bits_i).parse::<u8>() else {
             continue;
         };
-        let def = default.parse::<u8>().unwrap_or(0);
-        out.push_str(&format!("{family},{bit},{field},{def}\n"));
+        let def = Table::cell(row, default_i).parse::<u8>().unwrap_or(0);
+        out.push_str(&format!(
+            "{},{bit},{field},{def}\n",
+            Table::cell(row, family_i)
+        ));
         n += 1;
     }
     Ok((out, n))
