@@ -85,12 +85,17 @@ pub fn hid_flash(cli: &Cli, file: &std::path::Path, usb_id: Option<&str>) -> Exi
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
-            "usb": format!("{:04x}:{:04x}", report.vid, report.pid),
-            "bytes": report.bytes,
-            "sectors_written": report.sectors_written,
-            "sector_size": 64,
-            "verified": true,
-            "run": true,
+            "flash": {
+                "bytes": report.bytes,
+                "programmer": "hid",
+                "usb": format!("{:04x}:{:04x}", report.vid, report.pid),
+                "sectors_written": report.sectors_written,
+                "sector_size": 64,
+                "skipped": false,
+                "scope": "sectors",
+                "verified": true,
+                "running": true,
+            }
         }));
         crate::print_envelope(&env)
     } else {

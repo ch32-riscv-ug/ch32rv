@@ -744,6 +744,12 @@ fn finish_flash(
     sdi: Option<SwitchState>,
     monitor: Option<MonitorSource>,
 ) -> ExitCode {
+    // Which writer programmed it: WCH's stub where the family has one, else the FLASH controller.
+    let programmer = if params_for_family(session.attach.family_byte).is_some() {
+        "stub"
+    } else {
+        "controller"
+    };
     let mut running = None;
     // en: A Link borrowed from its broker (a monitor is open) is handed back with the reset: the
     // broker reopens its consoles first, so the firmware's first output is polled.
@@ -758,6 +764,7 @@ fn finish_flash(
                 cli,
                 cmd,
                 &family,
+                programmer,
                 total,
                 erase_scope,
                 skipped,
@@ -770,6 +777,7 @@ fn finish_flash(
             cli,
             cmd,
             &family,
+            programmer,
             total,
             erase_scope,
             skipped,
@@ -792,6 +800,7 @@ fn finish_flash(
                         cli,
                         cmd,
                         &session.family(),
+                        programmer,
                         total,
                         erase_scope,
                         skipped,
@@ -830,6 +839,7 @@ fn finish_flash(
         cli,
         cmd,
         &session.family(),
+        programmer,
         total,
         erase_scope,
         skipped,
@@ -860,6 +870,7 @@ fn finish_lent(
     cli: &Cli,
     cmd: &str,
     family: &str,
+    programmer: &str,
     total: u64,
     erase_scope: &str,
     skipped: bool,
@@ -871,6 +882,7 @@ fn finish_lent(
         cli,
         cmd,
         family,
+        programmer,
         total,
         erase_scope,
         skipped,
@@ -890,6 +902,7 @@ fn finish_lent_ok(
     cli: &Cli,
     cmd: &str,
     family: &str,
+    programmer: &str,
     total: u64,
     erase_scope: &str,
     skipped: bool,
@@ -902,6 +915,7 @@ fn finish_lent_ok(
         cli,
         cmd,
         family,
+        programmer,
         total,
         erase_scope,
         skipped,
@@ -1010,18 +1024,24 @@ fn flash_via_loader(
     {
         return fail(cli, CMD, ErrorKind::TransferFailed, e, None);
     }
+    // The Link's soft reset gives no word on whether the program runs.
+    let running: Option<bool> = None;
     let total = image.total_len();
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
             "flash": {
-                "written": total,
+                "bytes": total,
                 "programmer": "loader",
                 "family": family,
                 "pages": report.pages,
                 "rewritten": report.rewritten,
                 "restarted_runs": report.restarted_runs,
-                "verify": "readback",
+                // Every page is read back after it is written: verified, or the run failed.
+                "verified": true,
+                "skipped": false,
+                "scope": "pages",
+                "running": running,
                 "seconds": secs,
             }
         }));
@@ -1086,6 +1106,7 @@ fn finish(
     cli: &Cli,
     cmd: &str,
     family: &str,
+    programmer: &str,
     total_bytes: u64,
     erase_scope: &str,
     skipped: bool,
@@ -1102,12 +1123,15 @@ fn finish(
             ResultEnvelope::success(cmd)
         };
         env.result = Some(serde_json::json!({
-            "bytes": total_bytes,
-            "family": family,
-            "skipped": skipped,
-            "scope": erase_scope,
-            "verified": verified,
-            "running": running,
+            "flash": {
+                "bytes": total_bytes,
+                "family": family,
+                "programmer": programmer,
+                "skipped": skipped,
+                "scope": erase_scope,
+                "verified": verified,
+                "running": running,
+            }
         }));
         env.warnings = warnings;
         crate::print_envelope(&env)

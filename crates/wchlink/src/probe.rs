@@ -215,6 +215,20 @@ impl Variant {
         }
     }
 
+    /// en: The stable ID a caller compares (JSON `probe.variant`, docs/freeze-decisions.ja.md §7);
+    /// [`Self::name`] is only for people.
+    /// ja: 照合に使う安定した ID(JSON の `probe.variant`)。[`Self::name`] は人向けの表示だけ。
+    pub fn id(&self) -> String {
+        match self {
+            Variant::Ch549 => "link-ch549".to_owned(),
+            Variant::LinkE => "linke".to_owned(),
+            Variant::LinkS => "links".to_owned(),
+            Variant::DapLink => "daplink".to_owned(),
+            Variant::LinkW => "linkw".to_owned(),
+            Variant::Unknown(v) => format!("unknown-{v:02x}"),
+        }
+    }
+
     pub fn name(&self) -> String {
         match self {
             Variant::Ch549 => "WCH-Link(CH549)".to_owned(),
@@ -270,13 +284,24 @@ pub struct ProbeInfo {
 /// Source: measured on ArduinoCore-CH32 (upload-and-fixture); hash mapping lives in
 /// ch32-device-data `evidence/link_firmware.csv`.
 /// ja: 既知不良 firmware 表。不良内容を返す。出典は ArduinoCore-CH32 の実測。
-pub fn known_bad_firmware(major: u8, minor: u8) -> Option<&'static str> {
-    match (major, minor) {
-        (2, 11) => Some(
-            "firmware 2.11 (v31) has a known defect: the target is not started after flashing (reset does not take effect)",
-        ),
-        _ => None,
-    }
+/// en: Known-bad firmware: (variant ID, or `None` for every variant, major, minor, why). Matched by
+/// version and variant; there is no hash check (docs/freeze-decisions.ja.md §12). The 2.11 entry
+/// was recorded without the variant it was seen on, so it applies to all.
+/// ja: 既知の不良の firmware。(variant の ID か全 variant の `None`、版、理由)で照合する。hash での照合は
+/// しない。2.11 はどの variant で見たかの記録が無いので全 variant に当てる。
+const KNOWN_BAD: &[(Option<&str>, u8, u8, &str)] = &[(
+    None,
+    2,
+    11,
+    "firmware 2.11 (v31) has a known defect: the target is not started after flashing (reset does not take effect)",
+)];
+
+pub fn known_bad_firmware(variant: Variant, major: u8, minor: u8) -> Option<&'static str> {
+    let id = variant.id();
+    KNOWN_BAD
+        .iter()
+        .find(|(v, a, b, _)| (*a, *b) == (major, minor) && v.is_none_or(|v| v == id))
+        .map(|(_, _, _, why)| *why)
 }
 
 /// An opened WCH-Link (RISC-V mode) session.
@@ -834,9 +859,12 @@ mod tests {
 
     #[test]
     fn known_bad_is_only_2_11() {
-        assert!(known_bad_firmware(2, 11).is_some());
-        assert!(known_bad_firmware(2, 22).is_none());
-        assert!(known_bad_firmware(2, 12).is_none());
+        assert!(known_bad_firmware(Variant::LinkE, 2, 11).is_some());
+        assert!(known_bad_firmware(Variant::Ch549, 2, 11).is_some());
+        assert!(known_bad_firmware(Variant::LinkE, 2, 22).is_none());
+        assert!(known_bad_firmware(Variant::LinkE, 2, 12).is_none());
+        assert_eq!(Variant::LinkE.id(), "linke");
+        assert_eq!(Variant::Ch549.id(), "link-ch549");
     }
 
     #[test]

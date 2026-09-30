@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ch32-riscv-ug/ch32rv/docs/contract/events.schema.json",
-  "title": "ch32rv NDJSON progress event (contract 1)",
+  "title": "ch32rv NDJSON progress event (contract 4)",
   "description": "--progress ndjson 時に stderr へ 1 行 1 object。library の ProgressSink event と同一の型",
   "type": "object",
   "required": ["ev"],
