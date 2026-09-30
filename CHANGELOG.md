@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.4 - 2026-09-30
+
 - (EN) Fix: with oep-probe-arduino 0.0.7 on the probe, every OEP command by slot failed with "the probe has no slot `x035`" (exit 23). The probe.config slot item gained `max_speed(u32)` and `idle_clock(u8)` before `mechanism` (oep-spec 5bfe052), so the name moved from byte 12 to 17. Slots are read in the new shape (and still in the old one, told apart by which one parses cleanly: the revision did not change), and the slot's line settings go into the attach: its speed ceiling (the lower of it and `--speed`) and, on rvswd, its idle clock (the TLV only when it is low). The registry is regenerated from oep-spec 58d38cf.
 - (JA) 修正: probe が oep-probe-arduino 0.0.7 だと、スロットを使う OEP のコマンドがすべて「the probe has no slot `x035`」(exit 23)で失敗した。probe.config のスロットの項目に `mechanism` の前へ `max_speed(u32)` と `idle_clock(u8)` が入り(oep-spec 5bfe052)、名前が 12 byte 目から 17 byte 目に動いたため。新しい形で読み(古い形も読む。revision は変わっていないので、筋の通る方で読み分ける)、スロットの線の設定を attach に渡す: 速さの上限(`--speed` と低い方)と、rvswd では idle clock(low のときだけ TLV を付ける)。台帳は oep-spec 58d38cf から作り直した。
 
