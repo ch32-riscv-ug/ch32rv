@@ -25,7 +25,7 @@
 - **決定**:
   - `wchlink://<serial>`。serial の無い Link は `wchlink://usb-<bus>-<ports>`(位置)で出す。`unknown` は出さない。
   - topology は `<bus>-<ports>` だけ。port chain の取れない OS の `addrN` は「挿し直しで変わる」と文書に書き、discovery では出さない(その device は `--probe` で指定する)。
-  - `oep://<probe>/<slot>` の `<probe>` と `<slot>` は、`[A-Za-z0-9._~-]` 以外を percent-encode する(読む側は decode する)。
+  - `oep://<unit_id>/<slot>`(dev_oep の決定、2026-10-01): `<unit_id>` は describe の unit id(USB の probe は serial number を unit_id と同じにする。P4 の `-hs` は外す)、1〜32 byte の `a-z 0-9 -`。`<slot>` は 1〜32 byte の `a-z 0-9 - _`(probe-config §1.1)。どちらも仕様で文字を絞るので encode はしない。形が確定したら追従する。
   - OEP の probe の見分けは、専用の PID を取るまで iProduct の `OEP` 接頭辞。PID を取ったら PID だけにする(`is_oep_device` の 1 か所を差し替える。udev の規則も同時に変える、§11)。
   - monitor の `--port` の `path:` / `usb:` の文法は削る(ユーザー)。`--port` はシリアルの口のパスだけで、どの Link かは `--probe` で選ぶ。
 - **追従**: pytest プラグインと bench は `unknown` を当てにしない。
@@ -50,7 +50,7 @@
 
 - **今**: key は `oep-<serial port の path>`。同じ probe に `oep://` と別の CDC の `port:` で 2 つのブローカーができうる。`broker endpoint --json` の help と実際の形が違う。
 - **決定**:
-  - key は probe の同一性にする。OEP の USB の probe は `oep-<USB serial>`(無ければ `oep-usb-<topology>`)。USB の同一性を持たない UART bridge の probe は `oep-port-<正規化した path>`。WCH-Link は `wch-<serial>`(無ければ `wch-usb-<topology>`)。これで同じ probe は 1 つのブローカーになる。
+  - key は probe の同一性にする。OEP の probe は `oep-<unit_id>`(USB の probe は serial = unit_id。UART bridge も開けば describe の unit id が分かる)。unit id が読めない間だけ `oep-port-<正規化した path>`。WCH-Link は `wch-<serial>`(無ければ `wch-usb-<topology>`)。これで同じ probe は 1 つのブローカーになる。
   - `broker endpoint --json` は結果の封筒(envelope)の `result` に `{endpoint, pid, transport}` を返す。`endpoint` は `"127.0.0.1:<port>"` か null。help と文書をこれに揃える。
   - ブローカーの TCP は素の OEP(`length(u16) message`、oep-core §3.1)で、127.0.0.1 だけで待つ。
 - **追従**: pytest プラグインは `result.endpoint` だけを見ればよい(両方を許す分岐は消してよい)。

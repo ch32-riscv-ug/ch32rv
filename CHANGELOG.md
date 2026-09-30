@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Breaking: a WCH-Link without a USB serial is `wchlink://usb-<bus>-<ports>` (its position) in discovery and wherever a `wchlink://` address is taken, instead of `wchlink://unknown` (two such Links collided). A Link with neither a serial nor a stable position (an OS that gives no port chain) is left out of discovery; select it with `--probe`. `properties.serial` is the real serial, or null.
+- (JA) 破壊的: USB の serial の無い WCH-Link は、discovery でも `wchlink://` を受ける所でも、`wchlink://unknown` ではなく `wchlink://usb-<bus>-<ports>`(位置)になった(そうした Link 2 台が衝突していた)。serial も安定した位置も無い Link(port chain を返さない OS)は discovery に出さない(`--probe` で指定する)。`properties.serial` は本物の serial か null。
+
 - (EN) Breaking: `arduino monitor --protocol` takes `serial`, `wchlink` or `oep` only (another value fell back to the serial source list; now a usage error, exit 2), and the source table per protocol is frozen as docs/freeze-decisions.ja.md §3 lists it (the docs now agree in one table). `monitor --port` is the serial port's path; its documented `path:` / `usb:VID:PID…` grammar, never implemented, is gone from the help and the docs.
 - (JA) 破壊的: `arduino monitor --protocol` は `serial` / `wchlink` / `oep` だけを受ける(ほかの値は serial の一覧になっていた。今は usage の誤り、exit 2)。protocol ごとの source の表を docs/freeze-decisions.ja.md §3 のとおり凍結した(文書も 1 つの表に揃えた)。`monitor --port` は serial port の path だけ。文書にあって実装の無かった `path:` / `usb:VID:PID…` の文法は、help と文書から消した。
 

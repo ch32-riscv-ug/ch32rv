@@ -155,30 +155,32 @@ fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<V
     )
 }
 
-/// WCH-Links as `wchlink://<serial>`.
+/// WCH-Links as `wchlink://<serial>`, or `wchlink://usb-<bus>-<ports>` for one without a serial.
 fn wchlink_ports() -> Vec<Value> {
     let entries = crate::cmd_probe::wch_devices().unwrap_or_default();
     entries
         .iter()
-        .map(|e| {
-            let serial = e.dev.serial().unwrap_or("unknown");
+        // A Link with neither a serial nor a stable position has no address that would still name
+        // it after a replug; it is left out (select it with --probe).
+        .filter_map(|e| e.dev.port_id().map(|id| (e, id)))
+        .map(|(e, id)| {
             // en: Still listed when its driver keeps ch32rv out (the user sees it and why), with
             // the driver named in the label and the properties.
             // ja: driver のために開けない Link も出す(見えて、理由が分かるように)。label と properties に
             // driver の名前。
             let driver = e.dev.foreign_driver();
             let label = match &driver {
-                Some(d) => format!("WCH-Link {serial} (cannot open: driver {d})"),
-                None => format!("WCH-Link {serial}"),
+                Some(d) => format!("WCH-Link {id} (cannot open: driver {d})"),
+                None => format!("WCH-Link {id}"),
             };
             let mut v = json!({
-                "address": format!("wchlink://{serial}"),
+                "address": format!("wchlink://{id}"),
                 "label": label,
                 "protocol": "wchlink",
                 "protocolLabel": "WCH-Link (RISC-V debug)",
-                "hardwareId": serial,
+                "hardwareId": id,
                 "properties": {
-                    "serial": serial,
+                    "serial": e.dev.serial(),
                     "vid": format!("0x{:04x}", e.dev.vid()),
                     "pid": format!("0x{:04x}", e.dev.pid()),
                     "mode": crate::cmd_probe::mode_str(e.mode),
@@ -588,11 +590,11 @@ struct Resolved {
 /// 位置で見つかる)、無ければ素の serial port(uart だけが使える)。
 fn resolve_address(address: &str) -> Result<Resolved, String> {
     let entries = crate::cmd_probe::wch_devices().map_err(|e| format!("USB enumeration: {e}"))?;
-    if let Some(serial) = address.strip_prefix("wchlink://") {
+    if let Some(id) = address.strip_prefix("wchlink://") {
         let entry = entries
             .into_iter()
-            .find(|e| e.dev.serial() == Some(serial))
-            .ok_or_else(|| format!("no WCH-Link with serial {serial} is connected"))?;
+            .find(|e| e.dev.port_id().as_deref() == Some(id))
+            .ok_or_else(|| format!("no WCH-Link {id} is connected"))?;
         let port = entry.dev.serial_ports().into_iter().next();
         return Ok(Resolved {
             entry: Some(entry),
