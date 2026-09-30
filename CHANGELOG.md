@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Fix (safety): `--dry-run` was accepted by every command but honoured only by `probe firmware update` and `boot hid flash`; the others did the real thing (`erase --all --dry-run --yes` erased the chip). Any other command now refuses `--dry-run` with a usage error (exit 2) before touching a device.
+- (JA) 修正(安全): `--dry-run` はどのコマンドでも受け付けたが、効くのは `probe firmware update` と `boot hid flash` だけで、ほかは実際に動いた(`erase --all --dry-run --yes` が chip を消した)。ほかのコマンドは device に触れる前に `--dry-run` を usage の誤り(exit 2)で断る。
+
 ## 0.12.5 - 2026-09-30
 
 - (EN) OEP: on a probe with no slot whose wire takes its pins from the host (describe `role_channels`, e.g. an RP2350 board firmware), ch32rv scans the pairs (count 0, going on with `skip` until a scan tries none) and attaches where the target is; several are told apart by each one's chip and `--chip`, as with slots. Such a probe now refuses an attach without pins when it allows more than one pair (oep-if-debug §1). The registry is regenerated from oep-spec fd6b5c7.
