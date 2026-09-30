@@ -17,6 +17,7 @@
   - family / series を指定したら family で照合する。SKU を指定したら、その SKU の chip id と照合する(DB に chip id が無い SKU は family で照合し、warning を出す)。
   - CLI の `--chip` と monitor の `chip` 設定は同じ照合を使う(monitor でも大小無視、series を受ける)。
   - 空の `--chip` は usage の誤り(exit 2)。DB に無い名前は今までどおり exit 20。
+  - **`--chip auto`**(大小無視、2026-10-01 追加、ArduinoCore-CH32 の依頼): 「`--chip` 無し」と同じ正規の値。recipe は固定の 1 行で、値が空でも引数を消せないため、platform は DB に無い板に `auto` を書く。自動判定での失敗の形: pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。
 - **追従**: platform は空の値を渡さない(板に family が無いなら `--chip` を付けない)。文書の「空は 20」は「空は 2」に直す。
 
 ## 2. port の scheme と ID

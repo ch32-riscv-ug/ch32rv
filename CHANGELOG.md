@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `--chip auto` (any case; also through `CH32RV_CHIP` and `[defaults] chip`) means exactly "no `--chip`": detect the target and check it against nothing. An IDE recipe always passing `--chip {build.ch32rv_chip}` can now ask for auto-detection as a value (an empty value stays exit 2). Auto-detection's failures are part of the contract: nothing on the pins is `target-no-response` (20), a chip id the DB does not know is `target-not-in-db` (20; an OEP probe said target-no-response here), a detected family with no writer is `capability-unsupported` (24).
+- (JA) `--chip auto`(大小無視。`CH32RV_CHIP` と `[defaults] chip` でも)は「`--chip` 無し」と全く同じ(検出して何とも照合しない)。常に `--chip {build.ch32rv_chip}` を渡す IDE の recipe が、自動判定を値として頼める(空の値は exit 2 のまま)。自動判定での失敗を契約に入れた: pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20。OEP の probe ではここが target-no-response だった)、見つけた family を書く手段が無い → `capability-unsupported`(24)。
+
 ## 0.13.0 - 2026-09-30
 
 - (EN) The device DB is generated from ch32-device-data's public surface only, `index/` (febe61f's consumer contract): device_ids, option_bytes and option_byte_fields move from `evidence/` to their new `index/` tables, flash_geometry / flash_program_method to their `index/` copies, and every column is read by name. db-gen stops when `index/VERSION` is not the one it was written for, and each generated file's source line records the table's manifest sha256. The generated data is unchanged.

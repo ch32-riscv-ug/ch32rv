@@ -667,16 +667,23 @@ fn family(cli: &Cli, cmd: &str, chip_id: Option<u32>) -> Result<String, ExitCode
             format!("the probe read no chip id and --chip {c} does not name one family"),
             None,
         )),
-        (None, None) => Err(fail(
-            cli,
-            cmd,
-            ErrorKind::TargetNoResponse,
-            match chip_id {
-                Some(id) => format!("chip id 0x{id:08x} is not in the target DB"),
-                None => "the probe read no chip id at attach".to_owned(),
-            },
-            Some("pass --chip to name the target"),
-        )),
+        // A chip id the DB does not know is not-in-db; no chip id at all is no response.
+        (None, None) => Err(match chip_id {
+            Some(id) => fail(
+                cli,
+                cmd,
+                ErrorKind::TargetNotInDb,
+                format!("chip id 0x{id:08x} is not in the target DB"),
+                Some("the part is not in this build's DB (`ch32rv db list`)"),
+            ),
+            None => fail(
+                cli,
+                cmd,
+                ErrorKind::TargetNoResponse,
+                "the probe read no chip id at attach",
+                Some("check the wiring and power, or pass --chip to name the target"),
+            ),
+        }),
     }
 }
 
