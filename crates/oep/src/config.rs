@@ -19,6 +19,11 @@ pub struct Slot {
     pub swclk: u16,
     pub at_boot: bool,
     pub retry_s: u16,
+    /// The line speed ceiling the slot's attach takes (Hz; `None` = no ceiling, or a probe from
+    /// before slots carried one).
+    pub max_speed: Option<u32>,
+    /// How the slot's line idles (`wire_rvswd::enums::idle_clock`: 0 high, 1 low).
+    pub idle_clock: u8,
     /// The console mechanism (`oep.target.console`).
     pub mechanism: u8,
     pub name: String,
@@ -27,22 +32,48 @@ pub struct Slot {
 }
 
 impl Slot {
-    /// `slot(u8) wire_fn(u16) swdio(u16) swclk(u16) attach(u8) retry_s(u16) mechanism(u8)
-    /// name_len(u8) name lock_scheme(u8) [lock_mask(n) lock_value(n)]`
+    /// en: `slot(u8) wire_fn(u16) swdio(u16) swclk(u16) attach(u8) retry_s(u16) max_speed(u32)
+    /// idle_clock(u8) mechanism(u8) name_len(u8) name lock_scheme(u8) [lock_mask(n) lock_value(n)]`
+    /// (oep-spec 5bfe052). A probe from before that (oep-probe-arduino 0.0.5) has no max_speed /
+    /// idle_clock (name at 12, not 17); the revision did not change, so the shape is told from
+    /// the item itself: the one whose name fits, reads as text and leaves an even lock tail.
+    /// ja: 5bfe052 からの形。それより前の probe(0.0.5)には max_speed / idle_clock が無い(name が 12、
+    /// 今は 17)。revision は変わっていないので、名前が収まり、文字として読め、lock の残りが偶数の方で読む。
     fn parse(v: &[u8]) -> Option<Slot> {
-        if v.len() < 13 {
+        Self::parse_at(v, true).or_else(|| Self::parse_at(v, false))
+    }
+
+    fn parse_at(v: &[u8], line: bool) -> Option<Slot> {
+        let fixed = if line { 17 } else { 12 };
+        if v.len() < fixed + 1 {
             return None;
         }
         let le16 = |i: usize| u16::from_le_bytes([v[i], v[i + 1]]);
-        let name_end = 12 + usize::from(v[11]);
-        let name = String::from_utf8_lossy(v.get(12..name_end)?).into_owned();
+        let name_len = usize::from(v[fixed - 1]);
+        let name_end = fixed + name_len;
+        let name = std::str::from_utf8(v.get(fixed..name_end)?).ok()?;
+        if name.is_empty() || name.chars().any(char::is_control) {
+            return None;
+        }
         let scheme = *v.get(name_end)?;
+        let rest = &v[name_end + 1..];
         let lock = if scheme == 0 {
+            if !rest.is_empty() {
+                return None;
+            }
             None
         } else {
-            let rest = &v[name_end + 1..];
+            if rest.is_empty() || !rest.len().is_multiple_of(2) {
+                return None;
+            }
             let n = rest.len() / 2;
-            (n >= 1).then(|| (scheme, rest[..n].to_vec(), rest[n..2 * n].to_vec()))
+            Some((scheme, rest[..n].to_vec(), rest[n..].to_vec()))
+        };
+        let (max_speed, idle_clock, mechanism) = if line {
+            let hz = u32::from_le_bytes([v[10], v[11], v[12], v[13]]);
+            ((hz != 0).then_some(hz), v[14], v[15])
+        } else {
+            (None, 0, v[10])
         };
         Some(Slot {
             slot: v[0],
@@ -51,8 +82,10 @@ impl Slot {
             swclk: le16(5),
             at_boot: v[7] == cfg::enums::slot_attach::AT_BOOT,
             retry_s: le16(8),
-            mechanism: v[10],
-            name,
+            max_speed,
+            idle_clock,
+            mechanism,
+            name: name.to_owned(),
             lock,
         })
     }
@@ -148,4 +181,53 @@ pub fn slot_states(p: &mut Probe) -> Result<Vec<SlotState>, OepError> {
         .filter(|t| t.tag == cfg::tlvs::describe::SLOT_STATE)
         .filter_map(|t| SlotState::parse(&t.value))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    fn item(line: bool, name: &str, lock: &[u8]) -> Vec<u8> {
+        let mut v = vec![1u8];
+        v.extend_from_slice(&3u16.to_le_bytes()); // wire_fn
+        v.extend_from_slice(&7u16.to_le_bytes()); // swdio
+        v.extend_from_slice(&8u16.to_le_bytes()); // swclk
+        v.push(cfg::enums::slot_attach::AT_BOOT);
+        v.extend_from_slice(&5u16.to_le_bytes()); // retry_s
+        if line {
+            v.extend_from_slice(&400_000u32.to_le_bytes());
+            v.push(1); // idle_clock low
+        }
+        v.push(2); // mechanism dmseq
+        v.push(name.len() as u8);
+        v.extend_from_slice(name.as_bytes());
+        v.extend_from_slice(lock);
+        v
+    }
+
+    #[test]
+    fn reads_the_slot_with_line_settings() {
+        let s = Slot::parse(&item(true, "x035", &[0])).unwrap();
+        assert_eq!(s.name, "x035");
+        assert_eq!((s.swdio, s.swclk, s.retry_s), (7, 8, 5));
+        assert_eq!(s.max_speed, Some(400_000));
+        assert_eq!((s.idle_clock, s.mechanism), (1, 2));
+        assert!(s.at_boot && s.lock.is_none());
+    }
+
+    #[test]
+    fn still_reads_the_older_shape() {
+        let s = Slot::parse(&item(false, "v003", &[1, 0xff, 0x09])).unwrap();
+        assert_eq!(s.name, "v003");
+        assert_eq!((s.max_speed, s.idle_clock, s.mechanism), (None, 0, 2));
+        assert_eq!(s.lock, Some((1, vec![0xff], vec![0x09])));
+    }
+
+    #[test]
+    fn a_locked_slot_with_line_settings() {
+        let s = Slot::parse(&item(true, "x", &[1, 0xff, 0xff, 0x35, 0x06])).unwrap();
+        assert_eq!(s.name, "x");
+        assert_eq!(s.lock, Some((1, vec![0xff, 0xff], vec![0x35, 0x06])));
+    }
 }
