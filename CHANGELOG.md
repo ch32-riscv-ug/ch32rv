@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Breaking: `--chip` names a SKU, a family or a series exactly (case aside); the part-number prefix match is gone (`--chip C` matched every part). A SKU is now checked as that SKU against the chip id read (a family / series, or a SKU the DB has no device id for, by family as before). An empty `--chip` (or `CH32RV_CHIP`) is a usage error (exit 2) instead of matching everything. `arduino monitor`'s `chip` setting takes the same names the same way (case aside, series too).
+- (JA) 破壊的: `--chip` は SKU / family / series の完全一致(大小無視)だけにした。型番の前方一致はやめた(`--chip C` が全部に当たっていた)。SKU は、読んだ chip id とその SKU として照合する(family / series、または DB に device id の無い SKU は今までどおり family で)。空の `--chip`(または `CH32RV_CHIP`)は、全部に当たるのではなく usage の誤り(exit 2)。`arduino monitor` の `chip` 設定も同じ名前を同じように受ける(大小無視、series も)。
+
 - (EN) Fix (safety): `--dry-run` was accepted by every command but honoured only by `probe firmware update` and `boot hid flash`; the others did the real thing (`erase --all --dry-run --yes` erased the chip). Any other command now refuses `--dry-run` with a usage error (exit 2) before touching a device.
 - (JA) 修正(安全): `--dry-run` はどのコマンドでも受け付けたが、効くのは `probe firmware update` と `boot hid flash` だけで、ほかは実際に動いた(`erase --all --dry-run --yes` が chip を消した)。ほかのコマンドは device に触れる前に `--dry-run` を usage の誤り(exit 2)で断る。
 

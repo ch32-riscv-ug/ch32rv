@@ -907,6 +907,14 @@ fn check_family_text(chip_id: Option<u32>, chip: Option<&str>) -> Result<Option<
             ));
         }
     }
+    // A SKU is checked as that SKU (its device id), not only its family.
+    if let (Some(id), Some(c)) = (chip_id, chip)
+        && let Some(other) = db.sku_conflict(c, id)
+    {
+        return Err(format!(
+            "--chip {c} conflicts with the detected {other} (chip id 0x{id:08x})"
+        ));
+    }
     Ok(detected)
 }
 

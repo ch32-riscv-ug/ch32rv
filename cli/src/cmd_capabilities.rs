@@ -143,7 +143,6 @@ fn static_capabilities(
         );
     };
     // A representative SKU (for the series' debug wiring).
-    let up = chip.to_ascii_uppercase();
     let db = ch32rv_target::Db::builtin();
     let (sku, series) = db
         .skus()
@@ -152,7 +151,6 @@ fn static_capabilities(
             s.sku.eq_ignore_ascii_case(chip)
                 || s.family.eq_ignore_ascii_case(chip)
                 || s.series.eq_ignore_ascii_case(chip)
-                || s.sku.to_ascii_uppercase().starts_with(&up)
         })
         .map(|s| (Some(s.sku.clone()), Some(s.series.clone())))
         .unwrap_or((None, None));

@@ -356,9 +356,13 @@ impl Settings {
             }
             "dtr" => self.dtr = on_off(value)?,
             "rts" => self.rts = on_off(value)?,
-            "chip" if value == CHIP_AUTO => self.chip = None,
+            "chip" if value.eq_ignore_ascii_case(CHIP_AUTO) => self.chip = None,
             "chip" => {
-                if !chip_names().iter().any(|n| n == value) {
+                // The same names `--chip` takes (SKU / family / series, case aside).
+                if ch32rv_target::Db::builtin()
+                    .families_for_chip_name(value)
+                    .is_empty()
+                {
                     return Err(format!("`{value}` is not a chip in ch32rv's DB"));
                 }
                 self.chip = Some(value.to_owned());
