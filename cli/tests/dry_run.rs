@@ -31,3 +31,14 @@ fn commands_without_dry_run_refuse_it() {
         );
     }
 }
+
+#[test]
+fn chip_auto_is_no_chip_and_empty_is_a_usage_error() {
+    // `--chip auto` (any case) detects and checks nothing, so it goes on to look for the probe;
+    // an empty value names nothing and is refused (docs/freeze-decisions.ja.md §1).
+    let (code, v) = run(&["target", "info", "--chip", "Auto"]);
+    assert_eq!(code, 10, "{v}");
+    assert_eq!(v["error"]["kind"], "device-not-found", "{v}");
+    let (code, v) = run(&["target", "info", "--chip", ""]);
+    assert_eq!(code, 2, "{v}");
+}

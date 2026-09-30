@@ -42,6 +42,18 @@ fn main() -> std::process::ExitCode {
     if cli.chip.is_none() {
         cli.chip = config::default_chip();
     }
+    // en: `auto` is "no --chip": detect the target and check it against nothing, spelled as a value
+    // so an IDE recipe that always passes `--chip {build.ch32rv_chip}` can ask for it
+    // (docs/freeze-decisions.ja.md §1). An empty value stays a usage error.
+    // ja: `auto` は「--chip 無し」(検出して何とも照合しない)。常に `--chip {…}` を渡す recipe が値で
+    // 頼めるように。空の値は usage の誤りのまま。
+    if cli
+        .chip
+        .as_deref()
+        .is_some_and(|c| c.trim().eq_ignore_ascii_case("auto"))
+    {
+        cli.chip = None;
+    }
     // --replay: run against a recorded capture instead of hardware (mutually exclusive with --capture).
     if let Some(path) = cli.replay.as_deref() {
         if cli.capture.is_some() {
