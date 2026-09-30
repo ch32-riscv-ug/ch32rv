@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.5 - 2026-09-30
+
 - (EN) OEP: on a probe with no slot whose wire takes its pins from the host (describe `role_channels`, e.g. an RP2350 board firmware), ch32rv scans the pairs (count 0, going on with `skip` until a scan tries none) and attaches where the target is; several are told apart by each one's chip and `--chip`, as with slots. Such a probe now refuses an attach without pins when it allows more than one pair (oep-if-debug §1). The registry is regenerated from oep-spec fd6b5c7.
 - (JA) OEP: スロットが無く、線のピンを host が選ぶ probe(describe の `role_channels`。RP2350 の board firmware など)では、組を scan し(count 0 を `skip` で続け、何も試さなくなるまで)、target の居る組に attach する。複数あれば、スロットと同じく各組の chip と `--chip` で絞る。こうした probe は、許す組が 2 つ以上だとピン無しの attach を断るようになった(oep-if-debug §1)。台帳は oep-spec fd6b5c7 から作り直した。
 
