@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.12.2 - 2026-09-30
+
 - (EN) `CH32RV_USB_TRACE=<file>` logs every OEP vendor bulk write and IN completion (time, pid, length, first bytes), for finding where a probe stops answering.
 - (JA) `CH32RV_USB_TRACE=<file>` で、OEP の vendor bulk の書き込みと IN の完了をすべて記録する(時刻、pid、長さ、先頭)。probe が答えなくなる所を探すため。
 
