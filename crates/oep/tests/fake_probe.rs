@@ -239,6 +239,7 @@ fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
             halt: true,
             max_speed_hz: Some(1_000_000),
             pins: None,
+            ..Default::default()
         },
     )
     .unwrap();

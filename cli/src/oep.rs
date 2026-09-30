@@ -440,11 +440,43 @@ fn family_of_chip_id(id: u32) -> Option<String> {
 /// ja: どこに attach するか。`oep://…/<slot>` はそのスロット。スロットのある probe では、板の家系
 /// (`--chip`)に合うスロットが 1 つならそこ。接続済みは状態から、未接続は止めない attach で chip を
 /// 読む。0 か 2 つ以上ならスロットの一覧つきで止める。スロットの無い probe は許す所に attach する。
-fn choose_place(
-    p: &mut Probe,
-    a: &OepAddr,
-    chip: Option<&str>,
-) -> Result<(WireKind, Option<(u16, u16)>), String> {
+/// en: Where to attach: the wire, the slot's pins, and the line settings the slot carries (its
+/// speed ceiling and idle clock, which the host passes on attach, oep-spec 5bfe052).
+/// ja: attach する場所。線、スロットのピン、スロットの線の設定(速さの上限と休ませ方。attach で host が渡す)。
+#[derive(Debug, Clone, Copy)]
+struct Place {
+    wire: WireKind,
+    pins: Option<(u16, u16)>,
+    max_speed: Option<u32>,
+    idle_clock: Option<u8>,
+}
+
+impl Place {
+    fn of_slot(wire: WireKind, s: &ch32rv_oep::config::Slot) -> Place {
+        Place {
+            wire,
+            pins: Some((s.swdio, s.swclk)),
+            max_speed: s.max_speed,
+            idle_clock: Some(s.idle_clock),
+        }
+    }
+
+    /// Attach options here: the lower of the slot's ceiling and `max_speed_hz` (the command's).
+    fn options(&self, halt: bool, max_speed_hz: Option<u32>) -> AttachOptions {
+        let max_speed_hz = match (self.max_speed, max_speed_hz) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        AttachOptions {
+            halt,
+            max_speed_hz,
+            pins: self.pins,
+            idle_clock: self.idle_clock,
+        }
+    }
+}
+
+fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place, String> {
     let slots = ch32rv_oep::config::slots(p).map_err(|e| e.to_string())?;
     if let OepAddr::Slot { slot, .. } = a {
         let s = slots
@@ -453,18 +485,22 @@ fn choose_place(
             .ok_or_else(|| format!("the probe has no slot `{slot}`"))?;
         let w = wire_of_fn(p, s.wire_fn)
             .ok_or_else(|| format!("slot `{slot}` is on an unknown wire (fn {})", s.wire_fn))?;
-        return Ok((w, Some((s.swdio, s.swclk))));
+        return Ok(Place::of_slot(w, s));
     }
     if slots.is_empty() {
         return pick_wire(p, chip)
-            .map(|w| (w, None))
+            .map(|wire| Place {
+                wire,
+                pins: None,
+                max_speed: None,
+                idle_clock: None,
+            })
             .map_err(|e| e.to_string());
     }
     let states = ch32rv_oep::config::slot_states(p).map_err(|e| e.to_string())?;
     struct Seen {
         name: String,
-        wire: WireKind,
-        pins: (u16, u16),
+        place: Place,
         family: Option<String>,
     }
     let mut seen: Vec<Seen> = Vec::new();
@@ -472,30 +508,20 @@ fn choose_place(
         let Some(w) = wire_of_fn(p, s.wire_fn) else {
             continue;
         };
-        let pins = (s.swdio, s.swclk);
+        let place = Place::of_slot(w, s);
         let from_state = states
             .iter()
             .find(|st| st.slot == s.slot)
             .and_then(|st| st.wch_chip_id());
         // Not connected: a non-halting attach reads the chip (the user asked to use the probe).
         let id = from_state.or_else(|| {
-            let at = attach(
-                p,
-                w,
-                AttachOptions {
-                    halt: false,
-                    max_speed_hz: None,
-                    pins: Some(pins),
-                },
-            )
-            .ok()?;
+            let at = attach(p, w, place.options(false, None)).ok()?;
             let _ = detach(p, w, at.connection, false);
             at.wch_chip_id
         });
         seen.push(Seen {
             name: s.name.clone(),
-            wire: w,
-            pins,
+            place,
             family: id.and_then(family_of_chip_id),
         });
     }
@@ -510,7 +536,7 @@ fn choose_place(
         })
         .collect();
     match matches.as_slice() {
-        [one] => Ok((one.wire, Some(one.pins))),
+        [one] => Ok(one.place),
         _ => {
             let list: Vec<String> = seen
                 .iter()
@@ -622,7 +648,7 @@ fn flash_in_session(
     a: &OepAddr,
 ) -> ExitCode {
     const CMD: &str = "flash";
-    let (wire, pins) = match choose_place(p, a, cli.chip.as_deref()) {
+    let place = match choose_place(p, a, cli.chip.as_deref()) {
         Ok(v) => v,
         Err(m) => {
             return fail(
@@ -642,15 +668,8 @@ fn flash_in_session(
         }),
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
-    let at = match attach(
-        p,
-        wire,
-        AttachOptions {
-            halt: true,
-            max_speed_hz,
-            pins,
-        },
-    ) {
+    let wire = place.wire;
+    let at = match attach(p, wire, place.options(true, max_speed_hz)) {
         Ok(a) => a,
         Err(e) => return oep_fail(cli, CMD, e),
     };
@@ -871,17 +890,10 @@ impl ConsoleSession {
                 (s, None)
             }
             StreamWanted::Console(mech) => {
-                let (wire, pins) = choose_place(&mut probe, a, chip)?;
-                let at = attach(
-                    &mut probe,
-                    wire,
-                    AttachOptions {
-                        halt: false,
-                        max_speed_hz: None,
-                        pins,
-                    },
-                )
-                .map_err(|e| e.to_string())?;
+                let place = choose_place(&mut probe, a, chip)?;
+                let wire = place.wire;
+                let at = attach(&mut probe, wire, place.options(false, None))
+                    .map_err(|e| e.to_string())?;
                 check_family_text(at.wch_chip_id, chip)?;
                 let mut s =
                     ch32rv_oep::stream::PosStream::open_console(&mut probe, at.connection, mech)
@@ -965,19 +977,12 @@ fn with_attached(
         return c;
     }
     let r = (|| {
-        let (wire, pins) = match choose_place(&mut p, a, cli.chip.as_deref()) {
+        let place = match choose_place(&mut p, a, cli.chip.as_deref()) {
             Ok(v) => v,
             Err(m) => return fail(cli, cmd, ErrorKind::TargetAmbiguous, m, None),
         };
-        let at = match attach(
-            &mut p,
-            wire,
-            AttachOptions {
-                halt,
-                max_speed_hz: None,
-                pins,
-            },
-        ) {
+        let wire = place.wire;
+        let at = match attach(&mut p, wire, place.options(halt, None)) {
             Ok(a) => a,
             Err(e) => return oep_fail(cli, cmd, e),
         };

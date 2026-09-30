@@ -58,6 +58,9 @@ pub struct AttachOptions {
     pub max_speed_hz: Option<u32>,
     /// The (swdio, swclk) pair; swclk 0xFFFF on one wire (sent critical).
     pub pins: Option<(u16, u16)>,
+    /// How the line idles (`wire_rvswd::enums::idle_clock`; rvswd only, sent critical). `None`:
+    /// the probe's default (high). A slot's value is the host's to pass (oep-spec 5bfe052).
+    pub idle_clock: Option<u8>,
 }
 
 /// `attach` on `kind`.
@@ -76,6 +79,15 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
         let mut v = d.to_le_bytes().to_vec();
         v.extend_from_slice(&c.to_le_bytes());
         put_tlv(&mut pl, wire::tlvs::attach::PINS, true, &v);
+    }
+    // Low only: high is the default, and a probe from before the TLV would refuse it (critical).
+    if kind == WireKind::Rvswd && o.idle_clock == Some(wire::enums::idle_clock::LOW) {
+        put_tlv(
+            &mut pl,
+            wire::tlvs::attach::IDLE_CLOCK,
+            true,
+            &[wire::enums::idle_clock::LOW],
+        );
     }
     let a = check(p.call(func, wire::op::ATTACH, pl)?)?;
     if a.len() < 11 {
