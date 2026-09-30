@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) OEP: slots are read in the current probe.config shape only (the 0.0.5-era shape is no longer read). Until OEP v1 is frozen, ch32rv follows each wire change together with the other tools and keeps no compatibility with older probe firmware: reflash the probe.
+- (JA) OEP: スロットは今の probe.config の形だけで読む(0.0.5 の頃の形は読まない)。OEP v1 の凍結までは、wire の変更に他のツールとまとめて追従し、古い probe の firmware との互換は持たない(probe は焼き直す)。
+
 ## 0.12.4 - 2026-09-30
 
 - (EN) Fix: with oep-probe-arduino 0.0.7 on the probe, every OEP command by slot failed with "the probe has no slot `x035`" (exit 23). The probe.config slot item gained `max_speed(u32)` and `idle_clock(u8)` before `mechanism` (oep-spec 5bfe052), so the name moved from byte 12 to 17. Slots are read in the new shape (and still in the old one, told apart by which one parses cleanly: the revision did not change), and the slot's line settings go into the attach: its speed ceiling (the lower of it and `--speed`) and, on rvswd, its idle clock (the TLV only when it is low). The registry is regenerated from oep-spec 58d38cf.
