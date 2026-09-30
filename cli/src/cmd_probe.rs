@@ -325,7 +325,9 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         crate::print_envelope(&env)
     } else {
         if lines.is_empty() {
-            eprintln!("no WCH-Link / ISP / OEP devices found (run `ch32rv doctor` for diagnostics)");
+            eprintln!(
+                "no WCH-Link / ISP / OEP devices found (run `ch32rv doctor` for diagnostics)"
+            );
         } else {
             println!(
                 "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} FIRMWARE",
