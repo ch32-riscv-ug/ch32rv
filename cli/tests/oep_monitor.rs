@@ -230,3 +230,25 @@ fn the_cli_monitor_streams_an_oep_console() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("uptime"));
 }
+
+#[test]
+fn rtt_and_uart_on_an_oep_probe_say_so() {
+    // An OEP probe's console has no rtt, and "uart" is not its source: capability-unsupported
+    // (24) with what to use, not device-not-found from a WCH-Link lookup.
+    let Some((_fake, pty)) = fake_pty(&["--target-id", "0x20310500"]) else {
+        return;
+    };
+    for source in ["rtt", "uart"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+            .args(["monitor", "--source", source, "--duration", "1"])
+            .args(["--probe", &format!("port:{pty}"), "--json"])
+            .output()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(out.status.code(), Some(24), "{source}: {v}");
+        assert_eq!(
+            v["error"]["kind"], "capability-unsupported",
+            "{source}: {v}"
+        );
+    }
+}

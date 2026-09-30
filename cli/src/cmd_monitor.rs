@@ -34,12 +34,40 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         None => {}
     }
     // An OEP probe, or a WCH-Link whose broker runs: the console (or fixture UART) through it.
-    if args.source != MonitorSource::Uart && args.source != MonitorSource::Rtt {
-        match crate::oep::addr(cli, "monitor") {
-            Ok(Some(a)) => return run_oep(cli, args, &a),
-            Ok(None) => {}
-            Err(c) => return c,
+    let addr = match crate::oep::addr(cli, "monitor") {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    match (&addr, args.source) {
+        // A WCH-Link's broker: rtt and uart open the Link / its CDC as before (borrowing it).
+        (Some(crate::oep::OepAddr::Wch(_)), MonitorSource::Uart | MonitorSource::Rtt)
+        | (None, _) => {}
+        // en: An OEP probe has no RTT and no "uart" of its own: say so, rather than falling
+        // through to the WCH-Link lookup and reporting the selector as matching nothing.
+        // ja: OEP の probe に rtt と「uart」は無い。WCH-Link を探しに行って selector が何にも当たらない、
+        // と言う代わりにそう言う。
+        (Some(_), MonitorSource::Rtt) => {
+            return fail(
+                cli,
+                "monitor",
+                ErrorKind::CapabilityUnsupported,
+                "an OEP probe's console has no rtt source",
+                Some("use --source dmseq (SerialDMSeq), dmdata or sdi on this probe"),
+            );
         }
+        (Some(_), MonitorSource::Uart) => {
+            return fail(
+                cli,
+                "monitor",
+                ErrorKind::CapabilityUnsupported,
+                "an OEP probe has no uart source here",
+                Some(
+                    "its fixture UART is `fixture-uart` in `arduino monitor`; a UART bridge's own \
+                     serial port opens with --port <path>",
+                ),
+            );
+        }
+        (Some(a), _) => return run_oep(cli, args, a),
     }
     match args.source {
         MonitorSource::Uart => run_uart(cli, args),
