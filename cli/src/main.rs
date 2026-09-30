@@ -37,7 +37,11 @@ use args::*;
 use ch32rv_contract::{self as contract, ErrorKind, ResultEnvelope};
 
 fn main() -> std::process::ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    // `--chip` > CH32RV_CHIP (clap reads both) > the config's `[defaults] chip`.
+    if cli.chip.is_none() {
+        cli.chip = config::default_chip();
+    }
     // --replay: run against a recorded capture instead of hardware (mutually exclusive with --capture).
     if let Some(path) = cli.replay.as_deref() {
         if cli.capture.is_some() {
@@ -56,11 +60,6 @@ fn main() -> std::process::ExitCode {
         eprintln!(
             "warning: --capture disabled: cannot write {}: {e}",
             path.display()
-        );
-    }
-    if cli.connect_under_reset {
-        eprintln!(
-            "warning[connect-under-reset-unimplemented]: --connect-under-reset is not implemented yet and has no effect: the attach runs as usual"
         );
     }
     let code = run_command(&cli);
@@ -125,6 +124,26 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             ch32rv_contract::ErrorKind::Usage,
             format!("`{name}` does not support --dry-run yet; nothing was done"),
             Some("--dry-run works with `probe firmware update` and `boot hid flash`"),
+        );
+    }
+    // en: Global flags that are accepted but not implemented are refused, not ignored
+    // (docs/freeze-decisions.ja.md §9): a run that ignored them would do something else.
+    // ja: 受け付けるが未実装の global は、無視せずに断る。
+    if cli.core != 0 || cli.connect_under_reset {
+        let what = if cli.core != 0 {
+            format!(
+                "--core {}: only core 0 is supported (a second core, H41x, is not implemented)",
+                cli.core
+            )
+        } else {
+            "--connect-under-reset is not implemented yet".to_owned()
+        };
+        return cmd_probe::fail(
+            cli,
+            canonical_name(&cli.command),
+            ch32rv_contract::ErrorKind::CapabilityUnsupported,
+            what,
+            None,
         );
     }
     // An empty `--chip` (or CH32RV_CHIP) names nothing: a usage error, not "every family".
@@ -264,9 +283,7 @@ pub(crate) fn unimplemented_cmd(cli: &Cli, cmd: &str) -> std::process::ExitCode 
             format!("`{cmd}` is reserved and not implemented yet"),
         );
         if let Some(e) = env.error.as_mut() {
-            e.hint = Some(
-                "the name is reserved for a later version (docs/cli.ja.md)".to_owned(),
-            );
+            e.hint = Some("the name is reserved for a later version (docs/cli.ja.md)".to_owned());
         }
         let code = ErrorKind::Unimplemented.exit_code();
         let _ = print_envelope(&env);

@@ -289,7 +289,9 @@ fn run_semihosting(
                 cmd,
                 ErrorKind::RunTimeout,
                 msg,
-                Some("raise --duration, or use --exit-on timeout when running out the clock is a pass"),
+                Some(
+                    "raise --duration, or use --exit-on timeout when running out the clock is a pass",
+                ),
             );
         }
         // Exchange runtime output / stdin while running (an rtt poll leaves a halted core halted).
@@ -355,7 +357,9 @@ fn run_semihosting(
                         if code == 0 {
                             return ExitCode::SUCCESS;
                         }
-                        eprintln!("ch32rv: error[target-exit]: run: the target exited with code {code}");
+                        eprintln!(
+                            "ch32rv: error[target-exit]: run: the target exited with code {code}"
+                        );
                         return ErrorKind::TargetExit.exit_code().into();
                     }
                     SYS_WRITE0 => {

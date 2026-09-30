@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Breaking: accepted-but-unimplemented global flags are refused instead of ignored: `--core` other than 0 and `--connect-under-reset` exit 24 (capability-unsupported); the latter used to warn and attach as usual. The config's `[defaults] chip` now works as documented (used when neither `--chip` nor `CH32RV_CHIP` gives one), and the user config is looked up in the OS's own place (Linux `$XDG_CONFIG_HOME` or `~/.config`, macOS `~/Library/Application Support`, Windows `%APPDATA%`, then `ch32rv/config.toml`). `CH32RV_OEP_TRANSPORT` and `CH32RV_USB_TRACE` are listed in cli.ja.md §3.2 as diagnostics outside the contract.
+- (JA) 破壊的: 受け付けるが未実装の global は、無視せずに断る。0 以外の `--core` と `--connect-under-reset` は exit 24(capability-unsupported。後者は warning を出して通常の attach をしていた)。config の `[defaults] chip` が文書どおり効く(`--chip` も `CH32RV_CHIP` も無いとき)。ユーザーの config は OS ごとの場所で探す(Linux `$XDG_CONFIG_HOME` か `~/.config`、macOS `~/Library/Application Support`、Windows `%APPDATA%`、その下の `ch32rv/config.toml`)。`CH32RV_OEP_TRANSPORT` と `CH32RV_USB_TRACE` を、契約の外の切り分け用として cli.ja.md §3.2 に載せた。
+
 - (EN) The reserved, unimplemented commands (`isp`, `boot enter` / `dfu` / `uf2` / `uart`, `dap`, `probe vendor`) are hidden from `--help`; their names stay reserved, and running one says so and exits 71 (`unimplemented`) in human and JSON mode alike (human mode exited 70).
 - (JA) 予約で未実装のコマンド(`isp`、`boot enter` / `dfu` / `uf2` / `uart`、`dap`、`probe vendor`)を `--help` から隠した。名前は予約のまま、実行すると予約・未実装と言って exit 71(`unimplemented`)で終わる(人向けの出力では 70 だった)。
 
