@@ -596,7 +596,12 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
             }
         }
         match c.poll() {
-            Ok(b) if b.is_empty() => std::thread::sleep(Duration::from_millis(20)),
+            // Wait a little for output, but wake at once for input (as `arduino monitor` does).
+            Ok(b) if b.is_empty() => {
+                if let Ok(chunk) = input.recv_timeout(Duration::from_millis(5)) {
+                    pending.extend_from_slice(&chunk);
+                }
+            }
             Ok(b) => sink.write(&b),
             Err(m) => {
                 sink.finish();
