@@ -1,13 +1,17 @@
 //! en: Exit codes (docs/cli.ja.md §3.6) and error classification.
-//! 10-14 = entry device, 20-24 = target, 30-41 = transfer/verify, 50 = run confirmation.
+//! 10-14 = entry device, 20-24 = target, 30-41 = transfer/verify, 50 = run confirmation,
+//! 60-69 = `run` (the target's own outcome under HIL), 70-79 = the tool itself.
 //! New codes may only be added within the free numbers of each band.
 //!
 //! ja: exit code(docs/cli.ja.md §3.6)とエラー分類。
-//! 10-14 = 入口 device、20-24 = target、30-41 = 転送・検証、50 = 実行確認。追加は各帯の空き番号のみ。
+//! 10-14 = 入口 device、20-24 = target、30-41 = 転送・検証、50 = 実行確認、60-69 = `run`(HIL での target
+//! 自身の結果)、70-79 = tool 自身。追加は各帯の空き番号のみ。
 
-/// Process exit code. The values are part of the contract and never change.
+/// Process exit code. The values are part of the contract and never change; new ones may be added
+/// (hence `non_exhaustive`, so a caller's `match` keeps compiling).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum ExitCode {
     Success = 0,
     /// Argument / usage error (same as clap's 2)
@@ -40,8 +44,16 @@ pub enum ExitCode {
     ProbeWedged = 41,
     /// Programmed, but the target is not running (confirm-run failed)
     NotRunningAfterWrite = 50,
+    /// `run`: the target exited with a non-zero code (the code is in `result.exit`)
+    TargetExit = 60,
+    /// `run`: the target neither exited nor stopped within `--duration`
+    RunTimeout = 61,
+    /// `run`: the target stopped other than by a semihosting exit (breakpoint, exception)
+    TargetHalted = 62,
     /// Internal error (bug)
     Internal = 70,
+    /// The command is reserved but not implemented yet
+    Unimplemented = 71,
 }
 
 impl ExitCode {
@@ -83,8 +95,14 @@ pub enum ErrorKind {
     TransferFailed,
     ProbeWedged,
     NotRunningAfterWrite,
+    /// `run`: the target exited with a non-zero code.
+    TargetExit,
+    /// `run`: `--duration` ran out.
+    RunTimeout,
+    /// `run`: the target stopped other than by a semihosting exit.
+    TargetHalted,
     Internal,
-    /// Scaffold only: command not implemented yet
+    /// A reserved command that is not implemented yet.
     Unimplemented,
 }
 
@@ -111,6 +129,9 @@ impl ErrorKind {
             ErrorKind::TransferFailed => "transfer-failed",
             ErrorKind::ProbeWedged => "probe-wedged",
             ErrorKind::NotRunningAfterWrite => "not-running-after-write",
+            ErrorKind::TargetExit => "target-exit",
+            ErrorKind::RunTimeout => "run-timeout",
+            ErrorKind::TargetHalted => "target-halted",
             ErrorKind::Internal => "internal",
             ErrorKind::Unimplemented => "unimplemented",
         }
@@ -136,7 +157,11 @@ impl ErrorKind {
             ErrorKind::TransportTimeout | ErrorKind::TransferFailed => ExitCode::TransferFailed,
             ErrorKind::ProbeWedged => ExitCode::ProbeWedged,
             ErrorKind::NotRunningAfterWrite => ExitCode::NotRunningAfterWrite,
-            ErrorKind::Internal | ErrorKind::Unimplemented => ExitCode::Internal,
+            ErrorKind::TargetExit => ExitCode::TargetExit,
+            ErrorKind::RunTimeout => ExitCode::RunTimeout,
+            ErrorKind::TargetHalted => ExitCode::TargetHalted,
+            ErrorKind::Internal => ExitCode::Internal,
+            ErrorKind::Unimplemented => ExitCode::Unimplemented,
         }
     }
 }
@@ -167,6 +192,9 @@ mod tests {
         ErrorKind::TransferFailed,
         ErrorKind::ProbeWedged,
         ErrorKind::NotRunningAfterWrite,
+        ErrorKind::TargetExit,
+        ErrorKind::RunTimeout,
+        ErrorKind::TargetHalted,
         ErrorKind::Internal,
         ErrorKind::Unimplemented,
     ];
@@ -191,7 +219,11 @@ mod tests {
         assert_eq!(ExitCode::TransferFailed.code(), 40);
         assert_eq!(ExitCode::ProbeWedged.code(), 41);
         assert_eq!(ExitCode::NotRunningAfterWrite.code(), 50);
+        assert_eq!(ExitCode::TargetExit.code(), 60);
+        assert_eq!(ExitCode::RunTimeout.code(), 61);
+        assert_eq!(ExitCode::TargetHalted.code(), 62);
         assert_eq!(ExitCode::Internal.code(), 70);
+        assert_eq!(ExitCode::Unimplemented.code(), 71);
     }
 
     /// Every kind maps to a code in the documented band set; `exit_code` is total (compile-checked)
@@ -199,7 +231,7 @@ mod tests {
     #[test]
     fn every_kind_maps_into_the_documented_band() {
         const VALID: &[u8] = &[
-            2, 10, 11, 12, 13, 14, 20, 21, 22, 23, 24, 30, 40, 41, 50, 70,
+            2, 10, 11, 12, 13, 14, 20, 21, 22, 23, 24, 30, 40, 41, 50, 60, 61, 62, 70, 71,
         ];
         for &k in ALL_KINDS {
             assert!(

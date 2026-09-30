@@ -168,7 +168,7 @@ fn read_replays() {
 fn run_semihosting_replays() {
     // The whole `run --exit-on semihosting` path replays offline from a CH32V203 capture: flash the
     // image, reset, resume, the dmdata output decode, and the semihosting host that recognises the
-    // slli/ebreak/srai sequence, services SYS_WRITE0, and propagates SYS_EXIT's code. Deterministic
+    // slli/ebreak/srai sequence, services SYS_WRITE0, and reports SYS_EXIT's code. Deterministic
     // because the recording ends on the target's own exit, not a timeout. The capture flashed, so
     // the replay must too (no --no-flash, or the recorded program transfers desync).
     let out = Command::new(bin())
@@ -183,8 +183,10 @@ fn run_semihosting_replays() {
         .output()
         .expect("run ch32rv");
     let stderr = String::from_utf8_lossy(&out.stderr);
-    // The fixture's program exits 42 via SYS_EXIT_EXTENDED; the CLI propagates it.
-    assert_eq!(out.status.code(), Some(42), "stderr: {stderr}");
+    // The fixture's program exits 42 via SYS_EXIT_EXTENDED: the tool says target-exit (60) and
+    // names the target's code (docs/freeze-decisions.ja.md §6), not 42 as the process's code.
+    assert_eq!(out.status.code(), Some(60), "stderr: {stderr}");
+    assert!(stderr.contains("exited with code 42"), "stderr: {stderr}");
     // SYS_WRITE0 output is a runtime-output stream, so in human mode it lands on stdout.
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("hello from semihosting"),

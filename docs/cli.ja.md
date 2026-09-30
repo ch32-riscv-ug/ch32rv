@@ -23,7 +23,7 @@ ch32rv
 ├─ write                       生メモリ/領域書き込み(上級)                        P1  [minichlink -w, wlink write-mem]
 ├─ erase                       消去(chip/region/range)                            P0  [各 tool]
 ├─ reset                       リセット(run/halt/dm) + --confirm-run              P0  [wlink reset]
-├─ run <elf>                   書き込み+実行+出力監視+exit code 伝搬               P1  [probe-rs run/attach]
+├─ run <elf>                   書き込み+実行+出力監視+target の結果(exit 0 / 60)       P1  [probe-rs run/attach]
 ├─ recover                     診断+復旧(auto/power-off/nrst/unprotect/unbrick) P0  [wlink erase --method, minichlink -u, LinkUtility]
 │
 ├─ probe                       probe 本体の管理
@@ -185,19 +185,22 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 | 12 | device firmware が要求を満たさない(既知不良版を含む) |
 | 13 | device 使用中(lock 取得失敗) |
 | 14 | device が一意に解決されない(fail-closed) |
-| 20 | target を特定できない(応答なし / DB に無い。両者は JSON で区別) |
-| 21 | target が protected(明示 unprotect が必要)**(予約: 現状は未発行)** |
+| 20 | target を特定できない。detail で `target-no-response`(無応答)と `target-not-in-db`(DB に無い `--chip` / 未収載 SKU)を区別する |
+| 21 | target が protected(明示 unprotect が必要)。HID bootloader の読み出し保護、RAM loader の書き込み保護で出す |
 | 22 | attach 失敗(配線、電源、BOOT)。無応答は 20(`target-no-response`)で区別 |
 | 23 | target 曖昧(複数候補 / `--chip` と検出の矛盾) |
-| 20 | target を特定できない。detail で `target-no-response`(無応答)と `target-not-in-db`(DB に無い `--chip` / 未収載 SKU)を区別する |
-| 24 | capability 不足(probe×FW×target×operation で不可) |
+| 24 | capability 不足(probe×FW×target×operation で不可)。各コマンドが、その操作に要るものが無いと分かった所で出す |
 | 30 | verify 不一致 / blank check 失敗 |
 | 40 | 転送/DMI 操作の失敗、または真の transport timeout。JSON `kind` で `transfer-failed` と `transport-timeout` を区別 |
 | 41 | probe が固まっており USB 再接続が必要**(予約: 現状は未発行)** |
 | 50 | 書けたが target が走っていない(`--confirm-run` 失敗) |
+| 60 | `run`: target が 0 以外で終わった(`target-exit`。target のコードは `result.exit`) |
+| 61 | `run`: `--duration` の間に終わりも止まりもしなかった(`run-timeout`) |
+| 62 | `run`: semihosting でない理由で止まった(`target-halted`。breakpoint、例外。`result.dpc`) |
 | 70 | 内部エラー(bug。report 情報を出す) |
+| 71 | 予約されたが未実装のコマンド(`unimplemented`) |
 
-10-14 は「経路の入口 device」、20-24 は「target」、30-41 は「転送・検証」、50 は「実行確認」。将来の追加は各帯の空き番号のみ使う。
+10-14 は「経路の入口 device」、20-24 は「target」、30-41 は「転送・検証」、50 は「実行確認」、60-69 は「`run` での target 自身の結果」、70-79 は「tool 自身」。将来の追加は各帯の空き番号のみ使う(2026-10-01 に 60-62 と 71 を足した。docs/freeze-decisions.ja.md §6 / §8)。
 
 ### 3.7 排他制御と再試行
 
@@ -261,7 +264,7 @@ ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指�
 ```text
 ch32rv reset [--halt] [--dm] [--confirm-run]      既定: reset して実行、detach。**soft reset 後に `ackhavereset` → DMSTATUS → halt なら resume**(probe の reset 単体では attach 由来の halt 要求で hart がリセットベクタに止まる。CH32V00x の DM は `havereset` を ack するまで halt/running bit が固着するので ack が先。V006 実測)
 ch32rv run <ELF> [--no-flash] [--source dmdata|rtt]
-             [--exit-on semihosting|timeout] [--duration <s>]  target の exit code を伝搬(HIL 用)。
+             [--exit-on semihosting|timeout] [--duration <s>]  target の結果を tool の exit で返す(HIL 用。target が 0 なら 0、それ以外は 60、target のコードは result.exit)。
                                                               出力は DMI source のみ(uart/sdi は monitor)。stdin は target へ
 ch32rv recover                                    診断のみ(何も書かない): 状態と推奨を表示
 ch32rv recover --method auto                      診断して推奨を適用(各処理の確認プロンプトあり)

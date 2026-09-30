@@ -280,14 +280,17 @@ fn run_semihosting(
         if Instant::now() >= deadline {
             sink.finish();
             semi.finish();
-            let msg = "run: timed out waiting for a semihosting exit";
-            if cli.json {
-                let env =
-                    ch32rv_contract::ResultEnvelope::failure(cmd, ErrorKind::TransportTimeout, msg);
-                return crate::print_envelope(&env);
-            }
-            eprintln!("{msg}");
-            return ErrorKind::TransportTimeout.exit_code().into();
+            let msg = format!(
+                "run: the target neither exited nor stopped within {} s",
+                cap.as_secs()
+            );
+            return fail(
+                cli,
+                cmd,
+                ErrorKind::RunTimeout,
+                msg,
+                Some("raise --duration, or use --exit-on timeout when running out the clock is a pass"),
+            );
         }
         // Exchange runtime output / stdin while running (an rtt poll leaves a halted core halted).
         source::drain_input(input, &mut pending);
@@ -329,13 +332,31 @@ fn run_semihosting(
                         let code = semihosting_exit_code(&mut dm, op, arg);
                         sink.finish();
                         semi.finish();
+                        // en: The process exit is the tool's own code only (docs/freeze-decisions
+                        // §6): 0 for a target exit of 0, `target-exit` (60) otherwise, with the
+                        // target's code in `result.exit` and the message - never the target's code
+                        // as the process's (it collided with the tool's 10..70, and 256 was 0).
+                        // ja: process の exit は tool のコードだけ。target が 0 なら 0、それ以外は
+                        // target-exit(60)で、target のコードは `result.exit` と文面に入れる。
+                        let mut env = if code == 0 {
+                            ch32rv_contract::ResultEnvelope::success(cmd)
+                        } else {
+                            ch32rv_contract::ResultEnvelope::failure(
+                                cmd,
+                                ErrorKind::TargetExit,
+                                format!("run: the target exited with code {code}"),
+                            )
+                        };
+                        env.result = Some(serde_json::json!({ "exit": code }));
+                        env.warnings = warnings;
                         if cli.json {
-                            let mut env = ch32rv_contract::ResultEnvelope::success(cmd);
-                            env.result = Some(serde_json::json!({ "exit": code }));
-                            env.warnings = warnings;
                             return crate::print_envelope(&env);
                         }
-                        return ExitCode::from(code as u8);
+                        if code == 0 {
+                            return ExitCode::SUCCESS;
+                        }
+                        eprintln!("ch32rv: error[target-exit]: run: the target exited with code {code}");
+                        return ErrorKind::TargetExit.exit_code().into();
                     }
                     SYS_WRITE0 => {
                         // a1 -> NUL-terminated string.
@@ -373,21 +394,19 @@ fn run_semihosting(
                 }
             }
             _ => {
-                // A non-semihosting halt (a real breakpoint/trap): the program is not running as
-                // expected after program+reset, same class as flash's confirm-run failure (exit 50).
+                // A halt that is not a semihosting call (a breakpoint, an exception): its own
+                // kind, `target-halted` (62), with where it stopped.
                 sink.finish();
                 semi.finish();
                 let msg = format!("run: target halted at {dpc:#010x} (not a semihosting call)");
+                let mut env =
+                    ch32rv_contract::ResultEnvelope::failure(cmd, ErrorKind::TargetHalted, &msg);
+                env.result = Some(serde_json::json!({ "dpc": format!("0x{dpc:08x}") }));
                 if cli.json {
-                    let env = ch32rv_contract::ResultEnvelope::failure(
-                        cmd,
-                        ErrorKind::NotRunningAfterWrite,
-                        msg,
-                    );
                     return crate::print_envelope(&env);
                 }
-                eprintln!("{msg}");
-                return ErrorKind::NotRunningAfterWrite.exit_code().into();
+                eprintln!("ch32rv: error[target-halted]: {msg}");
+                return ErrorKind::TargetHalted.exit_code().into();
             }
         }
     }
