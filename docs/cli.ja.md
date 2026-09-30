@@ -492,7 +492,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
       |---|---|
       | `serial` | `uart`、`sdi`、`dmdata`、`dmseq`、`rtt`、`fixture-uart` |
       | `wchlink` | `dmdata`、`dmseq`、`sdi`、`rtt` |
-      | `oep` | `dmseq`、`dmdata`、`sdi`、`fixture-uart` |
+      | `oep` | `dmseq`、`dmdata`、`sdi`、`fixture-uart`、`rtt` |
 
       `wchlink` に `uart` と `fixture-uart` は無い(uart は Link の CDC を `serial` で開く)。`--protocol` はこの 3 つだけを受け、ほかは usage(exit 2)。
     - `baudrate` / `dtr` / `rts`: `uart` 用。値と既定は組み込みの serial-monitor と同じ(9600、on、on)。他の source でも受けて無視する。開いたまま変えるとすぐ効く。
@@ -501,7 +501,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
   - **source**: `uart` = serial port の素通し(双方向、serialport crate で排他 open)。`sdi` = LinkE の SDI 転送を有効にして CDC を読む(受信のみ。DTR を立てない素の open + TIOCEXCL + raw termios)。`dmdata` / `dmseq` / `rtt` = attach して DMI で(双方向)。開いたまま `source` を変えると同じ TCP のまま backend を替える。
   - **`fixture-uart`**(2026-09-29): OEP の probe の fixture の UART(`oep.fixture.uart`)。`baudrate` を configure で送る(開いたまま変えるとすぐ効く)。`wchlink://` の port には出さない(CONFIGURE が unknown source)。WCH-Link の CDC を `serial` で開いた port では、選べるが OPEN が error。
   - **`oep://<probe>/<slot>`**(protocol `oep`): source は上の表のとおり。スロットのピンの組で attach する。
-  - **OEP の probe**(2026-09-29): WCH-Link のものでない serial port で debug の source(sdi / dmdata / dmseq)を選ぶと、その port の probe のブローカー(docs/oep-host.ja.md §7.2、無ければ起動)の client として `oep.target.console` を開く(止めずに attach し、最後の reset の mark から読む。入力は console write)。`rtt` は OEP の console に無いので OPEN が error。`chip` は attach で読む chip id と照合する。WCH-Link ではないので attach のクロックの注意は出さない。`uart` は OEP の probe でも port の素通しのまま(知らない port に confirm を送らない。OEP の UART bridge の probe は、session の無い間は bind したストリームを port に生で流す)。
+  - **OEP の probe**(2026-09-29): WCH-Link のものでない serial port で debug の source(sdi / dmdata / dmseq)を選ぶと、その port の probe のブローカー(docs/oep-host.ja.md §7.2、無ければ起動)の client として `oep.target.console` を開く(止めずに attach し、最後の reset の mark から読む。入力は console write)。**`rtt` は ch32rv が host 側で行う**(2026-10-01): OEP の console の方式に RTT は無いので、ch32rv が probe の riscv-dm の上で、WCH-Link の時と同じく RAM の control block を探し、poll のたびに hart を一瞬止めて ring を読み書きする(止める / 走らせるは probe の op、RAM は block 読み。poll は 50 ms ごと)。CLI の `monitor --source rtt` も同じ。`uart` は OEP の probe の source ではない(CLI の monitor は exit 24 で `fixture-uart` か `--port` を案内する)。`chip` は attach で読む chip id と照合する。WCH-Link ではないので attach のクロックの注意は出さない。`uart` は OEP の probe でも port の素通しのまま(知らない port に confirm を送らない。OEP の UART bridge の probe は、session の無い間は bind したストリームを port に生で流す)。
   - **終わり方**: **stdin の EOF で必ず終わる**(arduino-cli は CLOSE / QUIT を送らずに死ぬことがあり、tool は別のプロセスグループなので killpg も届かない)。開いた後に続けられなくなったとき(読み書きの失敗、切り替え先の source が開けない)は `\r\n[ch32rv monitor] stopped: <理由>\r\n` を data として送ってからプロセスごと終わる(arduino-cli は tool の stderr を見せず、落ちても exit 0 で終わるため)。
   - **attach のクロックの注意**(2026-09-29): attach する source(uart 以外)を開いたとき(OPEN と、開いたままの切り替え)に、`[ch32rv monitor] attaching may have changed the target clock (UART baud rate, millis, timers); reset the board to run at its own clock` を data の行で流す。`monitor` の warning `attach-reclocks-target` と同じく、全 target に「可能性」として出す(IDE の利用者が読むのはモニタの窓だけのため)。reset して離す設定(on-close)は入れない(要望が出たら)。
   - **lock**: attach する source(sdi / dmdata / dmseq / rtt)は probe 単位の lock を持つ(開いている間の flash は待つか exit 13)。`uart` は lock を取らない(CDC だけを使い、tty は排他)。

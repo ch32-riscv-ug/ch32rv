@@ -39,7 +39,7 @@
 |---|---|
 | `serial` | `uart`、`sdi`、`dmdata`、`dmseq`、`rtt`、`fixture-uart` |
 | `wchlink` | `dmdata`、`dmseq`、`sdi`、`rtt` |
-| `oep` | `dmseq`、`dmdata`、`sdi`、`fixture-uart` |
+| `oep` | `dmseq`、`dmdata`、`sdi`、`fixture-uart`、`rtt`(2026-10-01 に追加。足すだけなので互換) |
 
   - `wchlink` に `uart` と `fixture-uart` は無い(uart は Link の CDC を `serial` で開く)。
   - `arduino monitor` の `baudrate` の既定は 9600(組み込みの serial-monitor に合わせる)。CLI の `monitor --baud` の既定は 115200(別のもの)。

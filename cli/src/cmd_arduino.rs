@@ -260,13 +260,15 @@ const SERIAL_SOURCES: [MonitorSource; 6] = [
 ];
 
 /// en: The sources an `oep://<probe>/<slot>` port offers: the slot's console (dmseq, the default,
-/// dmdata, sdi) and the probe's fixture UART.
-/// ja: `oep://` の port の source。スロットの console(dmseq 既定 / dmdata / sdi)と fixture の UART。
-const OEP_SOURCES: [MonitorSource; 4] = [
+/// dmdata, sdi), the probe's fixture UART, and RTT (run by ch32rv over the probe's riscv-dm).
+/// ja: `oep://` の port の source。スロットの console(dmseq 既定 / dmdata / sdi)、fixture の UART、RTT
+/// (ch32rv が probe の riscv-dm の上で行う)。
+const OEP_SOURCES: [MonitorSource; 5] = [
     MonitorSource::Dmseq,
     MonitorSource::Dmdata,
     MonitorSource::Sdi,
     MonitorSource::FixtureUart,
+    MonitorSource::Rtt,
 ];
 
 /// en: The sources a `wchlink://` port offers (uart needs the user to pick the Link's CDC port,
@@ -704,11 +706,12 @@ impl Backend {
                 MonitorSource::Dmdata => StreamWanted::Console(Mechanism::Dmdata),
                 MonitorSource::Dmseq => StreamWanted::Console(Mechanism::Dmseq),
                 MonitorSource::FixtureUart => StreamWanted::FixtureUart(s.baud),
-                MonitorSource::Uart | MonitorSource::Rtt => {
-                    return Err(format!(
-                        "{} is not available on an OEP probe (it offers dmseq, dmdata, sdi and fixture-uart)",
-                        s.source.as_str()
-                    ));
+                MonitorSource::Rtt => StreamWanted::Rtt,
+                MonitorSource::Uart => {
+                    return Err(
+                        "uart is not available on an OEP probe (it offers dmseq, dmdata, sdi, fixture-uart and rtt)"
+                            .to_owned(),
+                    );
                 }
             };
             let c = crate::oep::ConsoleSession::open(oep, wanted, s.chip.as_deref())?;
@@ -873,7 +876,12 @@ impl Backend {
                             // ja: 何も来なければ少し待つ。ただし IDE の入力も待ち、来たらすぐ probe へ送る
                             // (前は最大 20 ms 待たせていた)。
                             if b.is_empty()
-                                && let Ok(chunk) = input.recv_timeout(OEP_IDLE)
+                                && let Ok(chunk) = input.recv_timeout(if console.is_rtt() {
+                                    // RTT halts the hart per poll: RTT's pace, as on a WCH-Link.
+                                    Duration::from_millis(50)
+                                } else {
+                                    OEP_IDLE
+                                })
                             {
                                 pending.extend_from_slice(&chunk);
                             }

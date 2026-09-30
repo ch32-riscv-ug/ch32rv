@@ -197,14 +197,51 @@ fn transport(e: ch32rv_wchlink::WchLinkError) -> DmiError {
     DmiError::Transport(e.to_string())
 }
 
+/// en: What RTT needs of a target: run control and byte-granular memory access (the hart halted
+/// for the memory). A WCH-Link session and an OEP probe's riscv-dm (`crate::oep`) both provide it,
+/// so one RTT implementation streams on either.
+/// ja: RTT が target に求めるもの: run control と byte 単位の memory(memory は hart を止めて)。
+/// WCH-Link の session と OEP の probe の riscv-dm が両方持つので、RTT の実装は 1 つで済む。
+pub(crate) trait RttTarget {
+    fn is_halted(&mut self) -> Result<bool, DmiError>;
+    fn halt(&mut self) -> Result<(), DmiError>;
+    fn resume(&mut self) -> Result<(), DmiError>;
+    /// `len` bytes at `addr` (hart halted).
+    fn read(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, DmiError>;
+    /// `data` at `addr`, byte-granular (hart halted).
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), DmiError>;
+}
+
+impl RttTarget for Session {
+    fn is_halted(&mut self) -> Result<bool, DmiError> {
+        self.dm().is_halted()
+    }
+
+    fn halt(&mut self) -> Result<(), DmiError> {
+        self.dm().halt()
+    }
+
+    fn resume(&mut self) -> Result<(), DmiError> {
+        self.dm().resume()
+    }
+
+    fn read(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, DmiError> {
+        self.link().read_mem(addr, len).map_err(transport)
+    }
+
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), DmiError> {
+        self.dm().write_mem(addr, data)
+    }
+}
+
 /// Read `len` bytes of target memory into one buffer, chunked so each transfer stays small. Stops
 /// early (returning what it has) if a chunk fails, so a short read still lets the scan try.
-fn read_region(session: &mut Session, base: u32, len: u32) -> Vec<u8> {
+fn read_region(t: &mut impl RttTarget, base: u32, len: u32) -> Vec<u8> {
     let mut buf = Vec::with_capacity(len as usize);
     let mut off = 0u32;
     while off < len {
         let want = RTT_READ_CHUNK.min(len - off);
-        match session.link().read_mem(base + off, want) {
+        match t.read(base + off, want) {
             Ok(mut chunk) => {
                 buf.append(&mut chunk);
                 off += want;
@@ -213,6 +250,73 @@ fn read_region(session: &mut Session, base: u32, len: u32) -> Vec<u8> {
         }
     }
     buf
+}
+
+/// en: Find the RTT control block in the first `scan_len` bytes of RAM (retried while the target
+/// is still starting up) and leave the hart HALTED; the caller resumes it. A block with more
+/// than one channel per direction is warned about: only channel 0 is streamed.
+/// ja: RAM の先頭 `scan_len` byte から control block を探し(target の起動中は数回やり直す)、hart を
+/// 止めたまま返す(resume は呼び出し側)。
+pub(crate) fn rtt_find(
+    t: &mut impl RttTarget,
+    scan_len: u32,
+    warnings: &mut Vec<Warning>,
+) -> Result<RttChannels, OpenError> {
+    let mut found = None;
+    for _ in 0..10 {
+        t.halt()?;
+        let snap = read_region(t, RTT_RAM_BASE, scan_len);
+        if let Some(h) = find_control_block(&snap) {
+            found = Some(h);
+            break;
+        }
+        t.resume()?;
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let Some(h) = found else {
+        return Err(OpenError::NoControlBlock { scan_len });
+    };
+    if h.max_up > 1 || h.max_down > 1 {
+        warnings.push(Warning {
+            code: "rtt-channels".to_owned(),
+            msg: format!(
+                "the RTT control block has {} up / {} down channels; only channel 0 is streamed",
+                h.max_up, h.max_down
+            ),
+        });
+    }
+    let base = RTT_RAM_BASE + h.offset as u32;
+    let up = base + RTT_HEADER_LEN;
+    let down = (h.max_down >= 1).then_some(up + RTT_DESC_LEN * h.max_up);
+    Ok(RttChannels { up, down })
+}
+
+/// en: One RTT exchange: halt (unless already halted, as a semihosting stop `run` services is),
+/// drain up[0], feed down[0] from `input`, resume.
+/// ja: RTT の交換 1 回: 止め(既に止まっていればそのまま)、up[0] を汲み、`input` を down[0] に入れ、走らせる。
+pub(crate) fn rtt_poll(
+    t: &mut impl RttTarget,
+    ch: RttChannels,
+    input: &mut Vec<u8>,
+) -> Result<Vec<u8>, DmiError> {
+    let was_halted = t.is_halted()?;
+    if !was_halted {
+        t.halt()?;
+    }
+    let result = rtt_exchange(t, ch, input);
+    if !was_halted {
+        t.resume()?;
+    }
+    result
+}
+
+/// The RTT scan window for a chip: its SRAM (from the DB) or a default.
+pub(crate) fn rtt_scan_len(chip_id: Option<u32>) -> u32 {
+    let db = ch32rv_target::Db::builtin();
+    match chip_id.map(|id| db.resolve_by_chip_id(id)) {
+        Some(ch32rv_target::Resolution::Sku(s)) if s.sram_bytes > 0 => s.sram_bytes.min(64 * 1024),
+        _ => RTT_DEFAULT_SCAN,
+    }
 }
 
 impl DmiSource {
@@ -270,43 +374,13 @@ impl DmiSource {
     }
 
     fn open_rtt(session: &mut Session, warnings: &mut Vec<Warning>) -> Result<Self, OpenError> {
-        // How much RAM to scan for the control block: the target's SRAM (from the DB) or a default.
-        let scan_len = {
-            let db = session.db();
-            match db.resolve_by_chip_id(session.attach.chip_id) {
-                ch32rv_target::Resolution::Sku(s) if s.sram_bytes > 0 => {
-                    s.sram_bytes.min(64 * 1024)
-                }
-                _ => RTT_DEFAULT_SCAN,
-            }
+        // How much RAM to scan: the target's SRAM (from the session's DB, which may carry an
+        // overlay) or a default.
+        let scan_len = match session.db().resolve_by_chip_id(session.attach.chip_id) {
+            ch32rv_target::Resolution::Sku(s) if s.sram_bytes > 0 => s.sram_bytes.min(64 * 1024),
+            _ => RTT_DEFAULT_SCAN,
         };
-        let mut found = None;
-        for _ in 0..10 {
-            session.dm().halt()?;
-            let snap = read_region(session, RTT_RAM_BASE, scan_len);
-            if let Some(h) = find_control_block(&snap) {
-                found = Some(h);
-                break;
-            }
-            session.dm().resume()?;
-            std::thread::sleep(Duration::from_millis(100));
-        }
-        let Some(h) = found else {
-            return Err(OpenError::NoControlBlock { scan_len });
-        };
-        if h.max_up > 1 || h.max_down > 1 {
-            warnings.push(Warning {
-                code: "rtt-channels".to_owned(),
-                msg: format!(
-                    "the RTT control block has {} up / {} down channels; only channel 0 is streamed",
-                    h.max_up, h.max_down
-                ),
-            });
-        }
-        let base = RTT_RAM_BASE + h.offset as u32;
-        let up = base + RTT_HEADER_LEN;
-        let down = (h.max_down >= 1).then_some(up + RTT_DESC_LEN * h.max_up);
-        Ok(DmiSource::Rtt(RttChannels { up, down }))
+        Ok(DmiSource::Rtt(rtt_find(session, scan_len, warnings)?))
     }
 
     /// en: Anything the source wants said to the user since the last poll (dmseq: the target's
@@ -395,79 +469,55 @@ impl DmiSource {
                 }
                 Ok(r.received)
             }
-            DmiSource::Rtt(ch) => {
-                let ch = *ch;
-                // RAM access needs the hart halted. Leave an already-halted core (a semihosting
-                // stop being serviced by `run`) alone; otherwise halt for the exchange and resume.
-                let was_halted = session.dm().is_halted()?;
-                if !was_halted {
-                    session.dm().halt()?;
-                }
-                let result = rtt_exchange(session, ch, input);
-                if !was_halted {
-                    let _ = session.dm().resume();
-                }
-                result
-            }
+            // RAM access needs the hart halted (rtt_poll halts for the exchange).
+            DmiSource::Rtt(ch) => rtt_poll(session, *ch, input),
         }
     }
 }
 
 /// Drain up[0] (acknowledging by moving its read offset) and push host input into down[0].
 fn rtt_exchange(
-    session: &mut Session,
+    t: &mut impl RttTarget,
     ch: RttChannels,
     input: &mut Vec<u8>,
 ) -> Result<Vec<u8>, DmiError> {
-    let raw = session
-        .link()
-        .read_mem(ch.up, RTT_DESC_LEN)
-        .map_err(transport)?;
+    let raw = t.read(ch.up, RTT_DESC_LEN)?;
     let Some(up) = RingDesc::parse(&raw) else {
         // Not ready or garbage: let the target run and retry next poll.
         return Ok(Vec::new());
     };
     let mut out = Vec::new();
     if up.wr != up.rd {
-        let link = session.link();
         if up.wr > up.rd {
-            out = link
-                .read_mem(up.buffer + up.rd, up.wr - up.rd)
-                .map_err(transport)?;
+            out = t.read(up.buffer + up.rd, up.wr - up.rd)?;
         } else {
             // Wrapped: [rd, size) then [0, wr).
-            out = link
-                .read_mem(up.buffer + up.rd, up.size - up.rd)
-                .map_err(transport)?;
+            out = t.read(up.buffer + up.rd, up.size - up.rd)?;
             if up.wr > 0 {
-                out.extend(link.read_mem(up.buffer, up.wr).map_err(transport)?);
+                out.extend(t.read(up.buffer, up.wr)?);
             }
         }
         // Tell the target we drained: up[0].read_off = write_off.
-        session.dm().write_mem32(ch.up + RTT_DESC_READ_OFF, up.wr)?;
+        t.write(ch.up + RTT_DESC_READ_OFF, &up.wr.to_le_bytes())?;
     }
     if let Some(down_addr) = ch.down
         && !input.is_empty()
     {
-        let raw = session
-            .link()
-            .read_mem(down_addr, RTT_DESC_LEN)
-            .map_err(transport)?;
+        let raw = t.read(down_addr, RTT_DESC_LEN)?;
         if let Some(down) = RingDesc::parse(&raw) {
             // A ring spends one slot telling full from empty.
             let room = (down.size - 1 - down.used()) as usize;
             let n = input.len().min(room);
             if n > 0 {
                 let first = n.min((down.size - down.wr) as usize);
-                let mut dm = session.dm();
-                dm.write_mem(down.buffer + down.wr, &input[..first])?;
+                t.write(down.buffer + down.wr, &input[..first])?;
                 if n > first {
-                    dm.write_mem(down.buffer, &input[first..n])?;
+                    t.write(down.buffer, &input[first..n])?;
                 }
                 // Publish the offset only after the bytes are in place (the target reads it).
-                dm.write_mem32(
+                t.write(
                     down_addr + RTT_DESC_WRITE_OFF,
-                    (down.wr + n as u32) % down.size,
+                    &((down.wr + n as u32) % down.size).to_le_bytes(),
                 )?;
                 input.drain(..n);
             }
@@ -679,6 +729,87 @@ pub(crate) fn stream(
 
 #[cfg(test)]
 mod tests {
+    /// A target that is plain memory at 0x2000_0000, for the RTT engine.
+    struct MemTarget {
+        ram: Vec<u8>,
+        halted: bool,
+        halts: usize,
+    }
+
+    impl RttTarget for MemTarget {
+        fn is_halted(&mut self) -> Result<bool, DmiError> {
+            Ok(self.halted)
+        }
+        fn halt(&mut self) -> Result<(), DmiError> {
+            self.halted = true;
+            self.halts += 1;
+            Ok(())
+        }
+        fn resume(&mut self) -> Result<(), DmiError> {
+            self.halted = false;
+            Ok(())
+        }
+        fn read(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, DmiError> {
+            assert!(self.halted, "RAM read on a running hart");
+            let a = (addr - RTT_RAM_BASE) as usize;
+            Ok(self.ram[a..a + len as usize].to_vec())
+        }
+        fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), DmiError> {
+            assert!(self.halted, "RAM write on a running hart");
+            let a = (addr - RTT_RAM_BASE) as usize;
+            self.ram[a..a + data.len()].copy_from_slice(data);
+            Ok(())
+        }
+    }
+
+    /// A control block at 0x100 (1 up, 1 down), up ring at 0x200 (size 64), down at 0x300 (16).
+    fn rtt_ram() -> Vec<u8> {
+        let mut ram = vec![0u8; 0x400];
+        let put = |ram: &mut Vec<u8>, at: usize, v: u32| {
+            ram[at..at + 4].copy_from_slice(&v.to_le_bytes())
+        };
+        ram[0x100..0x10a].copy_from_slice(b"SEGGER RTT");
+        put(&mut ram, 0x110, 1); // max_up
+        put(&mut ram, 0x114, 1); // max_down
+        // up[0] at 0x118: name, buffer, size, wr, rd, flags
+        put(&mut ram, 0x118 + 4, RTT_RAM_BASE + 0x200);
+        put(&mut ram, 0x118 + 8, 64);
+        // down[0] at 0x130
+        put(&mut ram, 0x130 + 4, RTT_RAM_BASE + 0x300);
+        put(&mut ram, 0x130 + 8, 16);
+        ram
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn rtt_runs_on_any_rtt_target() {
+        let mut t = MemTarget {
+            ram: rtt_ram(),
+            halted: false,
+            halts: 0,
+        };
+        let mut w = Vec::new();
+        let ch = rtt_find(&mut t, 0x400, &mut w)
+            .map_err(|e| e.to_string())
+            .unwrap();
+        assert!(t.halted, "the scan leaves the hart halted for the caller");
+        t.resume().unwrap();
+        // The target prints "hi\n": 3 bytes into up[0], write offset 3.
+        t.ram[0x200..0x203].copy_from_slice(b"hi\n");
+        t.ram[0x118 + 12..0x118 + 16].copy_from_slice(&3u32.to_le_bytes());
+        let mut input = b"ab".to_vec();
+        let out = rtt_poll(&mut t, ch, &mut input).unwrap();
+        assert_eq!(out, b"hi\n");
+        assert!(!t.halted, "a poll resumes a hart it halted");
+        // The read offset follows the write offset; the input sits in down[0].
+        assert_eq!(le32(&t.ram, 0x118 + 16), 3);
+        assert!(input.is_empty());
+        assert_eq!(&t.ram[0x300..0x302], b"ab");
+        assert_eq!(le32(&t.ram, 0x130 + 12), 2);
+        // Nothing new: nothing out.
+        assert!(rtt_poll(&mut t, ch, &mut Vec::new()).unwrap().is_empty());
+    }
+
     use super::*;
 
     /// Build a RAM snapshot with a control block at `at` (`max_up`/`max_down` channels) whose

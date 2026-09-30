@@ -255,6 +255,27 @@ impl<'a> OepDtm<'a> {
         self.connection
     }
 
+    /// en: What [`Self::new`] learned (the riscv-dm fn and the block size), so a caller that makes
+    /// an `OepDtm` per poll can skip the describe round trip with [`Self::from_parts`].
+    /// ja: [`Self::new`] が調べた値(riscv-dm の fn と block の大きさ)。poll ごとに作る呼び出し側は
+    /// [`Self::from_parts`] で describe の往復を省ける。
+    pub fn parts(&self) -> (u16, usize) {
+        (self.func, self.max_words)
+    }
+
+    pub fn from_parts(
+        probe: &'a mut Probe,
+        connection: u16,
+        (func, max_words): (u16, usize),
+    ) -> Self {
+        OepDtm {
+            probe,
+            func,
+            connection,
+            max_words,
+        }
+    }
+
     fn body(&self) -> Vec<u8> {
         self.connection.to_le_bytes().to_vec()
     }

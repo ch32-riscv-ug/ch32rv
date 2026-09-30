@@ -42,19 +42,11 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         // A WCH-Link's broker: rtt and uart open the Link / its CDC as before (borrowing it).
         (Some(crate::oep::OepAddr::Wch(_)), MonitorSource::Uart | MonitorSource::Rtt)
         | (None, _) => {}
-        // en: An OEP probe has no RTT and no "uart" of its own: say so, rather than falling
-        // through to the WCH-Link lookup and reporting the selector as matching nothing.
-        // ja: OEP の probe に rtt と「uart」は無い。WCH-Link を探しに行って selector が何にも当たらない、
-        // と言う代わりにそう言う。
-        (Some(_), MonitorSource::Rtt) => {
-            return fail(
-                cli,
-                "monitor",
-                ErrorKind::CapabilityUnsupported,
-                "an OEP probe's console has no rtt source",
-                Some("use --source dmseq (SerialDMSeq), dmdata or sdi on this probe"),
-            );
-        }
+        // en: An OEP probe has no "uart" of its own: say so, rather than falling through to the
+        // WCH-Link lookup and reporting the selector as matching nothing. (rtt goes to run_oep:
+        // ch32rv runs it over the probe's riscv-dm.)
+        // ja: OEP の probe に「uart」は無い。WCH-Link を探しに行って selector が何にも当たらない、と
+        // 言う代わりにそう言う(rtt は run_oep へ。ch32rv が probe の riscv-dm の上で行う)。
         (Some(_), MonitorSource::Uart) => {
             return fail(
                 cli,
@@ -582,7 +574,8 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
         MonitorSource::Dmseq => StreamWanted::Console(Mechanism::Dmseq),
         MonitorSource::Sdi => StreamWanted::Console(Mechanism::Sdi),
         MonitorSource::FixtureUart => StreamWanted::FixtureUart(args.baud),
-        MonitorSource::Uart | MonitorSource::Rtt => {
+        MonitorSource::Rtt => StreamWanted::Rtt,
+        MonitorSource::Uart => {
             return fail(
                 cli,
                 CMD,
@@ -626,7 +619,9 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
         match c.poll() {
             // Wait a little for output, but wake at once for input (as `arduino monitor` does).
             Ok(b) if b.is_empty() => {
-                if let Ok(chunk) = input.recv_timeout(Duration::from_millis(5)) {
+                // RTT halts the hart per poll, so it goes at RTT's pace (as on a WCH-Link).
+                let idle = Duration::from_millis(if c.is_rtt() { 50 } else { 5 });
+                if let Ok(chunk) = input.recv_timeout(idle) {
                     pending.extend_from_slice(&chunk);
                 }
             }
