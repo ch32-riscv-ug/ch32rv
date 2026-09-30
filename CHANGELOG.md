@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `monitor --source rtt` or `--source uart` on an OEP probe says what is wrong - capability-unsupported (exit 24): its console has no rtt (use dmseq / dmdata / sdi), and its UART is `fixture-uart` in `arduino monitor` (a UART bridge's own serial port opens with `--port`) - instead of looking for a WCH-Link and reporting device-not-found (10) as if the selector were wrong. A WCH-Link behind its broker still takes rtt and uart as before.
+- (JA) OEP の probe での `monitor --source rtt` / `--source uart` は、何が違うのかを言う: capability-unsupported(exit 24)。console に rtt は無い(dmseq / dmdata / sdi を使う)、UART は `arduino monitor` の `fixture-uart`(UART bridge 自身の serial port は `--port` で開く)。以前は WCH-Link を探しに行き、selector の誤りのように device-not-found(10)と言っていた。ブローカーの裏の WCH-Link は、今までどおり rtt と uart を受ける。
+
 ## 0.13.2 - 2026-09-30
 
 - (EN) `probe list` also lists OEP probes on USB (`kind: "oep"`, `serial` = the unit id, `usb`, `topology`, `ports`, `model` from iProduct), from their USB descriptors alone - they are not opened, since a broker may hold them. Every entry now has `kind` (`wchlink` / `oep`). A UART-bridge OEP probe has no USB identity of its own and is not listed.
