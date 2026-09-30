@@ -4,7 +4,7 @@
 - 状態: 設計(実装前)。検討中なので日本語のみ([development.ja.md](development.ja.md) §1)
 - 出発点:
   - ArduinoCore-CH32 `docs/oep-workflow.ja.md`(最終の形。2026-09-29 の決定。以下 WF)の依頼 7〜14
-  - oep-spec の HEAD(e9c8e1f)と `registry/oep-v1.toml`
+  - oep-spec と `registry/oep-v1.toml`(書き始めは e9c8e1f。**ch32rv が今どの版に合わせているかは `crates/oep/src/registry.rs` の先頭の `source:` の行だけを正とする**。この文書や CHANGELOG に出てくる版は、その時点の記録)
   - 参考実装 `oep-client-python` v1(`ch32_flash.py` / `riscv.py` / `link.py`)と `oep-probe-arduino`(`OepV1Target.cpp` / `OepCh32Dm.cpp`)
 - 範囲: WF §8。書き込み・人が使うモニタ・discovery・ブローカー。**gdb を OEP の probe で扱うのは今回の範囲外**だが、§8 で余地を決めておく。
 
