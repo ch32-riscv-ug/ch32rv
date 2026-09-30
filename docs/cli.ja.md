@@ -165,11 +165,9 @@ chip = "CH32V203C8T6"
 - JSON には必ず `contract`(契約版)と `ok` を含む。schema は `docs/contract/` に置き、CLI の版とは独立に versioning する。
 
 ```json
-{"contract":"1","ok":true,"cmd":"flash",
- "probe":{"model":"WCH-LinkE","firmware":{"raw":"020c","norm":"2.12","wch":"v32"},"serial":"434A124C5596"},
- "target":{"sku":"CH32V203C8T6","chip_id":"0x30330504","verified":true},
- "flash":{"written":16700,"erase":"sector","verify":"readback","retries":1},
- "run":{"confirmed":true,"pc":"0x08000156"}}
+{"contract":"4","ok":true,"cmd":"flash",
+ "result":{"flash":{"bytes":16700,"family":"CH32V20x","programmer":"stub","skipped":false,
+                    "scope":"sectors","verified":true,"running":true}}}
 ```
 
 NDJSON event(stderr)の例。**再試行は必ず event として可視化する**(「16.7 KB で固まる」問題の運用要件):
@@ -299,7 +297,7 @@ ch32rv probe power <3v3|5v> <on|off>
 ch32rv probe power cycle [--off-ms 300]
 ch32rv probe mode get
 ch32rv probe mode set <riscv|dap> [--yes]
-ch32rv probe firmware info                        版と hash。既知不良版 DB と照合して判定を出す(2026-09-02 実装: `2.22 (WCH v42, raw 0216)`+mode+known-bad)
+ch32rv probe firmware info                        版(0 埋めしない "2.22"、WCH 表記 v42、raw 0216)、variant、mode、既知不良の判定(variant と版で照合。hash では照合しない)
 ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12(実装済。実機: LinkE 2.22 は --min 2.20 通過/2.30 で exit12、CH549 2.12 は --min 2.20 で exit12)
 ch32rv probe firmware update --image <FILE> [--yes]  IAP 経由で probe 自身の firmware を書換(実装済。実機: LinkE 2.22 ⇔ 2.13 を相互に更新し版を確認)
 ch32rv probe firmware exit-iap                     IAP mode の probe を、何も書かずに今入っている app で起動させる(実装済)

@@ -833,6 +833,10 @@ fn flash_attached(
         }
     };
     let secs = started.elapsed().as_secs_f64();
+    // A verified reset (--confirm-run) that came back is a running target; a plain one says nothing.
+    let running = (args.reset == ch32rv_contract::policy::ResetPolicy::Run
+        && args.confirm_run.is_some())
+    .then_some(true);
     if args.reset == ch32rv_contract::policy::ResetPolicy::Run {
         // `--confirm-run` asks the probe to check that the hart runs (exit 50 when it does not).
         let mode = if args.confirm_run.is_some() {
@@ -867,14 +871,18 @@ fn flash_attached(
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
             "flash": {
-                "written": total,
+                "bytes": total,
                 "programmer": "oep-loader",
                 "family": family,
                 "chip_id": chip_id.map(|c| format!("0x{c:08x}")),
                 "pages": report.pages,
                 "rewritten": report.rewritten,
                 "restarted_runs": report.restarted_runs,
-                "verify": "readback",
+                // Every page is read back after it is written: verified, or the run failed.
+                "verified": true,
+                "skipped": false,
+                "scope": "pages",
+                "running": running,
                 "seconds": secs,
             }
         }));

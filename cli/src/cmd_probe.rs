@@ -121,6 +121,7 @@ pub(crate) fn base_report(entry: &Entry) -> ProbeReport {
             ProbeMode::Iap => "WCH-Link (IAP mode) or WCH factory ISP device".to_owned(),
             _ => entry.dev.product().unwrap_or("WCH-Link").to_owned(),
         },
+        variant: None,
         serial: entry.dev.serial().map(str::to_owned),
         usb: Some(entry.dev.usb_id()),
         topology: Some(entry.dev.topology()),
@@ -139,7 +140,7 @@ pub(crate) fn apply_probe_info(
 ) {
     let mut fw = FirmwareVersion::from_major_minor(info.fw_major, info.fw_minor);
     fw.mode = info.fw_mode.map(|m| m.as_str().to_owned());
-    if let Some(msg) = known_bad_firmware(info.fw_major, info.fw_minor) {
+    if let Some(msg) = known_bad_firmware(info.variant, info.fw_major, info.fw_minor) {
         fw.known_bad = Some(true);
         warnings.push(Warning {
             code: "fw-known-bad".to_owned(),
@@ -156,6 +157,7 @@ pub(crate) fn apply_probe_info(
         });
     }
     report.model = model;
+    report.variant = Some(info.variant.id());
     report.firmware = Some(fw);
 }
 
@@ -656,7 +658,10 @@ pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
 }
 
 /// Open the probe and read its firmware major/minor + mode (for `probe firmware ...`).
-fn read_firmware(cli: &Cli, cmd: &str) -> Result<(u8, u8, Option<String>), ExitCode> {
+fn read_firmware(
+    cli: &Cli,
+    cmd: &str,
+) -> Result<(wchlink::Variant, u8, u8, Option<String>), ExitCode> {
     let entry = select_entry(cli, cmd)?;
     let mut link = WchLink::open(&entry.dev)
         .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
@@ -664,6 +669,7 @@ fn read_firmware(cli: &Cli, cmd: &str) -> Result<(u8, u8, Option<String>), ExitC
         .probe_info()
         .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
     Ok((
+        info.variant,
         info.fw_major,
         info.fw_minor,
         info.fw_mode.map(|m| m.as_str().to_owned()),
@@ -673,16 +679,17 @@ fn read_firmware(cli: &Cli, cmd: &str) -> Result<(u8, u8, Option<String>), ExitC
 /// `probe firmware info`: the probe's firmware version (raw / WCH notation), mode, known-bad status.
 pub fn firmware_info(cli: &Cli) -> ExitCode {
     const CMD: &str = "probe.firmware.info";
-    let (maj, min, mode) = match read_firmware(cli, CMD) {
+    let (variant, maj, min, mode) = match read_firmware(cli, CMD) {
         Ok(v) => v,
         Err(c) => return c,
     };
     let fw = FirmwareVersion::from_major_minor(maj, min);
-    let bad = known_bad_firmware(maj, min);
+    let bad = known_bad_firmware(variant, maj, min);
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
-            "firmware": format!("{maj}.{min:02}"),
+            "firmware": fw.norm,
+            "variant": variant.id(),
             "raw": fw.raw,
             "wch": fw.wch,
             "firmware_mode": mode,
@@ -707,11 +714,11 @@ pub fn firmware_info(cli: &Cli) -> ExitCode {
 /// below `--min`; exit 0 otherwise.
 pub fn firmware_check(cli: &Cli, min: Option<&str>) -> ExitCode {
     const CMD: &str = "probe.firmware.check";
-    let (maj, mn, _mode) = match read_firmware(cli, CMD) {
+    let (variant, maj, mn, _mode) = match read_firmware(cli, CMD) {
         Ok(v) => v,
         Err(c) => return c,
     };
-    if let Some(reason) = known_bad_firmware(maj, mn) {
+    if let Some(reason) = known_bad_firmware(variant, maj, mn) {
         return fail(
             cli,
             CMD,

@@ -76,7 +76,11 @@ pub fn doctor(cli: &Cli, args: &DoctorArgs) -> ExitCode {
             match entry.mode {
                 ProbeMode::Riscv => match WchLink::open(&entry.dev).and_then(|mut l| l.probe_info()) {
                     Ok(info) => {
-                        let bad = wchlink::known_bad_firmware(info.fw_major, info.fw_minor);
+                        let bad = wchlink::known_bad_firmware(
+                            info.variant,
+                            info.fw_major,
+                            info.fw_minor,
+                        );
                         checks.push(Check {
                             name: "probe-open",
                             ok: bad.is_none(),

@@ -55,8 +55,12 @@ impl ResultEnvelope {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProbeReport {
-    /// e.g. "WCH-LinkE" / "WCH-Link(CH549)".
+    /// A name for people, e.g. "WCH-LinkE" / "WCH-Link(CH549)". Compare `variant`, not this.
     pub model: String,
+    /// The stable ID to compare (`linke`, `link-ch549`, `links`, `daplink`, `linkw`,
+    /// `unknown-<xx>`), when the probe told its variant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
     /// "VID:PID".

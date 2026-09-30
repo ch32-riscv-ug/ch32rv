@@ -101,7 +101,7 @@ fn flash_over_tcp() {
     assert_eq!(fl["programmer"], "oep-loader");
     assert_eq!(fl["family"], "CH32V20x");
     assert_eq!(fl["chip_id"], V203);
-    assert_eq!(fl["written"], 852);
+    assert_eq!(fl["bytes"], 852);
     assert_eq!(fl["rewritten"], 0);
 }
 
@@ -279,5 +279,5 @@ fn flash_where_the_host_picks_the_pins() {
     let v = flash(&probe);
     let fl = &v["result"]["flash"];
     assert_eq!(fl["family"], "CH32V20x");
-    assert_eq!(fl["written"], 852);
+    assert_eq!(fl["bytes"], 852);
 }
