@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) OEP: on a probe with no slot whose wire takes its pins from the host (describe `role_channels`, e.g. an RP2350 board firmware), ch32rv scans the pairs (count 0, going on with `skip` until a scan tries none) and attaches where the target is; several are told apart by each one's chip and `--chip`, as with slots. Such a probe now refuses an attach without pins when it allows more than one pair (oep-if-debug §1). The registry is regenerated from oep-spec fd6b5c7.
+- (JA) OEP: スロットが無く、線のピンを host が選ぶ probe(describe の `role_channels`。RP2350 の board firmware など)では、組を scan し(count 0 を `skip` で続け、何も試さなくなるまで)、target の居る組に attach する。複数あれば、スロットと同じく各組の chip と `--chip` で絞る。こうした probe は、許す組が 2 つ以上だとピン無しの attach を断るようになった(oep-if-debug §1)。台帳は oep-spec fd6b5c7 から作り直した。
+
 - (EN) OEP: slots are read in the current probe.config shape only (the 0.0.5-era shape is no longer read). Until OEP v1 is frozen, ch32rv follows each wire change together with the other tools and keeps no compatibility with older probe firmware: reflash the probe.
 - (JA) OEP: スロットは今の probe.config の形だけで読む(0.0.5 の頃の形は読まない)。OEP v1 の凍結までは、wire の変更に他のツールとまとめて追従し、古い probe の firmware との互換は持たない(probe は焼き直す)。
 
