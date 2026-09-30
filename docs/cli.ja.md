@@ -1,7 +1,7 @@
 # ch32rv CLI 仕様: コマンド体系
 
 - 作成日: 2026-09-01
-- 状態: 提案。**全機能を最終的に実装する前提の完成形**を先に固定する。優先度(P0/P1/P2)は実装順であって体系の一部ではない
+- 状態: 凍結候補(v1 の凍結で確定。2026-10-01 に docs/freeze-decisions.ja.md で契約を決めた)。**全機能を最終的に実装する前提の完成形**を先に固定する。優先度(P0/P1/P2)は実装順であって体系の一部ではない
 - 根拠: [requirements.ja.md](requirements.ja.md) の吸収マップ
 
 ## 1. 設計原則
@@ -545,10 +545,12 @@ ch32rv doctor                             # 動かない時の一手目
 
 ## 6. 互換性ポリシー
 
-- **contract 版**(JSON schema・NDJSON event・exit code)は CLI 版と独立に管理し、破壊変更でのみ major を上げる。field 追加は随時。
-- command と flag は追加のみ。廃止する場合は 2 minor 版の deprecation 警告を挟む。
-- exit code は追加のみ(§3.6 の帯を守る)。
-- `--json` の schema は `docs/contract/` に置き、release ごとに固定する。
+- **v1 の凍結までは、以下の規則を適用しない**(ユーザーの方針、2026-09-30): 破壊的変更をまとめて入れ、関係するツールが一度に追従する。過去との互換は持たない。
+- 凍結後の規則:
+  - **contract 版**(JSON schema・NDJSON event・exit code)は CLI 版と独立に管理し、破壊変更でのみ版を上げる。field 追加は随時。
+  - command と flag は追加のみ。廃止する場合は 2 minor 版の deprecation 警告を挟む。
+  - exit code は追加のみ(§3.6 の帯を守る)。
+  - `--json` の schema は `docs/contract/` に置き、release ごとに固定する。実際の出力は試験(cli/tests/contract.rs)で schema と照合する。
 
 ## 7. 参照
 
