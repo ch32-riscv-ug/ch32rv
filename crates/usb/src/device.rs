@@ -168,6 +168,28 @@ impl UsbDeviceInfo {
         }
     }
 
+    /// en: The position only when the OS gives the port chain (it survives a replug into the same
+    /// port); `None` where [`Self::topology`] falls back to the device address, which changes on
+    /// every replug and so names nothing stable.
+    /// ja: port chain が取れるときだけの位置(同じ口への挿し直しでも変わらない)。device address に
+    /// 落ちるとき(挿し直しで変わる)は `None`。
+    pub fn stable_topology(&self) -> Option<String> {
+        let t = self.topology();
+        (!t.contains("-addr")).then_some(t)
+    }
+
+    /// en: The ID a port address names this probe by (`wchlink://<id>`, docs/freeze-decisions.ja.md
+    /// §2): its USB serial, else `usb-<bus>-<ports>` from a stable position; `None` when it has
+    /// neither (such a device is selected with `--probe`).
+    /// ja: port の address がこの probe を指す ID。USB の serial、無ければ安定した位置の
+    /// `usb-<bus>-<ports>`。どちらも無ければ `None`(`--probe` で指定する)。
+    pub fn port_id(&self) -> Option<String> {
+        match self.serial().filter(|s| !s.is_empty()) {
+            Some(s) => Some(s.to_owned()),
+            None => self.stable_topology().map(|t| format!("usb-{t}")),
+        }
+    }
+
     /// en: Serial-port device nodes (CDC etc.) belonging to this USB device, e.g.
     /// "/dev/ttyACM5". Linux walks sysfs; elsewhere the serialport list is matched by VID/PID/serial.
     /// ja: この USB device に属する serial port ノード(CDC 等)。Linux は sysfs 走査、

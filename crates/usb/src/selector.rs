@@ -153,8 +153,8 @@ impl Selector {
             // ように、discovery 自身の address(`wchlink://<serial>` / `hid://<topology>`)は device を
             // 直接指し、それ以外は serial port の path。
             Selector::Port(p) => {
-                if let Some(sn) = p.strip_prefix("wchlink://") {
-                    return dev.serial() == Some(sn);
+                if let Some(id) = p.strip_prefix("wchlink://") {
+                    return dev.port_id().as_deref() == Some(id);
                 }
                 if let Some(t) = p.strip_prefix("hid://") {
                     return dev.topology() == t;
