@@ -104,7 +104,7 @@ ch32rv
 | `--db <path>` | | 内蔵 | target DB の overlay(新 SKU の試行用) |
 | `--capture <path>` | | - | USB transaction（bulkおよびHID feature report）をNDJSONで記録(replay fixture用) |
 | `--replay <path>` | | - | 記録した capture を HW 無しで再生(`enumerate`〜転送を fixture から供給)。`--capture` と排他。CI/バグ再現用 |
-| `--dry-run` | | off | device を開かず計画のみ表示(`probe firmware update` は実装済: image の版・USB id・frame 数を出して終了。他コマンドは P2) |
+| `--dry-run` | | off | device を開かず計画のみ表示。対応は `probe firmware update`(image の版・USB id・frame 数を出して終了)と `boot hid flash` だけ。**ほかのコマンドは device に触れる前に exit 2(usage)で断る**(2026-10-01。以前は無視して実行した) |
 | `-v` / `-q` | 重ね掛け | | 冗長度 |
 
 ### 3.2 環境変数

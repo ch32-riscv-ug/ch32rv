@@ -107,6 +107,26 @@ fn borrow_link(cli: &Cli) -> Option<broker::Lend> {
 }
 
 fn run_command(cli: &Cli) -> std::process::ExitCode {
+    // en: `--dry-run` is global, but only these commands honour it. Any other one refuses it before
+    // touching a device, rather than doing the real thing (`erase --all --dry-run --yes` erased).
+    // ja: `--dry-run` は global だが、効くのは下の 2 つだけ。ほかは device に触れる前に断る(以前は
+    // 無視して実行し、`erase --all --dry-run --yes` が本当に消した)。
+    if cli.dry_run
+        && !matches!(
+            cli.command,
+            Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Update { .. }))
+                | Command::Boot(BootCmd::Hid(HidBootCmd::Flash { .. }))
+        )
+    {
+        let name = canonical_name(&cli.command);
+        return cmd_probe::fail(
+            cli,
+            name,
+            ch32rv_contract::ErrorKind::Usage,
+            format!("`{name}` does not support --dry-run yet; nothing was done"),
+            Some("--dry-run works with `probe firmware update` and `boot hid flash`"),
+        );
+    }
     let _lend = borrow_link(cli);
     match &cli.command {
         Command::Version => cmd_version(cli),
