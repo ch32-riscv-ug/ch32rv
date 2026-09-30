@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) OEP vendor bulk: IN is drained by a thread of its own at all times (4 transfers kept submitted), not only while the link is reading: a probe's send FIFO that nobody empties stops it taking OUT too (E160, a P4 over usbip with a pipelined host).
+- (JA) OEP の vendor bulk: IN を専用の thread で常に汲む(4 本出したまま)。link が読んでいる間だけではない(誰も空けない probe の送信 FIFO は OUT も止める。E160、usbip 越しの P4 と pipeline の host)。
+
 - (EN) Fix: a RAM-loader flash that lost its probe (the broker gone, the transport failing) was reported as `verify-mismatch` (exit 30), as if the written data were wrong. Only a page that still differs after rewriting is a verify mismatch now; the probe or transport failing is `transfer-failed` (40) / `transport-timeout`, a protect error `target-protected`, and on an OEP probe the hint names the broker's log.
 - (JA) 修正: probe を失った RAM loader の flash(ブローカーが消えた、transport の失敗)が、書いた中身が違うかのように `verify-mismatch`(exit 30)になっていた。書き直しても違う page だけを verify-mismatch とし、probe / transport の失敗は `transfer-failed`(40)/ `transport-timeout`、書き込み保護は `target-protected`。OEP の probe では hint にブローカーの log の場所を出す。
 - (EN) The broker keeps a log (`<runtime>/<key>.broker.log`: up, clients, why it went down). About to end with no client left, it takes its endpoint down first and still takes a connection for 150 ms (one that comes keeps it up), a failed release of a departed client's share no longer ends it, and a client that finds no endpoint starts a broker again every 400 ms while it waits (the one it started may have found the old one still holding the probe).

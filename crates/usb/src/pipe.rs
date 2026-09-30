@@ -1,12 +1,18 @@
 //! en: A byte stream over a vendor-class bulk pair (the OEP vendor bulk transport, oep-core §3.1 /
-//! §3.3). Unlike [`crate::UsbInterface`], reads never cancel: IN transfers stay submitted between
-//! reads, so bytes that arrive while nobody waits are kept, not dropped with a cancelled transfer.
-//! Writes whose length is a multiple of wMaxPacketSize are followed by a zero-length transfer.
-//! ja: vendor class の bulk の組の上のバイト列(OEP の vendor bulk の経路)。[`crate::UsbInterface`] と
-//! 違い、read は cancel しない。IN の転送を出したままにするので、待っていない間に届いた分も落とさない。
-//! 長さが wMaxPacketSize の倍数の書き込みには長さ 0 の転送を続ける。
+//! §3.3). IN is drained by a thread of its own, always, whatever the reader is doing: a probe's
+//! send FIFO that nobody empties stops it taking OUT too (a P4 over usbip with a 4 KiB vendor FIFO
+//! and a pipelined host deadlocked that way, E160), and a read never cancels a transfer (which
+//! would drop what arrived with it). Writes whose length is a multiple of wMaxPacketSize are
+//! followed by a zero-length transfer.
+//! ja: vendor class の bulk の組の上のバイト列(OEP の vendor bulk の経路)。IN は専用の thread が、読み手が
+//! 何をしていても常に汲む(誰も空けない probe の送信 FIFO は OUT も止める。usbip 越しの P4 と pipeline の
+//! host がそれで詰まった、E160)。read は転送を cancel しない。長さが wMaxPacketSize の倍数の書き込みには
+//! 長さ 0 の転送を続ける。
 
 use std::collections::VecDeque;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use nusb::MaybeFuture;
@@ -16,7 +22,7 @@ use nusb::transfer::{Buffer, Bulk, Direction, In, Out};
 use crate::device::{UsbDeviceInfo, UsbError, classify_open_error};
 
 /// How many IN transfers stay submitted.
-const IN_FLIGHT: usize = 2;
+const IN_FLIGHT: usize = 4;
 /// Packets per IN transfer.
 const IN_PACKETS: usize = 16;
 
@@ -32,9 +38,47 @@ pub struct VendorBulkPlace {
 pub struct BulkPipe {
     _iface: nusb::Interface,
     out: nusb::Endpoint<Bulk, Out>,
-    inp: nusb::Endpoint<Bulk, In>,
+    /// What the IN thread drained, in order; an error ends the stream.
+    from_in: mpsc::Receiver<Result<Vec<u8>, UsbError>>,
+    stop: Arc<AtomicBool>,
     rx: VecDeque<u8>,
     place: VendorBulkPlace,
+}
+
+impl Drop for BulkPipe {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// en: The IN side: keep [`IN_FLIGHT`] transfers submitted and hand every completion over, until
+/// told to stop or the reader is gone.
+/// ja: IN 側。[`IN_FLIGHT`] 本の転送を出したままにし、完了したものを渡し続ける(止めるか読み手が消えるまで)。
+fn drain_in(
+    mut inp: nusb::Endpoint<Bulk, In>,
+    tx: mpsc::Sender<Result<Vec<u8>, UsbError>>,
+    stop: Arc<AtomicBool>,
+) {
+    let size = inp.max_packet_size().max(1) * IN_PACKETS;
+    while !stop.load(Ordering::Relaxed) {
+        while inp.pending() < IN_FLIGHT {
+            inp.submit(Buffer::new(size));
+        }
+        let Some(c) = inp.wait_next_complete(Duration::from_millis(100)) else {
+            continue;
+        };
+        let item = match c.status {
+            Ok(()) => Ok(c.buffer[..c.actual_len].to_vec()),
+            Err(e) => Err(UsbError::Transfer(e.to_string())),
+        };
+        let failed = item.is_err();
+        if (item.as_ref().is_ok_and(|d| d.is_empty()) || tx.send(item).is_ok()) && !failed {
+            continue;
+        }
+        break;
+    }
+    inp.cancel_all();
+    while inp.pending() > 0 && inp.wait_next_complete(Duration::from_millis(100)).is_some() {}
 }
 
 impl UsbDeviceInfo {
@@ -79,10 +123,15 @@ impl UsbDeviceInfo {
         let inp = iface
             .endpoint::<Bulk, In>(place.ep_in)
             .map_err(|_| UsbError::Endpoint(place.ep_in))?;
+        let (tx, from_in) = mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let s = stop.clone();
+        std::thread::spawn(move || drain_in(inp, tx, s));
         Ok(Some(BulkPipe {
             _iface: iface,
             out,
-            inp,
+            from_in,
+            stop,
             rx: VecDeque::new(),
             place,
         }))
@@ -128,17 +177,18 @@ impl BulkPipe {
     /// en: Up to `buf.len()` bytes; 0 when nothing arrived within `timeout`. Nothing is cancelled.
     /// ja: `buf.len()` まで読む。`timeout` の間に何も来なければ 0。何も cancel しない。
     pub fn read(&mut self, buf: &mut [u8], timeout: Duration) -> Result<usize, UsbError> {
-        let size = self.inp.max_packet_size().max(1) * IN_PACKETS;
-        while self.inp.pending() < IN_FLIGHT {
-            self.inp.submit(Buffer::new(size));
-        }
         if self.rx.is_empty() {
-            let Some(c) = self.inp.wait_next_complete(timeout) else {
-                return Ok(0);
-            };
-            c.status.map_err(|e| UsbError::Transfer(e.to_string()))?;
-            self.rx.extend(&c.buffer[..c.actual_len]);
-            self.inp.submit(Buffer::new(size));
+            match self.from_in.recv_timeout(timeout) {
+                Ok(d) => self.rx.extend(d?),
+                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(0),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(UsbError::Transfer("the IN endpoint stopped".into()));
+                }
+            }
+        }
+        // Take whatever else the thread has already drained.
+        while let Ok(d) = self.from_in.try_recv() {
+            self.rx.extend(d?);
         }
         let n = buf.len().min(self.rx.len());
         for (d, s) in buf.iter_mut().zip(self.rx.drain(..n)) {
