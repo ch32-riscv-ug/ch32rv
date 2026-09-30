@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.0 - 2026-09-30
+
 - (EN) The device DB is generated from ch32-device-data's public surface only, `index/` (febe61f's consumer contract): device_ids, option_bytes and option_byte_fields move from `evidence/` to their new `index/` tables, flash_geometry / flash_program_method to their `index/` copies, and every column is read by name. db-gen stops when `index/VERSION` is not the one it was written for, and each generated file's source line records the table's manifest sha256. The generated data is unchanged.
 - (JA) device DB を、ch32-device-data の公開面 `index/` の下だけから作るようにした(febe61f の consumer の契約)。device_ids・option_bytes・option_byte_fields は `evidence/` から新しい `index/` の表へ、flash_geometry / flash_program_method は `index/` の写しへ移し、列はすべて名前で読む。`index/VERSION` が書いた時の値でなければ db-gen は止まり、生成物の source の行に表ごとの manifest の sha256 を記録する。生成されるデータは変わらない。
 
