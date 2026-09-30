@@ -2,8 +2,14 @@
 
 ## Unreleased
 
-- (EN) `monitor --source rtt` or `--source uart` on an OEP probe says what is wrong - capability-unsupported (exit 24): its console has no rtt (use dmseq / dmdata / sdi), and its UART is `fixture-uart` in `arduino monitor` (a UART bridge's own serial port opens with `--port`) - instead of looking for a WCH-Link and reporting device-not-found (10) as if the selector were wrong. A WCH-Link behind its broker still takes rtt and uart as before.
-- (JA) OEP の probe での `monitor --source rtt` / `--source uart` は、何が違うのかを言う: capability-unsupported(exit 24)。console に rtt は無い(dmseq / dmdata / sdi を使う)、UART は `arduino monitor` の `fixture-uart`(UART bridge 自身の serial port は `--port` で開く)。以前は WCH-Link を探しに行き、selector の誤りのように device-not-found(10)と言っていた。ブローカーの裏の WCH-Link は、今までどおり rtt と uart を受ける。
+- (EN) `rtt` works on an OEP probe (CLI `monitor --source rtt` and `arduino monitor`'s `rtt`, now in the `oep` source list): the probe's console has no RTT mechanism, so ch32rv runs RTT itself over the probe's riscv-dm, as it does on a WCH-Link - it finds the SEGGER control block in RAM and, every 50 ms, halts the hart briefly (the probe's own halt / resume) to drain up[0] and feed down[0], using only the probe's block reads / writes in between (a raw DMI write there makes the probe firmware drop the s0 / s1 / a0 / a1 its block ops borrowed, and the target runs on with them clobbered). The RTT engine is one implementation behind a small `RttTarget` trait for both probes.
+- (JA) OEP の probe でも `rtt` が使える(CLI の `monitor --source rtt` と `arduino monitor` の `rtt`。`oep` の source の一覧に足した)。probe の console に RTT の方式は無いので、WCH-Link の時と同じく ch32rv が probe の riscv-dm の上で行う: RAM の SEGGER の control block を探し、50 ms ごとに hart を一瞬止めて(probe の halt / resume)、その間は probe の block の読み書きだけで up[0] を汲み down[0] に入れる(そこで raw の DMI write を使うと、probe の firmware が block op で借りた s0 / s1 / a0 / a1 を戻さず、target が壊れた値のまま走る)。RTT の本体は小さな `RttTarget` trait の裏の 1 つの実装で、両方の probe に使う。
+
+- (EN) The Debug Module's program-buffer memory access (`read_mem` / `write_mem`) saves and restores the x5 / x6 / x7 it uses, so reading or writing memory of a halted hart that then resumes leaves its registers as they were.
+- (JA) Debug Module の program buffer による memory の読み書き(`read_mem` / `write_mem`)は、使う x5 / x6 / x7 を退避して戻す。止めた hart の memory を読み書きしてから走らせても、レジスタは元のまま。
+
+- (EN) `monitor --source uart` on an OEP probe says what is wrong - capability-unsupported (exit 24): its UART is `fixture-uart` in `arduino monitor` (a UART bridge's own serial port opens with `--port`) - instead of looking for a WCH-Link and reporting device-not-found (10) as if the selector were wrong. A WCH-Link behind its broker still takes uart as before.
+- (JA) OEP の probe での `monitor --source uart` は、何が違うのかを言う: capability-unsupported(exit 24)。UART は `arduino monitor` の `fixture-uart`(UART bridge 自身の serial port は `--port` で開く)。以前は WCH-Link を探しに行き、selector の誤りのように device-not-found(10)と言っていた。ブローカーの裏の WCH-Link は、今までどおり uart を受ける。
 
 ## 0.13.2 - 2026-09-30
 

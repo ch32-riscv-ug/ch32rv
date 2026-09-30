@@ -232,23 +232,31 @@ fn the_cli_monitor_streams_an_oep_console() {
 }
 
 #[test]
-fn rtt_and_uart_on_an_oep_probe_say_so() {
-    // An OEP probe's console has no rtt, and "uart" is not its source: capability-unsupported
-    // (24) with what to use, not device-not-found from a WCH-Link lookup.
+fn uart_on_an_oep_probe_says_so_and_rtt_looks_for_the_block() {
+    // "uart" is not an OEP probe's source: capability-unsupported (24) with what to use, not
+    // device-not-found from a WCH-Link lookup. rtt is run by ch32rv over the probe's riscv-dm;
+    // the fake target's RAM holds no control block, so it says that.
     let Some((_fake, pty)) = fake_pty(&["--target-id", "0x20310500"]) else {
         return;
     };
-    for source in ["rtt", "uart"] {
+    let run = |source: &str| {
         let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
             .args(["monitor", "--source", source, "--duration", "1"])
             .args(["--probe", &format!("port:{pty}"), "--json"])
             .output()
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        assert_eq!(out.status.code(), Some(24), "{source}: {v}");
-        assert_eq!(
-            v["error"]["kind"], "capability-unsupported",
-            "{source}: {v}"
-        );
-    }
+        (out.status.code(), v)
+    };
+    let (code, v) = run("uart");
+    assert_eq!(code, Some(24), "{v}");
+    assert_eq!(v["error"]["kind"], "capability-unsupported", "{v}");
+    let (_, v) = run("rtt");
+    assert!(
+        v["error"]["msg"]
+            .as_str()
+            .unwrap_or("")
+            .contains("RTT control block"),
+        "{v}"
+    );
 }

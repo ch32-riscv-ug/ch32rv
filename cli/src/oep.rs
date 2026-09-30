@@ -940,6 +940,89 @@ pub(crate) enum StreamWanted {
     Console(ch32rv_oep::stream::Mechanism),
     /// The fixture's UART at this baud (no connection needed).
     FixtureUart(u32),
+    /// SEGGER RTT in the target's RAM, run by ch32rv over the probe's riscv-dm (the probe's
+    /// console has no RTT mechanism; the host halts the hart briefly per poll, as on a WCH-Link).
+    Rtt,
+}
+
+/// en: RTT over an OEP probe's riscv-dm (`crate::source::rtt_*`): run control through the probe's
+/// own ops (its resume lets it poll its consoles again), memory by block reads and Debug Module
+/// writes.
+/// ja: OEP の probe の riscv-dm の上の RTT。run control は probe の op(その resume で probe は console の
+/// poll に戻る)、memory は block 読みと Debug Module の書き込み。
+// en: Only the probe's own operations between halt and resume (and DMSTATUS reads, which write
+// nothing): its block ops borrow s0 / s1 / a0 / a1 and put them back on its resume, but a raw DMI
+// write from the host makes it drop what it kept (oep-probe-arduino ac3e026, `writeDmi`), and the
+// target then runs on with the probe's addresses in s0 (a CH32X035 sketch faulted in its loop,
+// 2026-10-01). So: no `DebugModule` memory access, no dpc read around the resume.
+// ja: halt から resume までは probe の op だけを使う(DMSTATUS の読み出しは何も書かないので可)。
+// host の raw DMI write があると probe は退避した s0 / s1 / a0 / a1 を捨て、target は probe の番地を
+// s0 に持ったまま走る(X035 の sketch が落ちた)。
+impl crate::source::RttTarget for OepDtm<'_> {
+    fn is_halted(&mut self) -> Result<bool, ch32rv_dmi::DmiError> {
+        ch32rv_dmi::DebugModule::new(self).is_halted()
+    }
+
+    fn halt(&mut self) -> Result<(), ch32rv_dmi::DmiError> {
+        TargetAccess::halt(self)
+    }
+
+    fn resume(&mut self) -> Result<(), ch32rv_dmi::DmiError> {
+        // A resume that does not take (the CH32V006 now and then) is asked again while the hart is
+        // still halted; the dpc check of `resume_ch32` would be a raw abstract command.
+        for _ in 0..8 {
+            match TargetAccess::resume_once(self) {
+                Ok(()) => return Ok(()),
+                Err(ch32rv_dmi::DmiError::OperationFailed(_)) => {
+                    if !ch32rv_dmi::DebugModule::new(self).is_halted()? {
+                        return Ok(());
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+        Err(ch32rv_dmi::DmiError::OperationFailed(
+            "hart did not resume".to_owned(),
+        ))
+    }
+
+    fn read(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, ch32rv_dmi::DmiError> {
+        let start = addr & !3;
+        let end = addr.saturating_add(len).saturating_add(3) & !3;
+        let words = self.read_words(start, ((end - start) / 4) as usize)?;
+        let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+        let from = (addr - start) as usize;
+        Ok(bytes
+            .get(from..from + len as usize)
+            .map(<[u8]>::to_vec)
+            .unwrap_or_default())
+    }
+
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), ch32rv_dmi::DmiError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        // Whole words through the probe's block write; the bytes around an unaligned edge are
+        // read first and written back as they were.
+        let start = addr & !3;
+        let end = addr.saturating_add(data.len() as u32).saturating_add(3) & !3;
+        let mut bytes = if start == addr && end - start == data.len() as u32 {
+            vec![0; data.len()]
+        } else {
+            self.read(start, end - start)?
+        };
+        let from = (addr - start) as usize;
+        if let Some(dst) = bytes.get_mut(from..from + data.len()) {
+            dst.copy_from_slice(data);
+        }
+        let words: Vec<u32> = bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| u32::from_le_bytes(*c))
+            .collect();
+        self.write_words(start, &words)
+    }
 }
 
 /// en: A stream on an OEP probe, through the probe's broker, for the Arduino monitor: the target
@@ -952,10 +1035,23 @@ pub(crate) enum StreamWanted {
 /// configure で決める)。drop で detach と end(client が抜ければブローカーも外す)。
 pub(crate) struct ConsoleSession {
     probe: Probe,
-    stream: ch32rv_oep::stream::PosStream,
+    stream: Backing,
     /// The connection to detach at the end (the console's), if any.
     attached: Option<(WireKind, u16)>,
     max_read: u16,
+}
+
+/// Where a [`ConsoleSession`]'s bytes come from.
+enum Backing {
+    /// A position stream the probe keeps (console / fixture UART).
+    Stream(ch32rv_oep::stream::PosStream),
+    /// RTT the host runs: the connection, what OepDtm learned, the channels, input not yet taken.
+    Rtt {
+        connection: u16,
+        parts: (u16, usize),
+        channels: crate::source::RttChannels,
+        input: Vec<u8>,
+    },
 }
 
 impl ConsoleSession {
@@ -991,7 +1087,38 @@ impl ConsoleSession {
                 let mut s = s;
                 s.start_at_last_reset(&mut probe)
                     .map_err(|e| e.to_string())?;
-                (s, None)
+                (Backing::Stream(s), None)
+            }
+            StreamWanted::Rtt => {
+                let place = choose_place(&mut probe, a, chip)?;
+                let wire = place.wire;
+                let at = attach(&mut probe, wire, place.options(false, None))
+                    .map_err(|e| e.to_string())?;
+                check_family_text(at.wch_chip_id, chip)?;
+                let mut t = OepDtm::new(&mut probe, at.connection).map_err(|e| e.to_string())?;
+                let mut warnings = Vec::new();
+                let found = crate::source::rtt_find(
+                    &mut t,
+                    crate::source::rtt_scan_len(at.wch_chip_id),
+                    &mut warnings,
+                );
+                // rtt_find leaves the hart halted (found or not): let it run again.
+                let resumed = crate::source::RttTarget::resume(&mut t);
+                let channels = found.map_err(|e| e.to_string())?;
+                resumed.map_err(|e| format!("resume after the RTT scan: {e}"))?;
+                for w in warnings {
+                    eprintln!("warning[{}]: {}", w.code, w.msg);
+                }
+                let parts = t.parts();
+                (
+                    Backing::Rtt {
+                        connection: at.connection,
+                        parts,
+                        channels,
+                        input: Vec::new(),
+                    },
+                    Some((wire, at.connection)),
+                )
             }
             StreamWanted::Console(mech) => {
                 let place = choose_place(&mut probe, a, chip)?;
@@ -1004,7 +1131,7 @@ impl ConsoleSession {
                         .map_err(|e| e.to_string())?;
                 s.start_at_last_reset(&mut probe)
                     .map_err(|e| e.to_string())?;
-                (s, Some((wire, at.connection)))
+                (Backing::Stream(s), Some((wire, at.connection)))
             }
         };
         let max_read = probe.limits().max_frame.saturating_sub(14).clamp(16, 1000);
@@ -1016,27 +1143,51 @@ impl ConsoleSession {
         })
     }
 
-    /// What arrived since the last poll.
+    /// What arrived since the last poll (RTT: one exchange, which also hands over pending input).
     pub(crate) fn poll(&mut self) -> Result<Vec<u8>, String> {
-        self.stream
-            .poll(&mut self.probe, self.max_read)
-            .map(|c| c.data)
-            .map_err(|e| e.to_string())
+        match &mut self.stream {
+            Backing::Stream(s) => s
+                .poll(&mut self.probe, self.max_read)
+                .map(|c| c.data)
+                .map_err(|e| e.to_string()),
+            Backing::Rtt {
+                connection,
+                parts,
+                channels,
+                input,
+            } => {
+                let mut t = OepDtm::from_parts(&mut self.probe, *connection, *parts);
+                crate::source::rtt_poll(&mut t, *channels, input).map_err(|e| e.to_string())
+            }
+        }
     }
 
-    /// Send input; returns how many bytes were taken (resend the rest later).
+    /// Send input; returns how many bytes were taken (resend the rest later). RTT keeps it and
+    /// hands it to the target's down ring on the next polls.
     pub(crate) fn write(&mut self, data: &[u8]) -> Result<usize, String> {
-        self.stream
-            .write(&mut self.probe, data)
-            .map_err(|e| e.to_string())
+        match &mut self.stream {
+            Backing::Stream(s) => s.write(&mut self.probe, data).map_err(|e| e.to_string()),
+            Backing::Rtt { input, .. } => {
+                input.extend_from_slice(data);
+                Ok(data.len())
+            }
+        }
     }
 
     /// The fixture UART's new speed (the monitor's baudrate changed while open).
     pub(crate) fn set_baud(&mut self, baud: u32) -> Result<(), String> {
-        self.stream
-            .configure_baud(&mut self.probe, baud)
-            .map(|_| ())
-            .map_err(|e| e.to_string())
+        match &self.stream {
+            Backing::Stream(s) => s
+                .configure_baud(&mut self.probe, baud)
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            Backing::Rtt { .. } => Ok(()),
+        }
+    }
+
+    /// Whether this session is RTT (polled at RTT's pace: each poll halts the hart briefly).
+    pub(crate) fn is_rtt(&self) -> bool {
+        matches!(self.stream, Backing::Rtt { .. })
     }
 }
 

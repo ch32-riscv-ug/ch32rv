@@ -568,10 +568,43 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.abstract_done(v.get(1).copied())
     }
 
+    /// en: The GPRs the program-buffer memory access uses (x5 address, x6 read value, x7 write
+    /// value), read so they can be put back: a halted program resumes with its own t0-t2.
+    /// ja: program buffer の memory access が使う GPR(x5 番地、x6 読んだ値、x7 書く値)。戻すために読む
+    /// (止めた program が自分の t0〜t2 で走り直すように)。
+    fn save_scratch(&mut self) -> Result<[u32; 3], DmiError> {
+        Ok([
+            self.read_reg(RegName::Gpr(5))?,
+            self.read_reg(RegName::Gpr(6))?,
+            self.read_reg(RegName::Gpr(7))?,
+        ])
+    }
+
+    fn restore_scratch(&mut self, saved: [u32; 3]) -> Result<(), DmiError> {
+        self.write_reg(RegName::Gpr(5), saved[0])?;
+        self.write_reg(RegName::Gpr(6), saved[1])?;
+        self.write_reg(RegName::Gpr(7), saved[2])
+    }
+
     /// en: Write `data` to target memory starting at `addr`. Reads-modifies-writes the head
-    /// and tail words to keep byte granularity. The hart must be halted.
-    /// ja: `addr` から `data` を書く。端の word は read-modify-write で byte 単位を保つ。
+    /// and tail words to keep byte granularity. The hart must be halted. The program's x5-x7,
+    /// which the program buffer uses, are put back afterwards (RTT, gdb and semihosting write
+    /// memory of a program that then runs on; leaving them clobbered broke it, found on an OEP
+    /// probe's RTT). The per-word [`Self::write_mem32`] leaves them as they are.
+    /// ja: `addr` から `data` を書く。端の word は read-modify-write で byte 単位を保つ。program buffer が
+    /// 使う x5〜x7 は後で戻す(RTT・gdb・semihosting は、その後も走る program の memory を書く。壊した
+    /// ままだと program が壊れた。OEP の probe の RTT で発見)。語ごとの [`Self::write_mem32`] は戻さない。
     pub fn write_mem(&mut self, addr: u32, data: &[u8]) -> Result<(), DmiError> {
+        if data.is_empty() {
+            return Ok(());
+        }
+        let saved = self.save_scratch()?;
+        let r = self.write_mem_raw(addr, data);
+        self.restore_scratch(saved)?;
+        r
+    }
+
+    fn write_mem_raw(&mut self, addr: u32, data: &[u8]) -> Result<(), DmiError> {
         if data.is_empty() {
             return Ok(());
         }
@@ -604,9 +637,20 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     }
 
     /// en: Read `len` bytes starting at `addr` (word-aligned reads; caller trims). Halts first
-    /// is the caller's responsibility.
-    /// ja: `addr` から `len` byte を読む(word 単位。端数は呼び出し側で調整)。
+    /// is the caller's responsibility. The program's x5 / x6 are put back afterwards, as in
+    /// [`Self::write_mem`].
+    /// ja: `addr` から `len` byte を読む(word 単位。端数は呼び出し側で調整)。x5 / x6 は後で戻す。
     pub fn read_mem(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, DmiError> {
+        if len == 0 {
+            return Ok(Vec::new());
+        }
+        let saved = self.save_scratch()?;
+        let r = self.read_mem_raw(addr, len);
+        self.restore_scratch(saved)?;
+        r
+    }
+
+    fn read_mem_raw(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, DmiError> {
         let mut out = Vec::with_capacity(len as usize);
         let start = addr & !3;
         let end = addr.saturating_add(len);
