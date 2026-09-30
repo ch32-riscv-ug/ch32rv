@@ -19,6 +19,15 @@
       "type": "object",
       "description": "操作に使った probe。probe を開く前に失敗した場合は無い",
       "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["wchlink", "oep"],
+          "description": "probe の種類"
+        },
+        "variant": {
+          "type": "string",
+          "description": "WCH-Link の安定した ID(linke / link-ch549 / linkw / links / daplink / unknown-<hex>)。照合はこれで行う。OEP の probe には無い"
+        },
         "model": { "type": "string", "description": "例: WCH-LinkE / WCH-Link(CH549)" },
         "serial": { "type": "string" },
         "usb": { "type": "string", "description": "VID:PID" },
@@ -56,8 +65,22 @@
       }
     },
     "result": {
-      "description": "command 固有の結果。per-command schema は別途追加する",
-      "type": "object"
+      "description": "command 固有の結果。ここに書いた key は、その command の結果に出たときにこの形になる",
+      "type": "object",
+      "properties": {
+        "endpoint": {
+          "type": ["string", "null"],
+          "description": "broker endpoint: ブローカーの待ち受け \"127.0.0.1:<port>\"。動いていなければ null"
+        },
+        "pid": {
+          "type": ["integer", "null"],
+          "description": "broker endpoint: ブローカーの process id(動いていなければ null)"
+        },
+        "transport": {
+          "type": ["string", "null"],
+          "description": "broker endpoint: ブローカーが probe を開いた道(動いていなければ null)"
+        }
+      }
     },
     "warnings": {
       "type": "array",
@@ -95,6 +118,49 @@
       }
     }
   },
-  "if": { "properties": { "ok": { "const": false } } },
-  "then": { "required": ["error"] }
+  "allOf": [
+    {
+      "if": { "properties": { "ok": { "const": false } } },
+      "then": { "required": ["error"] }
+    },
+    {
+      "if": { "properties": { "cmd": { "const": "probe.list" } } },
+      "then": {
+        "properties": {
+          "result": {
+            "properties": {
+              "probes": {
+                "description": "つながっている probe。WCH-Link と USB の OEP probe",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["kind", "serial", "usb", "ports"],
+                  "properties": {
+                    "kind": { "type": "string", "enum": ["wchlink", "oep"] },
+                    "serial": { "type": "string", "description": "USB の serial。OEP の probe では unit_id と同じ" },
+                    "usb": { "type": "string", "description": "VID:PID" },
+                    "topology": { "type": "string", "description": "<bus>-<ports>" },
+                    "ports": { "type": "array", "items": { "type": "string" } },
+                    "model": { "type": "string", "description": "表示用の名前(照合には使わない)" },
+                    "variant": { "type": "string", "description": "WCH-Link だけ。probe.variant と同じ" },
+                    "mode": { "type": "string", "enum": ["riscv", "dap", "iap", "isp", "unknown"] },
+                    "firmware": {
+                      "type": "object",
+                      "properties": {
+                        "raw": { "type": "string" },
+                        "norm": { "type": "string", "description": "\"<major>.<minor>\"(0 埋めしない)" },
+                        "wch": { "type": "string" },
+                        "known_bad": { "type": "boolean" },
+                        "mode": { "type": "string" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }

@@ -2,7 +2,7 @@
 //! rule 5), with no device: `version`, `db list`, an error envelope, and replays of recorded
 //! sessions (flash through the WCH stub and through a HID bootloader), plus the NDJSON events a
 //! replayed flash streams. The validator covers the keywords these schemas use (type, required,
-//! properties, const, enum, items, if / then, oneOf, minimum); a keyword it does not know fails
+//! properties, const, enum, items, if / then, oneOf, allOf, minimum); a keyword it does not know fails
 //! the test, so a schema that grows one cannot be checked by mistake.
 //! ja: 実際の `--json` の出力を docs/contract の schema と照合する(device なし)。照合は schema が使う
 //! keyword だけを扱い、知らない keyword があれば試験を落とす(照合したつもりにならないように)。
@@ -39,6 +39,7 @@ const KNOWN: &[&str] = &[
     "if",
     "then",
     "oneOf",
+    "allOf",
     "minimum",
 ];
 
@@ -115,6 +116,11 @@ fn check(s: &Value, v: &Value, path: &str) -> Vec<String> {
     {
         errs.extend(check(then, v, path));
     }
+    if let Some(Value::Array(all)) = obj.get("allOf") {
+        for a in all {
+            errs.extend(check(a, v, path));
+        }
+    }
     if let Some(Value::Array(alts)) = obj.get("oneOf") {
         let passing = alts.iter().filter(|a| check(a, v, path).is_empty()).count();
         if passing != 1 {
@@ -155,6 +161,14 @@ fn result_envelopes_match_the_schema() {
             "--json",
         ],
         vec!["erase", "--all", "--dry-run", "--yes", "--json"],
+        // No broker for a path nothing listens on: every field null.
+        vec![
+            "broker",
+            "endpoint",
+            "--probe",
+            "port:/dev/ch32rv-no-such-port",
+            "--json",
+        ],
         vec![
             "flash",
             &flash_v307,
@@ -258,6 +272,29 @@ fn progress_events_match_the_schema() {
 
 fn ch32rv_contract_version() -> &'static str {
     "4"
+}
+
+#[test]
+fn probe_list_entries_match_the_schema() {
+    // `probe list` opens the probes it finds, so the test does not run it (a bench may be
+    // attached): these are its entries as printed on the bench, 2026-10-01.
+    let s = schema("result.schema.json");
+    let good = serde_json::json!({"contract": "4", "ok": true, "cmd": "probe.list", "result": {"probes": [
+        {"kind": "wchlink", "serial": "497F8F06CE2F", "usb": "1a86:8010", "topology": "3-4",
+         "ports": ["/dev/ttyACM12"], "model": "WCH-LinkE", "variant": "linke", "mode": "riscv",
+         "firmware": {"raw": "0216", "norm": "2.22", "wch": "v42", "known_bad": false, "mode": "riscv"}},
+        {"kind": "oep", "serial": "30eda0e31108", "usb": "303a:0002", "topology": "3-6",
+         "ports": ["/dev/ttyACM13"], "model": "OEP probe (ESP32-P4)"}
+    ]}});
+    assert_valid(&s, &good, "probe list");
+    let mut bad = good.clone();
+    bad["result"]["probes"][1]["kind"] = serde_json::json!("dap");
+    let errs = check(&s, &bad, "$");
+    assert!(errs.iter().any(|e| e.contains("kind")), "{errs:?}");
+    // monitor list has `probes` of its own shape: the probe.list rule does not reach it.
+    let other = serde_json::json!({"contract": "4", "ok": true, "cmd": "monitor.list",
+        "result": {"probes": [{"probe": "497F8F06CE2F", "mode": "riscv", "cdc_ports": []}]}});
+    assert_valid(&s, &other, "monitor list");
 }
 
 #[test]

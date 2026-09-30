@@ -127,7 +127,7 @@ flag > 環境変数 > 設定ファイル > 既定値。
 
 ### 3.3 設定ファイル
 
-`./ch32rv.toml`(プロジェクト)→ OS の設定の場所の `ch32rv/config.toml`(ユーザ。Linux は `$XDG_CONFIG_HOME`、無ければ `~/.config`。macOS は `~/Library/Application Support`。Windows は `%APPDATA%`)の順で探索(2026-10-01)。`[defaults] chip` は `--chip` も `CH32RV_CHIP` も無いときに使う。probe の別名(HIL fixture の `CH32_PROBE_<名前>` 慣行の一般化)と既定値のみを持つ。挙動を変える隠し設定は置かない。
+`./ch32rv.toml`(プロジェクト)→ OS の設定の場所の `ch32rv/config.toml`(ユーザ。Linux は `$XDG_CONFIG_HOME`、無ければ `~/.config`。macOS は `~/Library/Application Support`。Windows は `%APPDATA%`)の順で探索(2026-10-01)。`[defaults] chip` は `--chip` も `CH32RV_CHIP` も無いときに使う。probe の別名(`--probe name:<別名>`)と既定値のみを持つ。挙動を変える隠し設定は置かない。
 
 ```toml
 [probes]
@@ -472,6 +472,7 @@ ch32rv complete <bash|zsh|fish|powershell>          補完スクリプトを std
 
 ```text
 ch32rv arduino discovery       Pluggable Discovery protocol(stdio JSON)。WCH-Link を wchlink://<serial>、
+                               OEP の probe のスロットを oep://<probe>/<slot>、
                                rv003usb / UIAPduino の HID bootloader を hid://<bus>-<ports> で出す
 ch32rv arduino monitor [--protocol <p>]
                                Pluggable Monitor protocol(stdio JSON)。--protocol は serial / wchlink / oep
@@ -482,8 +483,8 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
 
 - **discovery**: HELLO/START/LIST/START_SYNC/STOP/QUIT。**USB descriptor だけから列挙**し AttachChip しない(同一 probe への upload/monitor 中でも乱さない。LinkE の attach は target のクロックを組み替える)。**普通の serial port は開かない**(組み込みの serial discovery が出す)。START_SYNC は現在の port を `add` で一度出す(hotplug 監視は後続、IDE の再 LIST に委ねる)。
   - `wchlink://<serial>`: protocol `wchlink`、properties に serial / vid / pid / mode。Windows で device に ch32rv が開けない driver が付いている Link(usbipd の stub など)は、label を `WCH-Link <serial> (cannot open: driver <name>)` にし、properties に `driver` を足す(2026-09-29。一覧からは消さない)。実機確認(0.12.1 のリリースの zip、Windows): usbipd で WSL に attach 中の LinkE 7 台がすべて `WCH-Link <sn> (cannot open: driver VBoxUSB)`(usbipd-win の stub は `VBoxUSB` の名で見える)。
-  - `oep://<probe>/<slot>`(2026-09-29、oep-workflow §3.3): OEP の probe(`is_oep_device` = iProduct が `OEP` で始まる device。専用 PID を取るまで)の登録スロットごとに 1 つ。`<probe>` は USB の serial(無ければ位置)、`<slot>` はスロットの name。スロットは lock 無しで読む(その port のブローカーが動いていればブローカー経由、ここでは起動しない。無ければ HID、vendor bulk、CDC の順に短く開く(2026-09-30、oep-workflow §3.3。HID は他の道具と取り合わない)。応答待ちは 0.3 秒)。読めなければ前回の一覧(runtime dir の `<key>.slots.json`)。properties に vid / pid / slot / state / chip(target_id から引いた family)/ port。普通の serial port は開かない。
-  - `hid://<topology>`(2026-09-29): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --probe port:hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology(boards.txt の `upload_port.N.vid/pid` で板名が出る)。
+  - `oep://<probe>/<slot>`(2026-09-29、oep-workflow §3.3): OEP の probe(`is_oep_device` = iProduct が `OEP` で始まる device。専用 PID を取るまで)の登録スロットごとに 1 つ。`<probe>` は USB の serial(= OEP の unit_id、oep-spec v1-freeze #3。serial の無い device だけ位置)、`<slot>` はスロットの name。スロットは lock 無しで読む(その port のブローカーが動いていればブローカー経由、ここでは起動しない。無ければ HID、vendor bulk、CDC の順に短く開く(2026-09-30、oep-workflow §3.3。HID は他の道具と取り合わない)。応答待ちは 0.3 秒)。読めなければ前回の一覧(runtime dir の `<key>.slots.json`)。properties に vid / pid / slot / state / chip(target_id から引いた family)/ port。普通の serial port は開かない。
+  - `hid://<topology>`(2026-09-29): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --probe port:hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology。
 - **monitor(2026-09-29 に組み直し、ArduinoCore-CH32 `docs/oep-workflow.ja.md` §6)**: platform.txt の `pluggable_monitor.pattern.<protocol>` に登録し、protocol を `--protocol` で渡す(既定 `serial`)。arduino-cli 1.3.1 は DESCRIBE の `protocol` を port の protocol と照合し、違うと OPEN の前に止まる(ArduinoCore-CH32 の実測)。
   - **DESCRIBE**: キーは `port_description`、列挙の値は `value`(arduino-cli が読むキー。0.10.1 までの `port_descriptor` / `values` は arduino-cli に読まれなかった)。設定は `source` / `baudrate` / `dtr` / `rts` / `chip`。
     - `source`(2026-10-01 に凍結する表、docs/freeze-decisions.ja.md §3。先頭が既定):
@@ -524,10 +525,10 @@ ch32rv broker serve --probe <sel>               ブローカー本体(利用者�
 
 ## 5. 呼び出し例
 
-Arduino recipe(platform.txt)。probe selector は空にできる 1 変数に畳む(現行 probe-rs recipe と同じ制約):
+Arduino recipe(platform.txt、ArduinoCore-CH32 の upload)。port は discovery の address を `--probe port:` で渡し、ch32rv が自分で解く(`wchlink://` / `oep://` / serial port)。`{build.ch32rv_chip}` は板ごとに SKU か family、ch32rv に名前の無い series の板は series 名(DB に無ければ exit 20 で書く前に止まる)。`auto` は使わない(つながっている別の chip に書いてしまう。docs/freeze-decisions.ja.md §1):
 
 ```text
-"{path}/ch32rv" flash "{build.path}/{build.project_name}.elf" --format elf --chip {build.ch32rv_chip} --reset run --confirm-run --non-interactive --progress none {upload.probe_args}
+"{path}/{cmd}" flash "{build.path}/{build.project_name}.elf" --format elf --chip {build.ch32rv_chip} --reset run --confirm-run --non-interactive --progress none {upload.verbose} --probe "port:{upload.port.address}"
 ```
 
 CI / HIL:

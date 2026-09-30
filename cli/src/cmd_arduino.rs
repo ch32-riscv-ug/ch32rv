@@ -410,15 +410,16 @@ impl Settings {
     }
 }
 
-/// en: Every name `chip` accepts: the DB's families and SKUs, spelled as `--chip` takes them
-/// (the core's `build.ch32rv_chip`). The IDE only passes values listed here.
-/// ja: `chip` が受ける名前 = DB の family と SKU(`--chip` / core の `build.ch32rv_chip` と同じ綴り)。
+/// en: Every name `chip` accepts: the DB's families, series and SKUs, spelled as `--chip` takes
+/// them (the core's `build.ch32rv_chip`, docs/freeze-decisions.ja.md §1). The IDE only passes
+/// values listed here.
+/// ja: `chip` が受ける名前 = DB の family・series・SKU(`--chip` / core の `build.ch32rv_chip` と同じ綴り)。
 fn chip_names() -> Vec<String> {
     let db = ch32rv_target::Db::builtin();
     let mut names: Vec<String> = db
         .skus()
         .iter()
-        .flat_map(|s| [s.family.clone(), s.sku.clone()])
+        .flat_map(|s| [s.family.clone(), s.series.clone(), s.sku.clone()])
         .collect();
     names.sort();
     names.dedup();

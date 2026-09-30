@@ -170,6 +170,22 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             ),
         );
     }
+    // A name the DB does not know stops here, before any probe is opened (it would stop after the
+    // attach anyway, docs/freeze-decisions.ja.md §1): an IDE's board for a series ch32rv has no
+    // name for fails without touching the bench. A broken `--db` overlay is left to the command.
+    if let (Some(c), Ok(db)) = (cli.chip.as_deref(), cmd_db::db_for(cli))
+        && db.families_for_chip_name(c).is_empty()
+    {
+        return cmd_probe::fail(
+            cli,
+            canonical_name(&cli.command),
+            ch32rv_contract::ErrorKind::TargetNotInDb,
+            format!("--chip {c} is not in the target DB"),
+            Some(
+                "name a family, series or SKU from `ch32rv db list`, or leave --chip out to detect the target",
+            ),
+        );
+    }
     let _lend = borrow_link(cli);
     match &cli.command {
         Command::Version => cmd_version(cli),

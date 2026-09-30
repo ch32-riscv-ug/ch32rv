@@ -44,7 +44,7 @@ ch32rv を実機でテストする手順。**まず Linux で通し、次に Win
 | `pattern-4k.bin` | 4KB の決定的パターン(`byte[i]=i&0xFF`)。flash 経路(erase/program/verify)の検証。実行可能ではない |
 | `runtest-<family>.bin` | family 別の走行自己テスト(GPIO 無しの counter loop)。**flash + `--confirm-run pc`** で走行確認。**Linux 実機検証済み**: `ch32v003` / `ch32v103` / `ch32v203` / `ch32v307` / `ch32l103` |
 
-- 他 family(X035 等)は基板接続時に `arduino-cli compile -b ch32-riscv-ug:ch32v:<board> tests/fixtures/runtest` でビルド・追加できる(sketch は [`tests/fixtures/runtest/`](../tests/fixtures/runtest/)、再生成は [`tests/fixtures/README.md`](../tests/fixtures/README.md))。
+- 他 family(X035 等)は基板接続時に `arduino-cli compile -b ch32-riscv-ug:ch32rv:<board> tests/fixtures/runtest` でビルド・追加できる(sketch は [`tests/fixtures/runtest/`](../tests/fixtures/runtest/)、再生成は [`tests/fixtures/README.md`](../tests/fixtures/README.md))。
 
 ## 4. テスト手順(3 tier)
 
