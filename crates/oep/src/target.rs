@@ -146,7 +146,22 @@ pub fn scan_all(p: &mut Probe, kind: WireKind) -> Result<Vec<Found>, OepError> {
                 "scan answer shorter than 2 bytes".into(),
             ));
         };
-        for e in a[2..].as_chunks::<9>().0.iter().take(usize::from(count)) {
+        // count x (len(u8), kind, swdio, swclk, DMSTATUS); an unknown tail is skipped.
+        let mut at = 2;
+        for _ in 0..count {
+            let len = usize::from(
+                *a.get(at)
+                    .ok_or_else(|| OepError::Malformed("scan entry cut short".into()))?,
+            );
+            let e = a
+                .get(at + 1..at + 1 + len)
+                .ok_or_else(|| OepError::Malformed("scan entry cut short".into()))?;
+            at += 1 + len;
+            if e.len() < 9 {
+                return Err(OepError::Malformed(
+                    "scan entry shorter than 9 bytes".into(),
+                ));
+            }
             found.push(Found {
                 kind: e[0],
                 swdio: u16::from_le_bytes([e[1], e[2]]),

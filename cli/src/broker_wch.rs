@@ -190,7 +190,9 @@ impl WchUpstream {
                 let mut out = (hits.len() as u16).to_le_bytes().to_vec();
                 let page = &hits[usize::from(first).min(hits.len())..];
                 out.push(page.len() as u8);
+                // Each entry behind its length (core §2.3): fn, instance, revision, flags, name.
                 for (func, name) in page {
+                    out.push((7 + name.len()) as u8);
                     out.extend_from_slice(&func.to_le_bytes());
                     out.extend_from_slice(&0u16.to_le_bytes()); // instance
                     out.extend_from_slice(&[1, 0, name.len() as u8]);

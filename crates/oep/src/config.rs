@@ -32,8 +32,9 @@ pub struct Slot {
 
 impl Slot {
     /// en: `slot(u8) wire_fn(u16) swdio(u16) swclk(u16) attach(u8) retry_s(u16) max_speed(u32)
-    /// idle_clock(u8) mechanism(u8) name_len(u8) name lock_scheme(u8) [lock_mask(n) lock_value(n)]`
-    /// (oep-spec 5bfe052). Only the current shape: until v1 is frozen the tools follow each change
+    /// idle_clock(u8) mechanism(u8) name_len(u8) name lock_len(u8) [lock_scheme(u8) lock_mask(n)
+    /// lock_value(n)]`, lock_len = 0 or 1 + 2n, and anything after the lock is a later extension
+    /// that is skipped (oep-if-probe-config §1.1, core §2.3). Only the current shape: until v1 is frozen the tools follow each change
     /// together, with no compatibility for older probes (the user's policy, 2026-09-30).
     /// ja: 今の形だけを読む(v1 の凍結までは各ツールが変更にまとめて追従し、古い probe との互換は持たない)。
     fn parse(v: &[u8]) -> Option<Slot> {
@@ -44,13 +45,13 @@ impl Slot {
         let le16 = |i: usize| u16::from_le_bytes([v[i], v[i + 1]]);
         let name_end = FIXED + usize::from(v[FIXED - 1]);
         let name = String::from_utf8_lossy(v.get(FIXED..name_end)?).into_owned();
-        let scheme = *v.get(name_end)?;
-        let lock = if scheme == 0 {
+        let lock_len = usize::from(*v.get(name_end)?);
+        let lock = if lock_len == 0 {
             None
         } else {
-            let rest = &v[name_end + 1..];
-            let n = rest.len() / 2;
-            (n >= 1).then(|| (scheme, rest[..n].to_vec(), rest[n..2 * n].to_vec()))
+            let l = v.get(name_end + 1..name_end + 1 + lock_len)?;
+            let n = (lock_len - 1) / 2;
+            (n >= 1).then(|| (l[0], l[1..1 + n].to_vec(), l[1 + n..1 + 2 * n].to_vec()))
         };
         let hz = u32::from_le_bytes([v[10], v[11], v[12], v[13]]);
         let (max_speed, idle_clock, mechanism) = ((hz != 0).then_some(hz), v[14], v[15]);
@@ -179,13 +180,14 @@ mod tests {
         v.push(2); // mechanism dmseq
         v.push(name.len() as u8);
         v.extend_from_slice(name.as_bytes());
+        v.push(lock.len() as u8); // lock_len
         v.extend_from_slice(lock);
         v
     }
 
     #[test]
     fn reads_the_slot_with_line_settings() {
-        let s = Slot::parse(&item("x035", &[0])).unwrap();
+        let s = Slot::parse(&item("x035", &[])).unwrap();
         assert_eq!(s.name, "x035");
         assert_eq!((s.swdio, s.swclk, s.retry_s), (7, 8, 5));
         assert_eq!(s.max_speed, Some(400_000));
@@ -198,5 +200,14 @@ mod tests {
         let s = Slot::parse(&item("x", &[1, 0xff, 0xff, 0x35, 0x06])).unwrap();
         assert_eq!(s.name, "x");
         assert_eq!(s.lock, Some((1, vec![0xff, 0xff], vec![0x35, 0x06])));
+    }
+
+    #[test]
+    fn a_later_extension_after_the_lock_is_skipped() {
+        let mut v = item("y", &[1, 0xff, 0x09]);
+        v.extend_from_slice(&[0xAA, 0xBB]); // appended by a later revision
+        let s = Slot::parse(&v).unwrap();
+        assert_eq!(s.name, "y");
+        assert_eq!(s.lock, Some((1, vec![0xff], vec![0x09])));
     }
 }

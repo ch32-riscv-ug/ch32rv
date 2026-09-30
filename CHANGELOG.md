@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Breaking (OEP, with oep-probe-arduino 9bcdafb / oep-client-python edbe7e7 and later): answer lists carry each element behind its length (`count × (len(u8), element)`, oep-core §2.3) - `list`, `scan` and the console / fixture UART `marks` are read that way, skipping an element's unknown tail, and the WCH-Link broker answers its own `list` the same way; a probe.config slot has `lock_len` after its name (0 = no lock), and anything after the lock is skipped. An older probe firmware is not read any more: reflash it (and rewrite its saved settings, whose stored form changed too). The registry is regenerated from oep-spec 5e3b618.
+- (JA) 破壊的(OEP。oep-probe-arduino 9bcdafb / oep-client-python edbe7e7 以降と組む): 応答の並びは、各要素の前にその長さを置く(`count × (len(u8), 要素)`、oep-core §2.3)。`list`、`scan`、console と fixture UART の `marks` をその形で読み、要素の知らない後ろは飛ばす。WCH-Link のブローカーが自分で答える `list` も同じ形にした。probe.config のスロットは name の後ろに `lock_len`(0 = 錠なし)を持ち、錠の後ろは飛ばす。古い probe の firmware はもう読めないので焼き直す(保存の形も変わったので、保存した設定も書き直す)。台帳は oep-spec 5e3b618 から作り直した。
+
 - (EN) The debug wiring now comes from ch32-device-data's public surface (`index/debug_interfaces.csv`, keyed by `debug_if`) instead of an evidence table outside it (the user's rule: data only from the public surface). It changes CH32V002 and CH32V004 from 1-or-2-wire to 1-wire (the public table's datasheet reading; the evidence table had SWCLK on PB3 from the WCH-Link manual, a disagreement passed to the data side) and adds CH32M103. The other generated tables only move their source revision (device-data 15eb31d).
 - (JA) debug の配線を、公開面の外の evidence の表ではなく、ch32-device-data の公開面(`index/debug_interfaces.csv`、`debug_if` から)で作るようにした(公開面からだけ取る、というユーザーの決まり)。CH32V002 と CH32V004 は「1 線または 2 線」から「1 線」になる(公開の表は datasheet の読み。evidence の表は WCH-Link の説明書から SWCLK = PB3 としていた。食い違いは data の側に伝えた)。CH32M103 の行が増えた。ほかの生成の表は source の版(device-data 15eb31d)だけが変わった。
 
