@@ -235,6 +235,13 @@ pub(crate) fn check_chip(
             attach.chip_id
         )));
     }
+    // A SKU is checked as that SKU (its device id), not only its family.
+    if let Some(other) = db.sku_conflict(requested, attach.chip_id) {
+        return Err(SessionError::ChipMismatch(format!(
+            "--chip {requested} conflicts with the detected {other} (chip_id 0x{:08x})",
+            attach.chip_id
+        )));
+    }
     Ok(())
 }
 

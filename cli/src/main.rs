@@ -127,6 +127,18 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             Some("--dry-run works with `probe firmware update` and `boot hid flash`"),
         );
     }
+    // An empty `--chip` (or CH32RV_CHIP) names nothing: a usage error, not "every family".
+    if cli.chip.as_deref().is_some_and(|c| c.trim().is_empty()) {
+        return cmd_probe::fail(
+            cli,
+            canonical_name(&cli.command),
+            ch32rv_contract::ErrorKind::Usage,
+            "--chip is empty",
+            Some(
+                "leave --chip out to detect the target, or name a family / SKU (`ch32rv db list`)",
+            ),
+        );
+    }
     let _lend = borrow_link(cli);
     match &cli.command {
         Command::Version => cmd_version(cli),

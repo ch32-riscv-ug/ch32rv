@@ -448,13 +448,12 @@ impl Db {
         &self.skus
     }
 
-    /// en: The distinct DB families a `--chip` name could mean (a SKU, a family, a series, or a
-    /// part-number prefix), for validating `--chip` against the detected chip. Empty when the name
-    /// is not in the DB (e.g. a gap-series part), so callers should not treat empty as a conflict.
-    /// ja: `--chip` 名(SKU/family/series/型番 prefix)が指しうる DB family 群。検出との突き合わせ用。
-    /// DB に無ければ空(未収載 part 等)なので、空を矛盾扱いしないこと。
+    /// en: The distinct DB families a `--chip` name means: a SKU, a family or a series, matched
+    /// exactly (case aside; docs/freeze-decisions.ja.md §1 - no prefix matching, so `--chip C` is
+    /// not every part). Empty when the name is not in the DB (e.g. a gap-series part).
+    /// ja: `--chip` 名(SKU / family / series、大小を除く完全一致。前方一致はしない)が指す DB family 群。
+    /// DB に無ければ空。
     pub fn families_for_chip_name(&self, name: &str) -> Vec<String> {
-        let up = name.to_ascii_uppercase();
         let mut fams: Vec<String> = self
             .skus
             .iter()
@@ -462,13 +461,32 @@ impl Db {
                 s.sku.eq_ignore_ascii_case(name)
                     || s.family.eq_ignore_ascii_case(name)
                     || s.series.eq_ignore_ascii_case(name)
-                    || s.sku.to_ascii_uppercase().starts_with(&up)
             })
             .map(|s| s.family.clone())
             .collect();
         fams.sort();
         fams.dedup();
         fams
+    }
+
+    /// en: When `name` is a SKU with a known device id and the chip read (`chip_id`) is another
+    /// part, the SKU the chip resolves to (or its id); `None` when they agree or when `name` is a
+    /// family / series, or a SKU the DB has no device id for (then only the family is checked).
+    /// ja: `name` が device id の分かる SKU で、読んだ chip が別の part なら、その chip の SKU(か id)。
+    /// 一致、または family / series、device id の無い SKU なら `None`(family だけで照合する)。
+    pub fn sku_conflict(&self, name: &str, chip_id: u32) -> Option<String> {
+        let want = self
+            .skus
+            .iter()
+            .find(|s| s.sku.eq_ignore_ascii_case(name))?
+            .device_id?;
+        if want & DEVICE_ID_MASK == chip_id & DEVICE_ID_MASK {
+            return None;
+        }
+        Some(match self.resolve_by_chip_id(chip_id) {
+            Resolution::Sku(s) => s.sku.clone(),
+            _ => format!("chip id 0x{chip_id:08x}"),
+        })
     }
 
     /// en: Resolve a live `chip_id` (AttachChip response) to a SKU. Silicon-revision bits `[7:4]` are
@@ -654,6 +672,10 @@ CH32FICTIONAL,CH32V006,CH32V006,0x00990900,0x1ffff704,1,1,false,9999\n";
         assert!(!v307.iter().any(|f| f == "CH32L103"));
         // Unknown name -> empty (callers must not treat as a conflict).
         assert!(db.families_for_chip_name("CH32V999ZZ").is_empty());
+        // No prefix matching (docs/freeze-decisions.ja.md §1).
+        assert!(db.families_for_chip_name("C").is_empty());
+        assert!(db.families_for_chip_name("CH32L103C8").is_empty());
+        assert!(db.families_for_chip_name("").is_empty());
     }
 
     #[test]
