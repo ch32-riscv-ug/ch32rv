@@ -290,6 +290,13 @@ const BAUDS: [u32; 20] = [
 /// How long a backend waits for data before it looks at `stop` / the settings again.
 const TICK: Duration = Duration::from_millis(50);
 
+/// en: How long an OEP console waits between empty reads (each read is one lock-free request
+/// through the broker, about a millisecond): short, so the target's output shows up within a few
+/// ms; the wait also ends at once when input comes.
+/// ja: OEP の console の、空の読み出しの間の待ち(読み出し 1 回はブローカー越しの lock 無しの要求で
+/// 約 1 ms)。短くして target の出力が数 ms で届くように。入力が来たらすぐ終わる。
+const OEP_IDLE: Duration = Duration::from_millis(5);
+
 /// en: The monitor's settings (the DESCRIBE parameters). `baudrate`, `dtr` and `rts` apply to
 /// `uart` and are accepted (and ignored) with the other sources. `chip` is `--chip`: the board's
 /// family (`monitor_port.serial.chip`), checked fail-closed against the target wherever the
@@ -853,8 +860,15 @@ impl Backend {
                     }
                     match console.poll() {
                         Ok(b) => {
-                            if b.is_empty() {
-                                std::thread::sleep(Duration::from_millis(20));
+                            // en: Nothing came: wait a little, but for the IDE's input too, so a
+                            // line typed (or a test's command) goes to the probe at once rather
+                            // than after the wait (it waited up to 20 ms before).
+                            // ja: 何も来なければ少し待つ。ただし IDE の入力も待ち、来たらすぐ probe へ送る
+                            // (前は最大 20 ms 待たせていた)。
+                            if b.is_empty()
+                                && let Ok(chunk) = input.recv_timeout(OEP_IDLE)
+                            {
+                                pending.extend_from_slice(&chunk);
                             }
                             Ok(b)
                         }

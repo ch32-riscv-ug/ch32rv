@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) An OEP console (`arduino monitor` and `monitor` with dmseq / dmdata / sdi / fixture-uart) sends the IDE's input to the probe as soon as it comes and reads the target's output every 5 ms when idle, where it waited 20 ms between empty reads and picked input up only after that wait. Echo round trip through the broker on the X035 jig (one character to a sketch that echoes it uppercased): p50 15.3 ms / max 20.8 ms before, 1.6 ms / 2.7 ms now.
+- (JA) OEP の console(`arduino monitor` と `monitor` の dmseq / dmdata / sdi / fixture-uart)は、IDE の入力を来たらすぐ probe へ送り、出力が無いときは 5 ms ごとに読む(前は空の読み出しの間に 20 ms 待ち、入力もその待ちの後にしか拾わなかった)。X035 治具でブローカー経由の echo の往復(1 文字を送り、大文字で返る sketch): 前は p50 15.3 ms / 最大 20.8 ms、今は 1.6 ms / 2.7 ms。
+
 ## 0.12.2 - 2026-09-30
 
 - (EN) `CH32RV_USB_TRACE=<file>` logs every OEP vendor bulk write and IN completion (time, pid, length, first bytes), for finding where a probe stops answering.
