@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The device DB is generated from ch32-device-data's public surface only, `index/` (febe61f's consumer contract): device_ids, option_bytes and option_byte_fields move from `evidence/` to their new `index/` tables, flash_geometry / flash_program_method to their `index/` copies, and every column is read by name. db-gen stops when `index/VERSION` is not the one it was written for, and each generated file's source line records the table's manifest sha256. The generated data is unchanged.
+- (JA) device DB を、ch32-device-data の公開面 `index/` の下だけから作るようにした(febe61f の consumer の契約)。device_ids・option_bytes・option_byte_fields は `evidence/` から新しい `index/` の表へ、flash_geometry / flash_program_method は `index/` の写しへ移し、列はすべて名前で読む。`index/VERSION` が書いた時の値でなければ db-gen は止まり、生成物の source の行に表ごとの manifest の sha256 を記録する。生成されるデータは変わらない。
+
 - (EN) Breaking (OEP, with oep-probe-arduino 9bcdafb / oep-client-python edbe7e7 and later): answer lists carry each element behind its length (`count × (len(u8), element)`, oep-core §2.3) - `list`, `scan` and the console / fixture UART `marks` are read that way, skipping an element's unknown tail, and the WCH-Link broker answers its own `list` the same way; a probe.config slot has `lock_len` after its name (0 = no lock), and anything after the lock is skipped. An older probe firmware is not read any more: reflash it (and rewrite its saved settings, whose stored form changed too). The registry is regenerated from oep-spec 5e3b618.
 - (JA) 破壊的(OEP。oep-probe-arduino 9bcdafb / oep-client-python edbe7e7 以降と組む): 応答の並びは、各要素の前にその長さを置く(`count × (len(u8), 要素)`、oep-core §2.3)。`list`、`scan`、console と fixture UART の `marks` をその形で読み、要素の知らない後ろは飛ばす。WCH-Link のブローカーが自分で答える `list` も同じ形にした。probe.config のスロットは name の後ろに `lock_len`(0 = 錠なし)を持ち、錠の後ろは飛ばす。古い probe の firmware はもう読めないので焼き直す(保存の形も変わったので、保存した設定も書き直す)。台帳は oep-spec 5e3b618 から作り直した。
 
