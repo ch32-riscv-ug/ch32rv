@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Breaking: `run`'s process exit is the tool's own code only. A target exit of 0 is exit 0; another is `target-exit` (**60**) with the target's code in `result.exit` and the message (the target's code used to be the process's, colliding with the tool's 10..70, and `--json` always exited 0). `--duration` running out is `run-timeout` (**61**, was `transport-timeout` 40), a halt that is not a semihosting call is `target-halted` (**62**, was 50, with `result.dpc`). `unimplemented` has its own code **71** (it was 70, internal). `ch32rv_contract::ExitCode` is `#[non_exhaustive]`.
+- (JA) 破壊的: `run` の process の exit は tool のコードだけにした。target が 0 で終われば exit 0、それ以外は `target-exit`(**60**)で、target のコードは `result.exit` と文面に入れる(以前は target のコードをそのまま process のコードにしていて tool の 10〜70 と衝突し、`--json` では常に 0 だった)。`--duration` の上限は `run-timeout`(**61**、以前は transport-timeout の 40)、semihosting でない halt は `target-halted`(**62**、以前は 50。`result.dpc` つき)。`unimplemented` は専用の **71**(以前は internal と同じ 70)。`ch32rv_contract::ExitCode` を `#[non_exhaustive]` にした。
+
 - (EN) Breaking: a WCH-Link without a USB serial is `wchlink://usb-<bus>-<ports>` (its position) in discovery and wherever a `wchlink://` address is taken, instead of `wchlink://unknown` (two such Links collided). A Link with neither a serial nor a stable position (an OS that gives no port chain) is left out of discovery; select it with `--probe`. `properties.serial` is the real serial, or null.
 - (JA) 破壊的: USB の serial の無い WCH-Link は、discovery でも `wchlink://` を受ける所でも、`wchlink://unknown` ではなく `wchlink://usb-<bus>-<ports>`(位置)になった(そうした Link 2 台が衝突していた)。serial も安定した位置も無い Link(port chain を返さない OS)は discovery に出さない(`--probe` で指定する)。`properties.serial` は本物の serial か null。
 

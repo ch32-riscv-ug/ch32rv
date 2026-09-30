@@ -77,14 +77,15 @@ ch32rv flash tests/fixtures/runtest-<family>.bin --confirm-run pc --probe serial
 ```
 `--confirm-run pc` = reset 後に PC をサンプルし flash 内で実行中かを確認(失敗は exit 50)。**実 LED を見たい/自作ファームを試すなら** ELF/HEX/bin をそのまま `flash` に渡す。
 
-### Tier 3b: semihosting 走行(`run` HIL、exit コード伝搬)
+### Tier 3b: semihosting 走行(`run` HIL、target の結果)
 ```sh
-ch32rv run tests/fixtures/semihosting.bin --probe serial:<SN> --exit-on semihosting
-# stdout: hello from semihosting  /  プロセス終了コード: 42
+ch32rv run tests/fixtures/semihosting.bin --probe serial:<SN> --exit-on semihosting --json
+# stdout: hello from semihosting  /  プロセス終了コード: 60(target-exit)、result.exit = 42
 ```
 `run` は 書込→reset 実行→runtime 出力→終了 を 1 コマンドで行う。`--exit-on semihosting` は
-target の `SYS_WRITE0` 出力を中継し、`SYS_EXIT`/`SYS_EXIT_EXTENDED` の値をプロセス終了コードに
-伝搬する(fixture は 42)。`--exit-on timeout --duration <s>` は s 秒だけ dmdata 出力を流して exit 0。
+target の `SYS_WRITE0` 出力を中継し、`SYS_EXIT`/`SYS_EXIT_EXTENDED` の値を `result.exit` に入れる。
+プロセス終了コードは tool のコードだけで、target が 0 なら 0、それ以外は 60(`target-exit`。fixture は 42 で
+終わるので 60)。上限時間は 61、semihosting でない halt は 62(2026-10-01、docs/freeze-decisions.ja.md §6)。`--exit-on timeout --duration <s>` は s 秒だけ dmdata 出力を流して exit 0。
 `--no-flash` で書込を省略。**CH32V307 実機検証済み**(family 非依存の base-ISA コード)。
 
 ### 補助
