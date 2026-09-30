@@ -261,19 +261,19 @@ pub(crate) fn unimplemented_cmd(cli: &Cli, cmd: &str) -> std::process::ExitCode 
         let mut env = ResultEnvelope::failure(
             cmd,
             ErrorKind::Unimplemented,
-            "not implemented yet (scaffold)",
+            format!("`{cmd}` is reserved and not implemented yet"),
         );
         if let Some(e) = env.error.as_mut() {
             e.hint = Some(
-                "see docs/cli.ja.md for the specified behavior and the milestone plan".to_owned(),
+                "the name is reserved for a later version (docs/cli.ja.md)".to_owned(),
             );
         }
         let code = ErrorKind::Unimplemented.exit_code();
         let _ = print_envelope(&env);
         code.into()
     } else {
-        eprintln!("ch32rv: `{cmd}` is not implemented yet (scaffold; see docs/cli.ja.md)");
-        contract::ExitCode::Internal.into()
+        eprintln!("ch32rv: error[unimplemented]: `{cmd}` is reserved and not implemented yet");
+        ErrorKind::Unimplemented.exit_code().into()
     }
 }
 

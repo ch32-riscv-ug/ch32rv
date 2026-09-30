@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The reserved, unimplemented commands (`isp`, `boot enter` / `dfu` / `uf2` / `uart`, `dap`, `probe vendor`) are hidden from `--help`; their names stay reserved, and running one says so and exits 71 (`unimplemented`) in human and JSON mode alike (human mode exited 70).
+- (JA) 予約で未実装のコマンド(`isp`、`boot enter` / `dfu` / `uf2` / `uart`、`dap`、`probe vendor`)を `--help` から隠した。名前は予約のまま、実行すると予約・未実装と言って exit 71(`unimplemented`)で終わる(人向けの出力では 70 だった)。
+
 - (EN) Breaking: `run`'s process exit is the tool's own code only. A target exit of 0 is exit 0; another is `target-exit` (**60**) with the target's code in `result.exit` and the message (the target's code used to be the process's, colliding with the tool's 10..70, and `--json` always exited 0). `--duration` running out is `run-timeout` (**61**, was `transport-timeout` 40), a halt that is not a semihosting call is `target-halted` (**62**, was 50, with `result.dpc`). `unimplemented` has its own code **71** (it was 70, internal). `ch32rv_contract::ExitCode` is `#[non_exhaustive]`.
 - (JA) 破壊的: `run` の process の exit は tool のコードだけにした。target が 0 で終われば exit 0、それ以外は `target-exit`(**60**)で、target のコードは `result.exit` と文面に入れる(以前は target のコードをそのまま process のコードにしていて tool の 10〜70 と衝突し、`--json` では常に 0 だった)。`--duration` の上限は `run-timeout`(**61**、以前は transport-timeout の 40)、semihosting でない halt は `target-halted`(**62**、以前は 50。`result.dpc` つき)。`unimplemented` は専用の **71**(以前は internal と同じ 70)。`ch32rv_contract::ExitCode` を `#[non_exhaustive]` にした。
 

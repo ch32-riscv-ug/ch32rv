@@ -124,9 +124,11 @@ pub enum Command {
     Monitor(MonitorArgs),
     /// GDB server (never modifies flash on attach)
     Gdb(GdbArgs),
-    /// DAP server
+    /// DAP server (reserved, not implemented yet: exit 71)
+    #[command(hide = true)]
     Dap(DapArgs),
-    /// Factory ISP route (USB/UART)
+    /// Factory ISP route (USB/UART) (reserved, not implemented yet: exit 71)
+    #[command(hide = true)]
     Isp(IspArgs),
     /// Custom bootloader route
     #[command(subcommand)]
@@ -336,7 +338,7 @@ pub enum ProbeCmd {
     /// Probe firmware: version info, known-bad check, IAP update
     #[command(subcommand)]
     Firmware(FirmwareCmd),
-    /// Backend-specific escape hatch
+    /// Backend-specific escape hatch (reserved, not implemented yet: exit 71)
     #[command(hide = true)]
     Vendor {
         #[arg(required = true)]
@@ -619,18 +621,22 @@ pub enum IspConfigCmd {
 
 #[derive(Subcommand)]
 pub enum BootCmd {
-    /// Enter the bootloader (touch1200 | double-reset | magic | pin)
+    /// Enter the bootloader (reserved, not implemented yet: exit 71)
+    #[command(hide = true)]
     Enter {
         #[arg(long)]
         method: Option<String>,
         #[arg(long)]
         port: Option<String>,
     },
-    #[command(subcommand)]
+    /// Reserved, not implemented yet (exit 71)
+    #[command(subcommand, hide = true)]
     Dfu(DfuCmd),
-    #[command(subcommand)]
+    /// Reserved, not implemented yet (exit 71)
+    #[command(subcommand, hide = true)]
     Uf2(Uf2Cmd),
-    #[command(subcommand)]
+    /// Reserved, not implemented yet (exit 71)
+    #[command(subcommand, hide = true)]
     Uart(UartBootCmd),
     #[command(subcommand)]
     Hid(HidBootCmd),
