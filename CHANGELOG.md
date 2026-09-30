@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.14.0 - 2026-09-30
+
 - (EN) `rtt` works on an OEP probe (CLI `monitor --source rtt` and `arduino monitor`'s `rtt`, now in the `oep` source list): the probe's console has no RTT mechanism, so ch32rv runs RTT itself over the probe's riscv-dm, as it does on a WCH-Link - it finds the SEGGER control block in RAM and, every 50 ms, halts the hart briefly (the probe's own halt / resume) to drain up[0] and feed down[0], using only the probe's block reads / writes in between (a raw DMI write there makes the probe firmware drop the s0 / s1 / a0 / a1 its block ops borrowed, and the target runs on with them clobbered). The RTT engine is one implementation behind a small `RttTarget` trait for both probes.
 - (JA) OEP の probe でも `rtt` が使える(CLI の `monitor --source rtt` と `arduino monitor` の `rtt`。`oep` の source の一覧に足した)。probe の console に RTT の方式は無いので、WCH-Link の時と同じく ch32rv が probe の riscv-dm の上で行う: RAM の SEGGER の control block を探し、50 ms ごとに hart を一瞬止めて(probe の halt / resume)、その間は probe の block の読み書きだけで up[0] を汲み down[0] に入れる(そこで raw の DMI write を使うと、probe の firmware が block op で借りた s0 / s1 / a0 / a1 を戻さず、target が壊れた値のまま走る)。RTT の本体は小さな `RttTarget` trait の裏の 1 つの実装で、両方の probe に使う。
 
