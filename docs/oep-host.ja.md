@@ -214,10 +214,10 @@ binary の扱い:
 **probe ごとに、誰の子でもないブローカーを 1 つ置く。ch32rv の各コマンド(flash、monitor、gdb、1 回だけの read / reset)と pytest の `oep_host` は、どれもブローカーの client になる。** 経路は 1 つで、立ち上がる順で形は変わらない。
 
 - **起動**:
-  - client は、まず `<runtime>/<key>.oep`(待ち受けの場所)を見てつなぐ。key は probe の同一性(OEP は unit_id、LinkE は USB の serial か位置)、runtime は DeviceLock と同じ利用者ごとのディレクトリ。
+  - client は、まず `<runtime>/<key>.oep`(待ち受けの場所)を見てつなぐ。key は probe の同一性(2026-10-01、docs/freeze-decisions.ja.md §4): OEP の USB の probe は `oep-<USB serial>`(serial = unit_id。無ければ `oep-usb-<位置>`)、OEP の USB device を持たない serial port(UART bridge)は `oep-port-<正規化した path>`、WCH-Link は `wch-<serial>`(無ければ `wch-usb-<位置>`)。同じ probe へのどの道(`oep://`、どちらの CDC の `port:`)も同じブローカーに着く。runtime は DeviceLock と同じ利用者ごとのディレクトリ。
   - 無ければ `ch32rv broker serve --probe <sel>`(利用者向けではない subcommand)を切り離して起動する。Linux / macOS は double fork + setsid、Windows は DETACHED_PROCESS と job object からの breakaway。stdio は捨てる。
   - 起動の取り合いは `<runtime>/<key>.broker.lock` の flock で 1 つにする。取れなかったほうは起動をやめ、`<key>.oep` が現れるのを待ってつなぐ。
-- **待ち受け**: 127.0.0.1 の TCP を 1 つ(port 0 で選ぶ)。`<key>.oep` には port、pid、起動時刻を書き、file は 0600 にする。`ch32rv broker endpoint --probe <sel> --json` がこれを返す(無ければ `{"endpoint":null}`)。認証は無い(OEP の TCP の注意どおり)。
+- **待ち受け**: 127.0.0.1 の TCP を 1 つ(port 0 で選ぶ)。`<key>.oep` には port、pid、起動時刻を書き、file は 0600 にする。`ch32rv broker endpoint --probe <sel> --json` がこれを返す(結果の封筒の `result` が `{endpoint, pid, transport}`。`endpoint` は `"127.0.0.1:<port>"`、ブローカーが無ければ null)。認証は無い(OEP の TCP の注意どおり)。
 - **終わり方**: **client が 0 になったらすぐ終わる**(待ち時間なし)。transport を閉じ、`<key>.oep` を消す。probe を失ったとき(抜かれた、boot_id が変わった)は、client に切断で知らせてから終わる。
 - **client から見ると OEP そのもの**(spec の TCP の形 `length(u16) message`)。ブローカーは次のことをする。
   - client ごとに corr を付け替え、probe への pipeline に混ぜる。応答は元の corr に戻して、その client にだけ返す。
