@@ -381,19 +381,38 @@ fn gen_flash_program_method(data: &Path, rev: &str) -> Result<(String, usize), S
         if family.is_empty() {
             continue;
         }
+        // en: `program_method` and `program_commit` are prose columns (index/columns.csv
+        // `spelling`: a rewording does not bump VERSION), so a value that does not read as
+        // expected stops the generation instead of turning into a wrong mode. A row the data
+        // repo marks `conflict` may stay unclassified: the consumer fails closed on it.
+        // ja: 2 つとも prose の列(言い換えで VERSION は上がらない)。想定の形で読めなければ生成を
+        // 止める。`conflict` の行だけは分類できなくてよい(使う側が fail-closed)。
+        let conflict = Table::cell(row, conf_i) == "conflict";
         let method = Table::cell(row, method_i);
-        let mode = if method.contains("buffer writes") {
-            "buffered"
-        } else if method.contains("direct writes") {
-            "direct"
-        } else {
-            "" // not classified (e.g. the H417 RM/EVT conflict) - the consumer fails closed
+        let mode = match (
+            method.contains("buffer writes"),
+            method.contains("direct writes"),
+        ) {
+            (true, false) => "buffered",
+            (false, true) => "direct",
+            _ if conflict => "",
+            _ => {
+                return Err(format!(
+                    "{family}: flash_program_method.program_method `{method}` reads as neither \
+                     `buffer writes` nor `direct writes` (a prose column changed: ask \
+                     ch32-device-data for a fixed column, or update db-gen)"
+                ));
+            }
         };
         // `STRT (bit6)` / `PG_STRT (bit21)` -> the bit name alone.
-        let commit = Table::cell(row, commit_i)
-            .split_whitespace()
-            .next()
-            .unwrap_or("");
+        let commit_text = Table::cell(row, commit_i);
+        let commit = commit_text.split_whitespace().next().unwrap_or("");
+        if !matches!(commit, "STRT" | "PG_STRT") && !conflict {
+            return Err(format!(
+                "{family}: flash_program_method.program_commit `{commit_text}` does not start \
+                 with STRT or PG_STRT (a prose column changed)"
+            ));
+        }
         out.push_str(&format!(
             "{family},{mode},{commit},{},{}\n",
             Table::cell(row, bits_i),
@@ -464,13 +483,17 @@ fn gen_option_bytes(data: &Path, rev: &str) -> Result<(String, usize), String> {
                 "{family}: option-byte row 0x00 has no usable address"
             ));
         };
+        // A prose column (index/columns.csv `spelling`): stop on a value that names neither.
         let unit = Table::cell(row, unit_i);
-        let method = if unit.contains("OBPG") {
-            "obpg"
-        } else if unit.contains("FTPG") {
-            "ftpg"
-        } else {
-            ""
+        let method = match (unit.contains("OBPG"), unit.contains("FTPG")) {
+            (true, false) => "obpg",
+            (false, true) => "ftpg",
+            _ => {
+                return Err(format!(
+                    "{family}: option_bytes.write_unit `{unit}` names neither OBPG nor FTPG \
+                     (a prose column changed)"
+                ));
+            }
         };
         out.push_str(&format!("{family},0x{base:08x},{method}\n"));
         n += 1;
