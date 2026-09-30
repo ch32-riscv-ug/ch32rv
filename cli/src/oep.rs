@@ -488,14 +488,8 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
         return Ok(Place::of_slot(w, s));
     }
     if slots.is_empty() {
-        return pick_wire(p, chip)
-            .map(|wire| Place {
-                wire,
-                pins: None,
-                max_speed: None,
-                idle_clock: None,
-            })
-            .map_err(|e| e.to_string());
+        let wire = pick_wire(p, chip).map_err(|e| e.to_string())?;
+        return place_by_scan(p, wire, chip);
     }
     let states = ch32rv_oep::config::slot_states(p).map_err(|e| e.to_string())?;
     struct Seen {
@@ -550,6 +544,93 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
             ))
         }
     }
+}
+
+/// en: No slot registered: where on `wire` the target is. A wire whose pins the probe fixes
+/// (channel_group) takes an attach without pins; one whose pins the host picks (role_channels)
+/// refuses that when it allows more than one pair (oep-if-debug §1), so its pairs are scanned and
+/// the one with a target is used - several, told apart by the chip each one reads and `--chip`,
+/// as with slots.
+/// ja: スロットが無いとき、`wire` のどこに target が居るか。ピンを probe が決める線(channel_group)は
+/// pins 無しの attach を受ける。host が選ぶ線(role_channels)は組が 2 つ以上だと断るので、scan して
+/// target の居る組を使う(複数なら、スロットと同じく各組の chip と `--chip` で絞る)。
+fn place_by_scan(p: &mut Probe, wire: WireKind, chip: Option<&str>) -> Result<Place, String> {
+    let bare = Place {
+        wire,
+        pins: None,
+        max_speed: None,
+        idle_clock: None,
+    };
+    if !host_picks_pins(p, wire) {
+        return Ok(bare);
+    }
+    let found = ch32rv_oep::target::scan_all(p, wire).map_err(|e| format!("scan: {e}"))?;
+    let places: Vec<Place> = found
+        .iter()
+        .map(|f| Place {
+            pins: Some((f.swdio, f.swclk)),
+            ..bare
+        })
+        .collect();
+    match places.as_slice() {
+        [] => Err(format!(
+            "no target found on any pin pair of {} (scan)",
+            wire.interface()
+        )),
+        [one] => Ok(*one),
+        _ => {
+            let db = ch32rv_target::Db::builtin();
+            let wanted = chip.map(|c| db.families_for_chip_name(c));
+            let mut seen = Vec::new();
+            for pl in &places {
+                let family = attach(p, wire, pl.options(false, None))
+                    .ok()
+                    .and_then(|at| {
+                        let _ = detach(p, wire, at.connection, false);
+                        at.wch_chip_id.and_then(family_of_chip_id)
+                    });
+                seen.push((*pl, family));
+            }
+            let matches: Vec<&(Place, Option<String>)> = seen
+                .iter()
+                .filter(|(_, f)| match (&wanted, f) {
+                    (Some(ws), Some(f)) => ws.iter().any(|w| w.eq_ignore_ascii_case(f)),
+                    (None, Some(_)) => true,
+                    _ => false,
+                })
+                .collect();
+            match matches.as_slice() {
+                [(one, _)] => Ok(*one),
+                _ => {
+                    let list: Vec<String> = seen
+                        .iter()
+                        .map(|(pl, f)| {
+                            let (d, c) = pl.pins.unwrap_or_default();
+                            format!("pins {d}/{c}: {}", f.as_deref().unwrap_or("no target"))
+                        })
+                        .collect();
+                    Err(format!(
+                        "{} pin pair(s) match {}: {} (register a slot for the board's pins)",
+                        matches.len(),
+                        chip.map_or("a target".to_owned(), |c| format!("--chip {c}")),
+                        list.join(", ")
+                    ))
+                }
+            }
+        }
+    }
+}
+
+/// Whether the probe lets the host pick `wire`'s pins (describe `role_channels`, not a fixed
+/// channel_group).
+fn host_picks_pins(p: &mut Probe, wire: WireKind) -> bool {
+    let Ok(func) = p.interface(wire.interface()).map(|i| i.func) else {
+        return false;
+    };
+    p.describe(func).is_ok_and(|tlvs| {
+        tlvs.iter()
+            .any(|t| t.tag == ch32rv_oep::registry::describe_common::ROLE_CHANNELS)
+    })
 }
 
 /// The DB family of the attached target, checked against `--chip` (fail-closed).

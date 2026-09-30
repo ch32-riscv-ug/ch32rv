@@ -258,3 +258,26 @@ fn a_raw_upload_to_a_probe_that_announces_its_oep_device_is_refused() {
         "{v}"
     );
 }
+
+#[test]
+fn flash_where_the_host_picks_the_pins() {
+    // A probe whose wire takes its pins from the host (role_channels) and has no slot: ch32rv
+    // scans for the pair with a target (the fake's is the first, GP0 / GP1) and attaches there.
+    let dir = std::env::var_os("OEP_CLIENT_PYTHON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root().join("../../dev_oep/oep-client-python"));
+    let has_profile = std::fs::read_to_string(dir.join("src/oep_client/fake.py"))
+        .is_ok_and(|t| t.contains("rp2350-pins"));
+    if !has_profile {
+        eprintln!("skip: the fake has no rp2350-pins profile");
+        return;
+    }
+    let Some(f) = fake(&["--pty", "--profile", "rp2350-pins", "--target-id", V203]) else {
+        return;
+    };
+    let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
+    let v = flash(&probe);
+    let fl = &v["result"]["flash"];
+    assert_eq!(fl["family"], "CH32V20x");
+    assert_eq!(fl["written"], 852);
+}

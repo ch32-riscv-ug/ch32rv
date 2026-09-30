@@ -113,6 +113,55 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
     })
 }
 
+/// One pair a scan found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Found {
+    /// 0x01 riscv-dm.
+    pub kind: u8,
+    pub swdio: u16,
+    /// 0xFFFF on one wire.
+    pub swclk: u16,
+    /// The debug module's DMSTATUS as read there.
+    pub status: u32,
+}
+
+/// en: `scan` every pair the probe allows (count 0), going on with `skip` until a scan tries none
+/// (oep-if-debug §1: at most 255 pairs a scan). The pairs found go to attach as they are.
+/// ja: probe が許すすべての組を scan する(count 0)。1 回は 255 組までなので、skip で続け、何も試さ
+/// なくなったら終わり。見つかった組はそのまま attach の pins に渡せる。
+pub fn scan_all(p: &mut Probe, kind: WireKind) -> Result<Vec<Found>, OepError> {
+    let func = p.interface(kind.interface())?.func;
+    let mut found = Vec::new();
+    let mut skip: u32 = 0;
+    // A probe offers far fewer pairs than this; the bound only stops a probe that never says 0.
+    for _ in 0..512 {
+        let mut pl = vec![0u8];
+        if skip > 0 {
+            let s = u16::try_from(skip).unwrap_or(u16::MAX);
+            put_tlv(&mut pl, wire::tlvs::scan::SKIP, false, &s.to_le_bytes());
+        }
+        let a = check(p.call(func, wire::op::SCAN, pl)?)?;
+        let (Some(&tried), Some(&count)) = (a.first(), a.get(1)) else {
+            return Err(OepError::Malformed(
+                "scan answer shorter than 2 bytes".into(),
+            ));
+        };
+        for e in a[2..].as_chunks::<9>().0.iter().take(usize::from(count)) {
+            found.push(Found {
+                kind: e[0],
+                swdio: u16::from_le_bytes([e[1], e[2]]),
+                swclk: u16::from_le_bytes([e[3], e[4]]),
+                status: u32::from_le_bytes([e[5], e[6], e[7], e[8]]),
+            });
+        }
+        if tried == 0 {
+            break;
+        }
+        skip += u32::from(tried);
+    }
+    Ok(found)
+}
+
 /// `detach`: drop this session's use of the connection (`force` closes it for everyone).
 pub fn detach(p: &mut Probe, kind: WireKind, connection: u16, force: bool) -> Result<(), OepError> {
     let func = p.interface(kind.interface())?.func;
