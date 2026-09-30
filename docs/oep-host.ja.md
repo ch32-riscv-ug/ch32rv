@@ -63,6 +63,7 @@
 - vendor bulk は nusb で扱う(`ch32rv_usb::BulkPipe`)。alt 0 の vendor class(0xFF)の interface で、bulk の OUT と IN を持つ最初のもの。
   - IN の転送を 2 本出したままにする(read の timeout で cancel しない。cancel すると、その瞬間に届いた分を落とす)。汲み続けるので OUT も詰まらない(参照 client の E160)。
   - wMaxPacketSize の倍数の書き込みの後には ZLP を送る。
+  - **probe 側の不具合の記録(2026-09-30)**: X035 治具の P4(oep-probe-arduino 1334b7f まで)は、ちょうど wMaxPacketSize の倍数の frame(1024 byte = 251 語の write_block)+ ZLP を、次の OUT が来るまで処理しなかった(host からは 3 秒の無応答、送り直しも同じ。ブローカーが上流の無応答で終わり、flash が「connection closed」)。`CH32RV_USB_TRACE` の記録で特定し、firmware 6964010(`CFG_TUD_VENDOR_RX_NEED_ZLP=0`、OUT を packet ごとに受ける)で直った。確認: 「monitor 1 秒 → すぐ flash」100 回で 0 回、1024 byte ちょうどの write_block 単独 70 回で 0 回(最遅 7.9 ms)。host は仕様どおり ZLP を送り続ける。
 - HID は hidapi で扱う。
   - 同じ VID:PID と serial で、usage page 0xFF00 以上の HID を開き、report 記述子から vendor の report(input と output を持つもの)の ID と大きさを読む(`ch32rv_oep::hid`)。P4 は ID 6、511 byte。
   - report ID があれば、output にも ID を付ける。input は ID を確かめてから count の分を取る。
