@@ -177,6 +177,26 @@ pub(crate) fn connect_upstream(
     path: &str,
     timeout: Option<Duration>,
 ) -> Result<(Probe, &'static str), String> {
+    connect_ordered(path, timeout, false)
+}
+
+/// en: For discovery's lock-free reads (oep-workflow §3.3): the probe's HID first, which no other
+/// tool holds and which does not contend with a monitor for the serial port (TIOCEXCL) or leave
+/// DTR on a bound CDC; then vendor bulk, then the serial port.
+/// ja: discovery の lock 無しの読み出し用。HID を先に(他の道具が握らず、monitor と serial port を
+/// 取り合わず、bind のある CDC に DTR を残さない)、次に vendor bulk、最後に serial port。
+pub(crate) fn connect_for_listing(
+    path: &str,
+    timeout: Duration,
+) -> Result<(Probe, &'static str), String> {
+    connect_ordered(path, Some(timeout), true)
+}
+
+fn connect_ordered(
+    path: &str,
+    timeout: Option<Duration>,
+    hid_first: bool,
+) -> Result<(Probe, &'static str), String> {
     let start = std::env::var("CH32RV_OEP_TRANSPORT").unwrap_or_default();
     let sel = Selector::Port(path.to_owned());
     let dev = oep_devices()
@@ -192,6 +212,12 @@ pub(crate) fn connect_upstream(
         Probe::connect(link).ok()
     };
     if let Some(d) = &dev {
+        if hid_first
+            && matches!(start.as_str(), "" | "hid")
+            && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
+        {
+            return Ok((p, "hid"));
+        }
         if !matches!(start.as_str(), "hid" | "serial")
             && let Some(p) = d
                 .open_vendor_bulk()
@@ -201,7 +227,8 @@ pub(crate) fn connect_upstream(
         {
             return Ok((p, "vendor-bulk"));
         }
-        if start != "serial"
+        if !hid_first
+            && start != "serial"
             && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
         {
             return Ok((p, "hid"));
