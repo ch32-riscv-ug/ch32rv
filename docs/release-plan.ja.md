@@ -72,6 +72,13 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 - **`prepare` の Verify が `cargo deny check` で落ちたら yank を疑う**: 依存 crate が crates.io で yank されると `error[yanked]: detected yanked crate (try cargo update -p <crate>)` で止まる(0.8.0 の初回試行で `serialport 4.10.0` がこれ)。直前までローカルで通っていても CI は最新 index を見るので起こる。対処は提案どおり `cargo update -p <crate>`(patch 版へ)→ ゲート再実行 → lock を commit → workflow 再起動。CI 側は `Commit, tag, push` に達していないので remote に半端な状態は残らない。
 - **注意**: 開発機は Linux(WSL2)+ usbipd 越しの Windows ネイティブ。**Linux x64 = verified**。**Windows x64 = verified**(2026-09-02、WCH 純正ドライバ経路 `ch32rv-usb-wch-win` で全5 probe の flash 往復まで実機確認。Zadig 不要。依頼 B-2 完了)。**macOS / arm = experimental**(未実機)。Release ノートにこの verified 状況を明記する。
 
+### 2.1 crates.io への公開が途中で止まったとき(2026-09-30)
+
+0.12.5 は、binary と GitHub Release は揃ったが、crates.io への公開が ch32rv-target の後で止まった。ch32rv-wchlink の package が `failed to select a version for the requirement ch32rv-dmi = "^0.12.5"`(候補は 0.12.4 まで)で落ちた。dmi 0.12.5 は数十秒前に出ていたが、index にまだ見えていなかった。`cargo publish` は直前に出した crate(target)が index に載るのは待つが、それより前に出した crate は待たないので、index の配信が遅れるとこうなる。既に出た crate は同じ版で出し直せない。
+
+- 公開の loop は、同じ版が crates.io にある crate を飛ばし、失敗した crate は 0 / 60 / 120 / 240 / 480 秒あけて最大 5 回やり直す(index の遅れはこれで吸収する)。
+- 途中で止まったら、Actions の「Release」を **`republish_tag=v<版>`**(`publish_crates=true`)で起動する。版を上げず、tag も binary も作らず、その tag の source で残りの crate だけを出す(Trusted Publishing は `release.yml` に結び付いているので、同じ workflow の中でやる)。
+
 ## 3. 出荷済みの機能(0.7.0 時点、全て実機検証済み)
 
 | 系統 | コマンド |

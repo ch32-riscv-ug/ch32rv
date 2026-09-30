@@ -26,6 +26,10 @@ on:
         description: "Publish the library crates to crates.io (turn OFF for the first release - the crates are bootstrapped once from the CLI)"
         type: boolean
         default: true
+      republish_tag:
+        description: "Finish an existing release's crates.io publish (e.g. v0.12.5): no bump, no tag, no binaries; crates already at that version are skipped"
+        type: string
+        default: ""
 
 permissions:
   contents: write # commit the version bump, push the tag, create the GitHub Release
@@ -35,20 +39,32 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.ver.outputs.version }}
-      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.version || steps.again.outputs.version }}
+      tag: ${{ steps.ver.outputs.tag || steps.again.outputs.tag }}
     steps:
+      # Re-publish only: take the version from the existing tag and skip everything below.
+      - name: Existing tag (republish)
+        id: again
+        if: inputs.republish_tag != ''
+        run: |
+          T="${{ inputs.republish_tag }}"
+          echo "tag=$T" >> "$GITHUB_OUTPUT"
+          echo "version=${T#v}" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
+        if: inputs.republish_tag == ''
         with:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
+        if: inputs.republish_tag == ''
         with:
           components: rustfmt, clippy
       - uses: taiki-e/install-action@v2
+        if: inputs.republish_tag == ''
         with:
           tool: cargo-deny
       # serialport (via the CLI/monitor) links libudev on Linux; the gates compile the whole workspace.
       - name: Install libudev
+        if: inputs.republish_tag == ''
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
 
       # The generated device DB is committed and embedded, so the build itself never reads a
@@ -59,6 +75,7 @@ jobs:
       # release before anything is mutated. `db-check` ignores the `# source:` rev header, so an
       # unrelated upstream commit with identical data does not trip it.
       - name: Check out ch32-device-data (drift guard only)
+        if: inputs.republish_tag == ''
         uses: actions/checkout@v4
         with:
           repository: ch32-riscv-ug/ch32-device-data
@@ -66,15 +83,18 @@ jobs:
           fetch-depth: 0
 
       - name: Verify the embedded device DB is current
+        if: inputs.republish_tag == ''
         run: cargo run -q -p xtask -- db-check .ch32-device-data
 
       # Bumps the [workspace.package] version + the internal dependency pins in Cargo.toml + the
       # lockfile, and cuts the CHANGELOG "Unreleased" section to the new version. See scripts/release.sh.
       # (The one-time crates.io name-claim bootstrap is a separate script: scripts/first-publish.sh.)
       - name: Bump version + CHANGELOG
+        if: inputs.republish_tag == ''
         run: ./scripts/release.sh "${{ inputs.version || inputs.level }}"
 
       - name: Read the bumped version
+        if: inputs.republish_tag == ''
         id: ver
         run: |
           V=$(cargo metadata --no-deps --format-version 1 \
@@ -83,6 +103,7 @@ jobs:
           echo "tag=v$V"       >> "$GITHUB_OUTPUT"
 
       - name: Verify (fmt / clippy / test / deny)
+        if: inputs.republish_tag == ''
         run: |
           cargo fmt --all --check
           cargo clippy --all-targets --all-features -- -D warnings
@@ -90,6 +111,7 @@ jobs:
           cargo deny check
 
       - name: Commit, tag, push
+        if: inputs.republish_tag == ''
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -98,6 +120,7 @@ jobs:
           git push origin HEAD --tags
 
       - name: Create the GitHub Release
+        if: inputs.republish_tag == ''
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -128,17 +151,35 @@ jobs:
           # oep after flash: its dev-dependency on ch32rv-flash must be on the index too.
           # NOTE: crates.io needs a published dependency in its index before a dependent can build,
           # so `cargo publish` waits for the index by default. If a run fails partway, the crates
-          # already published at this version cannot be re-published; re-run with those removed from
-          # the list, or switch to `cargo workspaces publish` (skips already-published crates).
+          # already published at this version cannot be re-published; `publish` below skips them.
           # usb-wch-win before usb: ch32rv-usb has a cfg(windows) dependency on it, and cargo
           # publish requires every dependency (target-specific included) to be on the index first.
+          # A crate already at this version is skipped (a run that stopped partway can be finished
+          # with `republish_tag`), and a failed publish is tried again after a pause: the index can lag
+          # behind an earlier publish (0.12.5 stopped at ch32rv-wchlink with "failed to select a
+          # version for ch32rv-dmi = ^0.12.5" although dmi 0.12.5 was out; cargo waits only for the
+          # crate it has just published).
+          V="${{ needs.prepare.outputs.version }}"
+          publish() {
+            if curl -sf -o /dev/null -H 'User-Agent: ch32rv-release (github.com/ch32-riscv-ug/ch32rv)' \
+                 "https://crates.io/api/v1/crates/$1/$V"; then
+              echo "skip  $1 $V (already on crates.io)"; return 0
+            fi
+            for wait in 0 60 120 240 480; do
+              sleep "$wait"
+              if cargo publish -p "$1"; then return 0; fi
+              echo "::warning::cargo publish -p $1 failed; trying again"
+            done
+            return 1
+          }
           for c in contract usb-wch-win usb dmi target wchlink flash oep boot debug; do
-            cargo publish -p "ch32rv-$c"
+            publish "ch32rv-$c"
           done
-          cargo publish -p ch32rv
+          publish ch32rv
 
   binaries:
     needs: prepare
+    if: inputs.republish_tag == ''
     strategy:
       fail-fast: false
       matrix:
