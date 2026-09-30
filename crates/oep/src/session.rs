@@ -250,22 +250,31 @@ impl Probe {
             let total = usize::from(u16::from_le_bytes([a[0], a[1]]));
             let count = usize::from(a[2]);
             let mut at = 3;
+            // count x (len(u8), entry); an entry longer than ch32rv knows is read up to what it
+            // knows (core §2.3: readers skip the unknown tail, writers only append).
             for _ in 0..count {
-                if a.len() < at + 7 {
+                let Some(&len) = a.get(at) else {
                     return Err(OepError::Malformed("list entry cut short".into()));
+                };
+                let e = a
+                    .get(at + 1..at + 1 + usize::from(len))
+                    .ok_or_else(|| OepError::Malformed("list entry cut short".into()))?;
+                at += 1 + usize::from(len);
+                // fn(u16) instance(u16) revision(u8) flags(u8) name_len(u8) name
+                if e.len() < 7 {
+                    return Err(OepError::Malformed(
+                        "list entry shorter than 7 bytes".into(),
+                    ));
                 }
-                let name_len = usize::from(a[at + 6]);
-                let end = at + 7 + name_len;
-                if a.len() < end {
-                    return Err(OepError::Malformed("list entry name cut short".into()));
-                }
+                let name = e
+                    .get(7..7 + usize::from(e[6]))
+                    .ok_or_else(|| OepError::Malformed("list entry name cut short".into()))?;
                 out.push(Interface {
-                    func: u16::from_le_bytes([a[at], a[at + 1]]),
-                    instance: u16::from_le_bytes([a[at + 2], a[at + 3]]),
-                    revision: a[at + 4],
-                    name: String::from_utf8_lossy(&a[at + 7..end]).into_owned(),
+                    func: u16::from_le_bytes([e[0], e[1]]),
+                    instance: u16::from_le_bytes([e[2], e[3]]),
+                    revision: e[4],
+                    name: String::from_utf8_lossy(name).into_owned(),
                 });
-                at = end;
             }
             if out.len() >= total || count == 0 {
                 return Ok(out);

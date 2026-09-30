@@ -366,8 +366,16 @@ fn gen_debug_wiring(data: &Path, rev: &str) -> Result<(String, usize), String> {
             "both" => "1-or-2-wire",
             _ => continue,
         };
-        let swclk = if get(c_clk).is_empty() { "-" } else { get(c_clk) };
-        out.push_str(&format!("{},{wire},{},{swclk}\n", get(c_series), get(c_dio)));
+        let swclk = if get(c_clk).is_empty() {
+            "-"
+        } else {
+            get(c_clk)
+        };
+        out.push_str(&format!(
+            "{},{wire},{},{swclk}\n",
+            get(c_series),
+            get(c_dio)
+        ));
         n += 1;
     }
     Ok((out, n))
