@@ -483,7 +483,7 @@ pub struct MonitorArgs {
     pub cmd: Option<MonitorCmd>,
     #[arg(long, value_enum, default_value = "uart")]
     pub source: MonitorSource,
-    /// Port selector: path:<dev> | usb:VID:PID[:SERIAL][:IFACE] (default: derived from --probe's CDC)
+    /// The serial port's path (default: the CDC of the probe --probe selects)
     #[arg(long)]
     pub port: Option<String>,
     /// Baud rate of the physical UART bridge (uart only)
@@ -733,7 +733,7 @@ pub enum ArduinoCmd {
     /// Pluggable Monitor protocol (stdio JSON)
     Monitor {
         /// The `protocol` DESCRIBE reports (the platform's `pluggable_monitor.pattern.<protocol>`)
-        #[arg(long, default_value = "serial")]
+        #[arg(long, default_value = "serial", value_parser = ["serial", "wchlink", "oep"])]
         protocol: String,
     },
 }

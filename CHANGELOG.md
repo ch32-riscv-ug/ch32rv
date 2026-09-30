@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Breaking: `arduino monitor --protocol` takes `serial`, `wchlink` or `oep` only (another value fell back to the serial source list; now a usage error, exit 2), and the source table per protocol is frozen as docs/freeze-decisions.ja.md §3 lists it (the docs now agree in one table). `monitor --port` is the serial port's path; its documented `path:` / `usb:VID:PID…` grammar, never implemented, is gone from the help and the docs.
+- (JA) 破壊的: `arduino monitor --protocol` は `serial` / `wchlink` / `oep` だけを受ける(ほかの値は serial の一覧になっていた。今は usage の誤り、exit 2)。protocol ごとの source の表を docs/freeze-decisions.ja.md §3 のとおり凍結した(文書も 1 つの表に揃えた)。`monitor --port` は serial port の path だけ。文書にあって実装の無かった `path:` / `usb:VID:PID…` の文法は、help と文書から消した。
+
 - (EN) Breaking: `--chip` names a SKU, a family or a series exactly (case aside); the part-number prefix match is gone (`--chip C` matched every part). A SKU is now checked as that SKU against the chip id read (a family / series, or a SKU the DB has no device id for, by family as before). An empty `--chip` (or `CH32RV_CHIP`) is a usage error (exit 2) instead of matching everything. `arduino monitor`'s `chip` setting takes the same names the same way (case aside, series too).
 - (JA) 破壊的: `--chip` は SKU / family / series の完全一致(大小無視)だけにした。型番の前方一致はやめた(`--chip C` が全部に当たっていた)。SKU は、読んだ chip id とその SKU として照合する(family / series、または DB に device id の無い SKU は今までどおり family で)。空の `--chip`(または `CH32RV_CHIP`)は、全部に当たるのではなく usage の誤り(exit 2)。`arduino monitor` の `chip` 設定も同じ名前を同じように受ける(大小無視、series も)。
 

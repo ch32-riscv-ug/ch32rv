@@ -319,6 +319,7 @@ impl Settings {
         let sources: &'static [MonitorSource] = match protocol {
             "wchlink" => &WCHLINK_SOURCES,
             "oep" => &OEP_SOURCES,
+            // `--protocol` takes serial / wchlink / oep only (clap refuses the rest).
             _ => &SERIAL_SOURCES,
         };
         // Line settings default to the builtin serial-monitor's.
