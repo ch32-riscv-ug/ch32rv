@@ -50,19 +50,19 @@ ch32rv
 │  └─ sdi <on|off>             SDI print の有効/無効                               P1  [wlink sdi-print]
 │
 ├─ gdb                         GDB server(attach 時 flash 非改変)                P1  [WCH OpenOCD, minichlink -G, probe-rs gdb]
-├─ dap                         DAP server                                          P2  [probe-rs dap-server]
+├─ dap                         DAP server(予約・未実装、help に出さない、exit 71)   P2  [probe-rs dap-server]
 │
-├─ isp                         factory ISP 経路(USB/UART)                        P2  [wchisp, WCHISPTool_CMD]
+├─ isp                         factory ISP 経路(予約・未実装、help に出さない、exit 71) P2  [wchisp, WCHISPTool_CMD]
 │  ├─ list / info / enter / reset
 │  ├─ flash <file> / verify <file> / erase
 │  ├─ eeprom <read|write|erase>
 │  └─ config <get|set|reset>
 │
 ├─ boot                        custom bootloader 経路                              P2  [dfu-util, UF2 copy, tinyboot, rv003usb]
-│  ├─ enter [--method touch1200|double-reset|magic|pin]
-│  ├─ dfu <flash|info>
-│  ├─ uf2 flash <file>
-│  ├─ uart <flash|info> [--node <id>]
+│  ├─ enter [--method touch1200|double-reset|magic|pin]   (予約・未実装)
+│  ├─ dfu <flash|info>                                    (予約・未実装)
+│  ├─ uf2 flash <file>                                    (予約・未実装)
+│  ├─ uart <flash|info> [--node <id>]                     (予約・未実装)
 │  └─ hid flash <file>
 │
 ├─ db                          target DB の閲覧
