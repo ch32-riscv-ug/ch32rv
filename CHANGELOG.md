@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.13.2 - 2026-09-30
+
 - (EN) `probe list` also lists OEP probes on USB (`kind: "oep"`, `serial` = the unit id, `usb`, `topology`, `ports`, `model` from iProduct), from their USB descriptors alone - they are not opened, since a broker may hold them. Every entry now has `kind` (`wchlink` / `oep`). A UART-bridge OEP probe has no USB identity of its own and is not listed.
 - (JA) `probe list` に USB の OEP の probe も出す(`kind: "oep"`、`serial` = unit id、`usb`、`topology`、`ports`、`model` は iProduct)。USB の記述子だけから作り、開かない(ブローカーが持っているかもしれないため)。どの行にも `kind`(`wchlink` / `oep`)を付けた。USB の同一性の無い UART bridge の OEP の probe は出さない。
 
