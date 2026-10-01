@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The broker raises the serial link to a UART-bridge OEP probe by default (`port_speed`, oep-core §3.5; probes from oep-probe-arduino 0.0.24 that declare it): it tries 921600, 750000, 500000 in turn the reference client's way (switch, 20 ms, confirm, verify both ways with max_frame-sized frames pipelined and then one at a time, commit when nothing broke), within 6 s, and logs every trial (passed / broken, KB/s each way, requests in flight, time). While its session holds the port, a broken frame is resent at once; with no answer above the boot speed it goes back to 115200 and sends again. `CH32RV_PORT_SPEED=off` (or a comma list of rates) changes it.
+- (JA) ブローカーは、UART bridge の OEP の probe との serial を既定で上げる(`port_speed`、oep-core §3.5。宣言する oep-probe-arduino 0.0.24 以降の probe): 921600、750000、500000 の順に参照 client と同じ手順で試し(切り替え、20 ms、confirm、max_frame の大きさで両方向を並べて、次に 1 つずつで確かめ、壊れなければ決める)、6 秒以内。試した結果(通った / 壊れた、両方向の KB/s、並べた数、時間)をすべて log に出す。session が口を持っている間は壊れたフレームをすぐ送り直し、上げた速さで答えが無ければ 115200 に戻って送り直す。`CH32RV_PORT_SPEED=off`(か速さの並び)で変えられる。
+
 ## 0.15.1 - 2026-10-01
 
 - (EN) Through a broker on a lossy serial probe (the V003 jig's CP2102), a lost answer no longer fails the command: a client's TCP link to the broker waits 15 s and never resends (TCP loses nothing; the broker may be waiting out the probe's 3 s and its own resend, and a client that gave up first ran into `no answer within 3s` / `result_lost`), and a `read_block` the probe answers `result_lost` to (it need not keep large answers for a resend, core §5.2) is asked again as a new request. The broker's log says `upstream: N resend(s)` when it happens.

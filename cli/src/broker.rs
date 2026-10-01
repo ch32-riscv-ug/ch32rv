@@ -73,6 +73,18 @@ fn endpoint_file(key: &str) -> PathBuf {
     ch32rv_usb::runtime_dir().join(format!("{key}.oep"))
 }
 
+/// en: The rates the broker tries on a UART bridge: `CH32RV_PORT_SPEED` = `off`, or a comma list
+/// (`921600,500000`); unset = [`ch32rv_oep::speed::DEFAULT_RATES`]. ja: ブローカーが試す速さ。
+fn port_speed_rates() -> Option<Vec<u32>> {
+    match std::env::var("CH32RV_PORT_SPEED") {
+        Ok(v) if v.trim().eq_ignore_ascii_case("off") => None,
+        Ok(v) if !v.trim().is_empty() => {
+            Some(v.split(',').filter_map(|r| r.trim().parse().ok()).collect())
+        }
+        _ => Some(ch32rv_oep::speed::DEFAULT_RATES.to_vec()),
+    }
+}
+
 /// The broker's log file for runtime key `key`.
 pub(crate) fn log_path(key: &str) -> PathBuf {
     ch32rv_usb::runtime_dir().join(format!("{key}.broker.log"))
@@ -435,6 +447,25 @@ fn serve_target(
     broker_log(&key, &format!("up on 127.0.0.1:{port} over {transport}"));
     let (tx, rx) = mpsc::channel::<Ev>();
     std::thread::spawn(move || accept_loop(listener, tx));
+    // en: A UART bridge's link is raised for the broker's long session (oep-core §3.5, by default
+    // since 2026-10-01: "a feature that is not used breaks"), every trial logged so the rates can
+    // be decided from what is seen. Clients that connect meanwhile wait (their TCP wait is 15 s).
+    // ja: UART bridge の link を、ブローカーの長い session の間だけ上げる(既定、2026-10-01)。試した
+    // 結果はすべて log に出す。その間に来た client は待つ(TCP の待ちは 15 秒)。
+    if transport == "serial"
+        && let Upstream::Oep(p) = &mut up
+    {
+        match port_speed_rates() {
+            None => broker_log(&key, "port_speed: off (CH32RV_PORT_SPEED=off)"),
+            Some(rates) => {
+                p.link().resend_on_broken = true;
+                match ch32rv_oep::speed::raise_speed(p, &rates, Duration::from_secs(6)) {
+                    Ok(r) => broker_log(&key, &r.summary()),
+                    Err(e) => return report_error(format!("port_speed: {e}")),
+                }
+            }
+        }
+    }
 
     let mut b = Broker {
         up,
