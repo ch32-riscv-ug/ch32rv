@@ -644,12 +644,20 @@ struct Broker {
 /// How long a broker about to end still takes a new connection (after its endpoint is gone).
 const LEAVE_GRACE: Duration = Duration::from_millis(150);
 
+/// en: How long a broker whose last client left stays up (endpoint and keepalive, so the session
+/// and a raised port speed hold): an IDE closes its monitor and then starts the upload, a moment
+/// later (the user, 2026-10-01: long enough for that, no longer). ja: 最後の client が抜けた後に
+/// ブローカーが残る時間(IDE がモニターを閉じてからアップロードを始めるまでの間)。
+const LINGER: Duration = Duration::from_secs(3);
+
 impl Broker {
     fn run(&mut self, rx: &mpsc::Receiver<Ev>) -> Result<(), String> {
         let started = Instant::now();
         let mut had_client = false;
         let mut last_upstream = Instant::now();
         let mut carried: Option<Ev> = None;
+        // Since when no client is connected (after one had been).
+        let mut empty_since: Option<Instant> = None;
         loop {
             let wait = self.up.tick();
             let got = match carried.take() {
@@ -659,8 +667,10 @@ impl Broker {
             let ev = match got {
                 Ok(ev) => ev,
                 Err(RecvTimeoutError::Timeout) => {
+                    let lingered = empty_since.is_some_and(|t| t.elapsed() >= LINGER);
                     if self.clients.is_empty()
-                        && (had_client || started.elapsed() > FIRST_CLIENT_WAIT)
+                        && ((had_client && lingered)
+                            || (!had_client && started.elapsed() > FIRST_CLIENT_WAIT))
                     {
                         match self.leave(rx) {
                             Some(ev) => carried = Some(ev),
@@ -694,6 +704,7 @@ impl Broker {
                     // the broker is alive (`broker endpoint`) and leaves must not end it.
                     Ev::Msg(id, m) => {
                         had_client = true;
+                        empty_since = None;
                         msgs.push((id, m));
                     }
                     Ev::Gone(id) => {
@@ -715,11 +726,23 @@ impl Broker {
             if !msgs.is_empty() {
                 self.serve_batch(msgs)?;
                 last_upstream = Instant::now();
+            } else if last_upstream.elapsed() >= KEEPALIVE_EVERY {
+                // Only connections and goodbyes came: the lease still needs its keepalive.
+                if self.up.keepalive()? {
+                    self.swept();
+                }
+                last_upstream = Instant::now();
             }
             if had_client && self.clients.is_empty() {
-                match self.leave(rx) {
-                    Some(ev) => carried = Some(ev),
-                    None => return Ok(()),
+                // Also here, not only when idle: connections that only look (`broker endpoint`)
+                // keep events coming and must not keep the broker up past its linger.
+                match empty_since {
+                    None => empty_since = Some(Instant::now()),
+                    Some(t) if t.elapsed() >= LINGER => match self.leave(rx) {
+                        Some(ev) => carried = Some(ev),
+                        None => return Ok(()),
+                    },
+                    Some(_) => {}
                 }
             }
         }

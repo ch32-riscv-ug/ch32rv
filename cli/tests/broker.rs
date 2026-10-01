@@ -142,8 +142,10 @@ fn two_clients_share_one_broker_and_it_ends_with_the_last() {
     assert!(err.contains("0x0a") || err.contains("reason 0x0a"), "{err}");
     drop(b);
 
-    // The last client left: the broker ends and takes its endpoint with it.
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // The last client left: after its linger (3 s, for an IDE's monitor-then-upload) the broker
+    // ends and takes its endpoint with it. `broker endpoint` only connects, so it does not keep
+    // the broker up.
+    let deadline = Instant::now() + Duration::from_secs(6);
     while endpoint(&pty).is_some() {
         assert!(
             Instant::now() < deadline,

@@ -225,6 +225,20 @@ impl Link {
 
     /// `confirm`: learn the revision and the limits. Refuses a probe that is not v1.
     pub fn confirm(&mut self) -> Result<Limits, LinkError> {
+        // en: A serial port just opened may find the probe still at a speed the previous host
+        // raised it to (that host gone): it goes back after at most port_speed_idle_max_ms of
+        // silence, so confirm is tried that long and a bit (oep-core §3.5). Not for a quick look
+        // (discovery's short timeout).
+        // ja: 開いたばかりの serial では、前の host が上げた速さが残っていることがある。probe は
+        // 最長 3 秒の黙りで戻るので、その間 confirm を繰り返す。discovery の短い待ちでは行わない。
+        if self.framing == Framing::Cobs
+            && self.base_baud.is_some()
+            && self.timeout >= Duration::from_secs(1)
+        {
+            let deadline = Instant::now()
+                + Duration::from_millis(u64::from(timing::PORT_SPEED_IDLE_MAX_MS) + 1000);
+            while !self.confirm_raw(Duration::from_millis(400)) && Instant::now() < deadline {}
+        }
         let mut payload = constants::CONFIRM_REQUEST_MAGIC.as_bytes().to_vec();
         payload.extend_from_slice(&[registry::PROTOCOL_REVISION, registry::PROTOCOL_REVISION]);
         let r = self.call(Call {
