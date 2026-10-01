@@ -889,7 +889,10 @@ impl Broker {
         {
             self.broken_at.pop_front();
         }
-        if self.broken_at.len() >= 3 {
+        // 2, stricter than the spec's 3 in 5 s: the probe goes back on its own at 3 in 1 s, and a
+        // host that lowers first keeps a fixture UART's stream from the timeout it would take to
+        // find the probe gone (V003 jig, CH340 at 921600, 2026-10-01).
+        if self.broken_at.len() >= 2 {
             let rate = p.link().baud().unwrap_or(0);
             let ok = ch32rv_oep::speed::revert(p, port);
             self.speed_port = None;
@@ -898,7 +901,7 @@ impl Broker {
                 &self.key,
                 &format!(
                     "port_speed: {} broken frames in 5 s at {rate}: back to the boot speed{}",
-                    3,
+                    2,
                     if ok { "" } else { " (no confirm there)" }
                 ),
             );

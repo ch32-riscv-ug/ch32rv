@@ -318,27 +318,30 @@ impl Link {
         }
         let mut replies: Vec<Option<Reply>> = vec![None; reqs.len()];
         let mut resent = false;
-        let mut fell_back = false;
+        // Looks at the boot speed after a raised one stopped answering (at most two).
+        let mut fallbacks = 0;
         loop {
             match self.pump(&reqs, &mut replies) {
                 Ok(()) => break,
                 // en: Above the boot speed and no answer: most likely the probe went back by
-                // itself (broken candidates, silence; oep-core §3.5). Look there first, briefly -
-                // a resend at the raised speed and its timeout would outlast the lease - and send
-                // the rest again at the boot speed. If the probe is not there (a slow answer
-                // still coming), back up to the raised speed and go on as before.
-                // ja: 上げた速さで答えが無い: probe が自分で戻ったことが多い。まず起動時の速さで短く
-                // 確かめ、いれば残りをそこで送り直す。いなければ(遅い答え)上げた速さに戻って続ける。
-                Err(LinkError::Timeout(_)) if !fell_back && self.baud != self.base_baud => {
-                    fell_back = true;
+                // itself (broken candidates, or its silence rule; oep-core §3.5). Look there first
+                // - as long as a host that opens the port would (port_speed_idle_max_ms and some),
+                // since its silence rule may still be running - and send the rest again there. If
+                // the probe is not there (a slow answer still coming), back up to the raised speed
+                // and wait once more; then look at the boot speed a second time.
+                // ja: 上げた速さで答えが無い: probe が自分で戻ったことが多い。開く側と同じ長さだけ起動時の
+                // 速さで確かめ、いれば残りをそこで送り直す。いなければ上げた速さに戻ってもう一度待ち、その後
+                // もう一度起動時の速さを見る。
+                // Only a timeout: a broken frame is resent at once below (the probe heard it).
+                Err(LinkError::Timeout(_)) if fallbacks < 2 && self.baud != self.base_baud => {
+                    fallbacks += 1;
                     let raised = self.baud;
-                    if self.back_to_base(Duration::from_millis(1000)) {
+                    let wait =
+                        Duration::from_millis(u64::from(timing::PORT_SPEED_IDLE_MAX_MS) + 1000);
+                    if self.back_to_base(wait) {
                         self.speed_fallbacks += 1;
                     } else if let Some(r) = raised {
                         self.set_baud(r)?;
-                        if resent || !self.resend {
-                            return Err(LinkError::Timeout(self.timeout));
-                        }
                         resent = true;
                         self.resends += 1;
                     }
