@@ -1,5 +1,5 @@
 //! en: Commands on an OEP probe (docs/oep-host.ja.md §4-§6): recognising one from `--probe`,
-//! opening a session with the lock rules of ArduinoCore-CH32 oep-workflow §4.3, attaching, and
+//! opening a session with the lock rules of ArduinoCore-CH32RV oep-workflow §4.3, attaching, and
 //! `flash` through ch32rv's RAM loader. The target is identified from the chip id the probe reads
 //! at attach (WCH DMI 0x7F), never from a WCH family byte.
 //! ja: OEP の probe でのコマンド。`--probe` から見分け、oep-workflow §4.3 の lock の規則で session を

@@ -1,6 +1,6 @@
 //! en: The link and session layers against the spec side's fake probe (oep-client-python
 //! `endpoint.Endpoint`), served over TCP by `tests/fake/serve.py`. The fake is the shared
-//! "working spec" (ArduinoCore-CH32 decision, 2026-09-29); Python runs only here, through `uv`.
+//! "working spec" (ArduinoCore-CH32RV decision, 2026-09-29); Python runs only here, through `uv`.
 //! Skipped, with a note, when uv or the client checkout is missing ($OEP_CLIENT_PYTHON, default
 //! `../dev_oep/oep-client-python` next to the ch32rv checkout's parent).
 //! ja: link と session を spec 側の偽の probe で試験する。uv か client が無ければ skip。

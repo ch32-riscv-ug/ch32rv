@@ -3,7 +3,7 @@
 - 作成日: 2026-09-29
 - 状態: 設計(実装前)。検討中なので日本語のみ([development.ja.md](development.ja.md) §1)
 - 出発点:
-  - ArduinoCore-CH32 `docs/oep-workflow.ja.md`(最終の形。2026-09-29 の決定。以下 WF)の依頼 7〜14
+  - ArduinoCore-CH32RV `docs/oep-workflow.ja.md`(最終の形。2026-09-29 の決定。以下 WF)の依頼 7〜14
   - oep-spec と `registry/oep-v1.toml`(書き始めは e9c8e1f。**ch32rv が今どの版に合わせているかは `crates/oep/src/registry.rs` の先頭の `source:` の行だけを正とする**。この文書や CHANGELOG に出てくる版は、その時点の記録)
   - 参考実装 `oep-client-python` v1(`ch32_flash.py` / `riscv.py` / `link.py`)と `oep-probe-arduino`(`OepV1Target.cpp` / `OepCh32Dm.cpp`)
 - 範囲: WF §8。書き込み・人が使うモニタ・discovery・ブローカー。**gdb を OEP の probe で扱うのは今回の範囲外**だが、§8 で余地を決めておく。
@@ -158,7 +158,7 @@ pub trait TargetAccess: DtmAccess {
 
 binary の扱い:
 
-- binary は commit する。`cargo xtask loader-gen` が ArduinoCore-CH32 の vendor toolchain(xpack riscv-none-elf-gcc)で build し直し、hash を照合する(architecture §3 の「stub は in-repo source から build」を、この loader で先に満たす)。
+- binary は commit する。`cargo xtask loader-gen` が ArduinoCore-CH32RV の vendor toolchain(xpack riscv-none-elf-gcc)で build し直し、hash を照合する(architecture §3 の「stub は in-repo source から build」を、この loader で先に満たす)。
 - V003 の page は 64 byte で fast page erase も 64、V103 は 128 と 128 で、どちらも DB の `flash_geometry` の値を使う。
 - wlink の V003 loader(500 byte)は使わない(ライセンスは MIT / Apache で問題ないが、1 本にまとめる)。**buffered で V003 が動くことは実機で確かめる**(§9)。
 
@@ -209,7 +209,7 @@ binary の扱い:
   - UART の速さは、monitor の `baudrate`(と、足すなら `format`)を `oep.fixture.uart` の configure で probe に送って決める。OPEN のときと、開いたまま CONFIGURE で変わったときに送る。probe の CDC の line coding を target の UART に写す機能は spec から消え、probe.config にも保存しない(2026-09-29、dev-oep-07 の決定)。
 - 接続を失う(link-lost の mark、boot_id が変わる、transport が消える)と、`[ch32rv monitor] stopped: …` を流して終わる(§1 の規則のまま)。
 
-### 7.2 ブローカー(2026-09-29 の決定、ArduinoCore-CH32 oep-workflow §7.2)
+### 7.2 ブローカー(2026-09-29 の決定、ArduinoCore-CH32RV oep-workflow §7.2)
 
 **probe ごとに、誰の子でもないブローカーを 1 つ置く。ch32rv の各コマンド(flash、monitor、gdb、1 回だけの read / reset)と pytest の `oep_host` は、どれもブローカーの client になる。** 経路は 1 つで、立ち上がる順で形は変わらない。
 

@@ -1,7 +1,7 @@
 //! en: OEP v1 framing and message layer (oep-spec core §2-§4, docs/oep-host.ja.md §3).
 //!
 //! - Serial-visible transports (USB CDC, USB-Serial/JTAG, UART bridge): `COBS(message ‖ crc16_le)`
-//!   delimited by 0x00; the host also sends a leading 0x00 (ArduinoCore-CH32 oep-workflow §4.2).
+//!   delimited by 0x00; the host also sends a leading 0x00 (ArduinoCore-CH32RV oep-workflow §4.2).
 //!   Bytes outside a frame are noise (the port is shared with the target console); a frame whose
 //!   CRC or COBS is wrong is dropped, and a lost answer shows up only as a timeout.
 //! - Vendor bulk, HID's inner stream and TCP: `length(u16 LE) message`; length 0 is a keepalive.

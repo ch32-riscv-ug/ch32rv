@@ -291,7 +291,7 @@ family byte(probe-rs `wlink/mod.rs:90-128` より転記。状態: attested):
 |---|---|---|
 | 取得 | GetProbeInfo 応答の v_major / v_minor(raw byte) | verified(実機: LinkE raw `0216`→2.22/v42、CH549 raw `020c`→2.12/v32) |
 | 表記の三重性 | raw `02 0c` = 正規化 `2.12` = WCH 表示 `v32`(`major*10+minor`) | attested |
-| 既知不良版 | **2.11(v31): `download --reset` 後に target が走らない**(ArduinoCore-CH32 で実測)。2.12 で解消 | verified(実測 log あり) |
+| 既知不良版 | **2.11(v31): `download --reset` 後に target が走らない**(ArduinoCore-CH32RV で実測)。2.12 で解消 | verified(実測 log あり) |
 | SDI print 要件 | firmware 2.10 以降(wlink README) | single-source |
 | probe-rs の版チェックのバグ | `v_major != 2 && v_minor < 7` のため major=2 で素通り。**同じ比較ミスをしないこと**(正規化値で比較 + 単体テスト) | 教訓 |
 | hash→版対応 | `ch32-device-data/evidence/link_firmware.csv`(10 行)を照合に使う | データ |
@@ -365,9 +365,9 @@ probe → 00 00
 |---|---|---|
 | DMI NOP | addr=0, val=0 の nop が直前の read 結果を返す前提のハックがある | probe-rs `mod.rs:512-522` |
 | resume 後 sleep | DMI write `0x10=0x40000001`(resume)後に 10ms sleep が必要 | probe-rs `mod.rs:526-529` |
-| attach 直後のレース | 挿抜直後は CDC が vendor interface より先に enumerate され、その窓で開くと失敗する。1 秒間隔 3 回の retry で回避 | ArduinoCore-CH32 実測 |
-| 大 image で固まる | 16.7KB の書込中に bulk timeout → probe が無応答化。USB 再接続でのみ復旧(`USBDEVFS_RESET` 不可) | ArduinoCore-CH32 実測 |
-| flash 直後の UART bridge | LinkE の CDC 配送が止まることがあり、port の再 open で直る | ArduinoCore-CH32 実測 |
+| attach 直後のレース | 挿抜直後は CDC が vendor interface より先に enumerate され、その窓で開くと失敗する。1 秒間隔 3 回の retry で回避 | ArduinoCore-CH32RV 実測 |
+| 大 image で固まる | 16.7KB の書込中に bulk timeout → probe が無応答化。USB 再接続でのみ復旧(`USBDEVFS_RESET` 不可) | ArduinoCore-CH32RV 実測 |
+| flash 直後の UART bridge | LinkE の CDC 配送が止まることがあり、port の再 open で直る | ArduinoCore-CH32RV 実測 |
 | **LinkE の壊れ読み値** | 一部ツールの後、probe が target の壊れた読み値を保持する: family byte は正しいまま chip ID と UUID が同一 32bit word の繰り返しになる。再 attach でも target 電源断でも直らない(**probe 側の状態**)。復旧は RedetectChip(`0x0d 0x03`)+ detach + 再 attach。ChipInfo 応答全体が同一 word 繰り返しかで検出できる | board-identify 実測(ch32rv も同じ検出・復旧を実装) |
 | **CH549 の stale fast-read** | §4.2.2 の高速バルク read が、stub 実行直後だけ program 前の古い flash 像(`0xff` やゴミの ramp)を返すことがある(CH549 で ~7 回中 2-3 回、LinkE では未発生)。書込自体は成功しているので、**verify は不一致時に権威ある DMI 読み(progbuf の word 読み)で再確認**する。偽 `verify-mismatch` の原因 | ch32rv 実測(2026-09-03、実 CH549 で再現・修正) |
 | attach の掴み | AttachChip は target core を掴む。セッション終了時は必ず DetachChip で解放する(失敗経路含む) | board-identify 実測 |
@@ -409,4 +409,4 @@ probe → 00 00
 - [wlink protocol.md](https://github.com/ch32-rs/wlink/blob/main/protocol.md)
 - [RINS: WCH-Link](https://perigoso.github.io/rins/wch-link/index.html)
 - minichlink `pgm-wch-linke.c`、probe-rs `probe/wlink/`(転記元)
-- `../../../ArduinoCore-CH32/docs/upload-and-fixture.ja.md`(実測 log)
+- `../../../ArduinoCore-CH32RV/docs/upload-and-fixture.ja.md`(実測 log)

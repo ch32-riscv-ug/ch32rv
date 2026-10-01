@@ -1,8 +1,8 @@
-//! en: ArduinoCore-CH32's upload recipe (platform.txt `tools.ch32rv.upload.pattern`) as ch32rv
+//! en: ArduinoCore-CH32RV's upload recipe (platform.txt `tools.ch32rv.upload.pattern`) as ch32rv
 //! sees it, with no device: the argument set parses, and a board whose `build.ch32rv_chip` is a
 //! series ch32rv has no name for stops with target-not-in-db (20) before any probe is opened
 //! (docs/freeze-decisions.ja.md §1).
-//! ja: ArduinoCore-CH32 の upload の recipe を device なしで確かめる。ch32rv に名前の無い series の
+//! ja: ArduinoCore-CH32RV の upload の recipe を device なしで確かめる。ch32rv に名前の無い series の
 //! 板は、probe を開く前に target-not-in-db(20)で止まる。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 

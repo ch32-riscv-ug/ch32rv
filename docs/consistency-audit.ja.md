@@ -142,4 +142,4 @@ crates.io 公開ライブラリ・CLI・JSON contract の仕様を横断点検�
 - ライブラリ規約(progress/cancel の全面適用、`Variant::name`=data 保持 enum で String 妥当、constructor 動詞): 別途 doc で規約明文化予定。
 
 ## 波及先(仕様の追従が要る)
-`docs/cli.ja.md`(§3 exit code / §4 各コマンド)、`docs/contract/result.schema.json`(+ per-command result schema)、`CONTRACT_VERSION`(1→2)、`CHANGELOG`、ArduinoCore-CH32 の JSON 消費側。
+`docs/cli.ja.md`(§3 exit code / §4 各コマンド)、`docs/contract/result.schema.json`(+ per-command result schema)、`CONTRACT_VERSION`(1→2)、`CHANGELOG`、ArduinoCore-CH32RV の JSON 消費側。

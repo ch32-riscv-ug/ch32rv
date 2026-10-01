@@ -15,7 +15,7 @@ use crate::cmd_probe::{mode_str, wch_devices};
 
 /// The udev rule that grants non-root access to WCH-Link probes. Single source of truth: this same
 /// file is bundled into the Linux release tarball, and `doctor --emit-udev` prints it verbatim, so
-/// the two never drift (ArduinoCore-CH32 request B-6).
+/// the two never drift (ArduinoCore-CH32RV request B-6).
 const UDEV_RULE: &str = include_str!("../60-ch32rv.rules");
 
 struct Check {

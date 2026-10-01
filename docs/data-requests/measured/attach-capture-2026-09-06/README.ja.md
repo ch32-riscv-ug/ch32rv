@@ -1,6 +1,6 @@
 # attach 時の USB 往復 capture(5 family, 2026-09-06)
 
-- 提供先: `ArduinoCore-CH32` `docs/harness-requirements.ja.md` §6.3(「**欲しい**」と明示)、
+- 提供先: `ArduinoCore-CH32RV` `docs/harness-requirements.ja.md` §6.3(「**欲しい**」と明示)、
   `docs/harness-probe.ja.md` §7-2 の共同実験(**LinkE が attach で線に何を出しているか**)
 - 提供元: ch32rv 0.7.0(`--capture`)
 - 形式: NDJSON。1 行目が `_meta`、2 行目が `_device`、以降 1 行 1 転送

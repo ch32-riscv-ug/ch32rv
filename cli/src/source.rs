@@ -29,7 +29,7 @@ use ch32rv_dmi::{DmSeq, DmiError, dmseq};
 use crate::args::Cli;
 use crate::session::Session;
 
-// ---- RTT control block layout (SEGGER format; ArduinoCore-CH32 SerialRTT publishes the same) ----
+// ---- RTT control block layout (SEGGER format; ArduinoCore-CH32RV SerialRTT publishes the same) ----
 
 /// All CH32 parts map SRAM at this base.
 const RTT_RAM_BASE: u32 = 0x2000_0000;

@@ -3,11 +3,11 @@
 - 状態: **要件出し中(draft)**。**まとめない**。要件の調整とマージは `wch-protocols` 側で行われる予定なので、
   本書は**そこへ持ち込む材料**を ch32rv 側で失わないように置いておくもの。実装・trait 設計には着手しない。
 - 依頼元 / 提供元: ch32rv
-- 相手: `wch-protocols`(要件調整の場)/ `ArduinoCore-CH32`(発議元)/ `ch32rv-probe`(実装の置き場)
+- 相手: `wch-protocols`(要件調整の場)/ `ArduinoCore-CH32RV`(発議元)/ `ch32rv-probe`(実装の置き場)
 - 作成日: 2026-09-06
-- 発議側の文書: `ArduinoCore-CH32/docs/harness-probe.ja.md`(採否評価と依頼 5-1〜5-9)、
-  `ArduinoCore-CH32/docs/harness-testing.ja.md`(駆動方式と依頼 5-10〜5-16)、
-  **`ArduinoCore-CH32/docs/harness-requirements.ja.md`(要求カタログ `H-001`〜`H-178` と相反 `C-1`〜`C-11`)**、
+- 発議側の文書: `ArduinoCore-CH32RV/docs/harness-probe.ja.md`(採否評価と依頼 5-1〜5-9)、
+  `ArduinoCore-CH32RV/docs/harness-testing.ja.md`(駆動方式と依頼 5-10〜5-16)、
+  **`ArduinoCore-CH32RV/docs/harness-requirements.ja.md`(要求カタログ `H-001`〜`H-178` と相反 `C-1`〜`C-11`)**、
   `EmbedBench/docs/HARNESS_REQUESTS.ja.md`(`E-1`〜`E-7`)
 - 所在の索引: `wch-protocols/references/harness-index.ja.md`
 
