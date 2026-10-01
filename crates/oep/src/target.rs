@@ -486,7 +486,24 @@ impl TargetAccess for OepDtm<'_> {
             calls.push((self.func, dm::op::READ_BLOCK, pl));
             at += n;
         }
-        for r in self.probe.exchange(calls).map_err(transport)? {
+        let replies = self.probe.exchange(calls.clone()).map_err(transport)?;
+        for (r, call) in replies.into_iter().zip(calls) {
+            // en: The answer was lost on the way and the probe did not keep it for the resend
+            // (core §5.2 lets it skip large answers: `result_lost`). A read changes nothing, so it
+            // is asked again as a new request (seen on the V003 jig's CP2102, 2026-10-01).
+            // ja: 答えが途中で失われ、probe は再送用に覚えていなかった(大きな応答は覚えなくてよい)。
+            // read は何も変えないので、新しい要求としてもう一度聞く。
+            let r = if r.resolution
+                == Resolution::Rejected(crate::registry::reject_reasons::RESULT_LOST)
+            {
+                self.probe
+                    .exchange(vec![call])
+                    .map_err(transport)?
+                    .pop()
+                    .ok_or_else(|| short("read_block"))?
+            } else {
+                r
+            };
             let a = completed(r)?;
             if a.len() < 3 {
                 return Err(short("read_block"));
