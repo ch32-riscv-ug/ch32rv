@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.15.1 - 2026-10-01
+
 - (EN) Through a broker on a lossy serial probe (the V003 jig's CP2102), a lost answer no longer fails the command: a client's TCP link to the broker waits 15 s and never resends (TCP loses nothing; the broker may be waiting out the probe's 3 s and its own resend, and a client that gave up first ran into `no answer within 3s` / `result_lost`), and a `read_block` the probe answers `result_lost` to (it need not keep large answers for a resend, core §5.2) is asked again as a new request. The broker's log says `upstream: N resend(s)` when it happens.
 - (JA) 失いのある serial の probe(V003 の治具の CP2102)にブローカー経由でつないだとき、答えが 1 つ失われてもコマンドが落ちないようにした: client からブローカーへの TCP の link は 15 秒待ち、送り直さない(TCP は失わない。ブローカーが probe の 3 秒と自分の送り直しを待っている間に client が先に諦めると、`no answer within 3s` や `result_lost` になった)。probe が `result_lost` を返した `read_block`(大きな応答は送り直し用に覚えなくてよい、core §5.2)は新しい要求として読み直す。そのときブローカーの log に `upstream: N resend(s)` を出す。
 
