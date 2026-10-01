@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) The udev rule's header names ArduinoCore-CH32RV (the core's new name); `doctor --emit-udev` prints it, and the core copies the file as it is.
+- (JA) udev の規則の先頭のコメントを ArduinoCore-CH32RV(core の新しい名前)にした。`doctor --emit-udev` はこれを出し、core はこのファイルをそのまま写す。
 - (EN) A `--chip` name the target DB does not know stops with target-not-in-db (exit 20) before any probe is opened; it used to stop only after the attach. An IDE board for a series ch32rv has no name for (ArduinoCore-CH32's "[compile only]" boards, which now pass the series name instead of `auto`) fails without touching the bench.
 - (JA) target DB に無い `--chip` の名前は、probe を開く前に target-not-in-db(exit 20)で止まる。以前は attach の後で止まっていた。ch32rv に名前の無い series の板(ArduinoCore-CH32 の「[compile only]」の板。`auto` をやめて series 名を渡すようになった)は、bench に触らずに失敗する。
 - (EN) `arduino monitor`'s DESCRIBE lists series names for `chip` too (CONFIGURE already took them).
