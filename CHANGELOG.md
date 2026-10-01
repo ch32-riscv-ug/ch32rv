@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.16.0 - 2026-10-01
+
 - (EN) The broker stays up 3 s after its last client left (endpoint and keepalive kept), so the session - and a raised port speed - outlive an IDE closing its monitor and starting the upload. A connection that only looks (`broker endpoint`) does not extend it.
 - (JA) ブローカーは最後の client が抜けた後 3 秒残る(endpoint と keepalive はそのまま)。IDE がモニターを閉じてからアップロードを始めるまでの間、session と上げた速さを保つ。見るだけの接続(`broker endpoint`)では延びない。
 
