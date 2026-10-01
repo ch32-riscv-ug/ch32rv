@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) A raised port speed that breaks under load no longer loses the session (seen on the V003 jig's CH340 at 921600 under a fixture UART's stream): the verify adds a phase with both ways at once; while raised, the broker lowers the rate together with the probe after 3 broken frames in 5 s and stays at the boot speed for the session; with no answer above the boot speed the link looks at the boot speed first (1 s) and, when the probe is there, sends the rest again there. The broker's lease is 10 s so that recovery fits in it. The log says each of these.
+- (JA) 上げた速さが負荷で壊れても session を失わないようにした(V003 の治具の CH340 で 921600、fixture UART の連続受信中に出た): 確かめに両方向を同時に流す段を足した。上げている間、ブローカーは 5 秒に 3 つ壊れたら probe と揃えて下げ、その session は起動時の速さで続ける。上げた速さで答えが無ければ、link はまず起動時の速さで確かめ(1 秒)、probe がそこにいれば残りをそこで送り直す。この立て直しが収まるよう、ブローカーの lease は 10 秒にした。どれも log に出す。
+
 ## 0.16.0 - 2026-10-01
 
 - (EN) The broker stays up 3 s after its last client left (endpoint and keepalive kept), so the session - and a raised port speed - outlive an IDE closing its monitor and starting the upload. A connection that only looks (`broker endpoint`) does not extend it.

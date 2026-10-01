@@ -42,7 +42,12 @@ const START_WAIT: Duration = Duration::from_secs(5);
 /// How often a client that finds no endpoint starts a broker again while it waits.
 const RESPAWN_EVERY: Duration = Duration::from_millis(400);
 /// The broker's own lease on the probe, renewed by keepalive while no client talks.
-const LEASE_MS: u32 = 3000;
+/// en: The broker's lease: long enough that a raised port speed that stopped answering can be
+/// noticed and brought back to the boot speed (a timeout, then a confirm there) before it lapses
+/// (oep-core §3.5); a broker that dies still frees a raised port within 3 s (the probe's
+/// silence rule), and its lock goes with the lease. ja: ブローカーの lease。上げた速さで答えが
+/// 止まったとき、気づいて起動時の速さへ戻すまで切れない長さ。
+const LEASE_MS: u32 = 10_000;
 const KEEPALIVE_EVERY: Duration = Duration::from_millis(1000);
 
 // ---- where a broker is ----
@@ -399,6 +404,8 @@ fn serve_target(
         ExitCode::from(ErrorKind::DeviceOpenFailed.exit_code())
     };
     let mut transport = "wchlink";
+    // The UART bridge port_speed raised, while it stays raised.
+    let mut speed_port: Option<u8> = None;
     let (up, sid) = match (&target, wch_entry) {
         (BrokerTarget::Serial(path), _) => {
             let mut probe = match crate::oep::connect_upstream(path, None) {
@@ -460,7 +467,10 @@ fn serve_target(
             Some(rates) => {
                 p.link().resend_on_broken = true;
                 match ch32rv_oep::speed::raise_speed(p, &rates, Duration::from_secs(6)) {
-                    Ok(r) => broker_log(&key, &r.summary()),
+                    Ok(r) => {
+                        broker_log(&key, &r.summary());
+                        speed_port = r.port.filter(|_| r.trials.iter().any(|t| t.committed));
+                    }
                     Err(e) => return report_error(format!("port_speed: {e}")),
                 }
             }
@@ -475,6 +485,9 @@ fn serve_target(
         ledger: Ledger::default(),
         key: key.clone(),
         endpoint: json!({"port": port, "pid": std::process::id(), "time": now_ms(), "transport": transport}),
+        speed_port,
+        broken_at: std::collections::VecDeque::new(),
+        fallbacks_seen: 0,
     };
     let r = b.run(&rx);
     match &r {
@@ -539,7 +552,7 @@ impl Upstream {
     /// The upstream link's resends and dropped frames so far (diagnostics for the log).
     fn losses(&mut self) -> (u64, u64) {
         match self {
-            Upstream::Oep(p) => (p.link().resends, p.link().dropped),
+            Upstream::Oep(p) => (p.link().resends, p.link().broken),
             Upstream::Wch(_) => (0, 0),
         }
     }
@@ -639,6 +652,12 @@ struct Broker {
     /// The runtime key and what the endpoint file says, to take it down and put it back.
     key: String,
     endpoint: Value,
+    /// The raised UART bridge (None: at the boot speed).
+    speed_port: Option<u8>,
+    /// When frames broke at the raised speed, the last few seconds' worth.
+    broken_at: std::collections::VecDeque<Instant>,
+    /// The link's `speed_fallbacks` already logged.
+    fallbacks_seen: u64,
 }
 
 /// How long a broker about to end still takes a new connection (after its endpoint is gone).
@@ -679,9 +698,7 @@ impl Broker {
                         continue;
                     }
                     if last_upstream.elapsed() >= KEEPALIVE_EVERY {
-                        if self.up.keepalive()? {
-                            self.swept();
-                        }
+                        self.keepalive()?;
                         last_upstream = Instant::now();
                     }
                     continue;
@@ -728,9 +745,7 @@ impl Broker {
                 last_upstream = Instant::now();
             } else if last_upstream.elapsed() >= KEEPALIVE_EVERY {
                 // Only connections and goodbyes came: the lease still needs its keepalive.
-                if self.up.keepalive()? {
-                    self.swept();
-                }
+                self.keepalive()?;
                 last_upstream = Instant::now();
             }
             if had_client && self.clients.is_empty() {
@@ -813,6 +828,7 @@ impl Broker {
                 ),
             );
         }
+        self.watch_speed(after.1 - before.1);
         // en: The lease lapsed under these requests (a long stall of the host): the probe released
         // every client's connections. Pass the answers on (each client hears `expired` and starts
         // again) and open the probe again for what comes next.
@@ -836,6 +852,67 @@ impl Broker {
                 }
             }
         }
+        Ok(())
+    }
+
+    /// en: While the port speed is raised, count the frames that break and lower it together with
+    /// the probe after 3 in 5 s (oep-core §3.5: the host notices first; the probe's own fallback
+    /// is the last resort), and note when the link found the probe back at the boot speed by
+    /// itself. Either way the session stays at the boot speed.
+    /// ja: 上げた速さの間、壊れたフレームを数え、5 秒に 3 つで probe と揃えて下げる。link が probe の
+    /// 自分での戻りを見つけたときも記録する。どちらもその session は起動時の速さのまま。
+    fn watch_speed(&mut self, broken: u64) {
+        let Some(port) = self.speed_port else {
+            return;
+        };
+        let Upstream::Oep(p) = &mut self.up else {
+            return;
+        };
+        let fallbacks = p.link().speed_fallbacks;
+        if fallbacks != self.fallbacks_seen {
+            self.fallbacks_seen = fallbacks;
+            self.speed_port = None;
+            broker_log(
+                &self.key,
+                "port_speed: the probe was back at the boot speed by itself; staying there",
+            );
+            return;
+        }
+        let now = Instant::now();
+        for _ in 0..broken {
+            self.broken_at.push_back(now);
+        }
+        while self
+            .broken_at
+            .front()
+            .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(5))
+        {
+            self.broken_at.pop_front();
+        }
+        if self.broken_at.len() >= 3 {
+            let rate = p.link().baud().unwrap_or(0);
+            let ok = ch32rv_oep::speed::revert(p, port);
+            self.speed_port = None;
+            self.broken_at.clear();
+            broker_log(
+                &self.key,
+                &format!(
+                    "port_speed: {} broken frames in 5 s at {rate}: back to the boot speed{}",
+                    3,
+                    if ok { "" } else { " (no confirm there)" }
+                ),
+            );
+        }
+    }
+
+    /// The broker's own keepalive, watched like any request (a raised speed may break under it).
+    fn keepalive(&mut self) -> Result<(), String> {
+        let before = self.up.losses();
+        if self.up.keepalive()? {
+            self.swept();
+        }
+        let after = self.up.losses();
+        self.watch_speed(after.1 - before.1);
         Ok(())
     }
 

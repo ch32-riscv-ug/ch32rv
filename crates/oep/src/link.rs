@@ -165,6 +165,8 @@ pub struct Link {
     pub resyncs: u64,
     /// Requests sent again after their answer did not come (diagnostics).
     pub resends: u64,
+    /// COBS frames that broke on the line (bad encoding or CRC), a part of `dropped`.
+    pub broken: u64,
     /// Whether a lost answer is waited for and the request sent again once: not on a lossless
     /// stream (TCP), where a missing answer is only late.
     resend: bool,
@@ -180,6 +182,9 @@ pub struct Link {
     /// At most this many requests outstanding (0: as the probe allows): a raised speed that broke
     /// while both ways carried at once is used one request at a time.
     pub inflight_cap: usize,
+    /// Times the probe was found back at the boot speed by itself (diagnostics; the owner of the
+    /// link then stays there for the session, oep-core §3.5).
+    pub speed_fallbacks: u64,
 }
 
 impl Link {
@@ -197,11 +202,13 @@ impl Link {
             dropped: 0,
             resyncs: 0,
             resends: 0,
+            broken: 0,
             resend: true,
             resend_on_broken: false,
             base_baud: None,
             baud: None,
             inflight_cap: 0,
+            speed_fallbacks: 0,
         }
     }
 
@@ -315,23 +322,32 @@ impl Link {
         loop {
             match self.pump(&reqs, &mut replies) {
                 Ok(()) => break,
+                // en: Above the boot speed and no answer: most likely the probe went back by
+                // itself (broken candidates, silence; oep-core §3.5). Look there first, briefly -
+                // a resend at the raised speed and its timeout would outlast the lease - and send
+                // the rest again at the boot speed. If the probe is not there (a slow answer
+                // still coming), back up to the raised speed and go on as before.
+                // ja: 上げた速さで答えが無い: probe が自分で戻ったことが多い。まず起動時の速さで短く
+                // 確かめ、いれば残りをそこで送り直す。いなければ(遅い答え)上げた速さに戻って続ける。
+                Err(LinkError::Timeout(_)) if !fell_back && self.baud != self.base_baud => {
+                    fell_back = true;
+                    let raised = self.baud;
+                    if self.back_to_base(Duration::from_millis(1000)) {
+                        self.speed_fallbacks += 1;
+                    } else if let Some(r) = raised {
+                        self.set_baud(r)?;
+                        if resent || !self.resend {
+                            return Err(LinkError::Timeout(self.timeout));
+                        }
+                        resent = true;
+                        self.resends += 1;
+                    }
+                }
                 Err(LinkError::Timeout(_) | LinkError::Broken) if !resent && self.resend => {
                     resent = true;
                     self.resends += 1;
                     if self.framing == Framing::Length {
                         self.resync()?;
-                    }
-                }
-                // en: Above the boot speed and still no answer: the probe went back by itself
-                // (idle, broken candidates, a lapse; oep-core §3.5). Back to the boot speed,
-                // confirmed there, and the rest sent once more.
-                // ja: 起動時の速さより上で答えが無い: probe が自分で戻った。起動時の速さで確かめて送り直す。
-                Err(LinkError::Timeout(_) | LinkError::Broken)
-                    if !fell_back && self.baud != self.base_baud =>
-                {
-                    fell_back = true;
-                    if !self.back_to_base(Duration::from_secs(3)) {
-                        return Err(LinkError::Timeout(self.timeout));
                     }
                 }
                 Err(LinkError::Broken) => return Err(LinkError::Timeout(self.timeout)),
@@ -451,6 +467,7 @@ impl Link {
                 let before = self.cobs.dropped;
                 self.inbox.extend(self.cobs.push(&buf[..n]));
                 self.dropped += self.cobs.dropped - before;
+                self.broken += self.cobs.dropped - before;
             }
             Framing::Length => match self.length.push(&buf[..n]) {
                 Ok(msgs) => self.inbox.extend(msgs),

@@ -25,8 +25,12 @@ pub struct SpeedTrial {
     pub inflight: usize,
     pub broken_in: u32,
     pub broken_out: u32,
+    /// Frames broken while both ways ran at once.
+    pub broken_both: u32,
     pub in_kb_s: f64,
     pub out_kb_s: f64,
+    /// Both ways at once, in and out together.
+    pub both_kb_s: f64,
     pub elapsed: Duration,
     /// Why it was not used.
     pub why: Option<String>,
@@ -41,6 +45,8 @@ pub struct SpeedReport {
     pub rate: u32,
     pub trials: Vec<SpeedTrial>,
     pub elapsed: Duration,
+    /// The UART bridge's transport index port_speed was sent for (for [`revert`]).
+    pub port: Option<u8>,
     /// Why nothing was tried.
     pub why: Option<String>,
 }
@@ -68,20 +74,23 @@ impl SpeedReport {
                 );
                 if t.committed {
                     format!(
-                        "{head} ok in {:.1} / out {:.1} KB/s inflight {} broken {}/{} {} ms",
+                        "{head} ok in {:.1} / out {:.1} / both {:.1} KB/s inflight {} broken {}/{}/{} {} ms",
                         t.in_kb_s,
                         t.out_kb_s,
+                        t.both_kb_s,
                         t.inflight,
                         t.broken_in,
                         t.broken_out,
+                        t.broken_both,
                         t.elapsed.as_millis()
                     )
                 } else {
                     format!(
-                        "{head} no ({}; broken {}/{}) {} ms",
+                        "{head} no ({}; broken {}/{}/{}) {} ms",
                         t.why.as_deref().unwrap_or("?"),
                         t.broken_in,
                         t.broken_out,
+                        t.broken_both,
                         t.elapsed.as_millis()
                     )
                 }
@@ -170,6 +179,7 @@ pub fn raise_speed(
         }
     };
     report.supported = true;
+    report.port = Some(port);
     let full = usize::from(p.limits().max_inflight.max(1));
     for &rate in rates {
         if t0.elapsed() >= budget {
@@ -238,6 +248,7 @@ pub fn raise_speed(
             for &n in tries {
                 trial.broken_in = 0;
                 trial.broken_out = 0;
+                trial.broken_both = 0;
                 ok = verify(p, rate, n, &mut trial);
                 if ok {
                     trial.inflight = n;
@@ -304,8 +315,15 @@ fn wait_back() -> Duration {
     Duration::from_millis(u64::from(VERIFY_MS) + 1500)
 }
 
-/// en: Both ways with max_frame-sized frames, `inflight` at a time: link_source (in) then
-/// link_sink (out), up to half of the budget each; stops at the first frame that breaks.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    In,
+    Out,
+    Both,
+}
+
+/// en: Both ways with max_frame-sized frames, `inflight` at a time: link_source (in), link_sink
+/// (out), then the two interleaved (both); stops at the first frame that breaks.
 /// ja: 両方向に max_frame の大きさで流す(in、次に out)。最初に壊れた所で止める。
 fn verify(p: &mut Probe, rate: u32, inflight: usize, trial: &mut SpeedTrial) -> bool {
     let limits = p.limits();
@@ -315,16 +333,31 @@ fn verify(p: &mut Probe, rate: u32, inflight: usize, trial: &mut SpeedTrial) -> 
     let wire = (max_frame + 8) as f64 * 10.0 / f64::from(rate.max(1));
     let timeout = Duration::from_secs_f64((4.0 * wire * inflight as f64 + 0.1).max(0.3));
     let pattern: Vec<u8> = (0..n_in).map(|k| k as u8).collect();
-    for inward in [true, false] {
-        if !inward && p.keepalive().is_err() {
+    // In, out, then both at once: a line may carry each way alone and break when both run
+    // (oep-core §3.5; a CH340 at 921600 under a fixture UART's stream, 2026-10-01).
+    for phase in [Phase::In, Phase::Out, Phase::Both] {
+        if phase != Phase::In && p.keepalive().is_err() {
             return false;
         }
+        let limit = if phase == Phase::Both {
+            VERIFY_TIME
+        } else {
+            VERIFY_TIME / 2
+        };
         let started = Instant::now();
         let mut moved = 0usize;
         let mut broken = 0u32;
-        while moved < VERIFY_BYTES / 2 && started.elapsed() < VERIFY_TIME / 2 {
-            let calls: Vec<Call> = (0..inflight * 2)
-                .map(|_| {
+        while moved < VERIFY_BYTES / 2 && started.elapsed() < limit {
+            let kinds: Vec<bool> = (0..inflight * 2)
+                .map(|k| match phase {
+                    Phase::In => true,
+                    Phase::Out => false,
+                    Phase::Both => k % 2 == 0,
+                })
+                .collect();
+            let calls: Vec<Call> = kinds
+                .iter()
+                .map(|&inward| {
                     if inward {
                         Call {
                             func: core::FN,
@@ -346,32 +379,70 @@ fn verify(p: &mut Probe, rate: u32, inflight: usize, trial: &mut SpeedTrial) -> 
             let replies = p.link().exchange_once(calls, inflight, timeout);
             let good = replies
                 .iter()
-                .take_while(|r| {
+                .zip(&kinds)
+                .take_while(|(r, inward)| {
                     r.resolution == crate::codec::Resolution::Completed(outcomes::SUCCESS)
-                        && if inward {
+                        && if **inward {
                             r.payload == pattern
                         } else {
                             r.payload.get(..4) == Some(&(n_out as u32).to_le_bytes()[..])
                         }
                 })
                 .count();
-            moved += good * if inward { n_in } else { n_out };
+            moved += kinds[..good]
+                .iter()
+                .map(|&inward| if inward { n_in } else { n_out })
+                .sum::<usize>();
             if good < sent {
                 broken += (sent - good) as u32;
                 break;
             }
         }
         let kb_s = moved as f64 / started.elapsed().as_secs_f64().max(1e-6) / 1000.0;
-        if inward {
-            trial.in_kb_s = kb_s;
-            trial.broken_in = broken;
-        } else {
-            trial.out_kb_s = kb_s;
-            trial.broken_out = broken;
+        match phase {
+            Phase::In => {
+                trial.in_kb_s = kb_s;
+                trial.broken_in = broken;
+            }
+            Phase::Out => {
+                trial.out_kb_s = kb_s;
+                trial.broken_out = broken;
+            }
+            Phase::Both => {
+                trial.both_kb_s = kb_s;
+                trial.broken_both = broken;
+            }
         }
         if broken > 0 {
             return false;
         }
     }
     true
+}
+
+/// en: Back to the boot speed together with the probe (oep-core §3.5: the host, which counts the
+/// broken frames, lowers first): port_speed revert at the speed now (answered there, lost is
+/// fine: the probe goes back on its own too), then the host side, confirmed. True when the link
+/// answers at the boot speed. ja: probe と揃って起動時の速さに戻る(戻すを今の速さで送り、host も
+/// 戻して confirm)。
+pub fn revert(p: &mut Probe, port: u8) -> bool {
+    let Some(base) = p.link().base_baud() else {
+        return false;
+    };
+    if p.link().baud() == Some(base) {
+        return true;
+    }
+    let rate = p.link().baud().unwrap_or(base);
+    let session = p.session_id();
+    let _ = p.link().exchange_once(
+        vec![Call {
+            func: core::FN,
+            op: core::op::PORT_SPEED,
+            session,
+            payload: port_speed_body(port, rate, STEP_REVERT, 0, 0),
+        }],
+        1,
+        Duration::from_millis(300),
+    );
+    p.link().back_to_base(wait_back())
 }
