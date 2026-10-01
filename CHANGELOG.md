@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) OEP blocks are as long as the probe's declared `max_length` (oep-if-debug §4.5), no longer computed from max_frame; the WCH-Link broker refuses a longer one as unsupported (payload 0x00). port_speed's verify carries max_frame − 16 bytes per frame (oep-core §3.5). Registry from oep-spec's latest.
+- (JA) OEP の block の長さは probe が宣言する `max_length` に従う(oep-if-debug §4.5)。max_frame からは計算しない。WCH-Link のブローカーは、それより長いものを unsupported(payload 0x00)で断る。port_speed の確かめは 1 フレーム max_frame − 16 byte で流す(oep-core §3.5)。registry は oep-spec の最新から。
+
 - (EN) On a serial port, the requests in flight are capped so their answers stay within 6 KiB (in flight x max_frame, oep-core §3.4): Linux's cdc_acm silently dropped 20-30 % of eight 1008-byte answers in flight on an ESP32-P4's HS CDC (none at seven). Vendor bulk, HID and TCP are not capped.
 - (JA) serial の口では、同時に待つ要求の数を、答えが 6 KiB(同時数 × max_frame)に収まるまでに抑える(oep-core §3.4)。ESP32-P4 の HS の CDC で、1008 byte の答えを 8 つ同時に待つと Linux の cdc_acm が 20〜30 % を黙って落とした(7 つなら 0)。vendor bulk、HID、TCP には上限を掛けない。
 

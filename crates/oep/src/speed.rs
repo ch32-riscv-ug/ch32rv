@@ -119,9 +119,9 @@ const VERIFY_TIME: Duration = Duration::from_secs(1);
 /// allows (oep-core §3.5), against a host that died; the broker's 1 s keepalive keeps it up.
 const IDLE_MS: u32 = crate::registry::timing::PORT_SPEED_IDLE_MAX_MS;
 const VERIFY_BYTES: usize = 32 * 1024;
-/// A result frame's header (role, corr, resolution, detail) and a session-less request's.
-const RESULT_HEADER: usize = 5;
-const REQUEST_HEADER: usize = 6;
+/// What the verify's frames leave of max_frame: link_source / link_sink carry max_frame − 16
+/// bytes (oep-core §3.5, room for the headers and the frame's own bytes).
+const VERIFY_ROOM: usize = 16;
 
 /// The UART bridge's transport index, when the probe declares port_speed; else why not.
 fn speed_port(p: &mut Probe) -> Result<u8, String> {
@@ -328,8 +328,8 @@ enum Phase {
 fn verify(p: &mut Probe, rate: u32, inflight: usize, trial: &mut SpeedTrial) -> bool {
     let limits = p.limits();
     let max_frame = usize::from(limits.max_frame);
-    let n_in = max_frame.saturating_sub(RESULT_HEADER);
-    let n_out = max_frame.saturating_sub(REQUEST_HEADER);
+    let n_in = max_frame.saturating_sub(VERIFY_ROOM);
+    let n_out = max_frame.saturating_sub(VERIFY_ROOM);
     let wire = (max_frame + 8) as f64 * 10.0 / f64::from(rate.max(1));
     let timeout = Duration::from_secs_f64((4.0 * wire * inflight as f64 + 0.1).max(0.3));
     let pattern: Vec<u8> = (0..n_in).map(|k| k as u8).collect();
