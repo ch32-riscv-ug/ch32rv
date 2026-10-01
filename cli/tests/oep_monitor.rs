@@ -5,6 +5,8 @@
 //! ja: OEP の probe の serial port での `arduino monitor`(試験が arduino-cli の役)。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../crates/oep/tests/fake/uv.rs"]
+mod uv;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -35,10 +37,7 @@ fn fake_pty(args: &[&str]) -> Option<(Kill, String)> {
         );
         return None;
     }
-    let mut child = Command::new("uv")
-        .arg("run")
-        .arg("--project")
-        .arg(&dir)
+    let mut child = uv::uv_run(&dir)
         .args(["python", "-m", "oep_client.fake_serve", "--pty"])
         .args(args)
         .stdin(Stdio::piped())

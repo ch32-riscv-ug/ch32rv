@@ -5,6 +5,8 @@
 //! ja: ブローカーを偽の probe(pty)で試験する。2 つの client、共有の接続の detach、最後の client で終わる。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../crates/oep/tests/fake/uv.rs"]
+mod uv;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -40,10 +42,7 @@ fn fake_pty() -> Option<(Kill, String)> {
         );
         return None;
     }
-    let mut child = Command::new("uv")
-        .arg("run")
-        .arg("--project")
-        .arg(&dir)
+    let mut child = uv::uv_run(&dir)
         .args(["python", "-m", "oep_client.fake_serve", "--pty"])
         .args(["--target-id", "0x20310500"])
         .stdin(Stdio::piped())

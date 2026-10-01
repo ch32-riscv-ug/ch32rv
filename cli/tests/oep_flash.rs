@@ -5,6 +5,8 @@
 //! ja: OEP の probe での `ch32rv flash` を端から端まで(偽の probe、TCP と pty)。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "../../crates/oep/tests/fake/uv.rs"]
+mod uv;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -37,10 +39,7 @@ fn fake(args: &[&str]) -> Option<Fake> {
         return None;
     }
     let hook = root().join("crates/oep/tests/fake/loader_hook.py:loader");
-    let mut child = Command::new("uv")
-        .arg("run")
-        .arg("--project")
-        .arg(&dir)
+    let mut child = uv::uv_run(&dir)
         .args(["python", "-m", "oep_client.fake_serve"])
         .args(args)
         .arg("--run-hook")

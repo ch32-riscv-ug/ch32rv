@@ -6,10 +6,12 @@
 //! ja: link と session を spec 側の偽の probe で試験する。uv か client が無ければ skip。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+#[path = "fake/uv.rs"]
+mod uv;
 use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::Duration;
 
 use ch32rv_oep::link::{Framing, Link};
@@ -51,11 +53,8 @@ fn fake_env(args: &[&str], env: &[(&str, &str)]) -> Option<Fake> {
         return None;
     }
     let hook = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fake/loader_hook.py:loader");
-    let mut cmd = Command::new("uv");
-    cmd.arg("run")
-        .arg("--project")
-        .arg(&dir)
-        .args(["python", "-m", "oep_client.fake_serve"])
+    let mut cmd = uv::uv_run(&dir);
+    cmd.args(["python", "-m", "oep_client.fake_serve"])
         .args(args)
         .arg("--run-hook")
         .arg(&hook)
