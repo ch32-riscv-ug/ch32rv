@@ -214,6 +214,8 @@ binary の扱い:
 
 **probe ごとに、誰の子でもないブローカーを 1 つ置く。ch32rv の各コマンド(flash、monitor、gdb、1 回だけの read / reset)と pytest の `oep_host` は、どれもブローカーの client になる。** 経路は 1 つで、立ち上がる順で形は変わらない。
 
+- **serial の速さ(port_speed、oep-core §3.5、2026-10-01 から既定で使う)**: probe を serial(UART bridge)で開いたブローカーは、endpoint を書いた後、client に答え始める前に、921600 → 750000 → 500000 の順に試す(`CH32RV_PORT_SPEED` で `off` か並びを指定できる)。手順は参照 client の `raise_speed` と同じ: 試す → host も切り替えて 20 ms 待ち confirm → link_source / link_sink で両方向を 1 秒か 32 KiB 確かめる(max_inflight で並べ、壊れたら 1 つずつで確かめ直し、通った上限で使う) → 壊れたフレームが無ければ決める、あれば戻す。全体の上限は 6 秒。試した結果(速さごとの通った / 壊れた、in / out の KB/s、並べた数、かかった時間)はブローカーの log に 1 行で出す。session が口を持っている間は、壊れたフレームを待たずに同じ corr ですぐ送り直す。上げた速さで答えが来なければ、起動時の速さ(115200)に戻って confirm し、送り直す。CLI の 1 回だけのコマンドはブローカーの client なので、別に速さを触らない。
+
 - **起動**:
   - client は、まず `<runtime>/<key>.oep`(待ち受けの場所)を見てつなぐ。key は probe の同一性(2026-10-01、docs/freeze-decisions.ja.md §4): OEP の USB の probe は `oep-<USB serial>`(serial = unit_id。無ければ `oep-usb-<位置>`)、OEP の USB device を持たない serial port(UART bridge)は `oep-port-<正規化した path>`、WCH-Link は `wch-<serial>`(無ければ `wch-usb-<位置>`)。同じ probe へのどの道(`oep://`、どちらの CDC の `port:`)も同じブローカーに着く。runtime は DeviceLock と同じ利用者ごとのディレクトリ。
   - 無ければ `ch32rv broker serve --probe <sel>`(利用者向けではない subcommand)を切り離して起動する。Linux / macOS は double fork + setsid、Windows は DETACHED_PROCESS と job object からの breakaway。stdio は捨てる。

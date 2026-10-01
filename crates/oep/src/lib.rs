@@ -21,6 +21,7 @@ pub mod config;
 pub mod hid;
 pub mod link;
 pub mod session;
+pub mod speed;
 pub mod stream;
 pub mod target;
 

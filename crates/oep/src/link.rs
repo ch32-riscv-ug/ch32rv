@@ -22,6 +22,15 @@ use crate::registry::{self, constants, core, timing};
 pub trait ByteStream: Send {
     fn write_all(&mut self, data: &[u8]) -> io::Result<()>;
     fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize>;
+    /// The host side's line speed (a serial port; others have none).
+    fn set_baud(&mut self, _baud: u32) -> io::Result<()> {
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this stream has no line speed",
+        ))
+    }
+    /// Drop what the OS has received and not read yet.
+    fn clear_input(&mut self) {}
 }
 
 impl ByteStream for TcpStream {
@@ -122,6 +131,9 @@ pub enum LinkError {
     NotOep(String),
     #[error("request of {0} bytes exceeds the probe's max_frame {1}")]
     TooLarge(usize, u16),
+    /// A frame broke while an answer was awaited (COBS / CRC): it was that answer, resend at once.
+    #[error("a frame broke on the way")]
+    Broken,
 }
 
 /// Reply wait before confirm and for ordinary requests.
@@ -156,6 +168,18 @@ pub struct Link {
     /// Whether a lost answer is waited for and the request sent again once: not on a lossless
     /// stream (TCP), where a missing answer is only late.
     resend: bool,
+    /// en: Resend at once when a frame breaks while an answer is awaited, instead of waiting out
+    /// the timeout. Right only while this host's session holds the port (then every frame on it is
+    /// an answer or a push, never the probe's raw output, oep-core §3.5).
+    /// ja: 答えを待つ間にフレームが壊れたら、時間切れを待たずにすぐ送り直す。session が口を持っている
+    /// 間だけ正しい(その口のフレームは答えか通知で、raw の出力ではない)。
+    pub resend_on_broken: bool,
+    /// The serial port's speed at the probe's boot (every revert's target) and now.
+    base_baud: Option<u32>,
+    baud: Option<u32>,
+    /// At most this many requests outstanding (0: as the probe allows): a raised speed that broke
+    /// while both ways carried at once is used one request at a time.
+    pub inflight_cap: usize,
 }
 
 impl Link {
@@ -174,6 +198,10 @@ impl Link {
             resyncs: 0,
             resends: 0,
             resend: true,
+            resend_on_broken: false,
+            base_baud: None,
+            baud: None,
+            inflight_cap: 0,
         }
     }
 
@@ -269,16 +297,30 @@ impl Link {
         }
         let mut replies: Vec<Option<Reply>> = vec![None; reqs.len()];
         let mut resent = false;
+        let mut fell_back = false;
         loop {
             match self.pump(&reqs, &mut replies) {
                 Ok(()) => break,
-                Err(LinkError::Timeout(_)) if !resent && self.resend => {
+                Err(LinkError::Timeout(_) | LinkError::Broken) if !resent && self.resend => {
                     resent = true;
                     self.resends += 1;
                     if self.framing == Framing::Length {
                         self.resync()?;
                     }
                 }
+                // en: Above the boot speed and still no answer: the probe went back by itself
+                // (idle, broken candidates, a lapse; oep-core §3.5). Back to the boot speed,
+                // confirmed there, and the rest sent once more.
+                // ja: 起動時の速さより上で答えが無い: probe が自分で戻った。起動時の速さで確かめて送り直す。
+                Err(LinkError::Timeout(_) | LinkError::Broken)
+                    if !fell_back && self.baud != self.base_baud =>
+                {
+                    fell_back = true;
+                    if !self.back_to_base(Duration::from_secs(3)) {
+                        return Err(LinkError::Timeout(self.timeout));
+                    }
+                }
+                Err(LinkError::Broken) => return Err(LinkError::Timeout(self.timeout)),
                 Err(e) => return Err(e),
             }
         }
@@ -290,9 +332,12 @@ impl Link {
 
     /// Send the requests that have no answer yet, within the limits, and collect answers.
     fn pump(&mut self, reqs: &[Request], replies: &mut [Option<Reply>]) -> Result<(), LinkError> {
-        let (window, inflight) = self.limits.map_or((usize::MAX, 1), |l| {
+        let (window, mut inflight) = self.limits.map_or((usize::MAX, 1), |l| {
             (l.window as usize, usize::from(l.max_inflight))
         });
+        if self.inflight_cap > 0 {
+            inflight = inflight.min(self.inflight_cap);
+        }
         let todo: Vec<usize> = (0..reqs.len()).filter(|&i| replies[i].is_none()).collect();
         let mut next = 0; // index into `todo` of the next request to send
         let mut outstanding: VecDeque<(usize, usize)> = VecDeque::new(); // (req index, size)
@@ -333,7 +378,15 @@ impl Link {
     /// late answer to an earlier try) are dropped.
     fn wait_result(&mut self, corr: u16) -> Result<Reply, LinkError> {
         let deadline = Instant::now() + self.timeout;
+        let broken_at_start = self.cobs.dropped;
         loop {
+            if self.resend_on_broken
+                && self.framing == Framing::Cobs
+                && self.cobs.dropped != broken_at_start
+                && self.inbox.is_empty()
+            {
+                return Err(LinkError::Broken);
+            }
             while let Some(m) = self.inbox.pop_front() {
                 match Incoming::decode(&m) {
                     Ok(Incoming::Result {
@@ -396,6 +449,118 @@ impl Link {
         Ok(())
     }
 
+    /// The serial port's speed at the probe's boot, when this link is a serial port.
+    pub fn base_baud(&self) -> Option<u32> {
+        self.base_baud
+    }
+
+    /// The serial port's speed now.
+    pub fn baud(&self) -> Option<u32> {
+        self.baud
+    }
+
+    /// en: The host side of the serial port to `rate`: after the switch, 20 ms for both ends to
+    /// settle (the bytes in flight meanwhile break, oep-core §3.5), then what was read dropped.
+    /// ja: host 側の serial の速さを変える。両端が落ち着くまで 20 ms 待ち、読んだものを捨てる。
+    pub fn set_baud(&mut self, rate: u32) -> Result<(), LinkError> {
+        self.stream.set_baud(rate)?;
+        self.baud = Some(rate);
+        std::thread::sleep(Duration::from_millis(20));
+        self.stream.clear_input();
+        self.cobs = SerialDeframer::new(self.limits.map_or(0xFFFF, |l| usize::from(l.max_frame)));
+        self.inbox.clear();
+        Ok(())
+    }
+
+    /// A confirm straight on the link: true when its answer came within `timeout`.
+    pub fn confirm_raw(&mut self, timeout: Duration) -> bool {
+        self.corr = next_corr(self.corr);
+        let mut payload = constants::CONFIRM_REQUEST_MAGIC.as_bytes().to_vec();
+        payload.extend_from_slice(&[0, 0xFF]);
+        let req = Request {
+            corr: self.corr,
+            func: core::FN,
+            op: core::op::CONFIRM,
+            session: None,
+            payload,
+        };
+        let frame = match self.framing {
+            Framing::Cobs => serial_frame(&req.encode()),
+            Framing::Length => length_frame(&req.encode()),
+        };
+        if self.stream.write_all(&frame).is_err() {
+            return false;
+        }
+        let saved = (self.timeout, self.resend_on_broken);
+        self.timeout = timeout;
+        self.resend_on_broken = false;
+        let ok = self.wait_result(req.corr).is_ok();
+        (self.timeout, self.resend_on_broken) = saved;
+        ok
+    }
+
+    /// en: Back at the boot speed, confirmed there: confirms every 0.25 s up to `wait` (a probe
+    /// still trying waits out its verify_ms). ja: 起動時の速さに戻り、confirm で確かめる。
+    pub fn back_to_base(&mut self, wait: Duration) -> bool {
+        self.inflight_cap = 0;
+        let Some(base) = self.base_baud else {
+            return false;
+        };
+        if self.set_baud(base).is_err() {
+            return false;
+        }
+        let deadline = Instant::now() + wait;
+        loop {
+            if self.confirm_raw(Duration::from_millis(250)) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+        }
+    }
+
+    /// en: Requests as they are, pipelined `inflight` at a time, with no resend: the answers that
+    /// came, in order, up to the first that did not (a measuring tool: port_speed's verify).
+    /// ja: 要求をそのまま `inflight` 本ずつ送り、送り直さない。来た答えを順に、最初に来なかった所まで返す。
+    pub fn exchange_once(
+        &mut self,
+        calls: Vec<Call>,
+        inflight: usize,
+        timeout: Duration,
+    ) -> Vec<Reply> {
+        let saved = (
+            self.timeout,
+            self.resend,
+            self.inflight_cap,
+            self.resend_on_broken,
+        );
+        self.timeout = timeout;
+        self.resend = false;
+        self.inflight_cap = inflight.max(1);
+        self.resend_on_broken = true;
+        let mut reqs = Vec::with_capacity(calls.len());
+        for c in calls {
+            self.corr = next_corr(self.corr);
+            reqs.push(Request {
+                corr: self.corr,
+                func: c.func,
+                op: c.op,
+                session: c.session,
+                payload: c.payload,
+            });
+        }
+        let mut replies: Vec<Option<Reply>> = vec![None; reqs.len()];
+        let _ = self.pump(&reqs, &mut replies);
+        (
+            self.timeout,
+            self.resend,
+            self.inflight_cap,
+            self.resend_on_broken,
+        ) = saved;
+        replies.into_iter().map_while(|r| r).collect()
+    }
+
     /// en: Length framing lost its boundaries (core §5.1): discard input until it has been quiet
     /// for `resync_quiet_ms`, then confirm with a fresh corr until its answer comes back. Pushes
     /// that keep the input busy are not stopped here (the session layer sends the blind
@@ -448,6 +613,14 @@ impl ByteStream for SerialStream {
         self.0.flush()
     }
 
+    fn set_baud(&mut self, baud: u32) -> io::Result<()> {
+        self.0.set_baud_rate(baud).map_err(io::Error::other)
+    }
+
+    fn clear_input(&mut self) {
+        let _ = self.0.clear(serialport::ClearBuffer::Input);
+    }
+
     fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
         self.0
             .set_timeout(timeout.max(Duration::from_millis(1)))
@@ -473,7 +646,10 @@ pub fn open_serial(path: &str) -> Result<Link, LinkError> {
         .map_err(|e| LinkError::Io(io::Error::other(format!("open {path}: {e}"))))?;
     let _ = port.write_data_terminal_ready(true);
     let _ = port.write_request_to_send(true);
-    Ok(Link::new(Box::new(SerialStream(port)), Framing::Cobs))
+    let mut link = Link::new(Box::new(SerialStream(port)), Framing::Cobs);
+    link.base_baud = Some(115_200);
+    link.baud = Some(115_200);
+    Ok(link)
 }
 
 /// Connect to an OEP endpoint over TCP (`length(u16) message`): a probe's TCP transport, or the
