@@ -58,7 +58,7 @@ ch32rv monitor --source rtt --probe serial:<SN>
 ```
 
 sketch は [`tests/fixtures/rtt/rtt.ino`](rtt/rtt.ino)(core の SerialRTT/HelloRTT 例)。他 family は
-`arduino-cli compile -b ch32-riscv-ug:ch32v:<board> tests/fixtures/rtt` でビルドして追加できる。
+`arduino-cli compile -b ch32-riscv-ug:ch32rv:<board> tests/fixtures/rtt` でビルドして追加できる。
 
 ## replay fixtures(`replay/*.ndjson`、HW 無し CI)
 
@@ -82,8 +82,8 @@ replay/<name>.ndjson` を録れば再生成できる)。
 ```sh
 # pattern
 ./make-fixtures.sh
-# runtest(family 別、arduino-cli + ch32-riscv-ug:ch32v core が必要)
-arduino-cli compile -b ch32-riscv-ug:ch32v:<CH32V003|CH32V103|CH32V203|CH32V307|CH32L103|CH32X035|...> \
+# runtest(family 別、arduino-cli + ch32-riscv-ug:ch32rv core が必要)
+arduino-cli compile -b ch32-riscv-ug:ch32rv:<CH32V003|CH32V103|CH32V203|CH32V307|CH32L103|CH32X035|...> \
   --output-dir /tmp/rt runtest
 cp /tmp/rt/runtest.ino.bin runtest-<family>.bin
 
