@@ -320,9 +320,30 @@ impl Link {
         let mut resent = false;
         // Looks at the boot speed after a raised one stopped answering (at most two).
         let mut fallbacks = 0;
+        // en: A broken frame starts the resend once; after that the answers are waited for to
+        // the timeout, more broken frames or not (a noisy line breaks several in a row: a second
+        // one must not fail the request, V003 jig at 115200, 2026-10-01).
+        // ja: 壊れたフレームで送り直すのは 1 回。その後は壊れたフレームが続いても時間切れまで待つ。
+        let on_broken = self.resend_on_broken;
+        let r = self.exchange_inner(&reqs, &mut replies, &mut resent, &mut fallbacks);
+        self.resend_on_broken = on_broken;
+        r?;
+        replies
+            .into_iter()
+            .map(|r| r.ok_or(LinkError::Timeout(self.timeout)))
+            .collect()
+    }
+
+    fn exchange_inner(
+        &mut self,
+        reqs: &[Request],
+        replies: &mut [Option<Reply>],
+        resent: &mut bool,
+        fallbacks: &mut u32,
+    ) -> Result<(), LinkError> {
         loop {
-            match self.pump(&reqs, &mut replies) {
-                Ok(()) => break,
+            match self.pump(reqs, replies) {
+                Ok(()) => return Ok(()),
                 // en: Above the boot speed and no answer: most likely the probe went back by
                 // itself (broken candidates, or its silence rule; oep-core §3.5). Look there first
                 // - as long as a host that opens the port would (port_speed_idle_max_ms and some),
@@ -333,8 +354,8 @@ impl Link {
                 // 速さで確かめ、いれば残りをそこで送り直す。いなければ上げた速さに戻ってもう一度待ち、その後
                 // もう一度起動時の速さを見る。
                 // Only a timeout: a broken frame is resent at once below (the probe heard it).
-                Err(LinkError::Timeout(_)) if fallbacks < 2 && self.baud != self.base_baud => {
-                    fallbacks += 1;
+                Err(LinkError::Timeout(_)) if *fallbacks < 2 && self.baud != self.base_baud => {
+                    *fallbacks += 1;
                     let raised = self.baud;
                     let wait =
                         Duration::from_millis(u64::from(timing::PORT_SPEED_IDLE_MAX_MS) + 1000);
@@ -342,13 +363,15 @@ impl Link {
                         self.speed_fallbacks += 1;
                     } else if let Some(r) = raised {
                         self.set_baud(r)?;
-                        resent = true;
+                        *resent = true;
                         self.resends += 1;
+                        self.resend_on_broken = false;
                     }
                 }
-                Err(LinkError::Timeout(_) | LinkError::Broken) if !resent && self.resend => {
-                    resent = true;
+                Err(LinkError::Timeout(_) | LinkError::Broken) if !*resent && self.resend => {
+                    *resent = true;
                     self.resends += 1;
+                    self.resend_on_broken = false;
                     if self.framing == Framing::Length {
                         self.resync()?;
                     }
@@ -357,10 +380,6 @@ impl Link {
                 Err(e) => return Err(e),
             }
         }
-        replies
-            .into_iter()
-            .map(|r| r.ok_or(LinkError::Timeout(self.timeout)))
-            .collect()
     }
 
     /// Send the requests that have no answer yet, within the limits, and collect answers.
