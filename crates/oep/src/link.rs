@@ -321,7 +321,7 @@ impl Link {
         }
         let mut replies: Vec<Option<Reply>> = vec![None; reqs.len()];
         let mut resent = false;
-        // Looks at the boot speed after a raised one stopped answering (at most two).
+        // Looks at the boot speed after a raised one stopped answering (once: then it stays there).
         let mut fallbacks = 0;
         // en: A broken frame starts the resend once; after that the answers are waited for to
         // the timeout, more broken frames or not (a noisy line breaks several in a row: a second
@@ -347,29 +347,22 @@ impl Link {
         loop {
             match self.pump(reqs, replies) {
                 Ok(()) => return Ok(()),
-                // en: Above the boot speed and no answer: most likely the probe went back by
-                // itself (broken candidates, or its silence rule; oep-core §3.5). Look there first
-                // - as long as a host that opens the port would (port_speed_idle_max_ms and some),
-                // since its silence rule may still be running - and send the rest again there. If
-                // the probe is not there (a slow answer still coming), back up to the raised speed
-                // and wait once more; then look at the boot speed a second time.
-                // ja: 上げた速さで答えが無い: probe が自分で戻ったことが多い。開く側と同じ長さだけ起動時の
-                // 速さで確かめ、いれば残りをそこで送り直す。いなければ上げた速さに戻ってもう一度待ち、その後
-                // もう一度起動時の速さを見る。
-                // Only a timeout: a broken frame is resent at once below (the probe heard it).
-                Err(LinkError::Timeout(_)) if *fallbacks < 2 && self.baud != self.base_baud => {
+                // en: Above the boot speed and no answer (oep-core §3.5, host duty 5): back to the
+                // boot speed, confirm until port_speed_idle_max_ms + 1000 ms. It converges either
+                // way - a probe still up there takes these confirms as broken and goes back after
+                // three - and passing, the rest is sent again there for the session. Not passing
+                // is a link failure (no going back up to wait again).
+                // ja: 上げた速さで答えが無い(義務 5): 起動時の速さに戻り、上限まで confirm を繰り返す。
+                // probe がまだ上に居ても、この confirm が壊れ 3 つになって戻るので収束する。通れば残りを
+                // そこで送り直す。通らなければリンクの失敗(上げた速さに戻って待ち直さない)。
+                Err(LinkError::Timeout(_)) if *fallbacks < 1 && self.baud != self.base_baud => {
                     *fallbacks += 1;
-                    let raised = self.baud;
                     let wait =
                         Duration::from_millis(u64::from(timing::PORT_SPEED_IDLE_MAX_MS) + 1000);
-                    if self.back_to_base(wait) {
-                        self.speed_fallbacks += 1;
-                    } else if let Some(r) = raised {
-                        self.set_baud(r)?;
-                        *resent = true;
-                        self.resends += 1;
-                        self.resend_on_broken = false;
+                    if !self.back_to_base(wait) {
+                        return Err(LinkError::Timeout(wait));
                     }
+                    self.speed_fallbacks += 1;
                 }
                 Err(LinkError::Timeout(_) | LinkError::Broken) if !*resent && self.resend => {
                     *resent = true;
