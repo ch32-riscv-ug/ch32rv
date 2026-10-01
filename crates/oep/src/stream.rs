@@ -138,7 +138,7 @@ impl PosStream {
 
     /// One read from `from`, at most `max` bytes. Lock-free (sent without the session).
     pub fn read(&self, p: &mut Probe, from: From, max: u16) -> Result<(u64, Chunk), OepError> {
-        use console::enums::read_from as f;
+        use crate::registry::common::enum_::read_from as f;
         let (func, mut pl) = self.head();
         let (code, arg) = match from {
             From::Position(x) => (f::POSITION, x),
@@ -150,16 +150,25 @@ impl PosStream {
         pl.extend_from_slice(&arg.to_le_bytes());
         pl.extend_from_slice(&max.to_le_bytes());
         let a = check(p.call(func, self.read_op(), pl)?)?;
-        if a.len() < 9 {
+        // start(u64), flags(u8), len(u16), data, [TLV] (oep-if-common §1.2)
+        let len = a
+            .get(9..11)
+            .map(|b| usize::from(u16::from_le_bytes([b[0], b[1]])));
+        let (Some(len), Some(_)) = (len, a.get(..11)) else {
             return Err(OepError::Malformed("stream read answer too short".into()));
-        }
+        };
+        let Some(data) = a.get(11..11 + len) else {
+            return Err(OepError::Malformed(
+                "stream read answer shorter than its len".into(),
+            ));
+        };
         let start = u64::from_le_bytes([a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]]);
         Ok((
             start,
             Chunk {
-                data: a[9..].to_vec(),
+                data: data.to_vec(),
                 gap: 0,
-                more: a[8] & 1 != 0,
+                more: a[8] & crate::registry::common::enum_::read_flags::MORE != 0,
             },
         ))
     }
@@ -173,7 +182,7 @@ impl PosStream {
         // read at its oldest byte (measured on a fixture UART), which would replay old output.
         // ja: marks の一覧から探す(reset の mark が無いストリームは LastMark の read に一番古い位置
         // を返し、古い出力をもう一度流してしまう。fixture UART で実測)。
-        let reset = console::enums::mark_kind::RESET;
+        let reset = crate::registry::common::enum_::mark_kind::RESET;
         self.pos = match self.last_mark(p, reset)? {
             Some(pos) => pos,
             None => self.read(p, From::Now, 0)?.0,
@@ -197,8 +206,8 @@ impl PosStream {
             let (Some(&more), Some(&count)) = (a.first(), a.get(1)) else {
                 return Ok(found);
             };
-            // count x (len(u8), mark); mark = serial u32, position u64, kind u8, time_ms u32,
-            // detail u8 (18 bytes), and an unknown tail is skipped (core §2.3).
+            // count x (len(u8), mark); mark = serial u32, position u64, kind u8, time_ns u64,
+            // detail u8 (22 bytes, oep-if-common §1.3), and an unknown tail is skipped (core §2.3).
             let mut at = 2;
             let mut marks = Vec::new();
             for _ in 0..count {
@@ -207,7 +216,7 @@ impl PosStream {
                     break;
                 };
                 at += 1 + usize::from(len);
-                if m.len() >= 18 {
+                if m.len() >= 22 {
                     marks.push(m);
                 }
             }

@@ -27,7 +27,7 @@
   - `wchlink://<serial>`。serial の無い Link は `wchlink://usb-<bus>-<ports>`(位置)で出す。`unknown` は出さない。
   - topology は `<bus>-<ports>` だけ。port chain の取れない OS の `addrN` は「挿し直しで変わる」と文書に書き、discovery では出さない(その device は `--probe` で指定する)。
   - `oep://<unit_id>/<slot>`(dev_oep の決定、2026-10-01、oep-spec v1-freeze #3 で確定): `<unit_id>` は describe の unit id で、USB の probe は serial number = unit_id(P4 の `-hs` は外す)。ch32rv は USB の serial をそのまま使うので、これで unit_id になる。serial の無い device(UART bridge)だけ位置で出す。1〜32 byte の `a-z 0-9 -`。`<slot>` は 1〜32 byte の `a-z 0-9 - _`(probe-config §1.1)。どちらも仕様で文字を絞るので encode はしない。
-  - OEP の probe の見分けは、専用の PID を取るまで iProduct の `OEP` 接頭辞。PID を取ったら PID だけにする(`is_oep_device` の 1 か所を差し替える。udev の規則も同時に変える、§11)。
+  - OEP の probe の見分けは iProduct の `OEP` 接頭辞(oep-spec のゼロベース見直しで恒久の規範になった、2026-10-01。PID に替える計画は無くなった)。vendor bulk の interface は class 0xFF・subclass 0x4F・protocol 0x45、HID は usage page 0xFF4F・usage 0x45 で見分ける。
   - monitor の `--port` の `path:` / `usb:` の文法は削る(ユーザー)。`--port` はシリアルの口のパスだけで、どの Link かは `--probe` で選ぶ。
 - **追従**: pytest プラグインと bench は `unknown` を当てにしない。
 
@@ -107,7 +107,7 @@
 ## 11. udev の規則
 
 - 足す: WCH の IAP / ISP(`4348:55e0`、`1a86:55e0`)、HID bootloader(`1209:b803`、`1209:b003`、USB と hidraw)。
-- OEP の `OEP*` の文字列一致は、PID を取ったら PID に替える(§2 と同時)。
+- OEP の probe は `OEP*` の文字列一致のまま(恒久、§2)。
 - core の CI は `doctor --emit-udev` と byte 一致を見るので、規則を変えるときは core と同時に出す。
 
 ## 12. firmware の既知の不良

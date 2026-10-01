@@ -18,12 +18,13 @@ pub struct Slot {
     /// 0xFFFF on one wire.
     pub swclk: u16,
     pub at_boot: bool,
-    pub retry_s: u16,
+    /// How often an at-boot slot that found nothing tries again (ms; 0 = never).
+    pub retry_ms: u32,
     /// The line speed ceiling the slot's attach takes (Hz; `None` = no ceiling).
     pub max_speed: Option<u32>,
     /// How the slot's line idles (`wire_rvswd::enums::idle_clock`: 0 high, 1 low).
     pub idle_clock: u8,
-    /// The console mechanism (`oep.target.console`).
+    /// The console mechanism (`oep.target.console`), or 0xFF: a slot without a console.
     pub mechanism: u8,
     pub name: String,
     /// The lock: (scheme, mask, value), when the slot has one.
@@ -31,18 +32,20 @@ pub struct Slot {
 }
 
 impl Slot {
-    /// en: `slot(u8) wire_fn(u16) swdio(u16) swclk(u16) attach(u8) retry_s(u16) max_speed(u32)
+    /// en: `slot(u8) wire_fn(u16) swdio(u16) swclk(u16) attach(u8) retry_ms(u32) max_speed_hz(u32)
     /// idle_clock(u8) mechanism(u8) name_len(u8) name lock_len(u8) [lock_scheme(u8) lock_mask(n)
     /// lock_value(n)]`, lock_len = 0 or 1 + 2n, and anything after the lock is a later extension
-    /// that is skipped (oep-if-probe-config §1.1, core §2.3). Only the current shape: until v1 is frozen the tools follow each change
-    /// together, with no compatibility for older probes (the user's policy, 2026-09-30).
+    /// that is skipped (oep-if-probe-config §1.1, core §2.3). Only the current shape: until v1 is
+    /// frozen the tools follow each change together, with no compatibility for older probes (the
+    /// user's policy, 2026-09-30).
     /// ja: 今の形だけを読む(v1 の凍結までは各ツールが変更にまとめて追従し、古い probe との互換は持たない)。
     fn parse(v: &[u8]) -> Option<Slot> {
-        const FIXED: usize = 17;
+        const FIXED: usize = 19;
         if v.len() < FIXED + 1 {
             return None;
         }
         let le16 = |i: usize| u16::from_le_bytes([v[i], v[i + 1]]);
+        let le32 = |i: usize| u32::from_le_bytes([v[i], v[i + 1], v[i + 2], v[i + 3]]);
         let name_end = FIXED + usize::from(v[FIXED - 1]);
         let name = String::from_utf8_lossy(v.get(FIXED..name_end)?).into_owned();
         let lock_len = usize::from(*v.get(name_end)?);
@@ -53,25 +56,24 @@ impl Slot {
             let n = (lock_len - 1) / 2;
             (n >= 1).then(|| (l[0], l[1..1 + n].to_vec(), l[1 + n..1 + 2 * n].to_vec()))
         };
-        let hz = u32::from_le_bytes([v[10], v[11], v[12], v[13]]);
-        let (max_speed, idle_clock, mechanism) = ((hz != 0).then_some(hz), v[14], v[15]);
+        let hz = le32(12);
         Some(Slot {
             slot: v[0],
             wire_fn: le16(1),
             swdio: le16(3),
             swclk: le16(5),
             at_boot: v[7] == cfg::enums::slot_attach::AT_BOOT,
-            retry_s: le16(8),
-            max_speed,
-            idle_clock,
-            mechanism,
+            retry_ms: le32(8),
+            max_speed: (hz != 0).then_some(hz),
+            idle_clock: v[16],
+            mechanism: v[17],
             name,
             lock,
         })
     }
 }
 
-/// A slot's state (oep-if-probe-config §3.2, describe `slot_state`).
+/// A slot's state (oep-if-probe-config §3.2, the `state` op's `slot_state`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotState {
     pub slot: u8,
@@ -79,27 +81,31 @@ pub struct SlotState {
     pub state: u8,
     /// The slot's connection, when it has one.
     pub connection: Option<u16>,
-    /// ms since the last automatic attach try (None: never tried).
-    pub last_try_ms: Option<u32>,
+    /// When the last automatic attach was tried (the probe's clock, ns; None: never tried).
+    pub last_try_at_ns: Option<u64>,
     /// The target id seen: (scheme, value).
     pub target_id: Option<(u8, Vec<u8>)>,
 }
 
 impl SlotState {
+    /// `slot(u8) state(u8) connection(u16) last_try_at_ns(u64) tid_scheme(u8) tid_len(u8) tid`
+    /// (oep-if-probe-config §3.3); a longer entry's tail is skipped.
     fn parse(v: &[u8]) -> Option<SlotState> {
-        if v.len() < 10 {
+        if v.len() < 14 {
             return None;
         }
         let conn = u16::from_le_bytes([v[2], v[3]]);
-        let last = u32::from_le_bytes([v[4], v[5], v[6], v[7]]);
-        let scheme = v[8];
-        let len = usize::from(v[9]);
-        let tid = v.get(10..10 + len)?.to_vec();
+        let mut last = [0u8; 8];
+        last.copy_from_slice(&v[4..12]);
+        let last = u64::from_le_bytes(last);
+        let scheme = v[12];
+        let len = usize::from(v[13]);
+        let tid = v.get(14..14 + len)?.to_vec();
         Some(SlotState {
             slot: v[0],
             state: v[1],
             connection: (conn != 0).then_some(conn),
-            last_try_ms: (last != u32::MAX).then_some(last),
+            last_try_at_ns: (last != u64::MAX).then_some(last),
             target_id: (scheme != 0).then_some((scheme, tid)),
         })
     }
@@ -151,16 +157,44 @@ pub fn slots(p: &mut Probe) -> Result<Vec<Slot>, OepError> {
     }
 }
 
-/// Every slot's state (describe `slot_state`), lock-free.
+/// Every slot's state (the `state` op, following `more`), lock-free.
 pub fn slot_states(p: &mut Probe) -> Result<Vec<SlotState>, OepError> {
     let Ok(func) = p.interface(cfg::NAME).map(|i| i.func) else {
         return Ok(Vec::new());
     };
-    Ok(p.describe(func)?
-        .iter()
-        .filter(|t| t.tag == cfg::tlvs::describe::SLOT_STATE)
-        .filter_map(|t| SlotState::parse(&t.value))
-        .collect())
+    let mut out = Vec::new();
+    let mut first_slot: u8 = 0;
+    for _ in 0..64 {
+        let r = p.link().call(crate::link::Call {
+            func,
+            op: cfg::op::STATE,
+            session: None,
+            payload: vec![first_slot, 0],
+        })?;
+        let a = check(r)?;
+        // more, storage_state, storage_hash(u32), unreadable_reason, n_slots, n_slots x (len, entry), ...
+        let (Some(&more), Some(&n)) = (a.first(), a.get(7)) else {
+            return Err(OepError::Malformed("config state answer too short".into()));
+        };
+        let mut at = 8;
+        for _ in 0..n {
+            let Some(&len) = a.get(at) else { break };
+            let Some(e) = a.get(at + 1..at + 1 + usize::from(len)) else {
+                return Err(OepError::Malformed(
+                    "config state entry shorter than its len".into(),
+                ));
+            };
+            at += 1 + usize::from(len);
+            if let Some(st) = SlotState::parse(e) {
+                out.push(st);
+            }
+        }
+        first_slot = first_slot.saturating_add(n);
+        if more == 0 || n == 0 {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -174,7 +208,7 @@ mod tests {
         v.extend_from_slice(&7u16.to_le_bytes()); // swdio
         v.extend_from_slice(&8u16.to_le_bytes()); // swclk
         v.push(cfg::enums::slot_attach::AT_BOOT);
-        v.extend_from_slice(&5u16.to_le_bytes()); // retry_s
+        v.extend_from_slice(&5000u32.to_le_bytes()); // retry_ms
         v.extend_from_slice(&400_000u32.to_le_bytes());
         v.push(1); // idle_clock low
         v.push(2); // mechanism dmseq
@@ -189,7 +223,7 @@ mod tests {
     fn reads_the_slot_with_line_settings() {
         let s = Slot::parse(&item("x035", &[])).unwrap();
         assert_eq!(s.name, "x035");
-        assert_eq!((s.swdio, s.swclk, s.retry_s), (7, 8, 5));
+        assert_eq!((s.swdio, s.swclk, s.retry_ms), (7, 8, 5000));
         assert_eq!(s.max_speed, Some(400_000));
         assert_eq!((s.idle_clock, s.mechanism), (1, 2));
         assert!(s.at_boot && s.lock.is_none());

@@ -480,7 +480,7 @@ impl Upstream {
     fn boot_id(&self) -> u32 {
         match self {
             Upstream::Oep(p) => p.boot_id().unwrap_or(0),
-            Upstream::Wch(_) => 0,
+            Upstream::Wch(w) => w.limits().boot_id,
         }
     }
 
@@ -511,11 +511,32 @@ impl Upstream {
         }
     }
 
-    fn keepalive(&mut self) -> Result<(), String> {
+    /// Renew the lease; `Ok(true)` when it had lapsed and the session was opened again (the
+    /// probe released everything it held, core §6.2).
+    fn keepalive(&mut self) -> Result<bool, String> {
         match self {
-            Upstream::Oep(p) => p.keepalive().map_err(|e| e.to_string()),
-            Upstream::Wch(_) => Ok(()),
+            Upstream::Oep(p) => match p.keepalive() {
+                Ok(()) => Ok(false),
+                Err(ch32rv_oep::session::OepError::Expired) => self.reopen().map(|()| true),
+                Err(e) => Err(e.to_string()),
+            },
+            Upstream::Wch(_) => Ok(false),
         }
+    }
+
+    /// en: Open the probe again under the same session id after the lease lapsed (it answers
+    /// `resumed` 2: nothing of the old session is left). ja: lease 切れの後、同じ session id で開き直す。
+    fn reopen(&mut self) -> Result<(), String> {
+        let Upstream::Oep(p) = self else {
+            return Ok(());
+        };
+        let sid = p
+            .session_id()
+            .unwrap_or_else(ch32rv_oep::session::random_session_id);
+        let owner = format!("ch32rv broker pid {}", std::process::id());
+        p.open(sid, LEASE_MS, false, Some(&owner))
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// Work between requests (a WCH-Link's consoles are polled here); how soon to come back.
@@ -609,7 +630,9 @@ impl Broker {
                         continue;
                     }
                     if last_upstream.elapsed() >= KEEPALIVE_EVERY {
-                        self.up.keepalive()?;
+                        if self.up.keepalive()? {
+                            self.swept();
+                        }
                         last_upstream = Instant::now();
                     }
                     continue;
@@ -709,12 +732,24 @@ impl Broker {
             ));
             pending.push(Pending::Forward(id, req));
         }
-        let mut replies = if calls.is_empty() {
+        let replies = if calls.is_empty() {
             Vec::new()
         } else {
             self.up.exchange(calls)?
+        };
+        // en: The lease lapsed under these requests (a long stall of the host): the probe released
+        // every client's connections. Pass the answers on (each client hears `expired` and starts
+        // again) and open the probe again for what comes next.
+        // ja: lease が切れていた(host が長く止まった)。probe は全 client の接続を外した。答えはそのまま
+        // 返し(client は expired を受けてやり直す)、次の要求のために開き直す。
+        if replies
+            .iter()
+            .any(|r| r.resolution == Resolution::Rejected(reject_reasons::EXPIRED))
+        {
+            self.up.reopen()?;
+            self.swept();
         }
-        .into_iter();
+        let mut replies = replies.into_iter();
         for p in pending {
             match p {
                 Pending::Local(id, answer) => self.send(id, &answer),
@@ -726,6 +761,11 @@ impl Broker {
             }
         }
         Ok(())
+    }
+
+    /// The probe released everything after a lapse: no client holds a connection or a plan.
+    fn swept(&mut self) {
+        self.ledger = Ledger::default();
     }
 
     fn send(&mut self, id: u64, msg: &[u8]) {
@@ -749,6 +789,7 @@ impl Broker {
                     p.extend_from_slice(&l.max_frame.to_le_bytes());
                     p.extend_from_slice(&l.window.to_le_bytes());
                     p.push(l.max_inflight);
+                    p.extend_from_slice(&l.boot_id.to_le_bytes());
                     Some(ok(&p))
                 }
                 o if o == oep_core::op::OPEN => {
@@ -800,7 +841,7 @@ impl Broker {
         }
         if self.wires.contains(&req.func) {
             match req.op {
-                o if o == wire_rvswd::op::ATTACH || o == wire_rvswd::op::ATTACH_UNDER_RESET => {
+                o if o == wire_rvswd::op::ATTACH => {
                     if r.payload.len() >= 2 {
                         let conn = u16::from_le_bytes([r.payload[0], r.payload[1]]);
                         self.ledger

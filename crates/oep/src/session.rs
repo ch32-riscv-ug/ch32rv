@@ -25,6 +25,11 @@ pub enum OepError {
         /// What the holder called itself in its open (core §6.4), if it did.
         owner: Option<String>,
     },
+    /// en: The session's lease lapsed and the probe released what it held (core §6.2): open
+    /// again; nothing the session made is there any more.
+    /// ja: lease が切れ、probe は session の資源を外した。open からやり直す。
+    #[error("the probe's session lease lapsed and its resources were released: open again")]
+    Expired,
     #[error("the probe rejected the request: reason 0x{reason:02x}")]
     Rejected { reason: u8, payload: Vec<u8> },
     #[error("the request failed on the probe (outcome 0x{outcome:02x})")]
@@ -49,8 +54,10 @@ pub struct Interface {
 pub struct Opened {
     pub lease_ms: u32,
     pub boot_id: u32,
-    /// The same session id took the lock again (its resources are still there).
+    /// The same session id took the lock again and its resources are still there (`resumed` 1).
     pub resumed: bool,
+    /// The same session id, but after a lapse: its resources were released (`resumed` 2).
+    pub swept: bool,
 }
 
 /// What `lock_state` answered.
@@ -89,6 +96,8 @@ pub struct Probe {
     limits: Limits,
     session: Option<u32>,
     boot_id: Option<u32>,
+    /// The probe's `max_op_ms` (fn 0 describe), learned once per boot.
+    max_op_ms: Option<u32>,
     fns: HashMap<String, Interface>,
 }
 
@@ -101,6 +110,7 @@ impl Probe {
             limits,
             session: None,
             boot_id: None,
+            max_op_ms: None,
             fns: HashMap::new(),
         })
     }
@@ -191,11 +201,13 @@ impl Probe {
         let opened = Opened {
             lease_ms: le32(&p, 0),
             boot_id: le32(&p, 4),
-            resumed: p[8] != 0,
+            resumed: p[8] == core::enums::resumed::RESUMED,
+            swept: p[8] == core::enums::resumed::SWEPT,
         };
         // A new boot means new fn numbers (and no resources): forget the cache.
         if self.boot_id != Some(opened.boot_id) || opened.boot_id == 0 {
             self.fns.clear();
+            self.max_op_ms = None;
         }
         self.boot_id = Some(opened.boot_id);
         self.session = Some(session_id);
@@ -302,6 +314,23 @@ impl Probe {
             .ok_or_else(|| OepError::NoInterface(name.to_owned()))
     }
 
+    /// en: The longest one request may take on this probe (fn 0 describe `max_op_ms`, core §7.5):
+    /// a run's timeout and a dmi request's waits stay at or under it. 2000 ms when the probe does
+    /// not say (it must; the value only keeps ch32rv conservative).
+    /// ja: 1 要求の最長時間(fn 0 の describe の max_op_ms)。run の timeout と dmi の待ちはこれ以下。
+    pub fn max_op_ms(&mut self) -> Result<u32, OepError> {
+        if let Some(ms) = self.max_op_ms {
+            return Ok(ms);
+        }
+        let ms = self
+            .describe(core::FN)?
+            .iter()
+            .find(|t| t.tag == core::tlvs::describe::MAX_OP_MS && t.value.len() == 4)
+            .map_or(2000, |t| le32(&t.value, 0));
+        self.max_op_ms = Some(ms);
+        Ok(ms)
+    }
+
     /// `describe` of `func`, following `more`.
     pub fn describe(&mut self, func: u16) -> Result<Vec<Tlv>, OepError> {
         let mut out = Vec::new();
@@ -344,6 +373,7 @@ pub fn check(r: Reply) -> Result<Vec<u8>, OepError> {
                 owner,
             })
         }
+        Resolution::Rejected(reason) if reason == reject_reasons::EXPIRED => Err(OepError::Expired),
         Resolution::Rejected(reason) => Err(OepError::Rejected {
             reason,
             payload: r.payload,
