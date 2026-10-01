@@ -505,6 +505,14 @@ impl Upstream {
         }
     }
 
+    /// The upstream link's resends and dropped frames so far (diagnostics for the log).
+    fn losses(&mut self) -> (u64, u64) {
+        match self {
+            Upstream::Oep(p) => (p.link().resends, p.link().dropped),
+            Upstream::Wch(_) => (0, 0),
+        }
+    }
+
     fn client_gone(&mut self, id: u64) {
         if let Upstream::Wch(w) = self {
             w.client_gone(id);
@@ -732,11 +740,25 @@ impl Broker {
             ));
             pending.push(Pending::Forward(id, req));
         }
+        let before = self.up.losses();
         let replies = if calls.is_empty() {
             Vec::new()
         } else {
             self.up.exchange(calls)?
         };
+        // A lost answer on the probe's link costs a resend after its timeout: say so, since it is
+        // what makes a client's request slow.
+        let after = self.up.losses();
+        if after != before {
+            broker_log(
+                &self.key,
+                &format!(
+                    "upstream: {} resend(s), {} broken frame(s) dropped",
+                    after.0 - before.0,
+                    after.1 - before.1
+                ),
+            );
+        }
         // en: The lease lapsed under these requests (a long stall of the host): the probe released
         // every client's connections. Pass the answers on (each client hears `expired` and starts
         // again) and open the probe again for what comes next.

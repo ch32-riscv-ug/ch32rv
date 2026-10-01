@@ -127,6 +127,15 @@ pub enum LinkError {
 /// Reply wait before confirm and for ordinary requests.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// en: Reply wait on a TCP link (a broker, or a probe reached over TCP). TCP loses nothing, so an
+/// answer that is late is still coming: behind the broker it may wait out a lost answer on the
+/// probe's serial link (3 s) and the resend, so this must be longer than that (a client that gave
+/// up first made the broker's late answer meet a resent corr: `result_lost`, V003 jig over a
+/// CP2102, 2026-10-01).
+/// ja: TCP の link の応答待ち。TCP は失わないので、遅い答えはまだ来る途中。ブローカーの裏で probe の
+/// serial の失われた答え(3 秒)と再送を待つことがあるので、それより長くする。
+pub const TCP_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub struct Link {
     stream: Box<dyn ByteStream>,
     framing: Framing,
@@ -142,6 +151,11 @@ pub struct Link {
     pub dropped: u64,
     /// Resyncs performed (diagnostics).
     pub resyncs: u64,
+    /// Requests sent again after their answer did not come (diagnostics).
+    pub resends: u64,
+    /// Whether a lost answer is waited for and the request sent again once: not on a lossless
+    /// stream (TCP), where a missing answer is only late.
+    resend: bool,
 }
 
 impl Link {
@@ -158,6 +172,8 @@ impl Link {
             inbox: VecDeque::new(),
             dropped: 0,
             resyncs: 0,
+            resends: 0,
+            resend: true,
         }
     }
 
@@ -256,8 +272,9 @@ impl Link {
         loop {
             match self.pump(&reqs, &mut replies) {
                 Ok(()) => break,
-                Err(LinkError::Timeout(_)) if !resent => {
+                Err(LinkError::Timeout(_)) if !resent && self.resend => {
                     resent = true;
+                    self.resends += 1;
                     if self.framing == Framing::Length {
                         self.resync()?;
                     }
@@ -464,5 +481,8 @@ pub fn open_serial(path: &str) -> Result<Link, LinkError> {
 pub fn open_tcp(addr: &str) -> Result<Link, LinkError> {
     let s = TcpStream::connect(addr)?;
     s.set_nodelay(true)?;
-    Ok(Link::new(Box::new(s), Framing::Length))
+    let mut link = Link::new(Box::new(s), Framing::Length);
+    link.timeout = TCP_TIMEOUT;
+    link.resend = false;
+    Ok(link)
 }
