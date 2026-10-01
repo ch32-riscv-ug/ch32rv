@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) On a serial port, the requests in flight are capped so their answers stay within 6 KiB (in flight x max_frame, oep-core §3.4): Linux's cdc_acm silently dropped 20-30 % of eight 1008-byte answers in flight on an ESP32-P4's HS CDC (none at seven). Vendor bulk, HID and TCP are not capped.
+- (JA) serial の口では、同時に待つ要求の数を、答えが 6 KiB(同時数 × max_frame)に収まるまでに抑える(oep-core §3.4)。ESP32-P4 の HS の CDC で、1008 byte の答えを 8 つ同時に待つと Linux の cdc_acm が 20〜30 % を黙って落とした(7 つなら 0)。vendor bulk、HID、TCP には上限を掛けない。
+
 ## 0.16.1 - 2026-10-01
 
 - (EN) A raised port speed that breaks under load no longer loses the session (seen on the V003 jig's CH340 at 921600 under a fixture UART's stream): the verify adds a phase with both ways at once; while raised, the broker lowers the rate together with the probe after 2 broken frames in 5 s (stricter than the spec's 3, so it lowers before the probe goes back on its own) and stays at the boot speed for the session; with no answer above the boot speed the link looks at the boot speed first (about 4 s, as an opening host would) and, when the probe is there, sends the rest again there. The broker's lease is 10 s so that recovery fits in it. The log says each of these.
