@@ -140,7 +140,8 @@ fn a_debug_source_streams_the_oep_console_through_the_broker() {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    let deadline = Instant::now() + Duration::from_secs(3);
+    // The broker lingers 3 s after its last client (an IDE's monitor-then-upload), then ends.
+    let deadline = Instant::now() + Duration::from_secs(6);
     loop {
         let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
             .args([

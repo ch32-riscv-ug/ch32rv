@@ -106,6 +106,9 @@ const STEP_REVERT: u8 = 0x02;
 /// How long the probe waits for the commit after a try: the verify (1 s) and some.
 const VERIFY_MS: u16 = 2500;
 const VERIFY_TIME: Duration = Duration::from_secs(1);
+/// Once committed, the probe goes back after this long with no good frame: the most the spec
+/// allows (oep-core §3.5), against a host that died; the broker's 1 s keepalive keeps it up.
+const IDLE_MS: u32 = crate::registry::timing::PORT_SPEED_IDLE_MAX_MS;
 const VERIFY_BYTES: usize = 32 * 1024;
 /// A result frame's header (role, corr, resolution, detail) and a session-less request's.
 const RESULT_HEADER: usize = 5;
@@ -248,7 +251,7 @@ pub fn raise_speed(
                 .call(
                     core::FN,
                     core::op::PORT_SPEED,
-                    port_speed_body(port, rate, STEP_COMMIT, 0, 0),
+                    port_speed_body(port, rate, STEP_COMMIT, 0, IDLE_MS),
                 )
                 .ok()
                 .is_some_and(|r| r.succeeded());
