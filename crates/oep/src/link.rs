@@ -136,6 +136,9 @@ pub enum LinkError {
     Broken,
 }
 
+/// The most answer bytes a serial link keeps in flight at once (in-flight requests x max_frame).
+pub const ANSWER_BURST_MAX: usize = 6144;
+
 /// Reply wait before confirm and for ordinary requests.
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -389,6 +392,16 @@ impl Link {
         });
         if self.inflight_cap > 0 {
             inflight = inflight.min(self.inflight_cap);
+        }
+        // en: On a serial port, keep the answers that may come back at once within
+        // ANSWER_BURST_MAX (oep-core §3.4): the probe's limits are what it can take, not what the
+        // host's tty path can - Linux's cdc_acm dropped 20-30 % of 8 x 1008-byte answers in
+        // flight on an ESP32-P4's HS CDC, none at 7 (dev-oep, 2026-10-02).
+        // ja: serial の口では、同時に返りうる答えの量を ANSWER_BURST_MAX 以内にする(probe の上限は
+        // probe の受けの上限で、host の tty の経路の上限ではない)。
+        if self.framing == Framing::Cobs {
+            let frame = self.limits.map_or(1, |l| usize::from(l.max_frame).max(1));
+            inflight = inflight.min((ANSWER_BURST_MAX / frame).max(1));
         }
         let todo: Vec<usize> = (0..reqs.len()).filter(|&i| replies[i].is_none()).collect();
         let mut next = 0; // index into `todo` of the next request to send
