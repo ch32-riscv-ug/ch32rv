@@ -115,10 +115,15 @@ fn drain_in(
 }
 
 impl UsbDeviceInfo {
-    /// en: Open the first vendor-class interface (alt 0) that has a bulk OUT and a bulk IN
-    /// endpoint. `Ok(None)` when the device has none.
-    /// ja: bulk の OUT と IN を持つ最初の vendor class の interface(alt 0)を開く。無ければ `Ok(None)`。
-    pub fn open_vendor_bulk(&self) -> Result<Option<BulkPipe>, UsbError> {
+    /// en: Open the first vendor-class interface (alt 0) with this subclass and protocol that has
+    /// a bulk OUT and a bulk IN endpoint. `Ok(None)` when the device has none.
+    /// ja: その subclass / protocol で bulk の OUT と IN を持つ最初の vendor class の interface(alt 0)
+    /// を開く。無ければ `Ok(None)`。
+    pub fn open_vendor_bulk(
+        &self,
+        subclass: u8,
+        protocol: u8,
+    ) -> Result<Option<BulkPipe>, UsbError> {
         let Some(info) = self.nusb_info() else {
             return Ok(None);
         };
@@ -129,7 +134,12 @@ impl UsbDeviceInfo {
                 .map_err(|e| UsbError::Open(e.to_string()))?;
             config
                 .interface_alt_settings()
-                .filter(|i| i.alternate_setting() == 0 && i.class() == 0xFF)
+                .filter(|i| {
+                    i.alternate_setting() == 0
+                        && i.class() == 0xFF
+                        && i.subclass() == subclass
+                        && i.protocol() == protocol
+                })
                 .find_map(|i| {
                     let bulk = |d: Direction| {
                         i.endpoints()

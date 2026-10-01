@@ -116,7 +116,7 @@ pub fn generate(spec: &Path, source: Source) -> Result<String, String> {
                     interface(&mut out, iface)?;
                 }
             }
-            "timing" => table(&mut out, key, value, "u32", 0)?,
+            "timing" | "limits" => table(&mut out, key, value, "u32", 0)?,
             _ => table(&mut out, key, value, "u8", 0)?,
         }
     }
@@ -140,13 +140,31 @@ fn table(
         let c = konst(k);
         match v {
             Value::Integer(i) => {
+                // A table of u8 values may hold a wider one (`usb.hid_usage_page`): that constant
+                // gets the smallest type it fits.
+                let ty = match ty {
+                    "u8" if *i > 0xFF => {
+                        if *i > 0xFFFF {
+                            "u32"
+                        } else {
+                            "u16"
+                        }
+                    }
+                    t => t,
+                };
                 check_fits(*i, ty, &format!("{name}.{k}"))?;
                 let _ = writeln!(out, "{pad}    pub const {c}: {ty} = 0x{i:02X};");
             }
             Value::String(s) => {
                 let _ = writeln!(out, "{pad}    pub const {c}: &str = {s:?};");
             }
-            _ => return Err(format!("`{name}.{k}` is neither a number nor a string")),
+            // A nested table (`[common.enum.read_from]`): its own module, u8 values.
+            Value::Table(_) => table(out, k, v, "u8", depth + 1)?,
+            _ => {
+                return Err(format!(
+                    "`{name}.{k}` is neither a number, a string nor a table"
+                ));
+            }
         }
     }
     let _ = writeln!(out, "{pad}}}\n");

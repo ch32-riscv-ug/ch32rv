@@ -267,7 +267,8 @@ pub struct Tlv {
     pub value: Vec<u8>,
 }
 
-/// Append a request TLV; `critical` sets bit 7 (the probe must honour it or refuse).
+/// Append a request TLV; `critical` sets bit 7 (the probe must honour it or refuse). A value of
+/// 255 bytes or more takes the long form `tag 0xFF len(u16) value` (core §2.2).
 pub fn put_tlv(out: &mut Vec<u8>, tag: u8, critical: bool, value: &[u8]) {
     let t = if critical {
         tag | registry::constants::TAG_CRITICAL
@@ -275,23 +276,43 @@ pub fn put_tlv(out: &mut Vec<u8>, tag: u8, critical: bool, value: &[u8]) {
         tag
     };
     out.push(t);
-    out.push(value.len() as u8);
+    if value.len() >= 0xFF {
+        out.push(0xFF);
+        out.extend_from_slice(&(value.len().min(0xFFFF) as u16).to_le_bytes());
+    } else {
+        out.push(value.len() as u8);
+    }
     out.extend_from_slice(value);
 }
 
-/// Parse a response TLV list. A truncated item means the whole result is broken (core §4.3).
+/// Parse a response TLV list. A truncated item, or the long form holding a value short enough
+/// for the short one, means the whole result is broken (core §2.2, §4.3).
 pub fn parse_tlvs(mut b: &[u8]) -> Result<Vec<Tlv>, DecodeError> {
     let mut out = Vec::new();
     while !b.is_empty() {
-        if b.len() < 2 || b.len() < 2 + usize::from(b[1]) {
+        if b.len() < 2 {
             return Err(DecodeError::TruncatedTlv);
         }
-        let len = usize::from(b[1]);
+        let (head, len) = if b[1] == 0xFF {
+            if b.len() < 4 {
+                return Err(DecodeError::TruncatedTlv);
+            }
+            let len = usize::from(u16::from_le_bytes([b[2], b[3]]));
+            if len < 0xFF {
+                return Err(DecodeError::TruncatedTlv);
+            }
+            (4, len)
+        } else {
+            (2, usize::from(b[1]))
+        };
+        if b.len() < head + len {
+            return Err(DecodeError::TruncatedTlv);
+        }
         out.push(Tlv {
             tag: b[0],
-            value: b[2..2 + len].to_vec(),
+            value: b[head..head + len].to_vec(),
         });
-        b = &b[2 + len..];
+        b = &b[head + len..];
     }
     Ok(out)
 }
@@ -617,6 +638,23 @@ mod tests {
         let t = parse_tlvs(&b).unwrap();
         assert_eq!(t[0].value, 1_000_000u32.to_le_bytes().to_vec());
         assert_eq!(parse_tlvs(&[0x10, 5, 1]), Err(DecodeError::TruncatedTlv));
+    }
+
+    #[test]
+    fn long_tlvs() {
+        // 255 bytes and more: `tag 0xFF len(u16) value`; 254 stays short.
+        for n in [254usize, 255, 600] {
+            let v = vec![0xA5; n];
+            let mut b = Vec::new();
+            put_tlv(&mut b, 0x02, false, &v);
+            assert_eq!(b[1] == 0xFF, n >= 255, "{n}");
+            assert_eq!(parse_tlvs(&b).unwrap()[0].value, v);
+        }
+        // The long form holding a short value is broken.
+        assert_eq!(
+            parse_tlvs(&[0x02, 0xFF, 3, 0, 1, 2, 3]),
+            Err(DecodeError::TruncatedTlv)
+        );
     }
 
     #[test]

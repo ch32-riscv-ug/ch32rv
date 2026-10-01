@@ -64,14 +64,13 @@ pub(crate) fn oep_port(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<String> {
     dev.serial_ports().into_iter().next()
 }
 
-/// en: fn 0 describe `oep_pid` = 1: the probe also enumerates as an OEP device (the OEP VID:PID;
-/// until it is taken, a product string starting `OEP`), so host discovery lists its slots
-/// (oep-core §7.5, oep-spec cc34f9f).
-/// ja: fn 0 の describe `oep_pid` = 1(この probe は OEP の device としても列挙している)。
+/// en: fn 0 describe `discoverable` = 1: the probe also enumerates the way host discovery lists
+/// (a USB device whose product string starts `OEP`, oep-core §3.3 / §7.5), so its slots are listed.
+/// ja: fn 0 の describe `discoverable` = 1(この probe は discovery の一覧に出る形でも列挙している)。
 fn announces_oep_device(p: &mut Probe) -> bool {
     p.describe(oep_core::FN).is_ok_and(|tlvs| {
         tlvs.iter()
-            .any(|t| t.tag == oep_core::tlvs::describe::OEP_PID && t.value.first() == Some(&1))
+            .any(|t| t.tag == oep_core::tlvs::describe::DISCOVERABLE && t.value.first() == Some(&1))
     })
 }
 
@@ -115,7 +114,8 @@ impl OepHid {
             if info.vendor_id() != dev.vid()
                 || info.product_id() != dev.pid()
                 || info.serial_number() != dev.serial()
-                || info.usage_page() < 0xFF00
+                || info.usage_page() != ch32rv_oep::registry::usb::HID_USAGE_PAGE
+                || info.usage() != u16::from(ch32rv_oep::registry::usb::HID_USAGE)
             {
                 continue;
             }
@@ -220,7 +220,11 @@ fn connect_ordered(
         }
         if !matches!(start.as_str(), "hid" | "serial")
             && let Some(p) = d
-                .open_vendor_bulk()
+                // class 0xFF, subclass 'O', protocol 'E' (oep-core §3.3)
+                .open_vendor_bulk(
+                    ch32rv_oep::registry::usb::VENDOR_BULK_SUBCLASS,
+                    ch32rv_oep::registry::usb::VENDOR_BULK_PROTOCOL,
+                )
                 .ok()
                 .flatten()
                 .and_then(|pipe| try_link(Box::new(VendorBulk(pipe))))
@@ -1048,7 +1052,7 @@ enum Backing {
     /// RTT the host runs: the connection, what OepDtm learned, the channels, input not yet taken.
     Rtt {
         connection: u16,
-        parts: (u16, usize),
+        parts: (u16, usize, u32),
         channels: crate::source::RttChannels,
         input: Vec<u8>,
     },

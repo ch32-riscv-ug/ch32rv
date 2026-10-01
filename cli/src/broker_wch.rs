@@ -74,6 +74,8 @@ pub(crate) struct WchUpstream {
     /// The client the Link is lent to (its session dropped so the client can open the Link
     /// directly), and whether a connection existed to be restored.
     lent: Option<(u64, bool)>,
+    /// What confirm reports: new for every broker (a restart of it is a new "boot").
+    boot_id: u32,
 }
 
 fn ok(payload: Vec<u8>) -> Reply {
@@ -131,9 +133,11 @@ impl WchUpstream {
             session: None,
             dirty: false,
             consoles: HashMap::new(),
-            next_stream: 1,
+            // One number space for connections and streams (core §9): the connection is CONN.
+            next_stream: CONN + 1,
             lock_timeout,
             lent: None,
+            boot_id: ch32rv_oep::session::random_session_id().max(1),
         }
     }
 
@@ -143,6 +147,7 @@ impl WchUpstream {
             max_frame: 4096,
             window: 1 << 16,
             max_inflight: 16,
+            boot_id: self.boot_id,
         }
     }
 
@@ -205,11 +210,25 @@ impl WchUpstream {
                     return rejected(reject_reasons::MALFORMED);
                 };
                 let tlvs: Vec<u8> = match func {
-                    f if f == oep_core::FN => tlv(
-                        oep_core::tlvs::describe::MODEL,
-                        format!("{} via ch32rv broker", self.model()).as_bytes(),
-                    ),
-                    FN_RVSWD | FN_SWIO => tlv(wire::tlvs::describe::MAX_CONNECTIONS, &[1]),
+                    f if f == oep_core::FN => {
+                        let mut v = tlv(
+                            oep_core::tlvs::describe::MODEL,
+                            format!("{} via ch32rv broker", self.model()).as_bytes(),
+                        );
+                        v.extend(tlv(
+                            oep_core::tlvs::describe::MAX_OP_MS,
+                            &registry::limits::MAX_OP_MS_REFERENCE.to_le_bytes(),
+                        ));
+                        v
+                    }
+                    FN_RVSWD | FN_SWIO => {
+                        let mut v = tlv(wire::tlvs::describe::MAX_CONNECTIONS, &[1]);
+                        v.extend(tlv(
+                            registry::describe_common::MAX_CLOCK_HZ,
+                            &6_000_000u32.to_le_bytes(),
+                        ));
+                        v
+                    }
                     FN_DM => {
                         let mut v = tlv(registry::describe_common::FEATURES, &0x7u32.to_le_bytes());
                         v.extend(tlv(
@@ -341,7 +360,9 @@ impl WchUpstream {
         let p = &c.payload;
         match c.op {
             o if o == wire::op::ATTACH => {
-                let Some(&method) = p.first() else {
+                let Some(&method) = p.first().filter(|&&m| {
+                    m == wire::enums::attach_method::RUN || m == wire::enums::attach_method::HALT
+                }) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
                 let tlvs = parse_tlvs(&p[1..]).unwrap_or_default();
@@ -382,9 +403,22 @@ impl WchUpstream {
                 }
                 let dmstatus = s.dm().dmstatus().unwrap_or(0);
                 let chip_id = s.attach.chip_id;
+                // flags (attach_flags): bit1 existing, bit3 halted with the dpc TLV.
+                let dpc = if s.dm().is_halted().unwrap_or(false) {
+                    s.dm().read_reg(ch32rv_dmi::RegName::Pc).ok()
+                } else {
+                    None
+                };
                 let mut out = CONN.to_le_bytes().to_vec();
                 out.extend_from_slice(&dmstatus.to_le_bytes());
-                out.push(if existing { 2 } else { 0 });
+                let mut flags = 0;
+                if existing {
+                    flags |= wire::enums::attach_flags::EXISTING;
+                }
+                if dpc.is_some() {
+                    flags |= wire::enums::attach_flags::HALTED;
+                }
+                out.push(flags);
                 let hz = match max_speed {
                     Some(hz) if hz <= 400_000 => 400_000u32,
                     Some(hz) if hz <= 4_000_000 => 4_000_000,
@@ -395,6 +429,9 @@ impl WchUpstream {
                     let mut v = vec![wire::enums::target_id_scheme::WCH_DMI_7F];
                     v.extend_from_slice(&chip_id.to_le_bytes());
                     out.extend(tlv(wire::tlvs::attach_answer::TARGET_ID, &v));
+                }
+                if let Some(pc) = dpc {
+                    out.extend(tlv(wire::tlvs::attach_answer::DPC, &pc.to_le_bytes()));
                 }
                 ok(out)
             }
@@ -552,7 +589,7 @@ impl WchUpstream {
                 // The mailboxes only move while the core runs.
                 let _ = s.dm().resume();
                 let id = self.next_stream;
-                self.next_stream = self.next_stream.wrapping_add(1).max(1);
+                self.next_stream = self.next_stream.wrapping_add(1).max(CONN + 1);
                 self.consoles.insert(
                     id,
                     Console {
@@ -581,10 +618,12 @@ impl WchUpstream {
                     return rejected(reject_reasons::UNAVAILABLE);
                 };
                 let end = x.base + x.buf.len() as u64;
+                use registry::common::enum_::read_from as f;
                 let want = match from {
-                    0 => arg,
-                    2 => end,
-                    _ => x.base, // oldest; no marks are kept here, so the last mark is the oldest
+                    f::POSITION => arg,
+                    f::OLDEST => x.base,
+                    // No marks are kept here: "the last mark" with none is now (oep-if-common §1.2).
+                    _ => end,
                 };
                 let start = want.clamp(x.base, end);
                 let skip = (start - x.base) as usize;
@@ -593,6 +632,7 @@ impl WchUpstream {
                 let more = skip + n < x.buf.len();
                 let gap = want < x.base;
                 out.push(u8::from(more) | (u8::from(gap) << 1));
+                out.extend_from_slice(&(n as u16).to_le_bytes());
                 out.extend(x.buf.iter().skip(skip).take(n));
                 ok(out)
             }
@@ -727,8 +767,10 @@ fn dmi_steps(s: &mut Session, b: &[u8]) -> Reply {
         }
         done += 1;
     }
+    // done(u16), status(u8), nvals(u16), nvals x value(u32)
     let mut out = done.to_le_bytes().to_vec();
     out.push(st);
+    out.extend_from_slice(&(values.len() as u16).to_le_bytes());
     for v in values {
         out.extend_from_slice(&v.to_le_bytes());
     }
@@ -749,6 +791,13 @@ fn run(s: &mut Session, b: &[u8]) -> Reply {
     let (Some(pc), Some(timeout), Some(&n)) = (le32(b, 0), le32(b, 4), b.get(8)) else {
         return rejected(reject_reasons::MALFORMED);
     };
+    // 1..=max_op_ms (core §7.5, oep-if-debug §4.4).
+    if timeout == 0 {
+        return rejected(reject_reasons::MALFORMED);
+    }
+    if timeout > registry::limits::MAX_OP_MS_REFERENCE {
+        return rejected(reject_reasons::UNSUPPORTED);
+    }
     let mut at = 9;
     let mut regs = Vec::new();
     for _ in 0..n {
@@ -781,11 +830,18 @@ fn run(s: &mut Session, b: &[u8]) -> Reply {
             ];
             out.extend_from_slice(&r.dpc.to_le_bytes());
             out.extend_from_slice(&r.elapsed_us.to_le_bytes());
+            out.push(r.outs.len() as u8);
             for v in r.outs {
                 out.extend_from_slice(&v.to_le_bytes());
             }
             if r.stopped { ok(out) } else { failed(out) }
         }
-        Err(_) => failed(vec![status::FAULT]),
+        // Could not run or halt it: stopped 2, dpc and values mean nothing (oep-if-debug §4.4).
+        Err(_) => {
+            let mut out = vec![status::FAULT, dm::enums::run_stopped::NOT_HALTED];
+            out.extend_from_slice(&[0; 8]);
+            out.push(0);
+            failed(out)
+        }
     }
 }

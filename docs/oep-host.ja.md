@@ -55,10 +55,10 @@
 
 ### 3.3 USB の口の見つけ方
 
-- **OEP の probe の見分け方(oep-core §3.3、2026-09-29 の決定、oep-spec 0f94e21 で訂正)**: 専用 PID(pid.codes で取る予定)はまだ無い。PID を取るまでは、**device の iProduct が `OEP` で始まる**ことで見分ける(interface の名前では見分けない)。今の P4 の HS device は 303a:0002、iProduct `OEP probe (P4 HS)`、serial `<MAC>-hs`。PID を取ったら、名前での判定をやめて PID だけにする。
+- **OEP の probe の見分け方(oep-core §3.3、2026-10-01 のゼロベース見直しで恒久の規範)**: **device の iProduct が `OEP` で始まる**ことで見分ける(interface の名前では見分けない。PID に替える計画は無くなった。1209:4F45 は参照 firmware の値)。vendor bulk の interface は class 0xFF・subclass 0x4F・protocol 0x45、HID の interface は usage page 0xFF4F・usage 0x45。
   - 判定は 1 つの関数(`is_oep_device`)にまとめ、後で PID の判定に差し替えられるようにする。discovery(`oep://`)も、serial port を選んだときの「OEP の probe なら raw の serial port の upload は断る」(§6)も、この関数を使う。
   - 名前は device を開かずに読む(nusb の列挙が持つ product の文字列)。
-  - fn 0 の describe の `oep_pid` = 1 は「この形で列挙している device がある」という意味で、USJ などから開いたときにも分かる。
+  - fn 0 の describe の `discoverable`(0x4A)= 1 は「この形で列挙している device がある」という意味で、USJ などから開いたときにも分かる。
 - 口は interface の種類で選ぶ(core §3.3): CDC(ACM)はすべて OEP を受ける serial port、vendor class の bulk の組は vendor bulk、vendor 定義の HID は HID。DFU や Mass Storage は OEP の外。vendor bulk、HID、serial port の順に試す(2026-09-29 実装、`oep::connect_upstream`)。ブローカーと discovery は、`port:<path>` / `oep://` の serial port を持つ OEP の device の vendor bulk → vendor HID → その serial port の順に開き、confirm が通った最初の経路を使う(開けない・答えないものは次へ。Linux で udev の規則が無く USB のノードに書けないときも serial port に落ちる)。`CH32RV_OEP_TRANSPORT=vendor-bulk|hid|serial` でその経路から始める(比較と切り分け用)。ブローカーの key は serial port の path のまま。
 - vendor bulk は nusb で扱う(`ch32rv_usb::BulkPipe`)。alt 0 の vendor class(0xFF)の interface で、bulk の OUT と IN を持つ最初のもの。
   - IN の転送を 2 本出したままにする(read の timeout で cancel しない。cancel すると、その瞬間に届いた分を落とす)。汲み続けるので OUT も詰まらない(参照 client の E160)。
@@ -68,7 +68,7 @@
   - 同じ VID:PID と serial で、usage page 0xFF00 以上の HID を開き、report 記述子から vendor の report(input と output を持つもの)の ID と大きさを読む(`ch32rv_oep::hid`)。P4 は ID 6、511 byte。
   - report ID があれば、output にも ID を付ける。input は ID を確かめてから count の分を取る。
 - 実機確認(2026-09-29、X035 治具の ESP32-P4 HS、oep-probe-arduino 71800ae): vendor bulk(interface 1)、HID(report ID 6)、serial port のどれでも、target info、TickBoth(4.9 KB)の flash が約 0.20〜0.22 秒で書けた。dmseq の monitor、monitor を開いたままの flash(reset の後も流れ続ける)も通った。既定では vendor bulk が選ばれる(`broker endpoint --json` の `transport`)。
-- Linux の権限: `60-ch32rv.rules`(`doctor --emit-udev`)に、product の文字列が `OEP` で始まる device の USB のノードと hidraw を足した(PID を取ったら VID:PID に替える)。
+- Linux の権限: `60-ch32rv.rules`(`doctor --emit-udev`)に、product の文字列が `OEP` で始まる device の USB のノードと hidraw を足した。
 
 ### 3.4 link の規則(core §5、§9 の MUST をそのまま)
 
@@ -95,7 +95,8 @@
 - **lease**:
   - 対話的なコマンド(flash、read、target info)は 3 秒。monitor とブローカーは 3 秒で、keepalive を 1 秒ごとに送る。
   - pytest の `oep_host` は 10 秒(WF §4.3。client 側の話)。
-  - run の timeout は lease と応答待ちより十分短くする(run の間、probe は他の要求に答えない)。
+  - run の timeout は lease と応答待ちより十分短くする(run の間、probe は他の要求に答えない)。run の timeout と dmi の待ちは fn 0 describe の `max_op_ms`(0x4D、参照 firmware は 10000)以下に詰める(2026-10-01、`Probe::max_op_ms`)。
+  - lease が切れた後の要求は `rejected expired`(0x0E)になる(`OepError::Expired`)。黙って再開はしない。ブローカーは expired を受けたら同じ session_id で open し直し(`resumed` = 2)、台帳を捨てる。client はそれぞれ expired を受けてやり直す。
 - **lock の奪い方(WF §4.3)**:
   - `open` が `locked` で返ったとき、transport が serial 1 本だけの probe なら、その場で force する(排他で開けた時点で、前の持ち主は死んでいる)。
   - それ以外の probe では、`lock_state` の残り時間を待つ(上限 5 秒)。持ち主が lease を延ばし続けていれば、exit 13(`device-busy`)にする。force は `--force-lock` を明示したときだけ。
@@ -187,7 +188,7 @@ binary の扱い:
 
 - serial port の path が WCH-Link のものでなければ、その port を開いて confirm を送る(利用者がその port を選んだので、開いてよい)。
   - `OEP!` が返らなければ「OEP の probe ではない」として exit 10。
-  - OEP の probe(§3.3 の `is_oep_device`。今は iProduct の名前、PID を取ったら PID)の port なら、upload は常に断る(`oep://` を選ぶよう案内する)。
+  - OEP の probe(§3.3 の `is_oep_device`。iProduct の名前)の port なら、upload は常に断る(`oep://` を選ぶよう案内する)。
 - **スロットの選び方**(WF §3.4):
   - 板の家系(`--chip`、monitor では `chip` の設定)に合うスロットが 1 つなら、そこを使う。
   - 接続済みのスロットの chip は、describe のスロットの状態から読む。未接続のスロットは、止めない attach で読む。
@@ -263,7 +264,7 @@ binary の扱い:
 ## 10. spec との対応
 
 - 設計のときに仮置きした 13 項目は、すべて oep-spec 89879bc に入った。台帳は `cargo xtask oep-gen` で取り直してある。
-  - serial port の COBS と前後の 0x00(core §3.1)、serial port の共用(§3.4)、経路の一覧(describe 0x49、enum transport_kind)、専用 PID の宣言(0x4A `oep_pid`)
+  - serial port の COBS と前後の 0x00(core §3.1)、serial port の共用(§3.4)、経路の一覧(describe 0x49、enum transport_kind)、discovery に出る形の宣言(0x4A `discoverable`)
   - スロット・接続の数・接続の一覧(wire の describe `max_connections`、op `connections`)
   - bind の mode(probe.config の item slot / bind)
   - 持ち主の名前(open の TLV `owner`、lock_state と locked の payload に返る)
@@ -273,7 +274,8 @@ binary の扱い:
   - `min_max_frame` = 64
   - riscv-dm の `max_length` は byte 数。read_block はバスを通して読む(probe は写しを持たない)
   - ブローカーは host の実装で spec の外
-- spec の外に残るもの: 専用 PID の番号の取得(OEP 側の作業)。
+
+- **ゼロベース見直しへの追従(2026-10-01、oep-spec 37278b6、fake = oep-client-python 7b56c15)**: TLV の長い形(`tag 0xFF len(u16)`)、confirm の boot_id、read の応答の len(console / fixture UART)、マークの time_ns(22 byte)、dmi の nvals(u16)、run の nvals(u8)と stopped 2、attach の一本化(method 0 / 1、max_speed は必須なので ch32rv は常に送る(呼び出し側の値、無ければ線の describe の max_clock_hz、無ければ 1 MHz)、応答の flags は `attach_flags`、bit3 で TLV 0x11 dpc)、scan の skip は TLV 0x02、probe.config のスロットは retry_ms(u32)と max_speed_hz(固定部 19 byte)、スロットの状態は `state` op(0x06)、`discoverable`(0x4A)、資源番号は 1 つの空間(WCH のブローカーは connection 1、ストリームは 2 から)。probe は op の外に target の状態を持ち越さないので、ch32rv の OEP の resume は dpc を読むたびに DATA0 / DATA1 を戻す。
 
 ## 11. 決まったこと
 

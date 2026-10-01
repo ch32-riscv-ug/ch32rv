@@ -47,6 +47,8 @@ pub struct Attached {
     pub speed_hz: u32,
     /// DMI 0x7F of a WCH debug module (target_id scheme 1), when the probe read one.
     pub wch_chip_id: Option<u32>,
+    /// The hart is halted (flags bit3), and its dpc (TLV 0x11).
+    pub halted: Option<u32>,
 }
 
 /// Attach options.
@@ -54,7 +56,8 @@ pub struct Attached {
 pub struct AttachOptions {
     /// Halt the hart (method 1) instead of leaving it running.
     pub halt: bool,
-    /// Never faster than this (sent critical).
+    /// Never faster than this (sent critical, always: the probe requires one). `None`: the
+    /// wire's declared `max_clock_hz`, else 1 MHz.
     pub max_speed_hz: Option<u32>,
     /// The (swdio, swclk) pair; swclk 0xFFFF on one wire (sent critical).
     pub pins: Option<(u16, u16)>,
@@ -66,15 +69,27 @@ pub struct AttachOptions {
 /// `attach` on `kind`.
 pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attached, OepError> {
     let func = p.interface(kind.interface())?.func;
-    let mut pl = vec![u8::from(o.halt)];
-    if let Some(hz) = o.max_speed_hz {
-        put_tlv(
-            &mut pl,
-            wire::tlvs::attach::MAX_SPEED,
-            true,
-            &hz.to_le_bytes(),
-        );
-    }
+    let method = if o.halt {
+        wire::enums::attach_method::HALT
+    } else {
+        wire::enums::attach_method::RUN
+    };
+    let mut pl = vec![method];
+    // Required on attach (oep-if-debug §1); without the caller's, the wire's own ceiling.
+    let hz = match o.max_speed_hz {
+        Some(hz) => hz,
+        None => p
+            .describe(func)?
+            .iter()
+            .find(|t| t.tag == describe_common::MAX_CLOCK_HZ && t.value.len() == 4)
+            .map_or(1_000_000, |t| le32(&t.value, 0)),
+    };
+    put_tlv(
+        &mut pl,
+        wire::tlvs::attach::MAX_SPEED,
+        true,
+        &hz.to_le_bytes(),
+    );
     if let Some((d, c)) = o.pins {
         let mut v = d.to_le_bytes().to_vec();
         v.extend_from_slice(&c.to_le_bytes());
@@ -103,13 +118,21 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
             (t.value.len() == 5 && t.value[0] == wire::enums::target_id_scheme::WCH_DMI_7F)
                 .then(|| le32(&t.value, 1))
         });
+    // connection(u16), id(u32: DMSTATUS), flags(u8: attach_flags), speed_hz(u32), [TLV]
+    use wire::enums::attach_flags as f;
+    let halted = (a[6] & f::HALTED != 0).then(|| {
+        tail.iter()
+            .find(|t| t.tag == wire::tlvs::attach_answer::DPC && t.value.len() >= 4)
+            .map_or(0, |t| le32(&t.value, 0))
+    });
     Ok(Attached {
         connection: le16(&a, 0),
         dmstatus: le32(&a, 2),
-        acked_havereset: a[6] & 1 != 0,
-        existing: a[6] & 2 != 0,
+        acked_havereset: a[6] & f::HAVERESET_ACKED != 0,
+        existing: a[6] & f::EXISTING != 0,
         speed_hz: le32(&a, 7),
         wch_chip_id,
+        halted,
     })
 }
 
@@ -221,6 +244,8 @@ pub struct OepDtm<'a> {
     func: u16,
     connection: u16,
     max_words: usize,
+    /// The probe's `max_op_ms`: a run's timeout stays at or under it.
+    max_op_ms: u32,
 }
 
 /// en: The most words one block request may carry: what fits `max_frame` (session header 10,
@@ -243,11 +268,13 @@ impl<'a> OepDtm<'a> {
             .find(|t| t.tag == describe_common::MAX_LENGTH && t.value.len() == 2)
             .map(|t| le16(&t.value, 0));
         let max_words = block_words(probe.limits().max_frame, max_length);
+        let max_op_ms = probe.max_op_ms()?;
         Ok(OepDtm {
             probe,
             func,
             connection,
             max_words,
+            max_op_ms,
         })
     }
 
@@ -259,20 +286,21 @@ impl<'a> OepDtm<'a> {
     /// an `OepDtm` per poll can skip the describe round trip with [`Self::from_parts`].
     /// ja: [`Self::new`] が調べた値(riscv-dm の fn と block の大きさ)。poll ごとに作る呼び出し側は
     /// [`Self::from_parts`] で describe の往復を省ける。
-    pub fn parts(&self) -> (u16, usize) {
-        (self.func, self.max_words)
+    pub fn parts(&self) -> (u16, usize, u32) {
+        (self.func, self.max_words, self.max_op_ms)
     }
 
     pub fn from_parts(
         probe: &'a mut Probe,
         connection: u16,
-        (func, max_words): (u16, usize),
+        (func, max_words, max_op_ms): (u16, usize, u32),
     ) -> Self {
         OepDtm {
             probe,
             func,
             connection,
             max_words,
+            max_op_ms,
         }
     }
 
@@ -316,10 +344,15 @@ impl<'a> OepDtm<'a> {
         }
         let r = self.call(dm::op::DMI, pl)?;
         let a = completed(r)?;
-        if a.len() < 3 {
+        // done(u16), status(u8), nvals(u16), nvals x value(u32), [TLV]
+        if a.len() < 5 {
             return Err(short("dmi"));
         }
-        let values = a[3..]
+        let nvals = usize::from(le16(&a, 3));
+        let Some(vals) = a.get(5..5 + 4 * nvals) else {
+            return Err(short("dmi"));
+        };
+        let values = vals
             .as_chunks::<4>()
             .0
             .iter()
@@ -330,6 +363,29 @@ impl<'a> OepDtm<'a> {
             status: a[2],
             values,
         })
+    }
+
+    /// dpc through the Debug Module, with DATA1 / DATA0 read first and written back after.
+    fn dpc_keeping_mailbox(&mut self) -> Result<u32, DmiError> {
+        const DATA0: u8 = 0x04;
+        const DATA1: u8 = 0x05;
+        let kept =
+            self.dmi_batch(&[DmiStep::Read { addr: DATA1 }, DmiStep::Read { addr: DATA0 }])?;
+        let dpc = ch32rv_dmi::DebugModule::new(self).read_reg(ch32rv_dmi::RegName::Pc);
+        if let [d1, d0] = kept.values[..] {
+            // The order the target writes them in (dmseq: DATA1 before DATA0).
+            self.dmi_batch(&[
+                DmiStep::Write {
+                    addr: DATA1,
+                    value: d1,
+                },
+                DmiStep::Write {
+                    addr: DATA0,
+                    value: d0,
+                },
+            ])?;
+        }
+        dpc
     }
 
     /// A status-only answer (halt / resume): ok, or the status as the error.
@@ -346,13 +402,15 @@ impl<'a> OepDtm<'a> {
 
 impl DtmAccess for OepDtm<'_> {
     /// en: The probe's own resume (with the CH32 retry rule): it is what lets the probe poll its
-    /// console again after the host drove the debug module through raw DMI.
-    /// ja: probe 自身の resume(CH32 の出し直しの規則つき)。raw DMI の後に probe が console の poll に
-    /// 戻るのはこれによる。
+    /// console again after the host drove the debug module through raw DMI. The rule reads dpc
+    /// with an abstract command, which goes through DATA0; the probe gives nothing back on its
+    /// resume (oep-if-debug §4: the host restores what it used), so the target's DATA0 / DATA1 -
+    /// a dmseq frame waiting there - are put back around each read.
+    /// ja: probe 自身の resume(CH32 の出し直しの規則つき)。規則の dpc の読みは DATA0 を通る abstract
+    /// command で、probe は resume で何も戻さない(host が使ったものは host が戻す)。だから読むたびに
+    /// target の DATA0 / DATA1(dmseq のフレームが待っている)を戻す。
     fn resume_hart(&mut self) -> Option<Result<(), DmiError>> {
-        let r = ch32rv_dmi::resume_ch32(self, |t| {
-            ch32rv_dmi::DebugModule::new(t).read_reg(ch32rv_dmi::RegName::Pc)
-        });
+        let r = ch32rv_dmi::resume_ch32(self, |t| t.dpc_keeping_mailbox());
         Some(match r {
             Ok(true) => Ok(()),
             Ok(false) => Err(DmiError::OperationFailed("hart did not resume".to_owned())),
@@ -483,11 +541,11 @@ impl TargetAccess for OepDtm<'_> {
     ) -> Result<RunResult, DmiError> {
         let mut pl = self.body();
         pl.extend_from_slice(&pc.to_le_bytes());
-        // Always finite: the probe refuses "no limit".
+        // 1..=max_op_ms (core §7.5): 0 is malformed and more is unsupported.
         let ms = u32::try_from(timeout.as_millis())
-            .unwrap_or(u32::MAX - 1)
-            .max(1);
-        pl.extend_from_slice(&ms.min(u32::MAX - 1).to_le_bytes());
+            .unwrap_or(u32::MAX)
+            .clamp(1, self.max_op_ms.max(1));
+        pl.extend_from_slice(&ms.to_le_bytes());
         pl.push(regs.len() as u8);
         for (r, v) in regs {
             pl.extend_from_slice(&r.to_le_bytes());
@@ -498,22 +556,27 @@ impl TargetAccess for OepDtm<'_> {
             pl.extend_from_slice(&r.to_le_bytes());
         }
         let a = completed(self.call(dm::op::RUN, pl)?)?;
-        if a.len() == 1 {
-            // Could not halt the hart at all: status alone.
-            return Err(failed("run", a[0]));
-        }
-        if a.len() < 10 + 4 * outs.len() {
+        // status, stopped (run_stopped), dpc, elapsed_us, nvals(u8), nvals x value, [TLV]
+        if a.len() < 11 {
             return Err(short("run"));
         }
         let s = a[0];
+        if a[1] == dm::enums::run_stopped::NOT_HALTED {
+            // Could not halt the hart after the timeout: dpc and values mean nothing.
+            return Err(failed("run", s));
+        }
         if s != status::OK && s != status::TIMEOUT {
             return Err(failed("run", s));
         }
+        let nvals = usize::from(a[10]);
+        if nvals < outs.len() || a.len() < 11 + 4 * nvals {
+            return Err(short("run"));
+        }
         Ok(RunResult {
-            stopped: a[1] != 0,
+            stopped: a[1] == dm::enums::run_stopped::STOPPED,
             dpc: le32(&a, 2),
             elapsed_us: le32(&a, 6),
-            outs: (0..outs.len()).map(|i| le32(&a, 10 + 4 * i)).collect(),
+            outs: (0..outs.len()).map(|i| le32(&a, 11 + 4 * i)).collect(),
         })
     }
 

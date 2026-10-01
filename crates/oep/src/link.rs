@@ -69,6 +69,8 @@ pub struct Limits {
     pub window: u32,
     /// The most requests that may be outstanding.
     pub max_inflight: u8,
+    /// Changes on every boot of the probe (core §5.2): a host without the lock learns a restart.
+    pub boot_id: u32,
 }
 
 /// One request to make.
@@ -194,7 +196,8 @@ impl Link {
                 r.resolution
             )));
         }
-        if p.len() < 13 || &p[..4] != constants::CONFIRM_RESULT_MAGIC.as_bytes() {
+        // "OEP!", revision, flags, max_frame(u16), window(u32), max_inflight, boot_id(u32), [TLV]
+        if p.len() < 17 || &p[..4] != constants::CONFIRM_RESULT_MAGIC.as_bytes() {
             return Err(LinkError::NotOep(
                 "confirm answer is not \"OEP!\"".to_owned(),
             ));
@@ -204,6 +207,7 @@ impl Link {
             max_frame: u16::from_le_bytes([p[6], p[7]]),
             window: u32::from_le_bytes([p[8], p[9], p[10], p[11]]),
             max_inflight: p[12].max(1),
+            boot_id: u32::from_le_bytes([p[13], p[14], p[15], p[16]]),
         };
         if limits.revision < 1 {
             return Err(LinkError::NotOep(format!(
