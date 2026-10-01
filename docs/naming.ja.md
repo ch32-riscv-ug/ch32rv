@@ -20,7 +20,7 @@
 1. **crates.io の空きを API で再確認**: `ch32rv`・`wch-link`・`ch32rv-cli` いずれも 404(未登録)。`wlink`・`wchisp` は既存 crate(別物)。
 2. **射程が広がった**: 本仕様は probe 経路に加えて factory ISP(`isp`)と custom bootloader(`boot`)経路を含む([cli.ja.md](cli.ja.md))。probe を意味する語(`link` 等)を含む名前は**多経路化でさらに名前負けする**ようになった。§8 で `rvlink` を退けた判断は強まった。
 3. **CH32F(Arm)を名乗らない**条件は変わらない(`ch32tool` / `ch32ctl` 不採用の理由)。ISP 経路は CH32F103 も物理的には書けるが、本 tool の target DB は RISC-V 系のみを持つ(non-goal 維持)。
-4. **org との整合**: ArduinoCore-CH32 の FQBN vendor は `ch32-riscv-ug`、本 repo の LICENSE も `CH32 RISC-V User Group`。`ch32-riscv-ug/ch32rv` は org 名が「CH32 RISC-V」を、repo 名が product を表す構成で一貫する。
+4. **org との整合**: ArduinoCore-CH32RV の FQBN vendor は `ch32-riscv-ug`、本 repo の LICENSE も `CH32 RISC-V User Group`。`ch32-riscv-ug/ch32rv` は org 名が「CH32 RISC-V」を、repo 名が product を表す構成で一貫する。
 
 ## 3. 結論
 

@@ -16,7 +16,7 @@
 | WCH OpenOCD | `../tools/MRS_Toolchain_Linux_X64_V240` binary | `wch-riscv.cfg` と埋め込み文字列から vendor command 抽出 |
 | wchisp | GitHub main(2026-04 時点最終 push) | README + `src/main.rs` の clap 定義 |
 | WCH-LinkUtility | WCH-Link manual V2.4(既存調査の要約) | [host app 調査 §2](../../note/research/wch-linke-host-apps.ja.md) |
-| Arduino 統合要件 | `../ArduinoCore-CH32`(platform.txt、ADR-0008/0014、upload-and-fixture) | 読解 |
+| Arduino 統合要件 | `../ArduinoCore-CH32RV`(platform.txt、ADR-0008/0014、upload-and-fixture) | 読解 |
 | target DB 源泉 | `../ch32-device-data`、`../ch32-data` | 構造・カバレッジの照合 |
 | Rust エコシステム | crates.io API・GitHub(2026-09-01) | 版・保守状況・名前空き確認 |
 
@@ -228,6 +228,6 @@ flash/erase/unbrick/NRST option の参考実装。`flash` / `erase` / `recover` 
 - [WCH-LinkE host application 調査](../../note/research/wch-linke-host-apps.ja.md)
 - [全経路調査](../../note/research/programming-tools-and-probes.ja.md)
 - [probe・USB 経路調査](../../note/research/programming-probes-and-usb-paths.ja.md)
-- `../../ArduinoCore-CH32/docs/upload-and-fixture.ja.md`、`docs/adr/0008`、`docs/adr/0014`
+- `../../ArduinoCore-CH32RV/docs/upload-and-fixture.ja.md`、`docs/adr/0008`、`docs/adr/0014`
 - `../../ch32-device-data/index/README.md`(consumer contract)、`../../ch32-data/docs/device-ids.md`
 - [wlink](https://github.com/ch32-rs/wlink)、[wchisp](https://github.com/ch32-rs/wchisp)、[ch32fun/minichlink](https://github.com/cnlohr/ch32fun/tree/master/minichlink)、[probe-rs](https://github.com/probe-rs/probe-rs)、[wlink-iap](https://github.com/cjacker/wlink-iap)

@@ -1,4 +1,4 @@
-//! en: The per-probe broker (docs/oep-host.ja.md §7.2, ArduinoCore-CH32 oep-workflow §7.2). One
+//! en: The per-probe broker (docs/oep-host.ja.md §7.2, ArduinoCore-CH32RV oep-workflow §7.2). One
 //! detached process per probe, parented by no one, holds the probe's transport and its one OEP
 //! session; every ch32rv command that uses the probe (flash, monitor, gdb, one-shot commands) and
 //! pytest's `oep_host` is a client of it over 127.0.0.1 TCP, speaking OEP (`length(u16)

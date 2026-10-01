@@ -1,7 +1,7 @@
 # v1 凍結前の契約の決定(ch32rv)
 
 - 日付: 2026-10-01
-- 発端: ArduinoCore-CH32 の洗い出し(凍結前に破壊的変更が要りそうな所、13 項目)
+- 発端: ArduinoCore-CH32RV の洗い出し(凍結前に破壊的変更が要りそうな所、13 項目)
 - 方針: 凍結までは破壊的変更をし、関係するツールがまとめて一度に追従する。過去との互換は持たない(ユーザーの方針、2026-09-30)。
 - 決め方: 1・2・6・8 の中の 4 点はユーザーが決めた。ほかは ch32rv の担当として決め、この文書を契約の元にする。
 - 実装: この文書の順に入れる。入れたものには commit を書く。契約の版は **"3" → "4"** に上げる(§7)。
@@ -17,8 +17,8 @@
   - family / series を指定したら family で照合する。SKU を指定したら、その SKU の chip id と照合する(DB に chip id が無い SKU は family で照合し、warning を出す)。
   - CLI の `--chip` と monitor の `chip` 設定は同じ照合を使う(monitor でも大小無視、series を受ける)。
   - 空の `--chip` は usage の誤り(exit 2)。DB に無い名前は今までどおり exit 20。2026-10-01 からは probe を開く前に止まる(bench に触らない)。
-  - **`--chip auto`**(大小無視、2026-10-01 追加、ArduinoCore-CH32 の依頼): 「`--chip` 無し」と同じ正規の値。recipe は固定の 1 行で、値が空でも引数を消せないために足した。ただし `auto` はつながっている chip を見つけてそこに書くので、**upload の recipe には使わない**(ArduinoCore-CH32 が「[compile only]」の板で試し、Generic CH32V205 の image が V203 に書けて exit 0 になった。2026-10-01)。自動判定での失敗の形: pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。
-- **追従**: platform は空の値を渡さない。板ごとに、ch32rv が知っている SKU、無ければ family、ch32rv に名前の無い series の板にはその series 名を渡す(ArduinoCore-CH32 f131155)。DB に無い series は `target-not-in-db`(exit 20)で書く前に止まる。`auto` は monitor の `chip` 設定の既定(板を決めずに開く)で使い、upload には使わない。文書の「空は 20」は「空は 2」に直す。
+  - **`--chip auto`**(大小無視、2026-10-01 追加、ArduinoCore-CH32RV の依頼): 「`--chip` 無し」と同じ正規の値。recipe は固定の 1 行で、値が空でも引数を消せないために足した。ただし `auto` はつながっている chip を見つけてそこに書くので、**upload の recipe には使わない**(ArduinoCore-CH32RV が「[compile only]」の板で試し、Generic CH32V205 の image が V203 に書けて exit 0 になった。2026-10-01)。自動判定での失敗の形: pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。
+- **追従**: platform は空の値を渡さない。板ごとに、ch32rv が知っている SKU、無ければ family、ch32rv に名前の無い series の板にはその series 名を渡す(ArduinoCore-CH32RV f131155)。DB に無い series は `target-not-in-db`(exit 20)で書く前に止まる。`auto` は monitor の `chip` 設定の既定(板を決めずに開く)で使い、upload には使わない。文書の「空は 20」は「空は 2」に直す。
 
 ## 2. port の scheme と ID
 

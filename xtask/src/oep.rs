@@ -318,12 +318,20 @@ pub fn check(spec: &Path, source: Source) -> Result<String, String> {
 pub const LOADER_SRC: &str = "crates/flash/loader/ch32_loader.S";
 pub const LOADER_BIN: &str = "crates/flash/loader/ch32_loader.bin";
 
-/// The toolchain's bin directory: $CH32_GCC_BIN, else ArduinoCore-CH32's vendored xpack gcc.
+/// The toolchain's bin directory: $CH32_GCC_BIN, else ArduinoCore-CH32RV's vendored xpack gcc.
 fn gcc_bin() -> Result<std::path::PathBuf, String> {
     if let Some(p) = std::env::var_os("CH32_GCC_BIN") {
         return Ok(p.into());
     }
-    let tools = Path::new("../ArduinoCore-CH32/.tools/xpack-riscv-none-elf-gcc");
+    // The core's checkout beside this one: its name since 2026-10-01, else the one before.
+    let tools = ["../ArduinoCore-CH32RV", "../ArduinoCore-CH32"]
+        .iter()
+        .map(|d| Path::new(d).join(".tools/xpack-riscv-none-elf-gcc"))
+        .find(|p| p.is_dir())
+        .unwrap_or_else(|| {
+            Path::new("../ArduinoCore-CH32RV/.tools/xpack-riscv-none-elf-gcc").into()
+        });
+    let tools = tools.as_path();
     let mut vers: Vec<_> = std::fs::read_dir(tools)
         .map_err(|e| format!("{tools:?}: {e} (set CH32_GCC_BIN to a riscv-none-elf-gcc bin dir)"))?
         .flatten()

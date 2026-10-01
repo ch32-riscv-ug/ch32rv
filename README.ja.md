@@ -10,7 +10,7 @@ probe-rs / wlink / minichlink / WCH OpenOCD / WCH-LinkUtility / wchisp などに
 書き込み、verify/read/write、erase、復旧、option byte、run 制御 + GDB server、runtime monitor、probe 管理、
 内蔵デバイス DB、Arduino IDE 統合プロトコル。
 
-> **β版。** `0.x` は下流プロジェクト(例: ArduinoCore-CH32)が統合するためのβで、`1.0` の正式リリースまでに CLI/ライブラリ API は変わりうる。
+> **β版。** `0.x` は下流プロジェクト(例: ArduinoCore-CH32RV)が統合するためのβで、`1.0` の正式リリースまでに CLI/ライブラリ API は変わりうる。
 >
 > **検証範囲。** 7台ベンチ(CH32V003 / V00x(V006) / V103 / V203 / V307 / X035 / L103)で end-to-end 検証済み。
 > V00x 系は WCH の flash loader stub が存在しないため、target 側の FLASH controller を debug 経由で

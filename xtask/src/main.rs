@@ -47,7 +47,7 @@ fn main() -> ExitCode {
         Some("db-check") => run(db_check(&data)),
         _ => {
             eprintln!(
-                "usage: cargo xtask <task> [DATA_DIR]\n\ntasks:\n  db-gen     generate crates/target/generated/ from ch32-device-data\n  db-check   verify the committed generated files match a fresh generation (CI)\n  oep-gen    generate crates/oep/src/registry.rs from oep-spec's committed HEAD (DIR default: $OEP_SPEC or\n             ../../dev_oep/oep-spec; --worktree reads uncommitted edits)\n  oep-check  verify the committed registry.rs matches the registry (CI)\n  loader-gen   assemble crates/flash/loader/ch32_loader.S ($CH32_GCC_BIN or ArduinoCore-CH32's xpack gcc)\n  loader-check verify the committed loader binary matches its source\n\n(DATA_DIR default: $CH32_DEVICE_DATA or ../ch32-device-data)"
+                "usage: cargo xtask <task> [DATA_DIR]\n\ntasks:\n  db-gen     generate crates/target/generated/ from ch32-device-data\n  db-check   verify the committed generated files match a fresh generation (CI)\n  oep-gen    generate crates/oep/src/registry.rs from oep-spec's committed HEAD (DIR default: $OEP_SPEC or\n             ../../dev_oep/oep-spec; --worktree reads uncommitted edits)\n  oep-check  verify the committed registry.rs matches the registry (CI)\n  loader-gen   assemble crates/flash/loader/ch32_loader.S ($CH32_GCC_BIN or ArduinoCore-CH32RV's xpack gcc)\n  loader-check verify the committed loader binary matches its source\n\n(DATA_DIR default: $CH32_DEVICE_DATA or ../ch32-device-data)"
             );
             ExitCode::from(2)
         }

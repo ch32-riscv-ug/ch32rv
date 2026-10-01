@@ -12,7 +12,7 @@ ch32rv は接続した target を chip ID から family/SKU 判定する。判�
 現状の情報源には次の穴がある。
 
 - `ch32-device-data` は chip ID をほぼ持っていない(CHIPID の番地が `evidence/memory_map.csv` に CH32L103 / CH32V205 の 2 family 分あるのみで、**値は 0 件**)。
-- `ch32-rs/ch32-data` は `data/chips/*.yaml` に package 単位の `device_id`(例: CH32V003F4P6 → `0x00300500`)と、`docs/device-ids.md` にビット割り・読み出し番地・取得手順を持つ。**ただし V205 / V407 / V467 / X305 / X315 / M030 / M103 の 7 series が欠落**しており、これは ArduinoCore-CH32 の `[compile only]`(書き込み経路が無い)7 board と同じ集合。
+- `ch32-rs/ch32-data` は `data/chips/*.yaml` に package 単位の `device_id`(例: CH32V003F4P6 → `0x00300500`)と、`docs/device-ids.md` にビット割り・読み出し番地・取得手順を持つ。**ただし V205 / V407 / V467 / X305 / X315 / M030 / M103 の 7 series が欠落**しており、これは ArduinoCore-CH32RV の `[compile only]`(書き込み経路が無い)7 board と同じ集合。
 
 ## 依頼内容
 
@@ -58,4 +58,4 @@ ch32rv は納品まで暫定 overlay(`ch32rv-target/provisional/device_ids`)で�
 - `ch32-data/docs/device-ids.md`(ビット割り: [31:20] family / [19:16] package / [15:8] series・process / [7:4] silicon rev = don't-care / [3:0] sub-family)
 - `ch32-data/data/chips/*.yaml`(既存 device_id 値)
 - probe-rs `targets/CH32*_Series.yaml` の `chip_detection: !WchLink` ブロック(mask と変換表の実例)
-- ArduinoCore-CH32 `boards.txt` の `[compile only]` 7 board(価値の直結先)
+- ArduinoCore-CH32RV `boards.txt` の `[compile only]` 7 board(価値の直結先)

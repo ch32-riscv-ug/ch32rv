@@ -12,7 +12,7 @@ ch32rv が必要とするデータは ch32rv 内部で作らず、**資料の持
 |---|---|
 | `ch32-device-data` | device データ(chip ID・geometry・option byte・debug 配線など、RM / datasheet / EVT 由来の表) |
 | `wch-protocols` | protocol と実装横断の調査資料(bootloader survey、stub の目録、capture)。**他 repo をまたぐ要件の調整もここで行う** |
-| `ArduinoCore-CH32` ほか consumer | 相手が発議した設計に対する、ch32rv 側の事実提供と論点(依頼というより**材料**) |
+| `ArduinoCore-CH32RV` ほか consumer | 相手が発議した設計に対する、ch32rv 側の事実提供と論点(依頼というより**材料**) |
 
 **依頼書はこの repo に置く**。依頼先のリポジトリには、先方から依頼が無い限り書き込まない。
 
@@ -34,6 +34,6 @@ ch32rv が必要とするデータは ch32rv 内部で作らず、**資料の持
 | [0004](0004-flash-program-method.ja.md) | ch32-device-data | main flash の消去/書き込み**手順**の family 別分類 | **納品受け入れ・消費済** | 中 |
 | — | ch32-device-data | **flash 消去後の読み出し値**(系統 A `0xFFFFFFFF` / B `0xe339e339`) | `wch-protocols` から依頼(R-31)→ **納品受け入れ・消費済**(V103 の値は[こちらの実測](measured/erased-read-2026-09-06.md)が DB の basis に採用された) | 中 |
 | [0005](0005-flash-stub-inventory.ja.md) | wch-protocols | WCH-Link flash stub(wlink 由来 5 本)の目録化 | **納品受け入れ・消費済**(重複 blob 1 本を削除。逆質問 3 件に回答済) | 低 |
-| [0006](0006-harness-integration.ja.md) | wch-protocols / ArduinoCore-CH32 | 自作 probe(DUT harness)との連携 — ch32rv 側の事実と論点 | **要件出し中**(結論は出さない。調整はプロトコル repo) | — |
+| [0006](0006-harness-integration.ja.md) | wch-protocols / ArduinoCore-CH32RV | 自作 probe(DUT harness)との連携 — ch32rv 側の事実と論点 | **要件出し中**(結論は出さない。調整はプロトコル repo) | — |
 
 将来の依頼候補(まだ依頼書にしない): WCH-Link firmware の hash→版対応の継続拡充(既存 `evidence/link_firmware.csv` の新版追従)、UF2 family ID / DFU VID:PID 等の bootloader 識別子表(P2 の `boot` 実装時)。

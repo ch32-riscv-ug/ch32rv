@@ -11,7 +11,7 @@ probe-rs, wlink, minichlink, WCH OpenOCD, WCH-LinkUtility, and wchisp into one t
 verify/read/write, erase, recovery, option bytes, run-control + a GDB server, runtime monitors, probe
 management, a built-in device database, and the Arduino IDE integration protocols.
 
-> **Beta.** The `0.x` line is a beta for downstream projects (e.g. ArduinoCore-CH32) to integrate
+> **Beta.** The `0.x` line is a beta for downstream projects (e.g. ArduinoCore-CH32RV) to integrate
 > against; the CLI and library APIs may still change before the `1.0` formal release.
 >
 > **Verified scope.** Exercised end-to-end on a seven-board bench — CH32V003, V00x (V006), V103,

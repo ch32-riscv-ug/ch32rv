@@ -151,4 +151,4 @@ nusb が WebUSB(wasm)backend を持つため、**ブラウザ版 flasher(wch-web
 - [原設計案 §7](../../note/research/new-programming-tool-design.ja.md)
 - [nusb](https://github.com/kevinmehall/nusb)、[gdbstub](https://github.com/daniel5151/gdbstub)、[cargo-dist](https://github.com/axodotdev/cargo-dist)
 - `../../ch32-device-data/index/README.md`(consumer contract)、`../../ch32-data/docs/device-ids.md`
-- `../../ArduinoCore-CH32/docs/adr/0011`、`0014`(配布枠組み)
+- `../../ArduinoCore-CH32RV/docs/adr/0011`、`0014`(配布枠組み)

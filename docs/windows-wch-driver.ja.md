@@ -4,7 +4,7 @@
   `ch32rv-usb` へのフォールバック統合(§4.2)→ **全 5 target で backup / chip erase / flash /
   readback verify 成功(§4.3)**。残: 安定後の英語 main + `.ja` twin 化。
 - 対象読者: Windows ネイティブ(Rust 導入済み)で VSCode を開いて続きを実装・検証する人。
-- 目的: **ユーザーが既に入れている WCH 標準ドライバ(`WCHLink_A64`)のまま、Zadig/WinUSB 置換なしで** ch32rv が WCH-Link と通信できる経路を追加する。ArduinoCore-CH32 依頼 B-2 の Windows 対応の核。
+- 目的: **ユーザーが既に入れている WCH 標準ドライバ(`WCHLink_A64`)のまま、Zadig/WinUSB 置換なしで** ch32rv が WCH-Link と通信できる経路を追加する。ArduinoCore-CH32RV 依頼 B-2 の Windows 対応の核。
 
 ## 1. なぜ必要か(WSL 側で実測した事実)
 
@@ -228,4 +228,4 @@ WCH-Link 専用ではなく「**WCH 標準ドライバ(CH375 系 IOCTL)で USB d
 - 事例: cw2/ch32v003fun `experimental/minichlink-wchlinkdll-driver` `minichlink/pgm-wch-linke.c`
 - ch32rv 既存トランスポート: `crates/usb/src/device.rs`(`UsbInterface::{write,read,write_data,read_data}`、EP 0x01/0x81・0x02/0x82)
 - WCH-Link ハンドシェイク: `crates/wchlink/src/probe.rs`(`probe_info`/`attach` の実バイト列)
-- architecture §2(別バックエンド crate 方針)、B-2(`../../ArduinoCore-CH32/docs/ch32rv-requests.ja.md` — ArduinoCore-CH32 repo 側の依頼文書)
+- architecture §2(別バックエンド crate 方針)、B-2(`../../ArduinoCore-CH32RV/docs/ch32rv-requests.ja.md` — ArduinoCore-CH32RV repo 側の依頼文書)

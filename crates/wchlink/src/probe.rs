@@ -281,9 +281,9 @@ pub struct ProbeInfo {
 }
 
 /// en: Known-bad firmware table. Returns the defect description.
-/// Source: measured on ArduinoCore-CH32 (upload-and-fixture); hash mapping lives in
+/// Source: measured on ArduinoCore-CH32RV (upload-and-fixture); hash mapping lives in
 /// ch32-device-data `evidence/link_firmware.csv`.
-/// ja: 既知不良 firmware 表。不良内容を返す。出典は ArduinoCore-CH32 の実測。
+/// ja: 既知不良 firmware 表。不良内容を返す。出典は ArduinoCore-CH32RV の実測。
 /// en: Known-bad firmware: (variant ID, or `None` for every variant, major, minor, why). Matched by
 /// version and variant; there is no hash check (docs/freeze-decisions.ja.md §12). The 2.11 entry
 /// was recorded without the variant it was seen on, so it applies to all.

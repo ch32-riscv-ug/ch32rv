@@ -1,5 +1,5 @@
 //! en: `dmseq` - the sequenced debug-module console (OEP `target.console` framing 2, spec:
-//! `oep-spec/docs/target-console-dmseq.ja.md`, agreed with the ArduinoCore-CH32 side 2026-09-24).
+//! `oep-spec/docs/target-console-dmseq.ja.md`, agreed with the ArduinoCore-CH32RV side 2026-09-24).
 //! It carries the same DATA0/DATA1 mailbox as [`DebugModule::dmdata_poll`]'s framing, but adds a
 //! 1-bit sequence number in each direction and a CRC-8 over every word, which is what lets the
 //! host tell a lost answer from a new frame: without them a dropped answer makes the target's word
@@ -12,7 +12,7 @@
 //! word - so every rule below is unit-tested without a target.
 //!
 //! ja: `dmseq` = 通番付き debug module console(OEP `target.console` framing 2。仕様は
-//! `oep-spec/docs/target-console-dmseq.ja.md`、2026-09-24 に ArduinoCore-CH32 側と合意)。搬送は
+//! `oep-spec/docs/target-console-dmseq.ja.md`、2026-09-24 に ArduinoCore-CH32RV 側と合意)。搬送は
 //! `dmdata` と同じ DATA0/DATA1 mailbox だが、**両方向の 1 bit 通番**と**全 word の CRC-8** が付く。
 //! これにより「答えが落ちた」と「新しいフレーム」を区別できる(通番が無いと、落ちた答えのせいで
 //! target の word を二度読んで重複し、読み戻しで直そうとすると同内容の次フレームと取り違えて

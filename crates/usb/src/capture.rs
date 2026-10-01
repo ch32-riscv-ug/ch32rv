@@ -1,11 +1,11 @@
-//! en: USB transaction capture (docs/cli.ja.md §3.7, ArduinoCore-CH32 request A-3). When the CLI is
+//! en: USB transaction capture (docs/cli.ja.md §3.7, ArduinoCore-CH32RV request A-3). When the CLI is
 //! run with `--capture <file>`, every bulk transfer on the probe (the WCH-Link command channel
 //! 0x01/0x81 and data channel 0x02/0x82), plus custom-bootloader HID feature reports, is appended
 //! to the file as one NDJSON line, so a
 //! protocol problem hit on the bench can be reported as a replay fixture instead of "reproduce it
 //! on real hardware first". The sink is a process-global set once from `main`; `record` is a no-op
 //! until then, so the transfer paths pay nothing when capture is off.
-//! ja: USB transaction capture(cli.ja.md §3.7、ArduinoCore-CH32 依頼 A-3)。`--capture <file>` 時に
+//! ja: USB transaction capture(cli.ja.md §3.7、ArduinoCore-CH32RV 依頼 A-3)。`--capture <file>` 時に
 //! probe の全 bulk 転送(WCH-Link の command 0x01/0x81・data 0x02/0x82)とcustom bootloaderの
 //! HID feature reportをNDJSON 1行ずつ追記する。
 //! ベンチで踏んだ protocol 問題を「実機で再現待ち」でなく replay fixture として報告できる。sink は

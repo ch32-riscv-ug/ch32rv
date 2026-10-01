@@ -89,7 +89,7 @@ ch32rv
 | flag | 値 | 既定 | 説明 |
 |---|---|---|---|
 | `--probe <selector>` | §3.4 | (一意なら自動) | probe の選択。複数一致は exit 14 |
-| `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed)。**実装済(2026-09-02)**: `Session::attach` が chip_id と `--chip` 名を DB family へ解決し、要求名が DB にあり検出 family と不一致なら `target-ambiguous`(23)。**名前は SKU / family / series の完全一致(大小無視)だけ**(2026-10-01、docs/freeze-decisions.ja.md §1。型番の前方一致はやめた)。family / series は family で、SKU はその SKU の device id で照合する(DB に device id の無い SKU は family で)。**空の `--chip` は usage(exit 2)**。**`--chip auto`(大小無視)は「`--chip` 無し」と同じ**(2026-10-01、ArduinoCore-CH32 の依頼。常に `--chip {build.ch32rv_chip}` を渡す recipe が、DB に無い板で自動判定を値として頼めるように。`CH32RV_CHIP` と config の `[defaults] chip` でも同じ)。自動判定での失敗: debug の pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。monitor の `chip` 設定も同じ照合(`auto` が既定)。**DB に無い名前は `target-not-in-db`(exit 20)で停止する**(検証できない名前を受理すると、`--chip` を付けたのに刺さっている別チップへ黙って書くことになるため)。未発売の gap series はここに落ちる。省略すれば従来どおり自動検出 |
+| `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed)。**実装済(2026-09-02)**: `Session::attach` が chip_id と `--chip` 名を DB family へ解決し、要求名が DB にあり検出 family と不一致なら `target-ambiguous`(23)。**名前は SKU / family / series の完全一致(大小無視)だけ**(2026-10-01、docs/freeze-decisions.ja.md §1。型番の前方一致はやめた)。family / series は family で、SKU はその SKU の device id で照合する(DB に device id の無い SKU は family で)。**空の `--chip` は usage(exit 2)**。**`--chip auto`(大小無視)は「`--chip` 無し」と同じ**(2026-10-01、ArduinoCore-CH32RV の依頼。常に `--chip {build.ch32rv_chip}` を渡す recipe が、DB に無い板で自動判定を値として頼めるように。`CH32RV_CHIP` と config の `[defaults] chip` でも同じ)。自動判定での失敗: debug の pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。monitor の `chip` 設定も同じ照合(`auto` が既定)。**DB に無い名前は `target-not-in-db`(exit 20)で停止する**(検証できない名前を受理すると、`--chip` を付けたのに刺さっている別チップへ黙って書くことになるため)。未発売の gap series はここに落ちる。省略すれば従来どおり自動検出 |
 | `--db <FILE>` | `CH32RV_DB` | 内蔵 DB のみ | 内蔵 device DB に CSV overlay を重ねる(列は `generated/skus.csv` と同じ)。**同名 SKU / 同一マスク device_id は overlay が勝つ**(in-tree `provisional/skus.csv` は穴埋め専用で逆)。overlay 行は `provisional: true` + `sku-provisional` warning。読めない/有効行なしは usage(2)。出荷テーブルに無い部品を試す逃げ道 |
 | `--core <n>` | 0.. | 0 | dual-core(H41x)の core 選択。**0 以外は未実装で、exit 24 で断る**(2026-10-01) |
 | `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn(段階の公称値 6000 / 4000 / 400 kHz で判定)。**公称値は線上の速さではない**: WCH-LinkE fw 2.22 + CH32L103 の実測(wch-protocols E163)では high = flash の Program 経路だけ速く(L103 約 2.5 MHz、V203 約 10 MHz)それ以外約 0.89 MHz、medium = 約 0.89 MHz、low = 約 0.47 MHz(V203 も medium / low は同じ)。high と medium の差は flash 書込みの速さだけ(pattern-4k の全体で L103 0.48 s / 0.63 s / 0.87 s、V203 high 0.40 s) |
@@ -151,7 +151,7 @@ chip = "CH32V203C8T6"
   index:<n>             列挙順(非推奨)。--non-interactive では拒否
 ```
 
-- **`port:`(2026-09-29、ArduinoCore-CH32 `docs/oep-workflow.ja.md` §3.2)**: recipe が利用者の選んだ IDE port を問わず `--probe port:{upload.port.address}` を渡せるようにするもの。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial、`hid://` は位置で device を直接指す(`boot hid flash` は `usb:` と `port:hid://` だけを受ける)。どの probe の port でもなければ exit 10。
+- **`port:`(2026-09-29、ArduinoCore-CH32RV `docs/oep-workflow.ja.md` §3.2)**: recipe が利用者の選んだ IDE port を問わず `--probe port:{upload.port.address}` を渡せるようにするもの。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial、`hid://` は位置で device を直接指す(`boot hid flash` は `usb:` と `port:hid://` だけを受ける)。どの probe の port でもなければ exit 10。
 
 - serial を持たない device(ISP mode 等)は `VID:PID:` (空 serial)と topology で選ぶ。
 - 解決結果が 0 台なら exit 10、2 台以上なら exit 14 で候補一覧を出す。
@@ -358,7 +358,7 @@ ch32rv monitor sdi <on|off>
 - **attach は target のクロックを変える(2026-09-25)**: WCH-Link の AttachChip は、**CH32L103 / V20x / V30x / X035 では**クロックを系統ごとの決まった設定に組み直し、**元に戻さない**(L103 / V20x / V30x は PLL の設定へ、X035 は AHB の分周を外して flash の wait を 2 に。L103 / V203 / X035 は線上で、V307 は target 自身に UART で報告させた試験で確認し、L103 / V203 / V307 ではアプリの UART が実際に化けた。**V003 は RCC に触れない**。その他の family は未観測。protocol §7a)。`dmdata` / `dmseq` / `rtt` / `sdi` はどれも attach を通るので、観測中の firmware は **次の reset まで probe のクロックで走る**(UART の baud・タイマ・PWM がずれる。V20x / V30x で HSE + PREDIV / PLL2 を使う firmware は PLL の入力も変わる)。元の値は AttachChip の中で上書きされるので ch32rv は戻せない。monitor は開始時に、**全 target で** warning `attach-reclocks-target` を「クロックが変わっている可能性がある」という形で出す(family ごとの全体像はまだ埋まっておらず、断定すると外れた family で誤りになるため)。**firmware 自身のクロックのまま見たいときは attach のあとに reset する**: `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`(接続 → DMI reset-halt → 流す。firmware は再起動する)か、ボードの reset。attach しないのは `uart` だけ。同じことは `target info` / `read` / `dbg` / `arduino monitor` にも当てはまる(警告は monitor だけが出す)。
 - **rtt の channel**: control block の up[0] / down[0] のみ流す。複数 channel を持つ block は warning `rtt-channels` を出す(選択機能は需要待ち。release-plan.ja.md §5)。
 
-5 つの `--source` は「5 本の並列 port」ではなく、**2 種類の host 機構**に分かれる(ArduinoCore-CH32 の Serial / SerialSDI / SerialDMDATA / SerialRTT ライブラリが target 側の一次仕様)。
+5 つの `--source` は「5 本の並列 port」ではなく、**2 種類の host 機構**に分かれる(ArduinoCore-CH32RV の Serial / SerialSDI / SerialDMDATA / SerialRTT ライブラリが target 側の一次仕様)。
 
 | source | target lib | host が受ける機構 | 対応 probe | 方向 | 備考 |
 |---|---|---|---|---|---|
@@ -485,7 +485,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
   - `wchlink://<serial>`: protocol `wchlink`、properties に serial / vid / pid / mode。Windows で device に ch32rv が開けない driver が付いている Link(usbipd の stub など)は、label を `WCH-Link <serial> (cannot open: driver <name>)` にし、properties に `driver` を足す(2026-09-29。一覧からは消さない)。実機確認(0.12.1 のリリースの zip、Windows): usbipd で WSL に attach 中の LinkE 7 台がすべて `WCH-Link <sn> (cannot open: driver VBoxUSB)`(usbipd-win の stub は `VBoxUSB` の名で見える)。
   - `oep://<probe>/<slot>`(2026-09-29、oep-workflow §3.3): OEP の probe(`is_oep_device` = iProduct が `OEP` で始まる device。専用 PID を取るまで)の登録スロットごとに 1 つ。`<probe>` は USB の serial(= OEP の unit_id、oep-spec v1-freeze #3。serial の無い device だけ位置)、`<slot>` はスロットの name。スロットは lock 無しで読む(その port のブローカーが動いていればブローカー経由、ここでは起動しない。無ければ HID、vendor bulk、CDC の順に短く開く(2026-09-30、oep-workflow §3.3。HID は他の道具と取り合わない)。応答待ちは 0.3 秒)。読めなければ前回の一覧(runtime dir の `<key>.slots.json`)。properties に vid / pid / slot / state / chip(target_id から引いた family)/ port。普通の serial port は開かない。
   - `hid://<topology>`(2026-09-29): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --probe port:hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology。
-- **monitor(2026-09-29 に組み直し、ArduinoCore-CH32 `docs/oep-workflow.ja.md` §6)**: platform.txt の `pluggable_monitor.pattern.<protocol>` に登録し、protocol を `--protocol` で渡す(既定 `serial`)。arduino-cli 1.3.1 は DESCRIBE の `protocol` を port の protocol と照合し、違うと OPEN の前に止まる(ArduinoCore-CH32 の実測)。
+- **monitor(2026-09-29 に組み直し、ArduinoCore-CH32RV `docs/oep-workflow.ja.md` §6)**: platform.txt の `pluggable_monitor.pattern.<protocol>` に登録し、protocol を `--protocol` で渡す(既定 `serial`)。arduino-cli 1.3.1 は DESCRIBE の `protocol` を port の protocol と照合し、違うと OPEN の前に止まる(ArduinoCore-CH32RV の実測)。
   - **DESCRIBE**: キーは `port_description`、列挙の値は `value`(arduino-cli が読むキー。0.10.1 までの `port_descriptor` / `values` は arduino-cli に読まれなかった)。設定は `source` / `baudrate` / `dtr` / `rts` / `chip`。
     - `source`(2026-10-01 に凍結する表、docs/freeze-decisions.ja.md §3。先頭が既定):
 
@@ -525,7 +525,7 @@ ch32rv broker serve --probe <sel>               ブローカー本体(利用者�
 
 ## 5. 呼び出し例
 
-Arduino recipe(platform.txt、ArduinoCore-CH32 の upload)。port は discovery の address を `--probe port:` で渡し、ch32rv が自分で解く(`wchlink://` / `oep://` / serial port)。`{build.ch32rv_chip}` は板ごとに SKU か family、ch32rv に名前の無い series の板は series 名(DB に無ければ exit 20 で書く前に止まる)。`auto` は使わない(つながっている別の chip に書いてしまう。docs/freeze-decisions.ja.md §1):
+Arduino recipe(platform.txt、ArduinoCore-CH32RV の upload)。port は discovery の address を `--probe port:` で渡し、ch32rv が自分で解く(`wchlink://` / `oep://` / serial port)。`{build.ch32rv_chip}` は板ごとに SKU か family、ch32rv に名前の無い series の板は series 名(DB に無ければ exit 20 で書く前に止まる)。`auto` は使わない(つながっている別の chip に書いてしまう。docs/freeze-decisions.ja.md §1):
 
 ```text
 "{path}/{cmd}" flash "{build.path}/{build.project_name}.elf" --format elf --chip {build.ch32rv_chip} --reset run --confirm-run --non-interactive --progress none {upload.verbose} --probe "port:{upload.port.address}"
@@ -559,5 +559,5 @@ ch32rv doctor                             # 動かない時の一手目
 
 - [requirements.ja.md](requirements.ja.md)(吸収マップと根拠)
 - [原設計案 §4・§6](../../note/research/new-programming-tool-design.ja.md)
-- `../../ArduinoCore-CH32/platform.txt`(recipe 制約の現物)
+- `../../ArduinoCore-CH32RV/platform.txt`(recipe 制約の現物)
 - [Arduino Pluggable Discovery / Monitor specification](https://arduino.github.io/arduino-cli/latest/pluggable-discovery-specification/)
