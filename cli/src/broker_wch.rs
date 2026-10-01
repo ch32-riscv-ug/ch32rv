@@ -78,6 +78,17 @@ pub(crate) struct WchUpstream {
     boot_id: u32,
 }
 
+/// The riscv-dm `max_length` this broker declares (bytes): a block of more is unsupported.
+const BLOCK_MAX_LENGTH: usize = 1024;
+
+/// `rejected unsupported` for a fixed-part value (payload `tag 0x00`, oep-core §4.3).
+fn rejected_unsupported_fixed() -> Reply {
+    Reply {
+        resolution: Resolution::Rejected(reject_reasons::UNSUPPORTED),
+        payload: vec![0x00],
+    }
+}
+
 fn ok(payload: Vec<u8>) -> Reply {
     Reply {
         resolution: Resolution::Completed(outcomes::SUCCESS),
@@ -233,7 +244,7 @@ impl WchUpstream {
                         let mut v = tlv(registry::describe_common::FEATURES, &0x7u32.to_le_bytes());
                         v.extend(tlv(
                             registry::describe_common::MAX_LENGTH,
-                            &1024u16.to_le_bytes(),
+                            &(BLOCK_MAX_LENGTH as u16).to_le_bytes(),
                         ));
                         v
                     }
@@ -503,6 +514,9 @@ impl WchUpstream {
                 let (Some(addr), Some(count)) = (le32(&p, 2), le16(&p, 6)) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
+                if usize::from(count) * 4 > BLOCK_MAX_LENGTH {
+                    return rejected_unsupported_fixed();
+                }
                 let len = u32::from(count) * 4;
                 // en: The Link's fast read serves code flash only: on a peripheral register
                 // (FLASH_CTLR at 0x40022010) it returned the last word written there (a key), and
@@ -538,6 +552,9 @@ impl WchUpstream {
                 let (Some(addr), Some(count)) = (le32(&p, 2), le16(&p, 6)) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
+                if usize::from(count) * 4 > BLOCK_MAX_LENGTH {
+                    return rejected_unsupported_fixed();
+                }
                 let words: Vec<u32> = (0..usize::from(count))
                     .filter_map(|i| le32(&p, 8 + 4 * i))
                     .collect();

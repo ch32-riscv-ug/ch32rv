@@ -248,14 +248,17 @@ pub struct OepDtm<'a> {
     max_op_ms: u32,
 }
 
-/// en: The most words one block request may carry: what fits `max_frame` (session header 10,
-/// connection + address + count 8, or on the answer 5 + done/status 3), the describe `max_length`
-/// (bytes, oep-if-debug) if declared, and the reference probe's 256-word buffer.
-/// ja: 1 回の block の語数の上限: max_frame に入る数、describe の max_length(byte 数)、参照 probe の 256 語。
+/// en: The most words one block request may carry: the describe `max_length` (bytes; the probe
+/// declares it so that requests and answers fit its max_frame, oep-if-debug §4.5), not computed
+/// from max_frame. Only a probe that does not declare it (it must) falls back to what fits
+/// max_frame (session header 10, connection + address + count 8) and the reference 256 words.
+/// ja: 1 回の block の語数の上限は describe の max_length(byte 数)。max_frame からは計算しない。宣言の
+/// 無い probe(宣言は必須)だけ、max_frame に入る数と 256 語に落とす。
 fn block_words(max_frame: u16, max_length: Option<u16>) -> usize {
-    let by_frame = (usize::from(max_frame).saturating_sub(18)) / 4;
-    let by_decl = max_length.map_or(usize::MAX, |b| usize::from(b) / 4);
-    by_frame.min(by_decl).clamp(1, 256)
+    match max_length {
+        Some(b) => (usize::from(b) / 4).max(1),
+        None => ((usize::from(max_frame).saturating_sub(18)) / 4).clamp(1, 256),
+    }
 }
 
 impl<'a> OepDtm<'a> {
@@ -680,9 +683,12 @@ mod tests {
     use super::block_words;
 
     #[test]
-    fn block_size_follows_the_smallest_limit() {
-        assert_eq!(block_words(1024, None), 251);
+    fn block_size_is_the_declared_max_length() {
+        // Declared: taken as it is (oep-if-debug §4.5), whatever max_frame says.
         assert_eq!(block_words(1024, Some(1000)), 250);
+        assert_eq!(block_words(4096, Some(2048)), 512);
+        // Not declared (it must be): what fits max_frame, at most 256 words.
+        assert_eq!(block_words(1024, None), 251);
         assert_eq!(block_words(4096, None), 256);
         assert_eq!(block_words(64, None), 11);
     }
