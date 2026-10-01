@@ -93,7 +93,7 @@
   - one-shot のコマンドが同じ session を続けて使うときは、id を probe の `unit_id`(fn 0 describe の tag 0x42)ごとに、利用者ごとの runtime ディレクトリ(DeviceLock と同じ場所)に保存する。USB の serial では保存しない。
   - `no_session` が返ったら、`boot_id` を比べて「別の人が使った」か「probe が再起動した」かを見分ける。
 - **lease**:
-  - 対話的なコマンド(flash、read、target info)は 3 秒。monitor とブローカーは 3 秒で、keepalive を 1 秒ごとに送る。
+  - 対話的なコマンド(flash、read、target info)は 3 秒。ブローカーは 10 秒(上げた速さの立て直しが収まる長さ)で、keepalive を 1 秒ごとに送る。
   - pytest の `oep_host` は 10 秒(WF §4.3。client 側の話)。
   - run の timeout は lease と応答待ちより十分短くする(run の間、probe は他の要求に答えない)。run の timeout と dmi の待ちは fn 0 describe の `max_op_ms`(0x4D、参照 firmware は 10000)以下に詰める(2026-10-01、`Probe::max_op_ms`)。
   - lease が切れた後の要求は `rejected expired`(0x0E)になる(`OepError::Expired`)。黙って再開はしない。ブローカーは expired を受けたら同じ session_id で open し直し(`resumed` = 2)、台帳を捨てる。client はそれぞれ expired を受けてやり直す。
@@ -214,7 +214,7 @@ binary の扱い:
 
 **probe ごとに、誰の子でもないブローカーを 1 つ置く。ch32rv の各コマンド(flash、monitor、gdb、1 回だけの read / reset)と pytest の `oep_host` は、どれもブローカーの client になる。** 経路は 1 つで、立ち上がる順で形は変わらない。
 
-- **serial の速さ(port_speed、oep-core §3.5、2026-10-01 から既定で使う)**: probe を serial(UART bridge)で開いたブローカーは、endpoint を書いた後、client に答え始める前に、921600 → 750000 → 500000 の順に試す(`CH32RV_PORT_SPEED` で `off` か並びを指定できる)。手順は参照 client の `raise_speed` と同じ: 試す → host も切り替えて 20 ms 待ち confirm → link_source / link_sink で両方向を 1 秒か 32 KiB 確かめる(max_inflight で並べ、壊れたら 1 つずつで確かめ直し、通った上限で使う) → 壊れたフレームが無ければ決める、あれば戻す。全体の上限は 6 秒。試した結果(速さごとの通った / 壊れた、in / out の KB/s、並べた数、かかった時間)はブローカーの log に 1 行で出す。session が口を持っている間は、壊れたフレームを待たずに同じ corr ですぐ送り直す。上げた速さで答えが来なければ、起動時の速さ(115200)に戻って confirm し、送り直す。決めるときの idle_ms は仕様の上限の 3000 ms(`port_speed_idle_max_ms`): ブローカーが落ちても probe は 3 秒の黙りで戻り、ブローカーは 1 秒ごとの keepalive で保つ。serial を開いたときの confirm は、前の host が上げた速さの残りを待つために約 4 秒まで繰り返す(oep-core §3.5)。ブローカーは最後の client が抜けた後 3 秒残り、その間も keepalive で session と速さを保つ(IDE がモニターを閉じてからアップロードを始めるまでの間)。CLI の 1 回だけのコマンドはブローカーの client なので、別に速さを触らない。
+- **serial の速さ(port_speed、oep-core §3.5、2026-10-01 から既定で使う)**: probe を serial(UART bridge)で開いたブローカーは、endpoint を書いた後、client に答え始める前に、921600 → 750000 → 500000 の順に試す(`CH32RV_PORT_SPEED` で `off` か並びを指定できる)。手順は参照 client の `raise_speed` と同じ: 試す → host も切り替えて 20 ms 待ち confirm → link_source / link_sink で両方向を 1 秒か 32 KiB 確かめる(max_inflight で並べ、壊れたら 1 つずつで確かめ直し、通った上限で使う) → 壊れたフレームが無ければ決める、あれば戻す。全体の上限は 6 秒。試した結果(速さごとの通った / 壊れた、in / out の KB/s、並べた数、かかった時間)はブローカーの log に 1 行で出す。session が口を持っている間は、壊れたフレームを待たずに同じ corr ですぐ送り直す。上げた速さで答えが来なければ、起動時の速さ(115200)に戻って confirm し、送り直す。決めるときの idle_ms は仕様の上限の 3000 ms(`port_speed_idle_max_ms`): ブローカーが落ちても probe は 3 秒の黙りで戻り、ブローカーは 1 秒ごとの keepalive で保つ。serial を開いたときの confirm は、前の host が上げた速さの残りを待つために約 4 秒まで繰り返す(oep-core §3.5)。上げている間は壊れたフレームを数え、5 秒に 3 つで port_speed(戻す)を送って probe と揃えて起動時の速さに戻り、その session では上げない。上げた速さで答えが無ければ、まず起動時の速さで 1 秒 confirm し、probe がそこにいれば(自分で戻っていた)残りをそこで送り直す。この立て直しが lease の中に収まるよう、ブローカーの lease は 10 秒。ブローカーは最後の client が抜けた後 3 秒残り、その間も keepalive で session と速さを保つ(IDE がモニターを閉じてからアップロードを始めるまでの間)。CLI の 1 回だけのコマンドはブローカーの client なので、別に速さを触らない。
 
 - **起動**:
   - client は、まず `<runtime>/<key>.oep`(待ち受けの場所)を見てつなぐ。key は probe の同一性(2026-10-01、docs/freeze-decisions.ja.md §4): OEP の USB の probe は `oep-<USB serial>`(serial = unit_id。無ければ `oep-usb-<位置>`)、OEP の USB device を持たない serial port(UART bridge)は `oep-port-<正規化した path>`、WCH-Link は `wch-<serial>`(無ければ `wch-usb-<位置>`)。同じ probe へのどの道(`oep://`、どちらの CDC の `port:`)も同じブローカーに着く。runtime は DeviceLock と同じ利用者ごとのディレクトリ。
