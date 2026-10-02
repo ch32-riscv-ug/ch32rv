@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `dbg regs|halt|resume|step|reg|dmi` and `capabilities` work on an OEP probe too. `capabilities` lists what the probe declares (block / run ops, console mechanisms, a fixture UART, port_speed) and what ch32rv builds on them.
+- (JA) `dbg regs|halt|resume|step|reg|dmi` と `capabilities` も OEP の probe で動く。`capabilities` は probe の宣言(block / run の op、console の mechanism、fixture UART、port_speed)と、ch32rv がその上で組むものを出す。
+
 - (EN) Clearing read protection waits for the mass erase it starts: the option-byte erase is waited for by time (up to 10 s) and through read errors, instead of 4000 polls - a CH32X035 behind an OEP probe ran past them, the USER bytes were left erased, and `target protect off` reported a timeout although the flash was erased. `recover` reads option bytes whose USER pair is erased (0xff 0xff) as nonstandard (recommends `target option reset`), not unreadable.
 - (JA) 読み出し保護を外すときは、それが始める全消去を待つ: option bytes の消去を、4000 回の poll ではなく時間(最長 10 秒)で、読みの誤りも越えて待つ。OEP 経由の CH32X035 でこの回数を越え、USER が消えたまま残り、flash は消えているのに `target protect off` が timeout と報告していた。`recover` は、USER の組が消えた(0xff 0xff)option bytes を「読めない」ではなく「既定値でない」(`target option reset` を勧める)と読む。
 

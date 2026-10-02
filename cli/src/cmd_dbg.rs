@@ -65,142 +65,127 @@ fn open_session(
 pub fn regs(cli: &Cli) -> ExitCode {
     const CMD: &str = "dbg.regs";
     let mut warnings = Vec::new();
-    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
-    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
-        Ok(s) => s,
-        Err(c) => return c,
-    };
-    let mut dm = session.dm();
-    if let Err(e) = dm.halt() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::AttachFailed,
-            format!("halt failed: {e}"),
-            None,
-        );
+    if let Err(m) = parse::speed(&cli.speed).map(|(_, w)| warnings.extend(w)) {
+        return fail(cli, CMD, ErrorKind::Usage, m, None);
     }
-    // RV32E cores (misa.E, e.g. CH32V003) expose only x0..x15; reading x16.. raises cmderr.
-    let gpr_count: u8 = match dm.read_reg(RegName::Csr(0x301)) {
-        Ok(misa) if misa & (1 << 4) != 0 => 16,
-        _ => 32,
-    };
-    let mut gprs = [0u32; 32];
-    for i in 0..gpr_count {
-        match dm.read_reg(RegName::Gpr(i)) {
-            Ok(v) => gprs[i as usize] = v,
-            Err(e) => {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::TransferFailed,
-                    format!("read x{i} failed: {e}"),
-                    None,
-                );
+    crate::cmd_target::on_target_halted(cli, CMD, true, |t, _family, _db| {
+        if let Err(e) = t.halt() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::AttachFailed,
+                format!("halt failed: {e}"),
+                None,
+            );
+        }
+        let mut d = t.dtm();
+        let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
+        // RV32E cores (misa.E, e.g. CH32V003) expose only x0..x15; reading x16.. raises cmderr.
+        let gpr_count: u8 = match dm.read_reg(RegName::Csr(0x301)) {
+            Ok(misa) if misa & (1 << 4) != 0 => 16,
+            _ => 32,
+        };
+        let mut gprs = [0u32; 32];
+        for i in 0..gpr_count {
+            match dm.read_reg(RegName::Gpr(i)) {
+                Ok(v) => gprs[i as usize] = v,
+                Err(e) => {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("read x{i} failed: {e}"),
+                        None,
+                    );
+                }
             }
         }
-    }
-    let pc = dm.read_reg(RegName::Pc).ok();
-    if gpr_count == 16 {
-        warnings.push(Warning {
-            code: "rv32e".to_owned(),
-            msg: "RV32E core (misa.E): only x0-x15 exist; x16-x31 omitted".to_owned(),
-        });
-    }
-    let n = gpr_count as usize;
+        let pc = dm.read_reg(RegName::Pc).ok();
+        if gpr_count == 16 {
+            warnings.push(Warning {
+                code: "rv32e".to_owned(),
+                msg: "RV32E core (misa.E): only x0-x15 exist; x16-x31 omitted".to_owned(),
+            });
+        }
+        let n = gpr_count as usize;
 
-    if cli.json {
-        let mut env = ResultEnvelope::success(CMD);
-        let regs: serde_json::Map<String, serde_json::Value> = (0..n)
-            .map(|i| {
-                (
-                    format!("x{i}"),
-                    serde_json::json!(format!("0x{:08x}", gprs[i])),
-                )
-            })
-            .collect();
-        env.result = Some(serde_json::json!({
-            "gpr": regs,
-            "pc": pc.map(|v| format!("0x{v:08x}")),
-        }));
-        env.warnings = warnings;
-        crate::print_envelope(&env)
-    } else {
-        for i in 0..n {
-            println!("x{i:<2} {:<4} 0x{:08x}", GPR_ABI[i], gprs[i]);
+        if cli.json {
+            let mut env = ResultEnvelope::success(CMD);
+            let regs: serde_json::Map<String, serde_json::Value> = (0..n)
+                .map(|i| {
+                    (
+                        format!("x{i}"),
+                        serde_json::json!(format!("0x{:08x}", gprs[i])),
+                    )
+                })
+                .collect();
+            env.result = Some(serde_json::json!({
+                "gpr": regs,
+                "pc": pc.map(|v| format!("0x{v:08x}")),
+            }));
+            env.warnings = warnings;
+            crate::print_envelope(&env)
+        } else {
+            for i in 0..n {
+                println!("x{i:<2} {:<4} 0x{:08x}", GPR_ABI[i], gprs[i]);
+            }
+            match pc {
+                Some(v) => println!("pc       0x{v:08x}"),
+                None => println!("pc       (unavailable)"),
+            }
+            for w in &warnings {
+                eprintln!("warning[{}]: {}", w.code, w.msg);
+            }
+            ExitCode::SUCCESS
         }
-        match pc {
-            Some(v) => println!("pc       0x{v:08x}"),
-            None => println!("pc       (unavailable)"),
-        }
-        for w in &warnings {
-            eprintln!("warning[{}]: {}", w.code, w.msg);
-        }
-        ExitCode::SUCCESS
-    }
+    })
 }
 
 pub fn halt(cli: &Cli, reset: bool) -> ExitCode {
     const CMD: &str = "dbg.halt";
     let mut warnings = Vec::new();
-    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
-    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
-        Ok(s) => s,
-        Err(c) => return c,
-    };
-    if reset && let Err(e) = session.link().soft_reset() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::TransferFailed,
-            format!("reset failed: {e}"),
-            None,
-        );
+    if let Err(m) = parse::speed(&cli.speed).map(|(_, w)| warnings.extend(w)) {
+        return fail(cli, CMD, ErrorKind::Usage, m, None);
     }
-    let mut dm = session.dm();
-    match dm.halt() {
-        Ok(()) => {
-            let pc = dm.read_reg(RegName::Pc).ok();
-            simple_ok(
+    crate::cmd_target::on_target_halted(cli, CMD, true, |t, _family, _db| {
+        if reset {
+            t.system_reset();
+        }
+        match t.halt() {
+            Ok(()) => {
+                let mut d = t.dtm();
+                let pc = ch32rv_dmi::DebugModule::new(&mut d)
+                    .read_reg(RegName::Pc)
+                    .ok();
+                simple_ok(
+                    cli,
+                    CMD,
+                    serde_json::json!({ "halted": true, "pc": pc.map(|v| format!("0x{v:08x}")) }),
+                    &format!(
+                        "halted{}",
+                        pc.map(|v| format!(" at 0x{v:08x}")).unwrap_or_default()
+                    ),
+                    warnings,
+                )
+            }
+            Err(e) => fail(
                 cli,
                 CMD,
-                serde_json::json!({ "halted": true, "pc": pc.map(|v| format!("0x{v:08x}")) }),
-                &format!(
-                    "halted{}",
-                    pc.map(|v| format!(" at 0x{v:08x}")).unwrap_or_default()
-                ),
-                warnings,
-            )
+                ErrorKind::AttachFailed,
+                format!("halt failed: {e}"),
+                None,
+            ),
         }
-        Err(e) => fail(
-            cli,
-            CMD,
-            ErrorKind::AttachFailed,
-            format!("halt failed: {e}"),
-            None,
-        ),
-    }
+    })
 }
 
 pub fn resume(cli: &Cli) -> ExitCode {
     const CMD: &str = "dbg.resume";
     let mut warnings = Vec::new();
-    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
-    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
-        Ok(s) => s,
-        Err(c) => return c,
-    };
-    let mut dm = session.dm();
-    match dm.resume() {
+    if let Err(m) = parse::speed(&cli.speed).map(|(_, w)| warnings.extend(w)) {
+        return fail(cli, CMD, ErrorKind::Usage, m, None);
+    }
+    crate::cmd_target::on_target_halted(cli, CMD, false, |t, _family, _db| match t.resume() {
         Ok(()) => simple_ok(
             cli,
             CMD,
@@ -215,53 +200,51 @@ pub fn resume(cli: &Cli) -> ExitCode {
             format!("resume failed: {e}"),
             None,
         ),
-    }
+    })
 }
 
 pub fn step(cli: &Cli, n: Option<u32>) -> ExitCode {
     const CMD: &str = "dbg.step";
     let count = n.unwrap_or(1).max(1);
     let mut warnings = Vec::new();
-    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
-    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
-        Ok(s) => s,
-        Err(c) => return c,
-    };
-    let mut dm = session.dm();
-    if let Err(e) = dm.halt() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::AttachFailed,
-            format!("halt failed: {e}"),
-            None,
-        );
+    if let Err(m) = parse::speed(&cli.speed).map(|(_, w)| warnings.extend(w)) {
+        return fail(cli, CMD, ErrorKind::Usage, m, None);
     }
-    for i in 0..count {
-        if let Err(e) = dm.step() {
+    crate::cmd_target::on_target_halted(cli, CMD, true, |t, _family, _db| {
+        if let Err(e) = t.halt() {
             return fail(
                 cli,
                 CMD,
-                ErrorKind::TransferFailed,
-                format!("step {} failed: {e}", i + 1),
+                ErrorKind::AttachFailed,
+                format!("halt failed: {e}"),
                 None,
             );
         }
-    }
-    let pc = dm.read_reg(RegName::Pc).ok();
-    simple_ok(
-        cli,
-        CMD,
-        serde_json::json!({ "stepped": count, "pc": pc.map(|v| format!("0x{v:08x}")) }),
-        &format!(
-            "stepped {count}{}",
-            pc.map(|v| format!(", pc 0x{v:08x}")).unwrap_or_default()
-        ),
-        warnings,
-    )
+        let mut d = t.dtm();
+        let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
+        for i in 0..count {
+            if let Err(e) = dm.step() {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("step {} failed: {e}", i + 1),
+                    None,
+                );
+            }
+        }
+        let pc = dm.read_reg(RegName::Pc).ok();
+        simple_ok(
+            cli,
+            CMD,
+            serde_json::json!({ "stepped": count, "pc": pc.map(|v| format!("0x{v:08x}")) }),
+            &format!(
+                "stepped {count}{}",
+                pc.map(|v| format!(", pc 0x{v:08x}")).unwrap_or_default()
+            ),
+            warnings,
+        )
+    })
 }
 
 fn simple_ok(
@@ -647,99 +630,97 @@ fn parse_u32(s: &str) -> Option<u32> {
 pub fn reg(cli: &Cli, sub: &RegCmd) -> ExitCode {
     const CMD: &str = "dbg.reg";
     let mut warnings = Vec::new();
-    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
-    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
-        Ok(s) => s,
-        Err(c) => return c,
-    };
-    let mut dm = session.dm();
-    if let Err(e) = dm.halt() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::AttachFailed,
-            format!("halt failed: {e}"),
-            None,
-        );
+    if let Err(m) = parse::speed(&cli.speed).map(|(_, w)| warnings.extend(w)) {
+        return fail(cli, CMD, ErrorKind::Usage, m, None);
     }
-    match sub {
-        RegCmd::Read { name } => {
-            let Some(reg) = parse_reg_name(name) else {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::Usage,
-                    format!("unknown register {name:?}"),
-                    Some("use x0..x31, pc, csr:<addr>, or misa/mstatus/mcause/mepc/mtval/dcsr"),
-                );
-            };
-            match dm.read_reg(reg) {
-                Ok(v) => {
-                    if cli.json {
-                        let mut env = ResultEnvelope::success(CMD);
-                        env.result = Some(serde_json::json!({
-                            "reg": name, "value": format!("0x{v:08x}"),
-                        }));
-                        crate::print_envelope(&env)
-                    } else {
-                        println!("{name} = 0x{v:08x}");
-                        ExitCode::SUCCESS
+    crate::cmd_target::on_target_halted(cli, CMD, true, |t, _family, _db| {
+        if let Err(e) = t.halt() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::AttachFailed,
+                format!("halt failed: {e}"),
+                None,
+            );
+        }
+        let mut d = t.dtm();
+        let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
+        match sub {
+            RegCmd::Read { name } => {
+                let Some(reg) = parse_reg_name(name) else {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        format!("unknown register {name:?}"),
+                        Some("use x0..x31, pc, csr:<addr>, or misa/mstatus/mcause/mepc/mtval/dcsr"),
+                    );
+                };
+                match dm.read_reg(reg) {
+                    Ok(v) => {
+                        if cli.json {
+                            let mut env = ResultEnvelope::success(CMD);
+                            env.result = Some(serde_json::json!({
+                                "reg": name, "value": format!("0x{v:08x}"),
+                            }));
+                            crate::print_envelope(&env)
+                        } else {
+                            println!("{name} = 0x{v:08x}");
+                            ExitCode::SUCCESS
+                        }
                     }
+                    Err(e) => fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("read {name} failed: {e}"),
+                        None,
+                    ),
                 }
-                Err(e) => fail(
-                    cli,
-                    CMD,
-                    ErrorKind::TransferFailed,
-                    format!("read {name} failed: {e}"),
-                    None,
-                ),
+            }
+            RegCmd::Write { name, value } => {
+                let Some(reg) = parse_reg_name(name) else {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        format!("unknown register {name:?}"),
+                        None,
+                    );
+                };
+                let Some(val) = parse_u32(value) else {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        format!("bad value {value:?} (use 0x.. or decimal)"),
+                        None,
+                    );
+                };
+                match dm.write_reg(reg, val) {
+                    Ok(()) => {
+                        if cli.json {
+                            let mut env = ResultEnvelope::success(CMD);
+                            env.result = Some(serde_json::json!({
+                                "reg": name, "value": format!("0x{val:08x}"),
+                            }));
+                            crate::print_envelope(&env)
+                        } else {
+                            println!("{name} <- 0x{val:08x}");
+                            ExitCode::SUCCESS
+                        }
+                    }
+                    Err(e) => fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("write {name} failed: {e}"),
+                        None,
+                    ),
+                }
             }
         }
-        RegCmd::Write { name, value } => {
-            let Some(reg) = parse_reg_name(name) else {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::Usage,
-                    format!("unknown register {name:?}"),
-                    None,
-                );
-            };
-            let Some(val) = parse_u32(value) else {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::Usage,
-                    format!("bad value {value:?} (use 0x.. or decimal)"),
-                    None,
-                );
-            };
-            match dm.write_reg(reg, val) {
-                Ok(()) => {
-                    if cli.json {
-                        let mut env = ResultEnvelope::success(CMD);
-                        env.result = Some(serde_json::json!({
-                            "reg": name, "value": format!("0x{val:08x}"),
-                        }));
-                        crate::print_envelope(&env)
-                    } else {
-                        println!("{name} <- 0x{val:08x}");
-                        ExitCode::SUCCESS
-                    }
-                }
-                Err(e) => fail(
-                    cli,
-                    CMD,
-                    ErrorKind::TransferFailed,
-                    format!("write {name} failed: {e}"),
-                    None,
-                ),
-            }
-        }
-    }
+    })
 }
 
 /// `dbg dmi read|write <addr> [value]`: raw Debug Module register access over DMI (expert). `addr`
@@ -747,81 +728,79 @@ pub fn reg(cli: &Cli, sub: &RegCmd) -> ExitCode {
 pub fn dmi(cli: &Cli, sub: &DmiCmd) -> ExitCode {
     const CMD: &str = "dbg.dmi";
     let mut warnings = Vec::new();
-    let (entry, speed) = match prepare(cli, CMD, &mut warnings) {
-        Ok(v) => v,
-        Err(c) => return c,
-    };
-    let mut session = match open_session(cli, CMD, &entry, speed, &mut warnings) {
-        Ok(s) => s,
-        Err(c) => return c,
-    };
-    let parse_addr = |a: &str| parse_u32(a).and_then(|v| u8::try_from(v).ok());
-    match sub {
-        DmiCmd::Read { addr } => {
-            let Some(a) = parse_addr(addr) else {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::Usage,
-                    format!("bad DM address {addr:?} (0x00..0x7f)"),
-                    None,
-                );
-            };
-            match session.link().dmi_read(a) {
-                Ok(v) => {
-                    if cli.json {
-                        let mut env = ResultEnvelope::success(CMD);
-                        env.result = Some(serde_json::json!({
-                            "addr": format!("0x{a:02x}"), "value": format!("0x{v:08x}"),
-                        }));
-                        crate::print_envelope(&env)
-                    } else {
-                        println!("dmi[0x{a:02x}] = 0x{v:08x}");
-                        ExitCode::SUCCESS
-                    }
-                }
-                Err(e) => fail(
-                    cli,
-                    CMD,
-                    ErrorKind::TransferFailed,
-                    format!("dmi read 0x{a:02x} failed: {e}"),
-                    None,
-                ),
-            }
-        }
-        DmiCmd::Write { addr, value } => {
-            let (Some(a), Some(v)) = (parse_addr(addr), parse_u32(value)) else {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::Usage,
-                    "bad DM address or value".to_owned(),
-                    None,
-                );
-            };
-            match session.link().dmi_write(a, v) {
-                Ok(()) => {
-                    if cli.json {
-                        let mut env = ResultEnvelope::success(CMD);
-                        env.result = Some(serde_json::json!({
-                            "addr": format!("0x{a:02x}"), "value": format!("0x{v:08x}"),
-                        }));
-                        crate::print_envelope(&env)
-                    } else {
-                        println!("dmi[0x{a:02x}] <- 0x{v:08x}");
-                        ExitCode::SUCCESS
-                    }
-                }
-                Err(e) => fail(
-                    cli,
-                    CMD,
-                    ErrorKind::TransferFailed,
-                    format!("dmi write 0x{a:02x} failed: {e}"),
-                    None,
-                ),
-            }
-        }
+    if let Err(m) = parse::speed(&cli.speed).map(|(_, w)| warnings.extend(w)) {
+        return fail(cli, CMD, ErrorKind::Usage, m, None);
     }
+    crate::cmd_target::on_target_halted(cli, CMD, false, |t, _family, _db| {
+        let mut d = t.dtm();
+        let parse_addr = |a: &str| parse_u32(a).and_then(|v| u8::try_from(v).ok());
+        match sub {
+            DmiCmd::Read { addr } => {
+                let Some(a) = parse_addr(addr) else {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        format!("bad DM address {addr:?} (0x00..0x7f)"),
+                        None,
+                    );
+                };
+                match d.dmi_read(a) {
+                    Ok(v) => {
+                        if cli.json {
+                            let mut env = ResultEnvelope::success(CMD);
+                            env.result = Some(serde_json::json!({
+                                "addr": format!("0x{a:02x}"), "value": format!("0x{v:08x}"),
+                            }));
+                            crate::print_envelope(&env)
+                        } else {
+                            println!("dmi[0x{a:02x}] = 0x{v:08x}");
+                            ExitCode::SUCCESS
+                        }
+                    }
+                    Err(e) => fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("dmi read 0x{a:02x} failed: {e}"),
+                        None,
+                    ),
+                }
+            }
+            DmiCmd::Write { addr, value } => {
+                let (Some(a), Some(v)) = (parse_addr(addr), parse_u32(value)) else {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        "bad DM address or value".to_owned(),
+                        None,
+                    );
+                };
+                match d.dmi_write(a, v) {
+                    Ok(()) => {
+                        if cli.json {
+                            let mut env = ResultEnvelope::success(CMD);
+                            env.result = Some(serde_json::json!({
+                                "addr": format!("0x{a:02x}"), "value": format!("0x{v:08x}"),
+                            }));
+                            crate::print_envelope(&env)
+                        } else {
+                            println!("dmi[0x{a:02x}] <- 0x{v:08x}");
+                            ExitCode::SUCCESS
+                        }
+                    }
+                    Err(e) => fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("dmi write 0x{a:02x} failed: {e}"),
+                        None,
+                    ),
+                }
+            }
+        }
+    })
 }
 
 #[cfg(test)]
