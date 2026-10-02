@@ -494,11 +494,16 @@ fn serve_target(
             None => broker_log(&key, "port_speed: off (CH32RV_PORT_SPEED=off)"),
             Some(rates) => {
                 p.link().resend_on_broken = true;
-                match ch32rv_oep::speed::raise_speed(p, &rates, Duration::from_secs(6)) {
+                speed_ratio_rule = firmware_at_least(p, (0, 0, 27));
+                match ch32rv_oep::speed::raise_speed(
+                    p,
+                    &rates,
+                    Duration::from_secs(6),
+                    speed_ratio_rule,
+                ) {
                     Ok(r) => {
                         broker_log(&key, &r.summary());
                         speed_port = r.port.filter(|_| r.trials.iter().any(|t| t.committed));
-                        speed_ratio_rule = firmware_at_least(p, (0, 0, 27));
                     }
                     Err(e) => return report_error(format!("port_speed: {e}")),
                 }
@@ -588,6 +593,28 @@ impl Upstream {
                 (l.resends, l.broken, l.good, l.lost)
             }
             Upstream::Wch(_) => (0, 0, 0, 0),
+        }
+    }
+
+    /// en: After a request went unanswered: does the probe still answer? A confirm at the speed
+    /// now, then (raised) at the boot speed (oep-core §3.5 host duty 5). ja: probe がまだ答えるか。
+    fn recheck(&mut self) -> bool {
+        match self {
+            Upstream::Oep(p) => {
+                let l = p.link();
+                if (0..3).any(|_| l.confirm_raw(Duration::from_millis(500))) {
+                    return true;
+                }
+                let back = l.baud() != l.base_baud()
+                    && l.back_to_base(Duration::from_millis(
+                        u64::from(ch32rv_oep::registry::timing::PORT_SPEED_IDLE_MAX_MS) + 1000,
+                    ));
+                if back {
+                    l.speed_fallbacks += 1;
+                }
+                back
+            }
+            Upstream::Wch(_) => true,
         }
     }
 
@@ -847,15 +874,50 @@ impl Broker {
             pending.push(Pending::Forward(id, req));
         }
         let before = self.up.losses();
+        let n_calls = calls.len();
         let replies = if calls.is_empty() {
             Vec::new()
         } else {
-            self.up.exchange(calls)?
+            match self.up.exchange(calls) {
+                Ok(r) => r,
+                // en: No answer even after the resend (a slow or noisy moment of the probe): one
+                // request's loss must not take every client down with the broker. The waiting
+                // clients hear result_lost (a read asks again by itself; anything else is that
+                // command's error), and the link is checked with confirm; only when the probe
+                // answers nothing at all does the broker end.
+                // ja: 送り直しても答えが無い: 1 つの要求のためにブローカーごと全 client を落とさない。待って
+                // いる client には result_lost を返し(read は自分で読み直す)、confirm で link を確かめる。
+                // probe が何も答えないときだけ終わる。
+                Err(e) => {
+                    let alive = self.up.recheck();
+                    broker_log(
+                        &self.key,
+                        &format!(
+                            "upstream: {e}; {n_calls} waiting request(s) answered result_lost, {}",
+                            if alive {
+                                "the probe answers confirm: going on"
+                            } else {
+                                "the probe answers nothing"
+                            }
+                        ),
+                    );
+                    if !alive {
+                        return Err(e);
+                    }
+                    vec![
+                        Reply {
+                            resolution: Resolution::Rejected(reject_reasons::RESULT_LOST),
+                            payload: Vec::new(),
+                        };
+                        n_calls
+                    ]
+                }
+            }
         };
         // A lost answer on the probe's link costs a resend after its timeout: say so, since it is
         // what makes a client's request slow.
         let after = self.up.losses();
-        if after != before {
+        if (after.0, after.1) != (before.0, before.1) {
             broker_log(
                 &self.key,
                 &format!(

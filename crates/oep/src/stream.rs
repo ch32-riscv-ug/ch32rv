@@ -237,7 +237,20 @@ impl PosStream {
 
     /// Read what has come since the position (at most `max`), advancing it.
     pub fn poll(&mut self, p: &mut Probe, max: u16) -> Result<Chunk, OepError> {
-        let (start, mut c) = self.read(p, From::Position(self.pos), max)?;
+        // A read changes nothing: one whose answer was lost on the way (a broker answers
+        // result_lost then) is simply asked again on the next poll.
+        let (start, mut c) = match self.read(p, From::Position(self.pos), max) {
+            Err(OepError::Rejected { reason, .. })
+                if reason == crate::registry::reject_reasons::RESULT_LOST =>
+            {
+                return Ok(Chunk {
+                    data: Vec::new(),
+                    gap: 0,
+                    more: false,
+                });
+            }
+            r => r?,
+        };
         c.gap = start.saturating_sub(self.pos);
         self.pos = start + c.data.len() as u64;
         Ok(c)

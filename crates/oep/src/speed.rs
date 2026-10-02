@@ -153,10 +153,14 @@ fn port_speed_body(port: u8, rate: u32, step: u8, verify_ms: u16, idle_ms: u32) 
 /// at neither the tried rate nor the boot speed.
 /// ja: `rates` を順に試し、最初に通ったものに決める。link はその速さ(か起動時の速さ)のまま。
 /// `budget` bounds the whole: no new rate is tried after it (each takes about 1.3 s).
+/// `by_share`: judge each flow by its share of broken frames (at most 5 %, at least 16 frames;
+/// host guide §7.4) instead of failing at the first one - right for a probe that goes back on its
+/// own only at 3 broken frames in a row (oep-probe-arduino 0.0.27 and up).
 pub fn raise_speed(
     p: &mut Probe,
     rates: &[u32],
     budget: Duration,
+    by_share: bool,
 ) -> Result<SpeedReport, OepError> {
     let t0 = Instant::now();
     let mut report = SpeedReport {
@@ -249,7 +253,7 @@ pub fn raise_speed(
                 trial.broken_in = 0;
                 trial.broken_out = 0;
                 trial.broken_both = 0;
-                ok = verify(p, rate, n, &mut trial);
+                ok = verify(p, rate, n, &mut trial, by_share);
                 if ok {
                     trial.inflight = n;
                     break;
@@ -325,7 +329,13 @@ enum Phase {
 /// en: Both ways with max_frame-sized frames, `inflight` at a time: link_source (in), link_sink
 /// (out), then the two interleaved (both); stops at the first frame that breaks.
 /// ja: 両方向に max_frame の大きさで流す(in、次に out)。最初に壊れた所で止める。
-fn verify(p: &mut Probe, rate: u32, inflight: usize, trial: &mut SpeedTrial) -> bool {
+fn verify(
+    p: &mut Probe,
+    rate: u32,
+    inflight: usize,
+    trial: &mut SpeedTrial,
+    by_share: bool,
+) -> bool {
     let limits = p.limits();
     let max_frame = usize::from(limits.max_frame);
     let n_in = max_frame.saturating_sub(VERIFY_ROOM);
@@ -347,6 +357,7 @@ fn verify(p: &mut Probe, rate: u32, inflight: usize, trial: &mut SpeedTrial) -> 
         let started = Instant::now();
         let mut moved = 0usize;
         let mut broken = 0u32;
+        let mut frames = 0u32;
         while moved < VERIFY_BYTES / 2 && started.elapsed() < limit {
             let kinds: Vec<bool> = (0..inflight * 2)
                 .map(|k| match phase {
@@ -393,9 +404,14 @@ fn verify(p: &mut Probe, rate: u32, inflight: usize, trial: &mut SpeedTrial) -> 
                 .iter()
                 .map(|&inward| if inward { n_in } else { n_out })
                 .sum::<usize>();
+            frames += sent as u32;
             if good < sent {
                 broken += (sent - good) as u32;
-                break;
+                if !by_share {
+                    break;
+                }
+                // Back in step before going on (what broke may have left bytes on the line).
+                let _ = (0..3).any(|_| p.link().confirm_raw(Duration::from_millis(200)));
             }
         }
         let kb_s = moved as f64 / started.elapsed().as_secs_f64().max(1e-6) / 1000.0;
@@ -413,7 +429,12 @@ fn verify(p: &mut Probe, rate: u32, inflight: usize, trial: &mut SpeedTrial) -> 
                 trial.broken_both = broken;
             }
         }
-        if broken > 0 {
+        let failed = if by_share {
+            frames < 16 || broken * 20 > frames
+        } else {
+            broken > 0
+        };
+        if failed {
             return false;
         }
     }
