@@ -78,6 +78,33 @@ fn endpoint_file(key: &str) -> PathBuf {
     ch32rv_usb::runtime_dir().join(format!("{key}.oep"))
 }
 
+/// Whether fn 0 describe's firmware (`<major>.<minor>.<patch>`, oep-probe-arduino) is at least
+/// `want`; false when it does not say or says something else.
+fn firmware_at_least(p: &mut ch32rv_oep::session::Probe, want: (u32, u32, u32)) -> bool {
+    let Ok(tlvs) = p.describe(oep_core::FN) else {
+        return false;
+    };
+    let Some(t) = tlvs
+        .iter()
+        .find(|t| t.tag == oep_core::tlvs::describe::FIRMWARE)
+    else {
+        return false;
+    };
+    let text = String::from_utf8_lossy(&t.value);
+    let mut parts = text
+        .trim()
+        .trim_start_matches('v')
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .map(|n| n.parse::<u32>().unwrap_or(0));
+    let got = (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    );
+    got >= want
+}
+
 /// en: The rates the broker tries on a UART bridge: `CH32RV_PORT_SPEED` = `off`, or a comma list
 /// (`921600,500000`); unset = [`ch32rv_oep::speed::DEFAULT_RATES`]. ja: ブローカーが試す速さ。
 fn port_speed_rates() -> Option<Vec<u32>> {
@@ -406,6 +433,7 @@ fn serve_target(
     let mut transport = "wchlink";
     // The UART bridge port_speed raised, while it stays raised.
     let mut speed_port: Option<u8> = None;
+    let mut speed_ratio_rule = false;
     let (up, sid) = match (&target, wch_entry) {
         (BrokerTarget::Serial(path), _) => {
             let mut probe = match crate::oep::connect_upstream(path, None) {
@@ -470,6 +498,7 @@ fn serve_target(
                     Ok(r) => {
                         broker_log(&key, &r.summary());
                         speed_port = r.port.filter(|_| r.trials.iter().any(|t| t.committed));
+                        speed_ratio_rule = firmware_at_least(p, (0, 0, 27));
                     }
                     Err(e) => return report_error(format!("port_speed: {e}")),
                 }
@@ -486,7 +515,8 @@ fn serve_target(
         key: key.clone(),
         endpoint: json!({"port": port, "pid": std::process::id(), "time": now_ms(), "transport": transport}),
         speed_port,
-        broken_at: std::collections::VecDeque::new(),
+        speed_window: std::collections::VecDeque::new(),
+        speed_ratio_rule,
         fallbacks_seen: 0,
     };
     let r = b.run(&rx);
@@ -550,10 +580,14 @@ impl Upstream {
     }
 
     /// The upstream link's resends and dropped frames so far (diagnostics for the log).
-    fn losses(&mut self) -> (u64, u64) {
+    /// The upstream link's (resends, broken, good, lost) so far (for the log and port_speed).
+    fn losses(&mut self) -> (u64, u64, u64, u64) {
         match self {
-            Upstream::Oep(p) => (p.link().resends, p.link().broken),
-            Upstream::Wch(_) => (0, 0),
+            Upstream::Oep(p) => {
+                let l = p.link();
+                (l.resends, l.broken, l.good, l.lost)
+            }
+            Upstream::Wch(_) => (0, 0, 0, 0),
         }
     }
 
@@ -654,8 +688,11 @@ struct Broker {
     endpoint: Value,
     /// The raised UART bridge (None: at the boot speed).
     speed_port: Option<u8>,
-    /// When frames broke at the raised speed, the last few seconds' worth.
-    broken_at: std::collections::VecDeque<Instant>,
+    /// (when, good, broken + lost) at the raised speed, the last few seconds' worth.
+    speed_window: std::collections::VecDeque<(Instant, u64, u64)>,
+    /// The probe goes back only at 3 broken frames in a row (oep-probe-arduino 0.0.27 and up):
+    /// judge by the share over 3 s (host guide §7.4) instead of 2 broken in 5 s.
+    speed_ratio_rule: bool,
     /// The link's `speed_fallbacks` already logged.
     fallbacks_seen: u64,
 }
@@ -828,7 +865,7 @@ impl Broker {
                 ),
             );
         }
-        self.watch_speed(after.1 - before.1);
+        self.watch_speed(after.1 - before.1, after.2 - before.2, after.3 - before.3);
         // en: The lease lapsed under these requests (a long stall of the host): the probe released
         // every client's connections. Pass the answers on (each client hears `expired` and starts
         // again) and open the probe again for what comes next.
@@ -855,13 +892,17 @@ impl Broker {
         Ok(())
     }
 
-    /// en: While the port speed is raised, count the frames that break and lower it together with
-    /// the probe after 3 in 5 s (oep-core §3.5: the host notices first; the probe's own fallback
-    /// is the last resort), and note when the link found the probe back at the boot speed by
-    /// itself. Either way the session stays at the boot speed.
-    /// ja: 上げた速さの間、壊れたフレームを数え、5 秒に 3 つで probe と揃えて下げる。link が probe の
-    /// 自分での戻りを見つけたときも記録する。どちらもその session は起動時の速さのまま。
-    fn watch_speed(&mut self, broken: u64) {
+    /// en: While the port speed is raised, watch how the frames fare and lower it together with
+    /// the probe when they fare badly (oep-core §3.5: the host notices first; the probe's own
+    /// fallback is the last resort); and note when the link found the probe back at the boot speed
+    /// by itself. Either way the session stays at the boot speed. The rule depends on the probe:
+    /// from oep-probe-arduino 0.0.27 (it goes back only at 3 broken frames in a row) the share of
+    /// broken and lost frames over the last 3 s above 10 % (host guide §7.4, base 0, not judged
+    /// under 50 frames); before it (3 in 1 s) 2 broken frames in 5 s, so as to lower first.
+    /// ja: 上げた速さの間、フレームの様子を見て、悪ければ probe と揃えて下げる。0.0.27 以降の probe
+    /// では直近 3 秒の(壊れ + 失われ)の割合が 10 % を超えたら(50 フレーム未満は判定しない)、それより
+    /// 前の probe では 5 秒に 2 つ壊れたら。
+    fn watch_speed(&mut self, broken: u64, good: u64, lost: u64) {
         let Some(port) = self.speed_port else {
             return;
         };
@@ -879,29 +920,41 @@ impl Broker {
             return;
         }
         let now = Instant::now();
-        for _ in 0..broken {
-            self.broken_at.push_back(now);
+        let window = if self.speed_ratio_rule {
+            Duration::from_secs(3)
+        } else {
+            Duration::from_secs(5)
+        };
+        if good + broken + lost > 0 {
+            self.speed_window.push_back((now, good, broken + lost));
         }
         while self
-            .broken_at
+            .speed_window
             .front()
-            .is_some_and(|t| now.duration_since(*t) > Duration::from_secs(5))
+            .is_some_and(|(t, ..)| now.duration_since(*t) > window)
         {
-            self.broken_at.pop_front();
+            self.speed_window.pop_front();
         }
-        // 2, stricter than the spec's 3 in 5 s: the probe goes back on its own at 3 in 1 s, and a
-        // host that lowers first keeps a fixture UART's stream from the timeout it would take to
-        // find the probe gone (V003 jig, CH340 at 921600, 2026-10-01).
-        if self.broken_at.len() >= 2 {
+        let (ok_n, bad_n) = self
+            .speed_window
+            .iter()
+            .fold((0u64, 0u64), |(g, b), (_, gg, bb)| (g + gg, b + bb));
+        let why = if self.speed_ratio_rule {
+            let total = ok_n + bad_n;
+            (total >= 50 && bad_n * 10 > total)
+                .then(|| format!("{bad_n} of {total} frames broken or lost in 3 s (over 10 %)"))
+        } else {
+            (bad_n >= 2).then(|| format!("{bad_n} broken or lost frames in 5 s"))
+        };
+        if let Some(why) = why {
             let rate = p.link().baud().unwrap_or(0);
             let ok = ch32rv_oep::speed::revert(p, port);
             self.speed_port = None;
-            self.broken_at.clear();
+            self.speed_window.clear();
             broker_log(
                 &self.key,
                 &format!(
-                    "port_speed: {} broken frames in 5 s at {rate}: back to the boot speed{}",
-                    2,
+                    "port_speed: {why} at {rate}: back to the boot speed{}",
                     if ok { "" } else { " (no confirm there)" }
                 ),
             );
@@ -915,7 +968,7 @@ impl Broker {
             self.swept();
         }
         let after = self.up.losses();
-        self.watch_speed(after.1 - before.1);
+        self.watch_speed(after.1 - before.1, after.2 - before.2, after.3 - before.3);
         Ok(())
     }
 

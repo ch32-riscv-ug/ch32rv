@@ -170,6 +170,10 @@ pub struct Link {
     pub resends: u64,
     /// COBS frames that broke on the line (bad encoding or CRC), a part of `dropped`.
     pub broken: u64,
+    /// Frames that decoded (answers and pushes): the "good" of oep-spec's host guide §7.4.
+    pub good: u64,
+    /// Requests whose answer did not come within the wait (the guide's "lost").
+    pub lost: u64,
     /// Whether a lost answer is waited for and the request sent again once: not on a lossless
     /// stream (TCP), where a missing answer is only late.
     resend: bool,
@@ -206,6 +210,8 @@ impl Link {
             resyncs: 0,
             resends: 0,
             broken: 0,
+            good: 0,
+            lost: 0,
             resend: true,
             resend_on_broken: false,
             base_baud: None,
@@ -345,7 +351,11 @@ impl Link {
         fallbacks: &mut u32,
     ) -> Result<(), LinkError> {
         loop {
-            match self.pump(reqs, replies) {
+            let r = self.pump(reqs, replies);
+            if matches!(r, Err(LinkError::Timeout(_))) {
+                self.lost += 1;
+            }
+            match r {
                 Ok(()) => return Ok(()),
                 // en: Above the boot speed and no answer (oep-core §3.5, host duty 5): back to the
                 // boot speed, confirm until port_speed_idle_max_ms + 1000 ms. It converges either
@@ -446,6 +456,7 @@ impl Link {
                 return Err(LinkError::Broken);
             }
             while let Some(m) = self.inbox.pop_front() {
+                self.good += 1;
                 match Incoming::decode(&m) {
                     Ok(Incoming::Result {
                         corr: c,
