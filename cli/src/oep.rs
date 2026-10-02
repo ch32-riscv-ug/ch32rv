@@ -378,10 +378,11 @@ pub(crate) fn single_serial(p: &mut Probe) -> bool {
     let Ok(tlvs) = p.describe(oep_core::FN) else {
         return false;
     };
+    // Each transport TLV is index(u8), kind(u8), interface(u8) (oep-core §7.5 0x49): the kind.
     let kinds: Vec<u8> = tlvs
         .iter()
         .filter(|t| t.tag == oep_core::tlvs::describe::TRANSPORT)
-        .flat_map(|t| t.value.clone())
+        .filter_map(|t| t.value.get(1).copied())
         .collect();
     matches!(kinds.as_slice(), [one] if [k::UART_BRIDGE, k::USB_CDC, k::USB_SERIAL_JTAG].contains(one))
 }
