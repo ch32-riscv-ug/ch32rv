@@ -206,6 +206,20 @@ fn interface(out: &mut String, v: &Value) -> Result<(), String> {
                 let _ = writeln!(out, "    }}");
             }
             "event" | "status" | "reject_reasons" => table(out, k, val, "u8", 1)?,
+            // Standard names (label texts): each key is the name itself; the value describes it.
+            "line_names" => {
+                let names = val
+                    .as_table()
+                    .ok_or_else(|| format!("`{name}.line_names` is not a table"))?;
+                let _ = writeln!(out, "    pub mod line_names {{");
+                for (n, what) in names {
+                    if let Some(w) = what.as_str() {
+                        let _ = writeln!(out, "        /// {w}");
+                    }
+                    let _ = writeln!(out, "        pub const {}: &str = {n:?};", konst(n));
+                }
+                let _ = writeln!(out, "    }}");
+            }
             // Ranges no value may use: checked by the spec's own generator; nothing to emit.
             "reserved" => {}
             other => return Err(format!("interface `{name}` has an unknown key `{other}`")),

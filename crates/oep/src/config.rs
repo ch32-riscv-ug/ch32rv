@@ -114,7 +114,7 @@ impl SlotState {
     pub fn wch_chip_id(&self) -> Option<u32> {
         match &self.target_id {
             Some((s, v))
-                if *s == crate::registry::wire_rvswd::enums::target_id_scheme::WCH_DMI_7F
+                if *s == crate::registry::common::enum_::target_id_scheme::WCH_DMI_7F
                     && v.len() == 4 =>
             {
                 Some(u32::from_le_bytes([v[0], v[1], v[2], v[3]]))

@@ -340,8 +340,15 @@ fn verify(
     let max_frame = usize::from(limits.max_frame);
     let n_in = max_frame.saturating_sub(VERIFY_ROOM);
     let n_out = max_frame.saturating_sub(VERIFY_ROOM);
-    let wire = (max_frame + 8) as f64 * 10.0 / f64::from(rate.max(1));
-    let timeout = Duration::from_secs_f64((4.0 * wire * inflight as f64 + 0.1).max(0.3));
+    // The wait floor of oep-core §4.4 for each link_source / link_sink: host_wait_add_ms plus the
+    // transfer time of a UART bridge, (L + max_frame x (1 + notify_pending_max_frames)) x 10 / baud,
+    // L the request's frame length on the wire (at most max_frame and its framing).
+    let transfer = (max_frame + 8) as f64
+        * (2 + crate::registry::timing::NOTIFY_PENDING_MAX_FRAMES) as f64
+        * 10.0
+        / f64::from(rate.max(1));
+    let timeout = Duration::from_millis(u64::from(crate::registry::timing::HOST_WAIT_ADD_MS))
+        + Duration::from_secs_f64(transfer);
     let pattern: Vec<u8> = (0..n_in).map(|k| k as u8).collect();
     // In, out, then both at once: a line may carry each way alone and break when both run
     // (oep-core §3.5; a CH340 at 921600 under a fixture UART's stream, 2026-10-01).

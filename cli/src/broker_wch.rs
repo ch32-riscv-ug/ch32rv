@@ -78,6 +78,9 @@ pub(crate) struct WchUpstream {
     boot_id: u32,
 }
 
+/// The `max_op_ms` this broker declares (fn 0 describe): a run of longer is unsupported.
+const MAX_OP_MS: u32 = 10_000;
+
 /// The riscv-dm `max_length` this broker declares (bytes): a block of more is unsupported.
 const BLOCK_MAX_LENGTH: usize = 1024;
 
@@ -228,7 +231,7 @@ impl WchUpstream {
                         );
                         v.extend(tlv(
                             oep_core::tlvs::describe::MAX_OP_MS,
-                            &registry::limits::MAX_OP_MS_REFERENCE.to_le_bytes(),
+                            &MAX_OP_MS.to_le_bytes(),
                         ));
                         v
                     }
@@ -437,7 +440,7 @@ impl WchUpstream {
                 };
                 out.extend_from_slice(&hz.to_le_bytes());
                 if chip_id != 0 && chip_id != u32::MAX {
-                    let mut v = vec![wire::enums::target_id_scheme::WCH_DMI_7F];
+                    let mut v = vec![registry::common::enum_::target_id_scheme::WCH_DMI_7F];
                     v.extend_from_slice(&chip_id.to_le_bytes());
                     out.extend(tlv(wire::tlvs::attach_answer::TARGET_ID, &v));
                 }
@@ -812,7 +815,7 @@ fn run(s: &mut Session, b: &[u8]) -> Reply {
     if timeout == 0 {
         return rejected(reject_reasons::MALFORMED);
     }
-    if timeout > registry::limits::MAX_OP_MS_REFERENCE {
+    if timeout > MAX_OP_MS {
         return rejected(reject_reasons::UNSUPPORTED);
     }
     let mut at = 9;

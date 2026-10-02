@@ -123,7 +123,8 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
         .iter()
         .find(|t| t.tag == wire::tlvs::attach_answer::TARGET_ID)
         .and_then(|t| {
-            (t.value.len() == 5 && t.value[0] == wire::enums::target_id_scheme::WCH_DMI_7F)
+            (t.value.len() == 5
+                && t.value[0] == crate::registry::common::enum_::target_id_scheme::WCH_DMI_7F)
                 .then(|| le32(&t.value, 1))
         });
     // connection(u16), id(u32: DMSTATUS), flags(u8: attach_flags), speed_hz(u32), [TLV]
