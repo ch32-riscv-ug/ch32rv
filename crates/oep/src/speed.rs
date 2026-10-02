@@ -404,9 +404,14 @@ fn verify(
                 .iter()
                 .map(|&inward| if inward { n_in } else { n_out })
                 .sum::<usize>();
-            frames += sent as u32;
+            // en: Only the first answer that did not come (or came wrong) is a broken frame: the
+            // link stops waiting there, so the requests behind it were not measured and count
+            // neither way (counting them all overstated one break up to the batch size: "broken
+            // 0/0/6" on the V003 jig, 2026-10-02).
+            // ja: 壊れに数えるのは、来なかった(か違った)最初の 1 つだけ。後ろは測っていないので数えない。
+            frames += good as u32 + u32::from(good < sent);
             if good < sent {
-                broken += (sent - good) as u32;
+                broken += 1;
                 if !by_share {
                     break;
                 }
