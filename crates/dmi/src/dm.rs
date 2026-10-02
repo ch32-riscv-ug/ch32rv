@@ -707,6 +707,26 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.write_mem32(FLASH_CTLR, ctlr | FLASH_LOCK | FLASH_FLOCK)
     }
 
+    /// en: Like [`Self::flash_wait`], but bounded by `limit` and going on through read errors (a
+    /// debug module busy behind a mass erase). ja: `limit` までの時間で待ち、読みの誤りも待ち続ける。
+    fn flash_wait_through(
+        &mut self,
+        mask: u32,
+        limit: std::time::Duration,
+    ) -> Result<u32, DmiError> {
+        let deadline = std::time::Instant::now() + limit;
+        loop {
+            match self.read_mem32(FLASH_STATR) {
+                Ok(v) if v & mask == 0 => return Ok(v),
+                Ok(_) => {}
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(DmiError::Timeout);
+            }
+        }
+    }
+
     /// Spin until every bit in `mask` reads 0 in the FLASH status register, then return it.
     fn flash_wait(&mut self, mask: u32) -> Result<u32, DmiError> {
         for _ in 0..4000 {
@@ -876,10 +896,16 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
                 "option-byte unlock failed (OPTWRE not set)".to_owned(),
             ));
         }
-        // Erase all option bytes (they must be blank before programming).
+        // en: Erase all option bytes (they must be blank before programming). On a read-protected
+        // part this starts the mass erase of the whole flash, and the debug module may not
+        // answer until it is done: a CH32X035 behind an OEP probe ran past the 4000 polls and
+        // its reads timed out meanwhile (2026-10-02). So wait by time, and through read errors.
+        // ja: option bytes を消す。保護のかかった part では flash 全体の消去が始まり、終わるまで DM が
+        // 答えないことがある(X035、OEP 経由で 4000 回の poll を越え、その間の読みが timeout した)。
+        // だから時間で待ち、読みの誤りも待ち続ける。
         self.write_mem32(FLASH_CTLR, OPTER | OPTWRE)?;
         self.write_mem32(FLASH_CTLR, OPTER | OPTWRE | FLASH_STRT)?;
-        let statr = self.flash_wait(FLASH_BUSY)?;
+        let statr = self.flash_wait_through(FLASH_BUSY, std::time::Duration::from_secs(10))?;
         if statr & FLASH_WPRERR != 0 {
             self.write_mem32(FLASH_CTLR, 0)?;
             return Err(DmiError::OperationFailed(

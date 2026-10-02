@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Clearing read protection waits for the mass erase it starts: the option-byte erase is waited for by time (up to 10 s) and through read errors, instead of 4000 polls - a CH32X035 behind an OEP probe ran past them, the USER bytes were left erased, and `target protect off` reported a timeout although the flash was erased. `recover` reads option bytes whose USER pair is erased (0xff 0xff) as nonstandard (recommends `target option reset`), not unreadable.
+- (JA) 読み出し保護を外すときは、それが始める全消去を待つ: option bytes の消去を、4000 回の poll ではなく時間(最長 10 秒)で、読みの誤りも越えて待つ。OEP 経由の CH32X035 でこの回数を越え、USER が消えたまま残り、flash は消えているのに `target protect off` が timeout と報告していた。`recover` は、USER の組が消えた(0xff 0xff)option bytes を「読めない」ではなく「既定値でない」(`target option reset` を勧める)と読む。
+
 - (EN) On an OEP probe (`--probe port:oep://…`): `recover` (diagnose), `recover --method auto` / `unprotect`, `target protect on|off`, `target option get|set|reset|write-raw`, and `erase --all|--range|--region` work through the Debug Module (the option bytes and the FLASH controller's page erase), as on a WCH-Link. `recover --method power-off|nrst|unbrick` says they are WCH-Link commands (capability-unsupported) instead of looking for a WCH-Link.
 - (JA) OEP の probe(`--probe port:oep://…`)でも、`recover`(診断)、`recover --method auto` / `unprotect`、`target protect on|off`、`target option get|set|reset|write-raw`、`erase --all|--range|--region` が、WCH-Link と同じく Debug Module(option bytes と FLASH controller の page 消去)で動く。`recover --method power-off|nrst|unbrick` は、WCH-Link を探しに行かず、WCH-Link の命令なので使えない(capability-unsupported)と言う。
 
