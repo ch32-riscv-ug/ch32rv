@@ -217,69 +217,15 @@ pub fn info(cli: &Cli) -> ExitCode {
 /// USER ビットは DB 生成後。生バイトは常に表示し、構造化復号は暫定扱い。
 pub fn option_get(cli: &Cli) -> ExitCode {
     const CMD: &str = "target.option.get";
-    let entry = match select_entry(cli, CMD) {
-        Ok(e) => e,
-        Err(code) => return code,
-    };
-    if entry.mode != ProbeMode::Riscv {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::CapabilityUnsupported,
-            format!(
-                "probe is in {} mode; attaching to a target requires RISC-V mode",
-                mode_str(entry.mode)
-            ),
-            None,
-        );
-    }
-    let (speed, mut warnings) = match parse::speed(&cli.speed) {
-        Ok(v) => v,
+    let mut warnings = match parse::speed(&cli.speed) {
+        Ok((_, w)) => w,
         Err(msg) => return fail(cli, CMD, ErrorKind::Usage, msg, None),
     };
-    let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    let mut session = match Session::attach(
-        &entry,
-        speed,
-        timeout,
-        Duration::from_secs(cli.lock_timeout),
-        cli.chip.as_deref(),
-        cli.db.as_deref(),
-        &mut warnings,
-    ) {
-        Ok(s) => s,
-        Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
-    };
-
-    let family = session.family();
-    let db_family = db_family_of(&mut session);
-    let option_base = match option_base(&db_family) {
-        Ok(b) => b,
-        Err(msg) => return fail(cli, CMD, ErrorKind::CapabilityUnsupported, msg, None),
+    let (family, db_family, raw) = match read_option_bytes_full(cli, CMD) {
+        Ok(v) => v,
+        Err(c) => return c,
     };
     let user_fields = ch32rv_target::option_user_fields(&db_family);
-    let mut dm = session.dm();
-    if let Err(e) = dm.halt() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::AttachFailed,
-            format!("halt failed: {e}"),
-            None,
-        );
-    }
-    let raw = match dm.read_mem(option_base, 16) {
-        Ok(v) => v,
-        Err(e) => {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::TransferFailed,
-                format!("reading option bytes failed: {e}"),
-                None,
-            );
-        }
-    };
 
     // Layout (STM32F1-style, shared by CH32V0/V1/V2/V3/X0): each logical byte is stored with its
     // complement. [0]=RDPR [2]=USER [4]=Data0 [6]=Data1 [8/10/12/14]=WRPR0..3.
@@ -378,6 +324,118 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 /// en: Resolve the DB family string for the attached target from its live chip id (the AttachChip
 /// family byte is coarser: 0x06 covers CH32V30x while the DB keys on CH32V307).
 /// ja: 生の chip_id から DB の family 文字列を引く(attach の family byte より細かい粒度)。
+/// en: A `DtmAccess` behind a trait object, so one `DebugModule<DynDtm>` serves a WCH-Link session
+/// and an OEP connection alike. ja: trait object の裏の `DtmAccess`(WCH と OEP を同じ型で扱う)。
+pub(crate) struct DynDtm<'a>(&'a mut dyn ch32rv_dmi::DtmAccess);
+
+impl ch32rv_dmi::DtmAccess for DynDtm<'_> {
+    fn dmi_read(&mut self, addr: u8) -> Result<u32, ch32rv_dmi::DmiError> {
+        self.0.dmi_read(addr)
+    }
+    fn dmi_write(&mut self, addr: u8, value: u32) -> Result<(), ch32rv_dmi::DmiError> {
+        self.0.dmi_write(addr, value)
+    }
+    fn dmi_nop(&mut self) -> Result<(), ch32rv_dmi::DmiError> {
+        self.0.dmi_nop()
+    }
+    fn resume_hart(&mut self) -> Option<Result<(), ch32rv_dmi::DmiError>> {
+        self.0.resume_hart()
+    }
+    fn dmi_sequence(
+        &mut self,
+        ops: &[ch32rv_dmi::DmiOp],
+    ) -> Result<Vec<u32>, ch32rv_dmi::DmiError> {
+        self.0.dmi_sequence(ops)
+    }
+}
+
+/// en: The target as the option-byte and recover commands use it, whichever probe holds it: a
+/// WCH-Link session, or an OEP connection (directly, or a WCH-Link behind its broker).
+/// ja: option bytes と recover が使う target。WCH-Link の session か OEP の接続のどちらか。
+pub(crate) enum OnTarget<'a, 'b> {
+    Wch(&'a mut Session),
+    Oep(&'a mut crate::oep::Attached<'b>),
+}
+
+impl OnTarget<'_, '_> {
+    /// The Debug Module's access.
+    pub(crate) fn dtm(&mut self) -> DynDtm<'_> {
+        match self {
+            OnTarget::Wch(s) => DynDtm(s.link()),
+            OnTarget::Oep(x) => DynDtm(&mut x.t),
+        }
+    }
+
+    /// Halt the hart (the probe's own halt on OEP).
+    pub(crate) fn halt(&mut self) -> Result<(), ch32rv_dmi::DmiError> {
+        match self {
+            OnTarget::Wch(s) => s.dm().halt(),
+            OnTarget::Oep(x) => ch32rv_dmi::TargetAccess::halt(&mut x.t),
+        }
+    }
+
+    /// Let the hart run (the probe's own resume on OEP, so it polls its console again).
+    pub(crate) fn resume(&mut self) -> Result<(), ch32rv_dmi::DmiError> {
+        match self {
+            OnTarget::Wch(s) => s.dm().resume(),
+            OnTarget::Oep(x) => match ch32rv_dmi::DtmAccess::resume_hart(&mut x.t) {
+                Some(r) => r,
+                None => ch32rv_dmi::DebugModule::new(&mut x.t).resume(),
+            },
+        }
+    }
+
+    /// A system reset that applies new option bytes (the target runs after it).
+    pub(crate) fn system_reset(&mut self) {
+        match self {
+            OnTarget::Wch(s) => {
+                let _ = s.link().soft_reset();
+            }
+            OnTarget::Oep(x) => {
+                let _ = ch32rv_dmi::TargetAccess::reset(&mut x.t, ch32rv_dmi::ResetMode::Run);
+            }
+        }
+    }
+
+    /// The chip id the attach read (DMI 0x7F on WCH parts), when there is one.
+    pub(crate) fn chip_id(&self) -> Option<u32> {
+        match self {
+            OnTarget::Wch(s) => Some(s.attach.chip_id),
+            OnTarget::Oep(x) => x.chip_id,
+        }
+    }
+}
+
+/// en: Attach (halted) at whichever probe the command line names and run `f` with the target, its
+/// family (for display) and its DB family (for the option block): an OEP address goes through the
+/// OEP probe, anything else through a WCH-Link. On exit the OEP connection is detached and the
+/// session ended; a WCH session drops as usual.
+/// ja: コマンド行の probe に(止めて)attach し、target と family、DB の family を `f` に渡す。OEP の
+/// address なら OEP、それ以外は WCH-Link。
+pub(crate) fn on_target(
+    cli: &Cli,
+    cmd: &str,
+    f: impl FnOnce(&mut OnTarget<'_, '_>, &str, &str) -> ExitCode,
+) -> ExitCode {
+    match crate::oep::addr(cli, cmd) {
+        Ok(Some(a)) => crate::oep::with_attached(cli, cmd, &a, true, |x| {
+            let family = x.family.clone().unwrap_or_else(|| "unknown".to_owned());
+            let db_family = family.clone();
+            f(&mut OnTarget::Oep(x), &family, &db_family)
+        }),
+        Ok(None) => {
+            let mut session = match crate::cmd_probe::attach(cli, cmd) {
+                Ok(s) => s,
+                Err(c) => return c,
+            };
+            let family = session.family();
+            let db_family = db_family_of(&mut session);
+            f(&mut OnTarget::Wch(&mut session), &family, &db_family)
+        }
+        Err(c) => c,
+    }
+}
+
 pub(crate) fn db_family_of(session: &mut Session) -> String {
     let db = session.db();
     match db.resolve_by_chip_id(session.attach.chip_id) {
@@ -503,32 +561,51 @@ fn parse_hex16(s: &str) -> Result<[u8; 16], String> {
 /// en: Read the 16 option bytes plus the DB family string (for USER-field names) - attach, halt,
 /// read, detach. ja: 16 byte の option bytes と DB family(USER field 名用)を読む。
 fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<(String, [u8; 16]), ExitCode> {
-    let mut session = crate::cmd_probe::attach(cli, cmd)?;
-    let db_family = db_family_of(&mut session);
-    let base = option_base(&db_family)
-        .map_err(|msg| fail(cli, cmd, ErrorKind::CapabilityUnsupported, msg, None))?;
-    let mut dm = session.dm();
-    dm.halt().map_err(|e| {
-        fail(
-            cli,
-            cmd,
-            ErrorKind::AttachFailed,
-            format!("halt failed: {e}"),
-            None,
-        )
-    })?;
-    let v = dm.read_mem(base, 16).map_err(|e| {
-        fail(
-            cli,
-            cmd,
-            ErrorKind::TransferFailed,
-            format!("reading option bytes failed: {e}"),
-            None,
-        )
-    })?;
-    let mut a = [0u8; 16];
-    a.copy_from_slice(&v[..16]);
-    Ok((db_family, a))
+    read_option_bytes_full(cli, cmd).map(|(_, db_family, ob)| (db_family, ob))
+}
+
+/// The option bytes with the target's family (for display) and DB family (for decoding).
+fn read_option_bytes_full(cli: &Cli, cmd: &str) -> Result<(String, String, [u8; 16]), ExitCode> {
+    let mut got = None;
+    let code = on_target(cli, cmd, |t, family, db_family| {
+        let base = match option_base(db_family) {
+            Ok(b) => b,
+            Err(msg) => return fail(cli, cmd, ErrorKind::CapabilityUnsupported, msg, None),
+        };
+        if let Err(e) = t.halt() {
+            return fail(
+                cli,
+                cmd,
+                ErrorKind::AttachFailed,
+                format!("halt failed: {e}"),
+                None,
+            );
+        }
+        let mut d = t.dtm();
+        match ch32rv_dmi::DebugModule::new(&mut d).read_mem(base, 16) {
+            Ok(v) if v.len() >= 16 => {
+                let mut a = [0u8; 16];
+                a.copy_from_slice(&v[..16]);
+                got = Some((family.to_owned(), db_family.to_owned(), a));
+                ExitCode::SUCCESS
+            }
+            Ok(_) => fail(
+                cli,
+                cmd,
+                ErrorKind::TransferFailed,
+                "reading option bytes came back short",
+                None,
+            ),
+            Err(e) => fail(
+                cli,
+                cmd,
+                ErrorKind::TransferFailed,
+                format!("reading option bytes failed: {e}"),
+                None,
+            ),
+        }
+    });
+    got.ok_or(code)
 }
 
 /// en: Erase + program the 16 option bytes to `new` (value+complement pairs, as `option get`
@@ -536,129 +613,134 @@ fn read_option_bytes(cli: &Cli, cmd: &str) -> Result<(String, [u8; 16]), ExitCod
 /// re-established immediately. The bytes take effect after a system reset. ja: option bytes を
 /// `new` へ erase+program し read-back で検証。RDPR を最初に書く。反映は system reset 後。
 fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
-    let mut session = match crate::cmd_probe::attach(cli, cmd) {
-        Ok(s) => s,
-        Err(c) => return c,
-    };
-    let family = session.family();
-    let db_family = db_family_of(&mut session);
-    let base = match option_base(&db_family) {
-        Ok(b) => b,
-        Err(msg) => return fail(cli, cmd, ErrorKind::CapabilityUnsupported, msg, None),
-    };
-    if let Some(w) = option_method_warning(&db_family) {
-        eprintln!("warning[option-write-method]: {w}");
-    }
-    let mut dm = session.dm();
-    if let Err(e) = dm.halt() {
-        return fail(
-            cli,
-            cmd,
-            ErrorKind::AttachFailed,
-            format!("halt failed: {e}"),
-            None,
-        );
-    }
-    let before = match dm.read_mem(base, 16) {
-        Ok(v) => v,
-        Err(e) => {
+    on_target(cli, cmd, |t, family, db_family| {
+        let base = match option_base(db_family) {
+            Ok(b) => b,
+            Err(msg) => return fail(cli, cmd, ErrorKind::CapabilityUnsupported, msg, None),
+        };
+        if let Some(w) = option_method_warning(db_family) {
+            eprintln!("warning[option-write-method]: {w}");
+        }
+        if let Err(e) = t.halt() {
             return fail(
                 cli,
                 cmd,
-                ErrorKind::TransferFailed,
-                format!("reading option bytes failed: {e}"),
+                ErrorKind::AttachFailed,
+                format!("halt failed: {e}"),
                 None,
             );
         }
-    };
-    if let Err(e) = dm.flash_program_option_bytes(base, new) {
-        return fail(
-            cli,
-            cmd,
-            ErrorKind::TransferFailed,
-            format!(
-                "programming option bytes failed: {e} - the target may be left with erased (read-protected) option bytes; recover with `ch32rv recover`"
-            ),
-            None,
-        );
-    }
-    // en: Verify after a reset, not straight after the write. On CH32V103 the option area keeps
-    // reading back the pre-write image until the target resets - `option set STOPRST=0` was
-    // measured reporting a false verify-mismatch while the write had in fact taken, and a fresh
-    // session showed the new value. Option bytes only take effect at reset anyway, so resetting
-    // first is also what the caller wants. Re-read a couple of times in case the reset is still
-    // settling; a mismatch that survives that is a genuine write failure (exit 30).
-    // ja: 検証は reset 後に行う。V103 は reset するまで書込前の像を読み続け、書けているのに
-    // verify-mismatch を返していた(実測)。option bytes はどのみち reset で反映されるので、
-    // reset してから読むのが意味的にも正しい。落ち着くまで数回読み直す。
-    // (the `dm` borrow above ends here, so the probe is reachable again)
-    let _ = session.link().soft_reset();
-    std::thread::sleep(Duration::from_millis(50));
-    let mut dm = session.dm();
-    if let Err(e) = dm.halt() {
-        return fail(
-            cli,
-            cmd,
-            ErrorKind::AttachFailed,
-            format!("halt after the option reset failed: {e}"),
-            None,
-        );
-    }
-    let mut after = Vec::new();
-    for attempt in 0..3 {
-        if attempt > 0 {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        after = match dm.read_mem(base, 16) {
-            Ok(v) => v,
-            Err(e) => {
+        let before = {
+            let mut d = t.dtm();
+            let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
+            let before = match dm.read_mem(base, 16) {
+                Ok(v) => v,
+                Err(e) => {
+                    return fail(
+                        cli,
+                        cmd,
+                        ErrorKind::TransferFailed,
+                        format!("reading option bytes failed: {e}"),
+                        None,
+                    );
+                }
+            };
+            if let Err(e) = dm.flash_program_option_bytes(base, new) {
                 return fail(
                     cli,
                     cmd,
                     ErrorKind::TransferFailed,
-                    format!("verify read failed: {e}"),
+                    format!(
+                        "programming option bytes failed: {e} - the target may be left with erased (read-protected) option bytes; recover with `ch32rv recover`"
+                    ),
                     None,
                 );
             }
+            before
         };
-        if (0..16).step_by(2).all(|i| after[i] == new[i]) {
-            break;
+        // en: Verify after a reset, not straight after the write. On CH32V103 the option area
+        // keeps reading back the pre-write image until the target resets - `option set
+        // STOPRST=0` was measured reporting a false verify-mismatch while the write had in fact
+        // taken, and a fresh session showed the new value. Option bytes only take effect at
+        // reset anyway, so resetting first is also what the caller wants. Re-read a couple of
+        // times in case the reset is still settling; a mismatch that survives that is a genuine
+        // write failure (exit 30).
+        // ja: 検証は reset 後に行う。V103 は reset するまで書込前の像を読み続け、書けているのに
+        // verify-mismatch を返していた(実測)。option bytes はどのみち reset で反映されるので、
+        // reset してから読むのが意味的にも正しい。落ち着くまで数回読み直す。
+        t.system_reset();
+        std::thread::sleep(Duration::from_millis(50));
+        if let Err(e) = t.halt() {
+            return fail(
+                cli,
+                cmd,
+                ErrorKind::AttachFailed,
+                format!("halt after the option reset failed: {e}"),
+                None,
+            );
         }
-    }
-    if let Some(i) = (0..16).step_by(2).find(|&i| after[i] != new[i]) {
-        return fail(
-            cli,
-            cmd,
-            ErrorKind::VerifyMismatch,
-            format!(
-                "option byte {i} reads back 0x{:02x}, not the requested 0x{:02x} (before={}, after={})",
-                after[i],
-                new[i],
+        let mut after = Vec::new();
+        {
+            let mut d = t.dtm();
+            let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
+            for attempt in 0..3 {
+                if attempt > 0 {
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                after = match dm.read_mem(base, 16) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        return fail(
+                            cli,
+                            cmd,
+                            ErrorKind::TransferFailed,
+                            format!("verify read failed: {e}"),
+                            None,
+                        );
+                    }
+                };
+                if (0..16).step_by(2).all(|i| after.get(i) == Some(&new[i])) {
+                    break;
+                }
+            }
+        }
+        // The option bytes are in place: let the target run its (possibly erased) program.
+        let _ = t.resume();
+        if let Some(i) = (0..16).step_by(2).find(|&i| after.get(i) != Some(&new[i])) {
+            return fail(
+                cli,
+                cmd,
+                ErrorKind::VerifyMismatch,
+                format!(
+                    "option byte {i} reads back 0x{:02x}, not the requested 0x{:02x} (before={}, after={})",
+                    after.get(i).copied().unwrap_or(0),
+                    new[i],
+                    hex(&before),
+                    hex(&after)
+                ),
+                Some("the write did not take; check the target is not write-protected"),
+            );
+        }
+        if cli.json {
+            let mut env = ResultEnvelope::success(cmd);
+            env.result = Some(serde_json::json!({
+                "family": family,
+                "before": hex(&before),
+                "after": hex(&after),
+                "verified": true,
+                "note": "option bytes take effect after a power-on / system reset",
+            }));
+            crate::print_envelope(&env)
+        } else {
+            println!(
+                "option bytes: {} -> {} ({family})",
                 hex(&before),
                 hex(&after)
-            ),
-            Some("the write did not take; check the target is not write-protected"),
-        );
-    }
-    if cli.json {
-        let mut env = ResultEnvelope::success(cmd);
-        env.result = Some(serde_json::json!({
-            "family": family,
-            "before": hex(&before),
-            "after": hex(&after),
-            "verified": true,
-            "note": "option bytes take effect after a power-on / system reset",
-        }));
-        crate::print_envelope(&env)
-    } else {
-        println!(
-            "option bytes: {} -> {} ({family})",
-            hex(&before),
-            hex(&after)
-        );
-        println!("note: option bytes take effect after a power-on / system reset");
-        ExitCode::SUCCESS
-    }
+            );
+            println!("note: option bytes take effect after a power-on / system reset");
+            ExitCode::SUCCESS
+        }
+    })
 }
 
 /// `target option write-raw <hex>`: overwrite the 16 option bytes with a raw value (expert).

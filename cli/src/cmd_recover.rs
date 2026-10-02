@@ -133,7 +133,65 @@ fn try_attach(
     )
 }
 
+/// en: The diagnosis through an OEP probe: attach (halted), read the option bytes twice through
+/// the Debug Module, classify them, and leave the hart running. The probe has no power switch, so
+/// an unreachable target is the attach's own error (it names what did not answer).
+/// ja: OEP の probe での診断。止めて attach し、option bytes を 2 回読んで分類し、走らせて戻す。
+fn diagnose_oep(cli: &Cli) -> Result<Diagnosis, ExitCode> {
+    let mut out = None;
+    let code = crate::cmd_target::on_target(cli, CMD, |t, family, db_family| {
+        let base = match crate::cmd_target::option_base(db_family) {
+            Ok(b) => b,
+            Err(msg) => return fail(cli, CMD, ErrorKind::CapabilityUnsupported, msg, None),
+        };
+        let mut reads = [[0u8; 16]; 2];
+        let mut read_ok = true;
+        {
+            let mut d = t.dtm();
+            let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
+            for r in &mut reads {
+                match dm.read_mem(base, 16) {
+                    Ok(v) if v.len() == 16 => r.copy_from_slice(&v),
+                    _ => read_ok = false,
+                }
+            }
+        }
+        // Leave the target running as it was found: the diagnosis only looks.
+        let _ = t.resume();
+        let state = if read_ok {
+            classify(db_family, &reads[0], &reads[1])
+        } else {
+            State::OptionUnreadable
+        };
+        let mut notes = Vec::new();
+        if state == State::OptionNonstandard {
+            notes.push(format!(
+                "USER 0x{:02x}, documented defaults give 0x{:02x}",
+                reads[0][2],
+                crate::cmd_target::reset_user_byte(db_family, reads[0][2])
+            ));
+        }
+        out = Some(Diagnosis {
+            state,
+            action: recommend(state, false),
+            probe: "OEP".to_owned(),
+            speed: Some("high"),
+            family: Some(family.to_owned()),
+            db_family: Some(db_family.to_owned()),
+            chip_id: t.chip_id(),
+            option_bytes: read_ok.then_some(reads[0]),
+            notes,
+            warnings: Vec::new(),
+        });
+        ExitCode::SUCCESS
+    });
+    out.ok_or(code)
+}
+
 fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
+    if crate::oep::addr(cli, CMD)?.is_some() {
+        return diagnose_oep(cli);
+    }
     let entry = select_entry(cli, CMD)?;
     if entry.mode != ch32rv_contract::ProbeMode::Riscv {
         return Err(fail(
