@@ -727,6 +727,26 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         }
     }
 
+    /// `op` again until it goes through, for up to 10 s (a debug module busy behind a mass erase).
+    fn retry_through(
+        &mut self,
+        mut op: impl FnMut(&mut Self) -> Result<(), DmiError>,
+    ) -> Result<(), DmiError> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match op(self) {
+                Ok(()) => return Ok(()),
+                Err(e @ (DmiError::Timeout | DmiError::OperationFailed(_))) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(e);
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
     /// Spin until every bit in `mask` reads 0 in the FLASH status register, then return it.
     fn flash_wait(&mut self, mask: u32) -> Result<u32, DmiError> {
         for _ in 0..4000 {
@@ -903,8 +923,14 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         // ja: option bytes を消す。保護のかかった part では flash 全体の消去が始まり、終わるまで DM が
         // 答えないことがある(X035、OEP 経由で 4000 回の poll を越え、その間の読みが timeout した)。
         // だから時間で待ち、読みの誤りも待ち続ける。
+        // The store that sets STRT may itself not finish within the abstract command's poll (the
+        // bus stalls under the erase it starts, measured on the CH32X035): it was issued, so go
+        // on to the wait; each later command clears cmderr first.
         self.write_mem32(FLASH_CTLR, OPTER | OPTWRE)?;
-        self.write_mem32(FLASH_CTLR, OPTER | OPTWRE | FLASH_STRT)?;
+        match self.write_mem32(FLASH_CTLR, OPTER | OPTWRE | FLASH_STRT) {
+            Ok(()) | Err(DmiError::Timeout | DmiError::OperationFailed(_)) => {}
+            Err(e) => return Err(e),
+        }
         let statr = self.flash_wait_through(FLASH_BUSY, std::time::Duration::from_secs(10))?;
         if statr & FLASH_WPRERR != 0 {
             self.write_mem32(FLASH_CTLR, 0)?;
@@ -914,13 +940,18 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         }
         // Program the 8 halfwords; RDPR (halfword 0) first, so read protection is re-established
         // immediately after the erase blanked it.
+        // The mass erase may still hold the bus after the option erase reads done: each step
+        // here is retried through errors for a while, as the wait above.
         for i in 0..8u32 {
-            self.write_mem32(FLASH_CTLR, OPTPG | OPTWRE)?;
-            self.write_mem32(FLASH_CTLR, OPTPG | OPTWRE | FLASH_STRT)?;
+            self.retry_through(|dm| dm.write_mem32(FLASH_CTLR, OPTPG | OPTWRE))?;
+            self.retry_through(|dm| dm.write_mem32(FLASH_CTLR, OPTPG | OPTWRE | FLASH_STRT))?;
             let lo = bytes[(i * 2) as usize];
             let hi = bytes[(i * 2 + 1) as usize];
-            self.write_mem16(base + i * 2, u16::from_le_bytes([lo, hi]))?;
-            let statr = self.flash_wait(FLASH_BUSY)?;
+            match self.write_mem16(base + i * 2, u16::from_le_bytes([lo, hi])) {
+                Ok(()) | Err(DmiError::Timeout | DmiError::OperationFailed(_)) => {}
+                Err(e) => return Err(e),
+            }
+            let statr = self.flash_wait_through(FLASH_BUSY, std::time::Duration::from_secs(10))?;
             if statr & FLASH_WPRERR != 0 {
                 self.write_mem32(FLASH_CTLR, 0)?;
                 return Err(DmiError::OperationFailed(format!(
