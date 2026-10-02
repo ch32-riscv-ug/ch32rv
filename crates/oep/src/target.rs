@@ -64,6 +64,9 @@ pub struct AttachOptions {
     /// How the line idles (`wire_rvswd::enums::idle_clock`; rvswd only, sent critical). `None`:
     /// the probe's default (high). A slot's value is the host's to pass (oep-spec 5bfe052).
     pub idle_clock: Option<u8>,
+    /// Hold the target's reset line (channel, ms) through the attach (TLV reset, critical): with
+    /// `halt`, the hart is stopped as early as the probe can after the release (oep-if-debug §3).
+    pub reset: Option<(u16, u16)>,
 }
 
 /// `attach` on `kind`.
@@ -103,6 +106,11 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
             true,
             &[wire::enums::idle_clock::LOW],
         );
+    }
+    if let Some((channel, hold_ms)) = o.reset {
+        let mut v = channel.to_le_bytes().to_vec();
+        v.extend_from_slice(&hold_ms.to_le_bytes());
+        put_tlv(&mut pl, wire::tlvs::attach::RESET, true, &v);
     }
     let a = check(p.call(func, wire::op::ATTACH, pl)?)?;
     if a.len() < 11 {

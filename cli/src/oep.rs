@@ -476,6 +476,7 @@ impl Place {
             max_speed_hz,
             pins: self.pins,
             idle_clock: self.idle_clock,
+            reset: None,
         }
     }
 }
@@ -1213,6 +1214,8 @@ pub(crate) struct Attached<'a> {
     pub(crate) family: Option<String>,
     /// The attach found a connection already there (another client's).
     pub(crate) existing: bool,
+    /// Where the hart stood when the attach halted it, if it did.
+    pub(crate) halted_at: Option<u32>,
 }
 
 /// en: Connect, open a session, attach at the place `choose_place` picks (halting when asked),
@@ -1225,6 +1228,42 @@ pub(crate) fn with_attached(
     cmd: &str,
     a: &OepAddr,
     halt: bool,
+    f: impl FnOnce(&mut Attached<'_>) -> ExitCode,
+) -> ExitCode {
+    with_attached_reset(cli, cmd, a, halt, false, f)
+}
+
+/// How long the NRST line is held low on an attach under reset (the probe's own retry uses the
+/// same, oep-spec registry `slot_retry_reset_hold_ms`).
+const NRST_HOLD_MS: u16 = 20;
+
+/// en: The slot's NRST line by the host guide's label rule (§8.1): the slot named in the address,
+/// or the probe's only slot. ja: スロットの NRST の線(address のスロット、またはただ 1 つのスロット)。
+fn nrst_line(p: &mut Probe, a: &OepAddr) -> Result<u16, String> {
+    let slots = ch32rv_oep::config::slots(p).map_err(|e| e.to_string())?;
+    let name = match a {
+        OepAddr::Slot { slot, .. } => slot.clone(),
+        _ if slots.len() == 1 => slots[0].name.clone(),
+        _ => {
+            return Err(format!(
+                "name the slot (`oep://<probe>/<slot>`) to find its NRST line ({} slot(s) on this probe)",
+                slots.len()
+            ));
+        }
+    };
+    let labels = ch32rv_oep::config::labels(p).map_err(|e| e.to_string())?;
+    ch32rv_oep::config::find_line(&labels, &name, slots.len(), "nrst")?.ok_or_else(|| {
+        format!("no NRST line for slot `{name}`: set a label `{name}.nrst` (or `nrst` on a one-slot probe) on its channel")
+    })
+}
+
+/// [`with_attached`], optionally holding the slot's NRST line through the attach (`under_reset`).
+pub(crate) fn with_attached_reset(
+    cli: &Cli,
+    cmd: &str,
+    a: &OepAddr,
+    halt: bool,
+    under_reset: bool,
     f: impl FnOnce(&mut Attached<'_>) -> ExitCode,
 ) -> ExitCode {
     let mut p = match connect(cli, cmd, a) {
@@ -1241,7 +1280,22 @@ pub(crate) fn with_attached(
             Err(m) => return fail(cli, cmd, ErrorKind::TargetAmbiguous, m, None),
         };
         let wire = place.wire;
-        let at = match attach(&mut p, wire, place.options(halt, None)) {
+        let mut options = place.options(halt, None);
+        if under_reset {
+            match nrst_line(&mut p, a) {
+                Ok(ch) => options.reset = Some((ch, NRST_HOLD_MS)),
+                Err(m) => {
+                    return fail(
+                        cli,
+                        cmd,
+                        ErrorKind::CapabilityUnsupported,
+                        m,
+                        Some("oep-spec host-development-guide §8.1 names the lines"),
+                    );
+                }
+            }
+        }
+        let at = match attach(&mut p, wire, options) {
             Ok(a) => a,
             Err(e) => return oep_fail(cli, cmd, e),
         };
@@ -1258,6 +1312,7 @@ pub(crate) fn with_attached(
                 chip_id: at.wch_chip_id,
                 family,
                 existing: at.existing,
+                halted_at: at.halted,
             }),
             Err(e) => oep_fail(cli, cmd, e),
         };

@@ -124,8 +124,9 @@ impl SlotState {
     }
 }
 
-/// The registered slots (`get`, following `more`). Empty when the probe has no `oep.probe.config`.
-pub fn slots(p: &mut Probe) -> Result<Vec<Slot>, OepError> {
+/// Every item of the probe's configuration (`get`, following `more`), lock-free. Empty when the
+/// probe has no `oep.probe.config`.
+fn items(p: &mut Probe) -> Result<Vec<crate::codec::Tlv>, OepError> {
     let Ok(func) = p.interface(cfg::NAME).map(|i| i.func) else {
         return Ok(Vec::new());
     };
@@ -142,18 +143,61 @@ pub fn slots(p: &mut Probe) -> Result<Vec<Slot>, OepError> {
         if a.len() < 5 {
             return Err(OepError::Malformed("config get answer too short".into()));
         }
-        let items = parse_tlvs(&a[5..]).map_err(|e| OepError::Malformed(e.to_string()))?;
-        first = first.saturating_add(items.len() as u16);
-        for t in &items {
-            if t.tag & 0x7F == cfg::tlvs::item::SLOT
-                && let Some(s) = Slot::parse(&t.value)
-            {
-                out.push(s);
-            }
-        }
-        if a[0] == 0 || items.is_empty() {
+        let got = parse_tlvs(&a[5..]).map_err(|e| OepError::Malformed(e.to_string()))?;
+        first = first.saturating_add(got.len() as u16);
+        let n = got.len();
+        out.extend(got);
+        if a[0] == 0 || n == 0 {
             return Ok(out);
         }
+    }
+}
+
+/// The registered slots (`get`, following `more`). Empty when the probe has no `oep.probe.config`.
+pub fn slots(p: &mut Probe) -> Result<Vec<Slot>, OepError> {
+    Ok(items(p)?
+        .iter()
+        .filter(|t| t.tag & 0x7F == cfg::tlvs::item::SLOT)
+        .filter_map(|t| Slot::parse(&t.value))
+        .collect())
+}
+
+/// The channel names set in the configuration (label items: `channel(u16) text`).
+pub fn labels(p: &mut Probe) -> Result<Vec<(u16, String)>, OepError> {
+    Ok(items(p)?
+        .iter()
+        .filter(|t| t.tag & 0x7F == cfg::tlvs::item::LABEL && t.value.len() >= 2)
+        .map(|t| {
+            (
+                u16::from_le_bytes([t.value[0], t.value[1]]),
+                String::from_utf8_lossy(&t.value[2..]).into_owned(),
+            )
+        })
+        .collect())
+}
+
+/// en: The channel of the line `name` (`nrst`, `power_hi`, `power_lo`) for the slot `slot`, by
+/// the host guide's label rule (oep-spec host-development-guide §8.1): `<slot>.<name>` first, then
+/// the bare `<name>` - but the bare one only on a probe with at most one slot (with more it names
+/// no target). `Ok(None)`: no such line. `Err`: only a bare name on a probe with several slots.
+/// ja: スロットの線(`nrst` など)の channel。`<slot>.<name>` を先に、無ければ素の名前(スロットが
+/// 1 つ以下の probe だけ)。
+pub fn find_line(
+    labels: &[(u16, String)],
+    slot: &str,
+    slot_count: usize,
+    name: &str,
+) -> Result<Option<u16>, String> {
+    let scoped = format!("{slot}.{name}");
+    if let Some((ch, _)) = labels.iter().find(|(_, t)| *t == scoped) {
+        return Ok(Some(*ch));
+    }
+    match labels.iter().find(|(_, t)| t == name) {
+        Some((ch, _)) if slot_count <= 1 => Ok(Some(*ch)),
+        Some(_) => Err(format!(
+            "the probe has {slot_count} slots and only a bare `{name}` label: name it `{scoped}` for this slot"
+        )),
+        None => Ok(None),
     }
 }
 
@@ -217,6 +261,15 @@ mod tests {
         v.push(lock.len() as u8); // lock_len
         v.extend_from_slice(lock);
         v
+    }
+
+    #[test]
+    fn a_line_is_found_by_slot_then_bare_name() {
+        let labels = vec![(23u16, "nrst".to_owned()), (5, "x035.power_hi".to_owned())];
+        assert_eq!(find_line(&labels, "v003", 1, "nrst"), Ok(Some(23)));
+        assert!(find_line(&labels, "v003", 2, "nrst").is_err());
+        assert_eq!(find_line(&labels, "x035", 2, "power_hi"), Ok(Some(5)));
+        assert_eq!(find_line(&labels, "x035", 2, "power_lo"), Ok(None));
     }
 
     #[test]
