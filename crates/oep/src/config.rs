@@ -177,23 +177,36 @@ pub fn labels(p: &mut Probe) -> Result<Vec<(u16, String)>, OepError> {
 }
 
 /// en: The channel of the line `name` (`nrst`, `power_hi`, `power_lo`) for the slot `slot`, by
-/// the host guide's label rule (oep-spec host-development-guide §8.1): `<slot>.<name>` first, then
-/// the bare `<name>` - but the bare one only on a probe with at most one slot (with more it names
-/// no target). `Ok(None)`: no such line. `Err`: only a bare name on a probe with several slots.
-/// ja: スロットの線(`nrst` など)の channel。`<slot>.<name>` を先に、無ければ素の名前(スロットが
-/// 1 つ以下の probe だけ)。
+/// oep-if-probe-config §1.3 (the probe uses the same rule for its own reset retry): names compared
+/// case aside, `<slot>.<name>` first, then the bare `<name>` - the bare one only on a probe with at
+/// most one slot. Two channels matching at the same step is no line. `Ok(None)`: no such line.
+/// `Err`: only a bare name on a probe with several slots (said so, rather than no line).
+/// ja: スロットの線の channel(§1.3、probe の自分のやり直しと同じ規則)。大小は区別せず、`<slot>.<name>`
+/// を先に、無ければ素の名前(スロットが 1 つ以下だけ)。同じ段で 2 つ一致したら線は無い。
 pub fn find_line(
     labels: &[(u16, String)],
     slot: &str,
     slot_count: usize,
     name: &str,
 ) -> Result<Option<u16>, String> {
+    let one = |want: &str| -> Option<Option<u16>> {
+        let hits: Vec<u16> = labels
+            .iter()
+            .filter(|(_, t)| t.eq_ignore_ascii_case(want))
+            .map(|(c, _)| *c)
+            .collect();
+        match hits.as_slice() {
+            [] => None,
+            [c] => Some(Some(*c)),
+            _ => Some(None), // two at the same step: no line
+        }
+    };
     let scoped = format!("{slot}.{name}");
-    if let Some((ch, _)) = labels.iter().find(|(_, t)| *t == scoped) {
-        return Ok(Some(*ch));
+    if let Some(found) = one(&scoped) {
+        return Ok(found);
     }
-    match labels.iter().find(|(_, t)| t == name) {
-        Some((ch, _)) if slot_count <= 1 => Ok(Some(*ch)),
+    match one(name) {
+        Some(found) if slot_count <= 1 => Ok(found),
         Some(_) => Err(format!(
             "the probe has {slot_count} slots and only a bare `{name}` label: name it `{scoped}` for this slot"
         )),
@@ -270,6 +283,10 @@ mod tests {
         assert!(find_line(&labels, "v003", 2, "nrst").is_err());
         assert_eq!(find_line(&labels, "x035", 2, "power_hi"), Ok(Some(5)));
         assert_eq!(find_line(&labels, "x035", 2, "power_lo"), Ok(None));
+        // Case aside, and two at the same step is no line (oep-if-probe-config §1.3).
+        assert_eq!(find_line(&labels, "X035", 2, "POWER_HI"), Ok(Some(5)));
+        let two = vec![(1u16, "v003.nrst".to_owned()), (2, "V003.NRST".to_owned())];
+        assert_eq!(find_line(&two, "v003", 1, "nrst"), Ok(None));
     }
 
     #[test]
