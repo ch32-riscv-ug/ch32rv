@@ -1171,6 +1171,11 @@ fn finish(
 
 pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
     const CMD: &str = "erase";
+    match crate::oep::addr(cli, CMD) {
+        Ok(Some(_)) => return erase_oep(cli, args),
+        Ok(None) => {}
+        Err(c) => return c,
+    }
     if args.region.is_some() || args.range.is_some() {
         return erase_range(cli, args);
     }
@@ -1205,6 +1210,136 @@ pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         println!("erased entire chip flash ({})", session.family());
         ExitCode::SUCCESS
     }
+}
+/// en: `erase` through an OEP probe: page erases by the FLASH controller over the Debug Module,
+/// for `--all` the whole code flash (the size from the DB by the chip id), for `--range` /
+/// `--region` the page-aligned span. A WCH-Link's own chip erase is not there.
+/// ja: OEP の probe での `erase`。Debug Module で FLASH controller の page 消去を回す。`--all` は
+/// code flash 全体(大きさは chip id から DB で引く)、`--range` / `--region` は page 境界の範囲。
+fn erase_oep(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
+    const CMD: &str = "erase";
+    crate::cmd_target::on_target(cli, CMD, |t, family, _db_family| {
+        let Some(profile) = ch32rv_flash::flash_controller_profile_for(family) else {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::CapabilityUnsupported,
+                format!("erasing {family} through the FLASH controller is not supported yet"),
+                None,
+            );
+        };
+        let page = profile.page_size;
+        let flash_bytes = t
+            .chip_id()
+            .and_then(
+                |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
+                    ch32rv_target::Resolution::Sku(s) => Some(s.flash_bytes),
+                    _ => None,
+                },
+            )
+            .unwrap_or(0);
+        let (start, len, scope) = if let Some(r) = &args.range {
+            match parse::range(r) {
+                Ok((s, l)) => (s, l, "range"),
+                Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+            }
+        } else if let Some(region) = &args.region {
+            match parse::resolve_region(region, flash_bytes, flash_bytes, None) {
+                Ok((start, _)) if !(CODE_FLASH_START..0x1000_0000).contains(&start) => {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::Usage,
+                        "erase operates on the flash (code) region only",
+                        Some("to erase a sub-range use --region code+<off>+<len> or --range"),
+                    );
+                }
+                Ok((s, l)) => (s, l, "range"),
+                Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+            }
+        } else {
+            if flash_bytes == 0 {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TargetNotInDb,
+                    "the code flash size is not known for this chip id, so --all cannot be sized",
+                    Some("erase a span with --range instead"),
+                );
+            }
+            (CODE_FLASH_START, flash_bytes, "chip")
+        };
+        if len == 0 {
+            return fail(cli, CMD, ErrorKind::Usage, "empty range", None);
+        }
+        if start % page != 0 || len % page != 0 {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                format!(
+                    "range 0x{start:08x}+0x{len:x} is not aligned to the {page}-byte flash page"
+                ),
+                Some("align both the start and the length to the page size"),
+            );
+        }
+        let pages = len / page;
+        let end = start.saturating_add(len);
+        if let Err(why) = confirm_destructive(
+            cli,
+            &format!("Erase {len} bytes ({pages} page(s)) at 0x{start:08x}..0x{end:08x}?"),
+        ) {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                why,
+                Some("pass --yes to confirm"),
+            );
+        }
+        if let Err(e) = t.halt() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::AttachFailed,
+                format!("halt failed: {e}"),
+                None,
+            );
+        }
+        {
+            let mut d = t.dtm();
+            let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
+            for i in 0..pages {
+                let addr = start + i * page;
+                if let Err(e) = dm.flash_page_erase(addr, profile.mode) {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("page erase failed at 0x{addr:08x}: {e}"),
+                        None,
+                    );
+                }
+            }
+        }
+        if cli.json {
+            let mut env = ResultEnvelope::success(CMD);
+            env.result = Some(serde_json::json!({
+                "scope": scope,
+                "addr": format!("0x{start:08x}"),
+                "len": len,
+                "pages": pages,
+                "page_size": page,
+                "family": family,
+            }));
+            crate::print_envelope(&env)
+        } else {
+            println!(
+                "erased {pages} page(s) ({len} bytes) at 0x{start:08x}..0x{end:08x} ({family})"
+            );
+            ExitCode::SUCCESS
+        }
+    })
 }
 
 /// en: `erase --range <a+len|a..b>` / `--region code[+off+len]`: page-granular erase via the
@@ -1531,6 +1666,30 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
 }
 
 pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
+    // en: power-off / nrst / unbrick are WCH-Link commands (its special erase, its power switch):
+    // an OEP probe has neither, and says so rather than looking for a WCH-Link. The diagnosis,
+    // auto and unprotect work through the Debug Module on either.
+    // ja: power-off / nrst / unbrick は WCH-Link の命令(特殊消去、電源)なので OEP では断る。
+    if matches!(
+        args.method,
+        Some(RecoverMethod::PowerOff | RecoverMethod::Nrst | RecoverMethod::Unbrick)
+    ) {
+        match crate::oep::addr(cli, "recover") {
+            Ok(Some(_)) => {
+                return fail(
+                    cli,
+                    "recover",
+                    ErrorKind::CapabilityUnsupported,
+                    "power-off, nrst and unbrick use a WCH-Link's own commands; an OEP probe has none of them",
+                    Some(
+                        "on an OEP probe: `ch32rv recover` (diagnose), `--method unprotect`, or `target protect off`",
+                    ),
+                );
+            }
+            Ok(None) => {}
+            Err(c) => return c,
+        }
+    }
     match args.method {
         None => crate::cmd_recover::diagnose_only(cli),
         Some(RecoverMethod::Auto) => crate::cmd_recover::auto(cli),
@@ -1559,73 +1718,74 @@ pub(crate) fn recover_unprotect(cli: &Cli) -> ExitCode {
             Some("pass --yes to confirm"),
         );
     }
-    let mut session = match crate::cmd_probe::attach(cli, CMD) {
-        Ok(s) => s,
-        Err(c) => return c,
-    };
-    let family = session.family();
-    // The option block is not at the same address on every part (CH32M030: 0x1FFF_F300), so take it
-    // from the device DB rather than assuming - writing factory bytes to the wrong address would
-    // program arbitrary memory.
-    let db_family = crate::cmd_target::db_family_of(&mut session);
-    let option_base = match crate::cmd_target::option_base(&db_family) {
-        Ok(b) => b,
-        Err(msg) => return fail(cli, CMD, ErrorKind::CapabilityUnsupported, msg, None),
-    };
-    let mut dm = session.dm();
-    if let Err(e) = dm.halt() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::AttachFailed,
-            format!("halt failed: {e}"),
-            None,
-        );
-    }
-    // Clear read protection without touching anything else the part carries: read the current
-    // bytes and replace only RDPR. A blanket USER=0xff would repartition SRAM on V20x/V307
-    // (`RAM_CODE_MOD`) and change the NRST pin function on V003 (`RST_MODE`) - neither is part of
-    // "remove read protection". A protected part may not hand its option bytes back, so fall back
-    // to the blanket image and say so.
-    let (image, preserved) = match dm.read_mem(option_base, 16) {
-        Ok(v) if v.len() == 16 => {
-            let mut cur = [0u8; 16];
-            cur.copy_from_slice(&v);
-            if crate::cmd_target::option_bytes_plausible(&cur) {
-                (crate::cmd_target::unprotect_image(&cur), true)
-            } else {
-                (crate::cmd_target::BLANKET_FACTORY, false)
-            }
+    // On a WCH-Link session or an OEP connection alike (the Debug Module does the work).
+    crate::cmd_target::on_target(cli, CMD, |t, family, db_family| {
+        // The option block is not at the same address on every part (CH32M030: 0x1FFF_F300), so
+        // take it from the device DB rather than assuming - writing factory bytes to the wrong
+        // address would program arbitrary memory.
+        let option_base = match crate::cmd_target::option_base(db_family) {
+            Ok(b) => b,
+            Err(msg) => return fail(cli, CMD, ErrorKind::CapabilityUnsupported, msg, None),
+        };
+        if let Err(e) = t.halt() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::AttachFailed,
+                format!("halt failed: {e}"),
+                None,
+            );
         }
-        _ => (crate::cmd_target::BLANKET_FACTORY, false),
-    };
-    if !preserved {
-        eprintln!(
-            "warning[option-defaults]: the target's current option bytes could not be read back, so family-specific USER bits (SRAM split, NRST mode) are set to 0xff rather than preserved"
-        );
-    }
-    if let Err(e) = dm.flash_program_option_bytes(option_base, &image) {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::TransferFailed,
-            format!("writing option bytes failed: {e}"),
-            None,
-        );
-    }
-    // Apply the option change with a system reset.
-    let _ = session.link().soft_reset();
-    if cli.json {
-        let mut env = ResultEnvelope::success(CMD);
-        env.result = Some(serde_json::json!({
-            "method": "unprotect", "family": family, "preserved_user_bits": preserved, "note": "read protection cleared (RDPR=0xA5); applies after reset",
-        }));
-        crate::print_envelope(&env)
-    } else {
-        println!("recover unprotect: read protection cleared (RDPR=0xA5) on {family}");
-        println!("note: a protected target is mass-erased; re-flash your firmware");
-        ExitCode::SUCCESS
-    }
+        let preserved = {
+            let mut d = t.dtm();
+            let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
+            // Clear read protection without touching anything else the part carries: read the
+            // current bytes and replace only RDPR. A blanket USER=0xff would repartition SRAM on
+            // V20x/V307 (`RAM_CODE_MOD`) and change the NRST pin function on V003 (`RST_MODE`) -
+            // neither is part of "remove read protection". A protected part may not hand its
+            // option bytes back, so fall back to the blanket image and say so.
+            let (image, preserved) = match dm.read_mem(option_base, 16) {
+                Ok(v) if v.len() == 16 => {
+                    let mut cur = [0u8; 16];
+                    cur.copy_from_slice(&v);
+                    if crate::cmd_target::option_bytes_plausible(&cur) {
+                        (crate::cmd_target::unprotect_image(&cur), true)
+                    } else {
+                        (crate::cmd_target::BLANKET_FACTORY, false)
+                    }
+                }
+                _ => (crate::cmd_target::BLANKET_FACTORY, false),
+            };
+            if !preserved {
+                eprintln!(
+                    "warning[option-defaults]: the target's current option bytes could not be read back, so family-specific USER bits (SRAM split, NRST mode) are set to 0xff rather than preserved"
+                );
+            }
+            if let Err(e) = dm.flash_program_option_bytes(option_base, &image) {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("writing option bytes failed: {e}"),
+                    None,
+                );
+            }
+            preserved
+        };
+        // Apply the option change with a system reset.
+        t.system_reset();
+        if cli.json {
+            let mut env = ResultEnvelope::success(CMD);
+            env.result = Some(serde_json::json!({
+                "method": "unprotect", "family": family, "preserved_user_bits": preserved, "note": "read protection cleared (RDPR=0xA5); applies after reset",
+            }));
+            crate::print_envelope(&env)
+        } else {
+            println!("recover unprotect: read protection cleared (RDPR=0xA5) on {family}");
+            println!("note: a protected target is mass-erased; re-flash your firmware");
+            ExitCode::SUCCESS
+        }
+    })
 }
 
 /// en: `recover --method unbrick`: attach-based escalation. Attaches the target, then clears

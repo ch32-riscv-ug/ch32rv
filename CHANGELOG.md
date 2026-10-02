@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) On an OEP probe (`--probe port:oep://…`): `recover` (diagnose), `recover --method auto` / `unprotect`, `target protect on|off`, `target option get|set|reset|write-raw`, and `erase --all|--range|--region` work through the Debug Module (the option bytes and the FLASH controller's page erase), as on a WCH-Link. `recover --method power-off|nrst|unbrick` says they are WCH-Link commands (capability-unsupported) instead of looking for a WCH-Link.
+- (JA) OEP の probe(`--probe port:oep://…`)でも、`recover`(診断)、`recover --method auto` / `unprotect`、`target protect on|off`、`target option get|set|reset|write-raw`、`erase --all|--range|--region` が、WCH-Link と同じく Debug Module(option bytes と FLASH controller の page 消去)で動く。`recover --method power-off|nrst|unbrick` は、WCH-Link を探しに行かず、WCH-Link の命令なので使えない(capability-unsupported)と言う。
+
 ## 0.18.0 - 2026-10-02
 
 - (EN) A request the probe never answers (even after the resend) no longer ends the broker and every client with it: the waiting clients get result_lost (an OEP stream read and a block read ask again by themselves), the link is checked with confirm (at the boot speed too when raised), and the broker goes on; only a probe that answers nothing at all ends it. With a probe from oep-probe-arduino 0.0.27, port_speed's verify passes a flow at up to 5 % broken frames (at least 16) instead of failing at the first one, counting a break once (not every request queued behind it). The broker's log no longer prints an `upstream:` line when nothing was resent or broken.

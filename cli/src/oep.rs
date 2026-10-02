@@ -1207,12 +1207,12 @@ impl Drop for ConsoleSession {
 // ---- other commands on an OEP probe ----
 
 /// What an attached command gets.
-struct Attached<'a> {
-    t: OepDtm<'a>,
-    chip_id: Option<u32>,
-    family: Option<String>,
+pub(crate) struct Attached<'a> {
+    pub(crate) t: OepDtm<'a>,
+    pub(crate) chip_id: Option<u32>,
+    pub(crate) family: Option<String>,
     /// The attach found a connection already there (another client's).
-    existing: bool,
+    pub(crate) existing: bool,
 }
 
 /// en: Connect, open a session, attach at the place `choose_place` picks (halting when asked),
@@ -1220,7 +1220,7 @@ struct Attached<'a> {
 /// against `--chip`.
 /// ja: 接続して session を開き、`choose_place` の場所に attach し(指定があれば止めて)、`f` を
 /// 走らせ、どの経路でも detach と end をする。
-fn with_attached(
+pub(crate) fn with_attached(
     cli: &Cli,
     cmd: &str,
     a: &OepAddr,
