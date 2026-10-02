@@ -42,6 +42,11 @@ impl Cap {
 
 pub fn capabilities(cli: &Cli) -> ExitCode {
     const CMD: &str = "capabilities";
+    match crate::oep::addr(cli, CMD) {
+        Ok(Some(a)) => return oep_capabilities(cli, CMD, &a),
+        Ok(None) => {}
+        Err(c) => return c,
+    }
     let entry = match select_entry(cli, CMD) {
         Ok(e) => e,
         Err(code) => return code,
@@ -65,6 +70,143 @@ pub fn capabilities(cli: &Cli) -> ExitCode {
     } else {
         live_capabilities(cli, CMD, &entry)
     }
+}
+
+/// en: The matrix for an OEP probe: attach without halting, then read what the probe declares
+/// (riscv-dm features, console mechanisms, a fixture UART, port_speed) and what ch32rv builds on
+/// them. ja: OEP の probe の表。止めずに attach し、probe の宣言(riscv-dm の features、console の
+/// mechanism、fixture UART、port_speed)と ch32rv がその上で組むものを出す。
+fn oep_capabilities(cli: &Cli, cmd: &str, a: &crate::oep::OepAddr) -> ExitCode {
+    use ch32rv_oep::registry::{
+        core as oep_core, describe_common, target_console, target_riscv_dm,
+    };
+    crate::oep::with_attached(cli, cmd, a, false, |x| {
+        let family = x.family.clone().unwrap_or_else(|| "unknown".to_owned());
+        let sku =
+            x.chip_id.and_then(
+                |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
+                    ch32rv_target::Resolution::Sku(s) => Some(s.sku.clone()),
+                    _ => None,
+                },
+            );
+        let p = x.t.probe();
+        let text = |tlvs: &[ch32rv_oep::codec::Tlv], tag: u8| {
+            tlvs.iter()
+                .find(|t| t.tag == tag)
+                .map(|t| String::from_utf8_lossy(&t.value).into_owned())
+        };
+        let core = p.describe(oep_core::FN).unwrap_or_default();
+        let model = text(&core, oep_core::tlvs::describe::MODEL).unwrap_or_else(|| "OEP".into());
+        let fw = text(&core, oep_core::tlvs::describe::FIRMWARE).unwrap_or_default();
+        let port_speed = core
+            .iter()
+            .any(|t| t.tag == oep_core::tlvs::describe::PORT_SPEED && t.value.first() == Some(&1));
+        let features = p
+            .interface(target_riscv_dm::NAME)
+            .and_then(|i| p.describe(i.func))
+            .ok()
+            .and_then(|d| {
+                d.iter()
+                    .find(|t| t.tag == describe_common::FEATURES && t.value.len() == 4)
+                    .map(|t| u32::from_le_bytes([t.value[0], t.value[1], t.value[2], t.value[3]]))
+            })
+            .unwrap_or(0);
+        let (blocks, run) = (features & 1 != 0, features & 2 != 0);
+        let mechanisms: Vec<u8> = p
+            .interface(target_console::NAME)
+            .and_then(|i| p.describe(i.func))
+            .ok()
+            .and_then(|d| {
+                d.iter()
+                    .find(|t| t.tag == target_console::tlvs::describe::MECHANISMS)
+                    .map(|t| t.value.clone())
+            })
+            .unwrap_or_default();
+        let fixture_uart = p
+            .interface(ch32rv_oep::registry::fixture_uart::NAME)
+            .is_ok();
+        let profile = ch32rv_flash::flash_controller_profile_for(&family);
+        let mech = |m: u8, op: &'static str, what: &str| {
+            if mechanisms.contains(&m) {
+                Cap::yes(op, format!("the probe's console carries {what}"))
+            } else {
+                Cap::no(op, format!("the probe's console does not declare {what}"))
+            }
+        };
+        let mut caps = vec![
+            Cap::yes("connect", "attached through the probe (its slot or wire)"),
+            if blocks && run {
+                Cap::yes(
+                    "flash",
+                    "ch32rv's RAM loader through the probe's block and run ops",
+                )
+            } else {
+                Cap::no(
+                    "flash",
+                    "the probe declares no read_block / write_block / run",
+                )
+            },
+            match profile {
+                Some(pr) => Cap::yes(
+                    "erase / option bytes / recover unprotect",
+                    format!(
+                        "the FLASH controller over the Debug Module ({}-byte page)",
+                        pr.page_size
+                    ),
+                ),
+                None => Cap::no(
+                    "erase / option bytes / recover unprotect",
+                    "no FLASH-controller profile for this family",
+                ),
+            },
+            Cap::yes(
+                "gdb HW breakpoints",
+                "detected at gdb attach (V4C/V4F have 4 trigger slots; V2/V3/V4B have 0)",
+            ),
+            mech(
+                target_console::enums::mechanism::DMSEQ,
+                "monitor dmseq",
+                "dmseq",
+            ),
+            mech(
+                target_console::enums::mechanism::DMDATA,
+                "monitor dmdata",
+                "dmdata",
+            ),
+            mech(target_console::enums::mechanism::SDI, "monitor sdi", "SDI"),
+            if blocks {
+                Cap::yes("monitor rtt", "host-side RTT over the probe's block ops")
+            } else {
+                Cap::no("monitor rtt", "the probe declares no block ops")
+            },
+            if fixture_uart {
+                Cap::yes("monitor fixture-uart", "the probe has oep.fixture.uart")
+            } else {
+                Cap::no("monitor fixture-uart", "the probe has no oep.fixture.uart")
+            },
+            Cap::no(
+                "recover power-off / nrst / unbrick",
+                "WCH-Link commands; an OEP probe has no target power switch or NRST erase for ch32rv yet",
+            ),
+        ];
+        if port_speed {
+            caps.push(Cap::yes(
+                "port_speed",
+                "the broker raises a UART bridge's link (921600, 750000, 500000)",
+            ));
+        }
+        report(
+            cli,
+            cmd,
+            &model,
+            &fw,
+            &family,
+            sku.as_deref(),
+            &caps,
+            false,
+            Vec::new(),
+        )
+    })
 }
 
 /// Attach and report the matrix for the connected target.

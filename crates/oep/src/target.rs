@@ -285,6 +285,11 @@ impl<'a> OepDtm<'a> {
         self.connection
     }
 
+    /// The probe this connection goes through (for its other interfaces' describes).
+    pub fn probe(&mut self) -> &mut Probe {
+        self.probe
+    }
+
     /// en: What [`Self::new`] learned (the riscv-dm fn and the block size), so a caller that makes
     /// an `OepDtm` per poll can skip the describe round trip with [`Self::from_parts`].
     /// ja: [`Self::new`] が調べた値(riscv-dm の fn と block の大きさ)。poll ごとに作る呼び出し側は

@@ -417,8 +417,18 @@ pub(crate) fn on_target(
     cmd: &str,
     f: impl FnOnce(&mut OnTarget<'_, '_>, &str, &str) -> ExitCode,
 ) -> ExitCode {
+    on_target_halted(cli, cmd, true, f)
+}
+
+/// [`on_target`], choosing whether an OEP attach halts the hart (a WCH-Link attach always does).
+pub(crate) fn on_target_halted(
+    cli: &Cli,
+    cmd: &str,
+    halt: bool,
+    f: impl FnOnce(&mut OnTarget<'_, '_>, &str, &str) -> ExitCode,
+) -> ExitCode {
     match crate::oep::addr(cli, cmd) {
-        Ok(Some(a)) => crate::oep::with_attached(cli, cmd, &a, true, |x| {
+        Ok(Some(a)) => crate::oep::with_attached(cli, cmd, &a, halt, |x| {
             let family = x.family.clone().unwrap_or_else(|| "unknown".to_owned());
             let db_family = family.clone();
             f(&mut OnTarget::Oep(x), &family, &db_family)
