@@ -271,20 +271,39 @@ pub fn debug_wiring(series: &str) -> Option<DebugWiring> {
     })
 }
 
-/// One named single-bit field of the option USER byte, for a family.
+/// One named field of the option USER byte, for a family: one bit, or a range (`RST_MODE[4:3]`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionUserField {
-    /// Bit position within the USER byte.
+    /// The lowest bit of the field within the USER byte.
     pub bit: u8,
-    /// Field name from the reference manual (e.g. `IWDGSW`, `STOPRST`, `CFGCANM`).
+    /// How many bits it takes (1 for a single bit).
+    pub width: u8,
+    /// Field name from the reference manual (e.g. `IWDGSW`, `STOPRST`, `RST_MODE`).
     pub field: String,
-    /// Factory-default value of this bit.
+    /// Its default value (the reference manual's; fields the manual leaves open are not listed).
     pub default: u8,
 }
 
-/// en: The named USER-byte option-bit fields for a DB `family` string (e.g. `CH32L103`,
-/// `CH32V20x`, `CH32V307`), sorted high bit first. Empty when the family is not in the DB.
-/// ja: DB の family 文字列に対する USER byte の名前付き option bit 群(高 bit 順)。DB に無ければ空。
+impl OptionUserField {
+    /// The field's bits within the USER byte.
+    pub fn mask(&self) -> u8 {
+        (((1u16 << self.width) - 1) << self.bit) as u8
+    }
+
+    /// The field's value in `user`.
+    pub fn get(&self, user: u8) -> u8 {
+        (user & self.mask()) >> self.bit
+    }
+
+    /// `user` with this field set to `value` (masked to its width).
+    pub fn set(&self, user: u8, value: u8) -> u8 {
+        (user & !self.mask()) | ((value << self.bit) & self.mask())
+    }
+}
+
+/// en: The named USER-byte option fields for a DB `family` string (e.g. `CH32L103`, `CH32V20x`,
+/// `CH32V307`), sorted high bit first. Empty when the family is not in the DB.
+/// ja: DB の family 文字列に対する USER byte の名前付き field 群(高 bit 順)。DB に無ければ空。
 pub fn option_user_fields(family: &str) -> Vec<OptionUserField> {
     let mut out: Vec<OptionUserField> = GENERATED_OPTION_FIELDS
         .lines()
@@ -293,16 +312,22 @@ pub fn option_user_fields(family: &str) -> Vec<OptionUserField> {
             if line.is_empty() || line.starts_with('#') {
                 return None;
             }
-            // family,bit,field,default
+            // family,bit,width,field,default
             let f: Vec<&str> = line.split(',').collect();
-            let [fam, bit, field, default] = f.as_slice() else {
+            let [fam, bit, width, field, default] = f.as_slice() else {
                 return None;
             };
             if !fam.eq_ignore_ascii_case(family) {
                 return None;
             }
+            let width: u8 = width.parse().ok()?;
+            let bit: u8 = bit.parse().ok()?;
+            if width == 0 || bit + width > 8 {
+                return None;
+            }
             Some(OptionUserField {
-                bit: bit.parse().ok()?,
+                bit,
+                width,
                 field: (*field).to_owned(),
                 default: default.parse().unwrap_or(0),
             })
@@ -652,6 +677,20 @@ CH32FICTIONAL,CH32V006,CH32V006,0x00990900,0x1ffff704,1,1,false,9999\n";
         assert!(f.iter().any(|x| x.field == "CFGCANM" && x.bit == 5));
         assert!(f.iter().any(|x| x.field == "IWDGSW" && x.bit == 0));
         assert!(f.windows(2).all(|w| w[0].bit > w[1].bit));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn option_user_fields_include_ranges() {
+        // CH32X035 RST_MODE[4:3], default 11b (index/option_byte_fields.csv); Reserved[7:5] is
+        // left open by the manual and not listed.
+        let f = option_user_fields("CH32X035");
+        let rst = f.iter().find(|x| x.field == "RST_MODE").unwrap();
+        assert_eq!((rst.bit, rst.width, rst.default), (3, 2, 3));
+        assert_eq!(rst.mask(), 0b0001_1000);
+        assert_eq!(rst.get(0x1f), 3);
+        assert_eq!(rst.set(0xe7, 3), 0xff);
+        assert!(f.iter().all(|x| x.field != "Reserved"));
     }
 
     #[test]
