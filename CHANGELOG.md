@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.17.0 - 2026-10-02
+
 - (EN) OEP blocks are as long as the probe's declared `max_length` (oep-if-debug §4.5), no longer computed from max_frame; the WCH-Link broker refuses a longer one as unsupported (payload 0x00). port_speed's verify carries max_frame − 16 bytes per frame (oep-core §3.5). Registry from oep-spec's latest.
 - (JA) OEP の block の長さは probe が宣言する `max_length` に従う(oep-if-debug §4.5)。max_frame からは計算しない。WCH-Link のブローカーは、それより長いものを unsupported(payload 0x00)で断る。port_speed の確かめは 1 フレーム max_frame − 16 byte で流す(oep-core §3.5)。registry は oep-spec の最新から。
 
