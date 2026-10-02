@@ -1675,14 +1675,17 @@ pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
         Some(RecoverMethod::PowerOff | RecoverMethod::Nrst | RecoverMethod::Unbrick)
     ) {
         match crate::oep::addr(cli, "recover") {
+            Ok(Some(a)) if args.method == Some(RecoverMethod::Nrst) => {
+                return recover_nrst_oep(cli, &a);
+            }
             Ok(Some(_)) => {
                 return fail(
                     cli,
                     "recover",
                     ErrorKind::CapabilityUnsupported,
-                    "power-off, nrst and unbrick use a WCH-Link's own commands; an OEP probe has none of them",
+                    "power-off and unbrick use a WCH-Link's own commands; an OEP probe has none of them",
                     Some(
-                        "on an OEP probe: `ch32rv recover` (diagnose), `--method unprotect`, or `target protect off`",
+                        "on an OEP probe: `ch32rv recover` (diagnose), `--method nrst`, `--method unprotect`, or `target protect off`",
                     ),
                 );
             }
@@ -1697,6 +1700,148 @@ pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
         Some(RecoverMethod::Unprotect) => recover_unprotect(cli),
         Some(RecoverMethod::Unbrick) => recover_unbrick(cli),
     }
+}
+
+/// en: `recover --method nrst` through an OEP probe: hold the slot's NRST line (its label,
+/// oep-spec host guide §8.1) through a halting attach, so the hart stops before the firmware runs
+/// (that firmware may have turned the debug pins into GPIOs), then clear what keeps a normal flash
+/// out: read protection (writing it off mass-erases), or else the whole code flash by page erases.
+/// A stop away from the reset vector is reported: the NRST line may be unwired, or turned into a
+/// GPIO by the option bytes (RST_MODE).
+/// ja: OEP の probe での `recover --method nrst`。スロットの NRST の線(label)をかけながら止める
+/// attach で、firmware が走る前に止め、保護を外す(全消去)か、code flash を page 消去する。
+/// リセットベクタ以外で止まったら、NRST が配線されていないか RST_MODE で GPIO にされている可能性を言う。
+fn recover_nrst_oep(cli: &Cli, a: &crate::oep::OepAddr) -> ExitCode {
+    const CMD: &str = "recover";
+    if let Err(why) = confirm_destructive(
+        cli,
+        "ERASE the target's code flash, attaching under its NRST line?",
+    ) {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            why,
+            Some("pass --yes to confirm"),
+        );
+    }
+    crate::oep::with_attached_reset(cli, CMD, a, true, true, |x| {
+        let stopped = x.halted_at;
+        let mut warnings = Vec::new();
+        if stopped != Some(0) {
+            let at = stopped.map_or("(not halted)".to_owned(), |d| format!("0x{d:08x}"));
+            warnings.push(format!(
+                "the hart stopped at {at}, not at the reset vector: the NRST line may not be wired, or the option bytes may have turned it into a GPIO (RST_MODE)"
+            ));
+        }
+        let family = x.family.clone().unwrap_or_else(|| "unknown".to_owned());
+        let flash_bytes = x
+            .chip_id
+            .and_then(
+                |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
+                    ch32rv_target::Resolution::Sku(s) => Some(s.flash_bytes),
+                    _ => None,
+                },
+            )
+            .unwrap_or(0);
+        let option_base = match crate::cmd_target::option_base(&family) {
+            Ok(b) => b,
+            Err(msg) => return fail(cli, CMD, ErrorKind::CapabilityUnsupported, msg, None),
+        };
+        let mut t = crate::cmd_target::OnTarget::Oep(x);
+        let protected = {
+            let mut d = t.dtm();
+            let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
+            let cur = match dm.read_mem(option_base, 16) {
+                Ok(v) if v.len() == 16 => {
+                    let mut c = [0u8; 16];
+                    c.copy_from_slice(&v);
+                    Some(c)
+                }
+                _ => None,
+            };
+            let protected = cur.is_none_or(|c| c[0] != 0xA5);
+            if protected {
+                let image = match cur.filter(crate::cmd_target::option_bytes_plausible) {
+                    Some(c) => crate::cmd_target::unprotect_image(&c),
+                    None => crate::cmd_target::BLANKET_FACTORY,
+                };
+                if let Err(e) = dm.flash_program_option_bytes(option_base, &image) {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("clearing read protection failed: {e}"),
+                        None,
+                    );
+                }
+            } else {
+                let Some(profile) = ch32rv_flash::flash_controller_profile_for(&family) else {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::CapabilityUnsupported,
+                        format!(
+                            "erasing {family} through the FLASH controller is not supported yet"
+                        ),
+                        None,
+                    );
+                };
+                if flash_bytes == 0 {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TargetNotInDb,
+                        "the code flash size is not known for this chip id",
+                        None,
+                    );
+                }
+                for i in 0..flash_bytes / profile.page_size {
+                    let addr = CODE_FLASH_START + i * profile.page_size;
+                    if let Err(e) = dm.flash_page_erase(addr, profile.mode) {
+                        return fail(
+                            cli,
+                            CMD,
+                            ErrorKind::TransferFailed,
+                            format!("page erase failed at 0x{addr:08x}: {e}"),
+                            None,
+                        );
+                    }
+                }
+            }
+            protected
+        };
+        t.system_reset();
+        let how = if protected {
+            "read protection cleared (mass erase)"
+        } else {
+            "code flash erased"
+        };
+        if cli.json {
+            let mut env = ResultEnvelope::success(CMD);
+            env.warnings = warnings
+                .iter()
+                .map(|m| ch32rv_contract::Warning {
+                    code: "nrst-not-at-reset-vector".to_owned(),
+                    msg: m.clone(),
+                })
+                .collect();
+            env.result = Some(serde_json::json!({
+                "method": "nrst",
+                "family": family,
+                "stopped_at": stopped.map(|d| format!("0x{d:08x}")),
+                "unprotected": protected,
+                "erased": true,
+            }));
+            crate::print_envelope(&env)
+        } else {
+            for w in &warnings {
+                eprintln!("warning[nrst-not-at-reset-vector]: {w}");
+            }
+            println!("recover nrst: {how} on {family} (attached under NRST)");
+            ExitCode::SUCCESS
+        }
+    })
 }
 
 /// en: `recover --method unprotect`: clear read protection by writing factory-default option bytes

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `recover --method nrst` works on an OEP probe whose configuration names the slot's NRST line (a label `<slot>.nrst`, or `nrst` on a one-slot probe; oep-spec host guide §8.1): it holds the line through a halting attach, then clears read protection (a mass erase) or erases the code flash, and resets. A stop away from the reset vector is warned about (NRST unwired, or a GPIO by RST_MODE). Registry from oep-spec 3e6da8b (idle output modes).
+- (JA) OEP の probe でも、設定がスロットの NRST の線を名前で持っていれば(label `<slot>.nrst`、スロットが 1 つなら `nrst`。oep-spec の host 開発ガイド §8.1)、`recover --method nrst` が使える: その線をかけながら止める attach をして、保護を外す(全消去)か code flash を消し、reset する。リセットベクタ以外で止まったら警告する(NRST が配線されていないか、RST_MODE で GPIO になっている)。registry は oep-spec 3e6da8b(idle の出力の mode)から。
+
 - (EN) The USER option fields that take more than one bit (such as RST_MODE[4:3] on CH32X035 / CH32V003) are now in the DB: `target option get` shows their values, `target option set RST_MODE=<n>` takes 0..2^width-1, and `target option reset` writes their documented defaults. Fields the reference manual leaves open (Reserved, or a default per chip) are still kept as they are.
 - (JA) 2 bit 以上の USER の option field(CH32X035 / CH32V003 の RST_MODE[4:3] など)を DB に入れた。`target option get` はその値を出し、`target option set RST_MODE=<n>` は 0〜2^幅−1 を受け、`target option reset` は資料の既定値を書く。資料が決めていない field(Reserved、チップごとの既定値)は、今までどおり今の値のまま残す。
 
