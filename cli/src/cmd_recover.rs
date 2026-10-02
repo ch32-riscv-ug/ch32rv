@@ -81,6 +81,11 @@ pub(crate) fn classify(db_family: &str, first: &[u8; 16], second: &[u8; 16]) -> 
     if first[0] != 0xA5 {
         return State::ReadProtected;
     }
+    // USER and its complement both 0xff: erased (what a mass erase leaves, e.g. after clearing
+    // read protection on a CH32X035), not unreadable - its documented defaults are written back.
+    if first[2] == 0xFF && first[3] == 0xFF {
+        return State::OptionNonstandard;
+    }
     if !crate::cmd_target::option_bytes_plausible(first) {
         return State::OptionUnreadable;
     }
@@ -595,6 +600,15 @@ mod tests {
         assert_eq!(
             classify("CH32L103", &HEALTHY, &bad),
             State::OptionUnreadable
+        );
+        // After a mass erase (read protection cleared on a CH32X035, 2026-10-02): USER and its
+        // complement erased - not unreadable, but not at its defaults either.
+        let mut erased = [0xFF; 16];
+        erased[0] = 0xA5;
+        erased[1] = 0x5A;
+        assert_eq!(
+            classify("CH32X035", &erased, &erased),
+            State::OptionNonstandard
         );
     }
 
