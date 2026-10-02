@@ -371,7 +371,7 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
             "USER 0x{user:02x}, documented defaults give 0x{want:02x} (fields: {})",
             ch32rv_target::option_user_fields(&db_family)
                 .into_iter()
-                .filter(|f| f.bit < 8 && (user ^ want) & (1 << f.bit) != 0)
+                .filter(|f| (user ^ want) & f.mask() != 0)
                 .map(|f| f.field)
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -618,7 +618,7 @@ mod tests {
         // comes from the DB, so find one rather than hard-code it.
         let Some(f) = ch32rv_target::option_user_fields("CH32L103")
             .into_iter()
-            .find(|f| f.bit < 8 && f.default != 0)
+            .find(|f| f.width == 1 && f.default != 0)
         else {
             return;
         };

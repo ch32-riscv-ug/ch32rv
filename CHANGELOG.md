@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The USER option fields that take more than one bit (such as RST_MODE[4:3] on CH32X035 / CH32V003) are now in the DB: `target option get` shows their values, `target option set RST_MODE=<n>` takes 0..2^width-1, and `target option reset` writes their documented defaults. Fields the reference manual leaves open (Reserved, or a default per chip) are still kept as they are.
+- (JA) 2 bit 以上の USER の option field(CH32X035 / CH32V003 の RST_MODE[4:3] など)を DB に入れた。`target option get` はその値を出し、`target option set RST_MODE=<n>` は 0〜2^幅−1 を受け、`target option reset` は資料の既定値を書く。資料が決めていない field(Reserved、チップごとの既定値)は、今までどおり今の値のまま残す。
+
 - (EN) `dbg regs|halt|resume|step|reg|dmi` and `capabilities` work on an OEP probe too. `capabilities` lists what the probe declares (block / run ops, console mechanisms, a fixture UART, port_speed) and what ch32rv builds on them.
 - (JA) `dbg regs|halt|resume|step|reg|dmi` と `capabilities` も OEP の probe で動く。`capabilities` は probe の宣言(block / run の op、console の mechanism、fixture UART、port_speed)と、ch32rv がその上で組むものを出す。
 

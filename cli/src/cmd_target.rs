@@ -250,7 +250,7 @@ pub fn option_get(cli: &Cli) -> ExitCode {
     } else {
         user_fields
             .iter()
-            .map(|f| (f.field.clone(), (user >> f.bit) & 1))
+            .map(|f| (f.field.clone(), f.get(user)))
             .collect()
     };
     if user_fields.is_empty() {
@@ -529,18 +529,9 @@ pub(crate) fn unprotect_image(current: &[u8; 16]) -> [u8; 16] {
 /// 多 bit フィールド(`RST_MODE` / `RAM_CODE_MOD`)は DB に無く、RM も `RAM_CODE_MOD` の復位値を
 /// 書いていないので、再構成せず現在値を残す。
 pub(crate) fn reset_user_byte(db_family: &str, current: u8) -> u8 {
-    let mut user = current;
-    for f in ch32rv_target::option_user_fields(db_family) {
-        if f.bit < 8 {
-            let mask = 1u8 << f.bit;
-            if f.default == 0 {
-                user &= !mask;
-            } else {
-                user |= mask;
-            }
-        }
-    }
-    user
+    ch32rv_target::option_user_fields(db_family)
+        .iter()
+        .fold(current, |user, f| f.set(user, f.default))
 }
 
 /// Confirm a destructive option-byte write (the shared gate: `--yes` skips it,
@@ -899,25 +890,21 @@ pub fn option_set(cli: &Cli, kv: &[String]) -> ExitCode {
                         )),
                     );
                 };
-                let bit = match val {
-                    "0" => 0u8,
-                    "1" => 1,
-                    other => {
+                let top = (1u16 << f.width) - 1;
+                let value = match parse_u8(val).filter(|&v| u16::from(v) <= top) {
+                    Some(v) => v,
+                    None => {
                         return fail(
                             cli,
                             CMD,
                             ErrorKind::Usage,
-                            format!("{key}: expected 0 or 1, got {other:?}"),
+                            format!("{key}: expected 0..={top}, got {val:?}"),
                             None,
                         );
                     }
                 };
-                if bit == 1 {
-                    ob[2] |= 1 << f.bit;
-                } else {
-                    ob[2] &= !(1 << f.bit);
-                }
-                changes.push(format!("{}={bit}", f.field));
+                ob[2] = f.set(ob[2], value);
+                changes.push(format!("{}={value}", f.field));
             }
         }
     }
