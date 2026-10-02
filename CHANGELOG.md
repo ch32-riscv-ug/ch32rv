@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) With a probe from oep-probe-arduino 0.0.27 (it goes back on its own only at 3 broken frames in a row), the broker keeps a raised port speed until broken and lost frames pass 10 % over the last 3 s (oep-spec host guide §7.4; not judged under 50 frames), instead of lowering at 2 broken frames in 5 s; an older probe keeps the stricter rule. Registry from oep-spec ad85d8f.
+- (JA) oep-probe-arduino 0.0.27 以降の probe(壊れ 3 つが続いて初めて自分で戻る)では、ブローカーは上げた速さを、直近 3 秒の壊れ + 失われが 10 % を超えるまで保つ(oep-spec の host 開発ガイド §7.4。50 フレーム未満は判定しない)。5 秒に 2 つで下げるのは、それより前の probe だけ。registry は oep-spec ad85d8f から。
+
 ## 0.17.0 - 2026-10-02
 
 - (EN) OEP blocks are as long as the probe's declared `max_length` (oep-if-debug §4.5), no longer computed from max_frame; the WCH-Link broker refuses a longer one as unsupported (payload 0x00). port_speed's verify carries max_frame − 16 bytes per frame (oep-core §3.5). Registry from oep-spec's latest.
