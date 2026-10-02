@@ -141,10 +141,14 @@ impl Selector {
                     && match serial {
                         SerialFilter::Any => true,
                         SerialFilter::NoSerial => dev.serial().is_none(),
-                        SerialFilter::Exact(sn) => dev.serial() == Some(sn.as_str()),
+                        SerialFilter::Exact(sn) => {
+                            dev.serial().is_some_and(|d| d.eq_ignore_ascii_case(sn))
+                        }
                     }
             }
-            Selector::Serial(sn) => dev.serial() == Some(sn.as_str()),
+            // Case aside: some OSes and tools show a serial in capitals (oep-core §3.3 compares unit_id
+            // and serial the same way).
+            Selector::Serial(sn) => dev.serial().is_some_and(|d| d.eq_ignore_ascii_case(sn)),
             Selector::Topology(t) => dev.topology() == *t,
             // en: The IDE's port addresses, so a recipe can pass `port:{upload.port.address}`
             // whatever the user picked: `wchlink://<serial>` and `hid://<topology>` (discovery's
