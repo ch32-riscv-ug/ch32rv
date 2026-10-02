@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.18.0 - 2026-10-02
+
 - (EN) A request the probe never answers (even after the resend) no longer ends the broker and every client with it: the waiting clients get result_lost (an OEP stream read and a block read ask again by themselves), the link is checked with confirm (at the boot speed too when raised), and the broker goes on; only a probe that answers nothing at all ends it. With a probe from oep-probe-arduino 0.0.27, port_speed's verify passes a flow at up to 5 % broken frames (at least 16) instead of failing at the first one, counting a break once (not every request queued behind it). The broker's log no longer prints an `upstream:` line when nothing was resent or broken.
 - (JA) probe が(送り直しても)答えない要求があっても、ブローカーと全 client が一緒に終わらないようにした: 待っている client には result_lost を返し(OEP のストリームの read と block の read は自分で読み直す)、confirm で link を確かめ(上げた速さなら起動時の速さでも)、ブローカーは続ける。何も答えない probe のときだけ終わる。oep-probe-arduino 0.0.27 以降の probe では、port_speed の確かめは流し方ごとに壊れ 5 % まで(16 フレーム以上)を通す(最初の 1 つで落とさない。1 つの壊れは、その後ろに並んだ要求の分まで数えず 1 つと数える)。何も送り直さず壊れてもいない時の `upstream:` の行はブローカーの log に出さない。
 
