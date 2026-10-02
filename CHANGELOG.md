@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Probe selection compares serial numbers and OEP unit ids case aside (`--probe serial:<sn>`, `oep://<unit_id>/…`; oep-core §3.3). A raw upload to a serial port is sent to the probe's `oep://` slots when the probe's unit id is the serial of an OEP device on USB, instead of by describe `discoverable` (which only the project's VID:PID sets now). Registry from oep-spec's latest.
+- (JA) probe の選び方で、serial number と OEP の unit id は英字の大小を区別せずに比べる(`--probe serial:<sn>`、`oep://<unit_id>/…`。oep-core §3.3)。serial の口への書き込みを `oep://` のスロットへ案内するのは、probe の unit id が USB の OEP の device の serial と同じときにした(describe の `discoverable` は、今はプロジェクトの VID:PID のときだけ立つため)。registry は oep-spec の最新から。
+
 - (EN) `recover --method nrst` works on an OEP probe whose configuration names the slot's NRST line (a label `<slot>.nrst`, or `nrst` on a one-slot probe; oep-spec host guide §8.1): it holds the line through a halting attach, then clears read protection (a mass erase) or erases the code flash, and resets. A stop away from the reset vector is warned about (NRST unwired, or a GPIO by RST_MODE). Registry from oep-spec 3e6da8b (idle output modes).
 - (JA) OEP の probe でも、設定がスロットの NRST の線を名前で持っていれば(label `<slot>.nrst`、スロットが 1 つなら `nrst`。oep-spec の host 開発ガイド §8.1)、`recover --method nrst` が使える: その線をかけながら止める attach をして、保護を外す(全消去)か code flash を消し、reset する。リセットベクタ以外で止まったら警告する(NRST が配線されていないか、RST_MODE で GPIO になっている)。registry は oep-spec 3e6da8b(idle の出力の mode)から。
 

@@ -64,14 +64,33 @@ pub(crate) fn oep_port(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<String> {
     dev.serial_ports().into_iter().next()
 }
 
-/// en: fn 0 describe `discoverable` = 1: the probe also enumerates the way host discovery lists
-/// (a USB device whose product string starts `OEP`, oep-core §3.3 / §7.5), so its slots are listed.
-/// ja: fn 0 の describe `discoverable` = 1(この probe は discovery の一覧に出る形でも列挙している)。
-fn announces_oep_device(p: &mut Probe) -> bool {
-    p.describe(oep_core::FN).is_ok_and(|tlvs| {
-        tlvs.iter()
-            .any(|t| t.tag == oep_core::tlvs::describe::DISCOVERABLE && t.value.first() == Some(&1))
-    })
+/// en: The probe opened on some port is also on USB as an OEP device that discovery lists (its
+/// slots are the IDE's ports): its describe unit_id is the serial number of one of
+/// [`oep_devices`] (oep-core §3.3 / §7.5, compared case aside). `discoverable` cannot tell this
+/// until the project's VID:PID exists (oep-spec 2108125).
+/// ja: どこかの口で開いた probe が、discovery の一覧に出る USB の OEP の device でもあるか(describe の
+/// unit_id が USB の serial と同じか、大小は区別しない)。
+fn listed_on_usb(p: &mut Probe) -> bool {
+    let Ok(tlvs) = p.describe(oep_core::FN) else {
+        return false;
+    };
+    let Some(unit) = tlvs
+        .iter()
+        .find(|t| t.tag == oep_core::tlvs::describe::UNIT_ID)
+        .map(|t| String::from_utf8_lossy(&t.value).into_owned())
+    else {
+        return false;
+    };
+    let serials: Vec<String> = oep_devices()
+        .iter()
+        .filter_map(|d| d.serial().map(str::to_owned))
+        .collect();
+    unit_among(&unit, &serials)
+}
+
+/// Whether `unit_id` is one of `serials`, case aside (oep-core §3.3).
+fn unit_among(unit_id: &str, serials: &[String]) -> bool {
+    !unit_id.is_empty() && serials.iter().any(|s| s.eq_ignore_ascii_case(unit_id))
 }
 
 /// Whether the serial port `path` belongs to an OEP probe (as [`is_oep_device`] decides).
@@ -256,7 +275,9 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
         .ok_or_else(|| format!("`{url}` is not oep://<probe>/<slot>"))?;
     let dev = oep_devices()
         .into_iter()
-        .find(|d| probe_id(d) == id)
+        // unit_id against the USB serial, case aside (oep-core §3.3: some OSes and tools show the
+        // serial in capitals; unit_id's characters keep distinct values distinct).
+        .find(|d| probe_id(d).eq_ignore_ascii_case(id))
         .ok_or_else(|| format!("no OEP probe {id} is connected"))?;
     let path = oep_port(&dev).ok_or_else(|| format!("OEP probe {id} has no serial port"))?;
     Ok(OepAddr::Slot {
@@ -712,14 +733,14 @@ pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> E
         Ok(p) => p,
         Err(c) => return c,
     };
-    // The same probe reached on another serial port (its USB-Serial/JTAG, a UART bridge) says so
-    // in describe `oep_pid`: it also enumerates in the OEP form, whose slots are the IDE's ports.
-    if matches!(a, OepAddr::Serial(_)) && announces_oep_device(&mut p) {
+    // The same probe reached on another serial port (its USB-Serial/JTAG, a UART bridge) is also
+    // on USB as an OEP device, whose slots are the IDE's ports: its unit_id is that serial.
+    if matches!(a, OepAddr::Serial(_)) && listed_on_usb(&mut p) {
         return fail(
             cli,
             CMD,
             ErrorKind::Usage,
-            "this serial port belongs to an OEP probe that also enumerates as an OEP device; flash one of its slots instead",
+            "this serial port belongs to an OEP probe that is also on USB as an OEP device; flash one of its slots instead",
             Some("pick its oep://<probe>/<slot> port (`ch32rv arduino discovery` lists them)"),
         );
     }
@@ -1635,4 +1656,16 @@ pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
             ExitCode::SUCCESS
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_unit_id_matches_a_serial_case_aside() {
+        let serials = vec!["30EDA0E31108".to_owned(), "9489dd2ae0953650".to_owned()];
+        assert!(super::unit_among("30eda0e31108", &serials));
+        assert!(super::unit_among("9489DD2AE0953650", &serials));
+        assert!(!super::unit_among("0070070d9394", &serials));
+        assert!(!super::unit_among("", &serials));
+    }
 }

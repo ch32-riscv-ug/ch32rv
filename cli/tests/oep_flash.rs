@@ -241,19 +241,22 @@ fn verify_read_reset_and_target_info_on_an_oep_probe() {
 }
 
 #[test]
-fn a_raw_upload_to_a_probe_that_announces_its_oep_device_is_refused() {
-    // The P4 profile says oep_pid = 1: its slots are the IDE's ports, not this serial port.
-    let Some(f) = fake(&["--pty", "--target-id", V203]) else {
+fn a_raw_upload_to_a_probe_not_on_usb_is_not_sent_to_its_slots() {
+    // A probe on a serial port is sent to its `oep://` slots only when it is also on USB as an
+    // OEP device (its unit_id is a listed serial, oep-core §3.3): the pty fake is not, so the
+    // upload is not refused for that (the match itself is unit-tested in oep.rs). The p4-bench
+    // profile: its unit_id is no real probe's (the default p4-x035 is the X035 jig's, which may be
+    // plugged into the machine running this).
+    let Some(f) = fake(&["--pty", "--profile", "p4-bench", "--target-id", V203]) else {
         return;
     };
     let pty = f.at.strip_prefix("PTY ").unwrap();
-    let (ok, v) = flash_raw(&format!("port:{pty}"), None);
-    assert!(!ok);
+    let (_, v) = flash_raw(&format!("port:{pty}"), None);
     assert!(
-        v["error"]["msg"]
+        !v["error"]["msg"]
             .as_str()
             .unwrap_or_default()
-            .contains("slots"),
+            .contains("also on USB"),
         "{v}"
     );
 }
