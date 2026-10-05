@@ -204,8 +204,11 @@ impl Probe {
             resumed: p[8] == core::enums::resumed::RESUMED,
             swept: p[8] == core::enums::resumed::SWEPT,
         };
-        // A new boot means new fn numbers (and no resources): forget the cache.
-        if self.boot_id != Some(opened.boot_id) || opened.boot_id == 0 {
+        // A new boot means new fn numbers (and no resources): forget the cache. So does an open
+        // with this host's last session_id answered resumed = 0: the probe no longer knows that
+        // session (a reboot whose boot_id repeated, or another host in between; oep-core §6.5).
+        let forgotten = self.session == Some(session_id) && p[8] == core::enums::resumed::NEW;
+        if self.boot_id != Some(opened.boot_id) || opened.boot_id == 0 || forgotten {
             self.fns.clear();
             self.max_op_ms = None;
         }

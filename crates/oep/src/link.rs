@@ -280,9 +280,20 @@ impl Link {
             revision: p[4],
             max_frame: u16::from_le_bytes([p[6], p[7]]),
             window: u32::from_le_bytes([p[8], p[9], p[10], p[11]]),
-            max_inflight: p[12].max(1),
+            max_inflight: p[12],
             boot_id: u32::from_le_bytes([p[13], p[14], p[15], p[16]]),
         };
+        // The bounds of confirm's values (oep-core §7.1): a transport that breaks them is not used.
+        let min_frame = u16::from(constants::MIN_MAX_FRAME);
+        if limits.max_frame < min_frame
+            || limits.window < u32::from(limits.max_frame)
+            || limits.max_inflight == 0
+        {
+            return Err(LinkError::NotOep(format!(
+                "confirm's limits are out of bounds (max_frame {} < {min_frame}, window {} < max_frame, or max_inflight 0)",
+                limits.max_frame, limits.window
+            )));
+        }
         if limits.revision < 1 {
             return Err(LinkError::NotOep(format!(
                 "revision {} (ch32rv needs 1)",
