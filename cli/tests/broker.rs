@@ -154,3 +154,98 @@ fn two_clients_share_one_broker_and_it_ends_with_the_last() {
         std::thread::sleep(Duration::from_millis(50));
     }
 }
+
+#[test]
+fn the_broker_opens_a_new_session_after_the_probe_restarts() {
+    // oep-client-python's fake_serve restarts on a `reboot` line on its stdin (new boot_id, every
+    // session forgotten). The broker's next upstream request gets no_session: it passes that on,
+    // opens a new session, and the client's next attach goes through (CHANGELOG, 2026-10-06).
+    let dir = std::env::var_os("OEP_CLIENT_PYTHON")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root().join("../../dev_oep/oep-client-python"));
+    if !dir.join("src/oep_client/fake_serve.py").exists() {
+        eprintln!("skip: no oep-client-python at {}", dir.display());
+        return;
+    }
+    let mut child = uv::uv_run(&dir)
+        .args(["python", "-m", "oep_client.fake_serve", "--pty"])
+        .args(["--target-id", "0x20310500"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut fake_in = child.stdin.take().unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let pty = line.trim().strip_prefix("PTY ").unwrap().to_owned();
+    let (said, heard) = std::sync::mpsc::channel::<String>();
+    let err = child.stderr.take().unwrap();
+    std::thread::spawn(move || {
+        for l in BufReader::new(err).lines().map_while(Result::ok) {
+            let _ = said.send(l);
+        }
+    });
+    let _fake = Kill(child);
+    let _broker = Kill(
+        Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+            .args(["broker", "serve", "--probe", &format!("port:{pty}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let ep = loop {
+        if let Some(ep) = endpoint(&pty) {
+            break ep;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the broker published no endpoint"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut a = client(&ep);
+    let opt = AttachOptions {
+        halt: true,
+        ..AttachOptions::default()
+    };
+    let conn = attach(&mut a, WireKind::Rvswd, opt).unwrap().connection;
+    halted(&mut a, conn).unwrap();
+
+    // The probe restarts under the broker.
+    use std::io::Write;
+    writeln!(fake_in, "reboot").unwrap();
+    fake_in.flush().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let l = heard
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("fake_serve did not say it rebooted");
+        if l.contains("rebooted") {
+            break;
+        }
+    }
+
+    // The old connection is gone with the restart (the request may meet no_session, or the
+    // broker's keepalive may have reopened first: either way it fails) ...
+    assert!(halted(&mut a, conn).is_err());
+    // ... and the broker is still there, with a new session: a fresh attach works.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let again = loop {
+        match attach(&mut a, WireKind::Rvswd, opt) {
+            Ok(at) => break at,
+            Err(e) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "no attach after the restart: {e}"
+                );
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    };
+    halted(&mut a, again.connection).unwrap();
+}

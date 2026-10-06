@@ -213,6 +213,9 @@ impl Probe {
             self.max_op_ms = None;
         }
         self.boot_id = Some(opened.boot_id);
+        // The link's view of the boot is this open's from now on (a restart is told by a later
+        // confirm that differs from it).
+        self.link.last_boot_id = Some(opened.boot_id);
         self.session = Some(session_id);
         // The probe dropped its resend table: numbering may restart.
         self.link.reset_corr();

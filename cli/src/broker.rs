@@ -1103,6 +1103,10 @@ impl Broker {
         self.speed_window.clear();
         if let Upstream::Oep(p) = &mut self.up {
             self.fallbacks_seen = p.link().speed_fallbacks;
+            // The clients' requests now go in the new session.
+            if let Some(sid) = p.session_id() {
+                self.sid = sid;
+            }
         }
         Ok(())
     }
