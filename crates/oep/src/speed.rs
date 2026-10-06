@@ -106,15 +106,24 @@ impl SpeedReport {
     }
 }
 
-/// The broker's candidates, in order (the user's choice for now, 2026-10-01: decided again once
-/// the logs show what passes on which bridge).
-pub const DEFAULT_RATES: &[u32] = &[921_600, 750_000, 500_000];
+/// en: The broker's candidates when the user names none: nothing above 500000 (oep-if-link §3
+/// host obligation 7, oep-spec 32260e5): a CH340 at 921600 passed the verify and still broke
+/// 491-byte answers on every upload, while 500000 was clean on it and on a CH552. A faster rate
+/// only by the user's explicit choice (`CH32RV_PORT_SPEED`), then with the longer verify.
+/// ja: 利用者が選ばないときの候補: 500000 より上は試さない。速い速さは利用者が明示したときだけ。
+pub const DEFAULT_RATES: &[u32] = &[500_000];
+
+/// The fastest rate tried without the user's explicit choice (oep-if-link §3 host obligation 7).
+pub const DEFAULT_MAX_RATE: u32 = 500_000;
 
 const STEP_TRY: u8 = 0x00;
 const STEP_COMMIT: u8 = 0x01;
 const STEP_REVERT: u8 = 0x02;
-/// How long the probe waits for the commit after a try: the verify (1 s) and some.
-const VERIFY_MS: u16 = 2500;
+/// How long the probe waits for the commit after a try: the verify and some (host guide
+/// §17.3.3: 6000 ms for the long verify with duplex).
+fn verify_ms(rate: u32) -> u16 {
+    if rate > DEFAULT_MAX_RATE { 6000 } else { 2500 }
+}
 const VERIFY_TIME: Duration = Duration::from_secs(1);
 /// Once committed, the probe goes back after this long with no good frame: the most the spec
 /// allows (oep-core §3.5), against a host that died; the broker's 1 s keepalive keeps it up.
@@ -211,7 +220,7 @@ pub fn raise_speed(
         let tried = p.call(
             func,
             link::op::PORT_SPEED,
-            port_speed_body(port, rate, STEP_TRY, VERIFY_MS, 0),
+            port_speed_body(port, rate, STEP_TRY, verify_ms(rate), 0),
         );
         match tried {
             Ok(r) if r.succeeded() => {
@@ -247,8 +256,8 @@ pub fn raise_speed(
                 trial.why = Some("no answer to the try".into());
                 trial.elapsed = started.elapsed();
                 report.trials.push(trial);
-                if !p.link().back_to_base(wait_back()) {
-                    return Err(OepError::Link(LinkError::Timeout(wait_back())));
+                if !p.link().back_to_base(wait_back(rate)) {
+                    return Err(OepError::Link(LinkError::Timeout(wait_back(rate))));
                 }
                 continue;
             }
@@ -316,8 +325,8 @@ pub fn raise_speed(
         }
         trial.elapsed = started.elapsed();
         report.trials.push(trial);
-        if !p.link().back_to_base(wait_back()) {
-            return Err(OepError::Link(LinkError::Timeout(wait_back())));
+        if !p.link().back_to_base(wait_back(rate)) {
+            return Err(OepError::Link(LinkError::Timeout(wait_back(rate))));
         }
         report.rate = p.link().baud().unwrap_or(0);
     }
@@ -326,8 +335,8 @@ pub fn raise_speed(
 }
 
 /// The probe's verify_ms and some: a probe still trying goes back after that.
-fn wait_back() -> Duration {
-    Duration::from_millis(u64::from(VERIFY_MS) + 1500)
+fn wait_back(rate: u32) -> Duration {
+    Duration::from_millis(u64::from(verify_ms(rate)) + 1500)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -372,16 +381,22 @@ fn verify(
         if phase != Phase::In && p.keepalive().is_err() {
             return false;
         }
-        let limit = if phase == Phase::Both {
+        // en: Above 500000 (the user's explicit choice) each way runs a full second with no byte
+        // cap, as use does (oep-if-link §3 host obligation 7: source and sink >= 1 s each at the
+        // in-flight count of use); up to it, half a second or 16 KiB each way.
+        // ja: 500000 より上(利用者の明示)は各方向 1 秒、バイト数で打ち切らない。
+        let long = rate > DEFAULT_MAX_RATE;
+        let limit = if phase == Phase::Both || long {
             VERIFY_TIME
         } else {
             VERIFY_TIME / 2
         };
+        let cap = if long { usize::MAX } else { VERIFY_BYTES / 2 };
         let started = Instant::now();
         let mut moved = 0usize;
         let mut broken = 0u32;
         let mut frames = 0u32;
-        while moved < VERIFY_BYTES / 2 && started.elapsed() < limit {
+        while moved < cap && started.elapsed() < limit {
             let kinds: Vec<bool> = (0..inflight * 2)
                 .map(|k| match phase {
                     Phase::In => true,
@@ -480,7 +495,7 @@ pub fn revert(p: &mut Probe, port: u8) -> bool {
     let rate = p.link().baud().unwrap_or(base);
     let session = p.session_id();
     let Some(func) = link_fn(p) else {
-        return p.link().back_to_base(wait_back());
+        return p.link().back_to_base(wait_back(rate));
     };
     let _ = p.link().exchange_once(
         vec![Call {
@@ -492,5 +507,5 @@ pub fn revert(p: &mut Probe, port: u8) -> bool {
         1,
         Duration::from_millis(300),
     );
-    p.link().back_to_base(wait_back())
+    p.link().back_to_base(wait_back(rate))
 }

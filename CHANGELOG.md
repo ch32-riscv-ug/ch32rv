@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The broker raises a UART bridge to 500000 only, no longer trying 921600 / 750000 first (oep-spec 32260e5, link §3 host obligation 7): a CH340 at 921600 passed the check and still broke answers on every upload, while 500000 was clean on it and on a CH552. A faster rate only when the user names it in `CH32RV_PORT_SPEED` (`921600,500000`), and then it is adopted only after a full second each way of full-size frames at the in-flight count of use (verify_ms 6000); the in-use drop rule still applies.
+- (JA) ブローカーが UART bridge を上げる速さは 500000 だけにした(921600 / 750000 を先に試さない。oep-spec 32260e5、link §3 の host の義務 7): CH340 は 921600 で確かめを通っても書き込みのたびに答えを壊し、500000 ではそれも CH552 もきれいだった。速い速さは利用者が `CH32RV_PORT_SPEED`(`921600,500000`)で名指したときだけで、そのときは使うときの同時数で最大の大きさのフレームを各方向 1 秒流して通ったときだけ使う(verify_ms 6000)。使っている間に下げる規則はそのまま。
+
 - (EN) OEP uploads ride out link drops on rvswd: a read_block / write_block that comes back `line` or `fault` (the probe saw the link drop and could not confirm the words) or whose answer was lost is sent again, up to 3 more times after 10 ms (a write_block goes on after the words it reports done, so none is written twice); and when the FLASH controller is still locked after the unlock keys (a key write lost on the way, which keeps it locked until a reset), the loader reset-halts the part and enters the keys again, up to 3 tries. Seen on a CH32L103 behind an RP2350 probe (2 failures in 60 uploads).
 - (JA) OEP の書き込みは rvswd の線の途切れを越える: read_block / write_block が `line` か `fault`(probe が途切れを見て語を確かめられなかった)で返るか、答えが失われたら、10 ms 置いて最大 3 回送り直す(write_block は書けたと答えた語の後ろから。同じ語を 2 度書かない)。鍵を入れても FLASH controller が lock のままなら(鍵の書き込みが途中で消え、reset まで lock が続く)、loader は reset-halt して鍵を入れ直す(最大 3 回)。RP2350 の probe の裏の CH32L103 で見えた(60 回の書き込みで 2 回の失敗)。
 
