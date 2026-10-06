@@ -17,7 +17,14 @@ fn main() {
         .unwrap_or_else(|| "unknown".to_owned());
     println!("cargo:rustc-env=CH32RV_GIT_REV={git_rev}");
 
-    // Re-run if HEAD moves.
+    // Re-run if HEAD moves: HEAD itself names the branch (`ref: refs/heads/main`) and does not
+    // change on a commit, so the branch's ref (loose or packed) is watched too.
     println!("cargo:rerun-if-changed=../.git/HEAD");
+    if let Ok(head) = std::fs::read_to_string("../.git/HEAD")
+        && let Some(r) = head.trim().strip_prefix("ref: ")
+    {
+        println!("cargo:rerun-if-changed=../.git/{r}");
+        println!("cargo:rerun-if-changed=../.git/packed-refs");
+    }
     println!("cargo:rerun-if-changed=build.rs");
 }
