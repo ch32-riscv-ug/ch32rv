@@ -7,7 +7,7 @@
 //! 1 write、role と corr での振り分け、push の保留、max_inflight / window、失われた応答は同じ corr で
 //! 1 回だけ送り直す、長さ見出しの resync)を守る。
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::time::{Duration, Instant};
@@ -113,6 +113,22 @@ fn trace(line: std::fmt::Arguments<'_>, payload: &[u8]) {
     }
 }
 
+/// en: Where a request's argument time comes from (core §4.4: its wait is at least the argument
+/// time + host_wait_add_ms + the transfer time, and nothing is resent before that). Filled in by
+/// [`crate::session::Probe`] from what list names, keyed by (fn, op).
+/// ja: 要求の引数の時間の出どころ(core §4.4 の待ちの下限)。list の名前から Probe が埋める。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArgTime {
+    /// A fixed time (ms).
+    Fixed(u32),
+    /// A u32 of ms at this payload offset (riscv-dm run's timeout_ms).
+    U32At(usize),
+    /// A wire attach: attach_budget_ms, plus hold_ms + reset_settle_ms with the reset TLV.
+    Attach,
+    /// The probe's max_op_ms (probe.config save).
+    MaxOp,
+}
+
 /// How often one exchange resends on a broken frame before it waits out the timeout.
 const BROKEN_RESENDS: u32 = 4;
 
@@ -195,6 +211,10 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(3);
 pub const TCP_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub struct Link {
+    /// Each (fn, op)'s argument time, for the core §4.4 wait floor.
+    pub arg_time: HashMap<(u16, u8), ArgTime>,
+    /// The probe's max_op_ms, once known (for [`ArgTime::MaxOp`]).
+    pub max_op_ms: Option<u32>,
     stream: Box<dyn ByteStream>,
     framing: Framing,
     cobs: SerialDeframer,
@@ -242,6 +262,8 @@ pub struct Link {
 impl Link {
     pub fn new(stream: Box<dyn ByteStream>, framing: Framing) -> Self {
         Link {
+            arg_time: HashMap::new(),
+            max_op_ms: None,
             stream,
             framing,
             cobs: SerialDeframer::new(0xFFFF),
@@ -537,7 +559,8 @@ impl Link {
             let Some(&(i, size)) = outstanding.front() else {
                 continue;
             };
-            let reply = self.wait_result(reqs[i].corr)?;
+            let wait = self.timeout.max(self.floor(&reqs[i]));
+            let reply = self.wait_result(reqs[i].corr, wait)?;
             replies[i] = Some(reply);
             outstanding.pop_front();
             bytes_out -= size;
@@ -547,8 +570,47 @@ impl Link {
 
     /// Read until the result for `corr` arrives. Pushes are queued; results for other corrs (a
     /// late answer to an earlier try) are dropped.
-    fn wait_result(&mut self, corr: u16) -> Result<Reply, LinkError> {
-        let deadline = Instant::now() + self.timeout;
+    /// en: core §4.4's wait floor for `req`: its argument time + host_wait_add_ms + the transfer
+    /// time of a serial line, (L + max_frame x (1 + notify_pending_max_frames)) x 10 / baud. No
+    /// wait for it - the quick first wait at a raised speed included - is shorter.
+    /// ja: core §4.4 の待ちの下限(引数の時間 + host_wait_add_ms + 転送の時間)。どの待ちもこれより短くしない。
+    fn floor(&self, req: &Request) -> Duration {
+        let p = &req.payload;
+        let arg = match self.arg_time.get(&(req.func, req.op)) {
+            None => 0,
+            Some(ArgTime::Fixed(ms)) => *ms,
+            Some(ArgTime::U32At(at)) => p
+                .get(*at..*at + 4)
+                .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])),
+            Some(ArgTime::MaxOp) => self.max_op_ms.unwrap_or(10_000),
+            Some(ArgTime::Attach) => {
+                // method(u8), then TLVs: reset (0x05) = channel(u16) hold_ms(u16).
+                let reset = crate::codec::parse_tlvs(p.get(1..).unwrap_or(&[]))
+                    .ok()
+                    .and_then(|t| t.into_iter().find(|t| t.tag & 0x7F == 0x05))
+                    .and_then(|t| {
+                        t.value
+                            .get(2..4)
+                            .map(|b| u32::from(u16::from_le_bytes([b[0], b[1]])))
+                    });
+                registry::limits::ATTACH_BUDGET_MS
+                    + reset.map_or(0, |hold| hold + registry::limits::RESET_SETTLE_MS)
+            }
+        };
+        let transfer = match (self.framing, self.baud) {
+            (Framing::Cobs, Some(baud)) if baud > 0 => {
+                let frame = self.limits.map_or(64, |l| usize::from(l.max_frame));
+                let len = req.payload.len() + 16;
+                let bytes = len + frame * (1 + timing::NOTIFY_PENDING_MAX_FRAMES as usize);
+                Duration::from_secs_f64(bytes as f64 * 10.0 / f64::from(baud))
+            }
+            _ => Duration::ZERO,
+        };
+        Duration::from_millis(u64::from(arg) + u64::from(timing::HOST_WAIT_ADD_MS)) + transfer
+    }
+
+    fn wait_result(&mut self, corr: u16, wait: Duration) -> Result<Reply, LinkError> {
+        let deadline = Instant::now() + wait;
         let broken_at_start = self.cobs.dropped;
         loop {
             if self.resend_on_broken
@@ -671,7 +733,7 @@ impl Link {
         let saved = (self.timeout, self.resend_on_broken);
         self.timeout = timeout;
         self.resend_on_broken = false;
-        let got = self.wait_result(req.corr);
+        let got = self.wait_result(req.corr, self.timeout);
         (self.timeout, self.resend_on_broken) = saved;
         match got {
             Ok(r) => {
@@ -812,7 +874,7 @@ impl Link {
                 payload,
             };
             self.stream.write_all(&length_frame(&req.encode()))?;
-            if self.wait_result(req.corr).is_ok() {
+            if self.wait_result(req.corr, self.timeout).is_ok() {
                 return Ok(());
             }
         }
@@ -1014,5 +1076,23 @@ mod tests {
             t.elapsed()
         );
         assert_eq!(l.baud, Some(500_000));
+    }
+
+    #[test]
+    fn no_wait_is_shorter_than_the_core_floor() {
+        // A run-like op with 1000 ms of argument time: its floor is 1000 + host_wait_add_ms (and
+        // the transfer), so even the quick first wait at a raised speed is not 1.5 s.
+        let mut l = lossy(0, 1);
+        l.set_timeout(Duration::from_millis(400));
+        l.base_baud = Some(115_200);
+        l.baud = Some(500_000);
+        l.arg_time.insert((2, 5), ArgTime::U32At(0));
+        let mut c = call();
+        c.payload = 1000u32.to_le_bytes().to_vec();
+        let t = std::time::Instant::now();
+        assert!(l.call(c).unwrap().succeeded());
+        assert_eq!(l.resends, 1);
+        let floor = Duration::from_millis(1000 + u64::from(timing::HOST_WAIT_ADD_MS));
+        assert!(t.elapsed() >= floor, "{:?}", t.elapsed());
     }
 }

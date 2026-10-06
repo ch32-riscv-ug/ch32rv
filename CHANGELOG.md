@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) OEP waits respect core §4.4's floor per request: an op's argument time + host_wait_add_ms + a serial line's transfer time, learned by name from list (riscv-dm run's timeout_ms and reset's reset_settle_ms, a wire attach's attach budget with the reset's hold and settle, probe.config save's max_op_ms). No wait is shorter, the quick first wait at a raised speed included, so a long run is never resent early; and a loader run (up to 2.5 s) no longer has a 3 s link timeout below its floor.
+- (JA) OEP の待ちは要求ごとに core §4.4 の下限を守る: op の引数の時間 + host_wait_add_ms + serial の転送の時間(list の名前で知る: riscv-dm の run の timeout_ms と reset の reset_settle_ms、線の attach の予算と reset の hold・落ち着き、probe.config の save の max_op_ms)。上げた速さでの短い最初の待ちも含め、どの待ちもこれより短くしないので、長い run を早く送り直さない。loader の run(最長 2.5 秒)の待ちが、その下限より短い 3 秒の link の待ちになることも無くなった。
+
 - (EN) A raised port speed is kept through a lost request: above the boot speed the first wait for an answer is 1.5 s (half of port_speed_idle_max_ms) and the request is resent at the raised speed, before the probe's own 3 s idle rule takes it back; only when the resend too gets nothing does the link go to the boot speed. When the speed did go down (that, or too many broken frames, or a new session), the broker raises it again 20 s later, between requests, up to 3 times a session. On the V003 jig one lost request had kept a whole sweep at 115200 (150 s against 66 s).
 - (JA) 上げた速さは、要求が 1 つ失われても保つ: 上げた速さでは答えの最初の待ちを 1.5 秒(port_speed_idle_max_ms の半分)にし、probe が自分の 3 秒の idle の規則で戻る前に、上げた速さのまま送り直す。それにも答えが無いときだけ起動時の速さに戻る。速さが下がったとき(それ、壊れの多さ、新しい session)は、ブローカーが 20 秒後に要求の合間で上げ直す(1 session に 3 回まで)。V003 の治具では、1 つ失われた要求で sweep 全体が 115200 のままだった(66 秒に対し 150 秒)。
 

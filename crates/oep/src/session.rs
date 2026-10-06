@@ -268,8 +268,10 @@ impl Probe {
                     .get(at + 7..at + 7 + usize::from(e[6]))
                     .ok_or_else(|| OepError::Malformed("list entry name cut short".into()))?;
                 at += 7 + name.len();
+                let func = u16::from_le_bytes([e[0], e[1]]);
+                self.note_arg_times(func, &String::from_utf8_lossy(name));
                 out.push(Interface {
-                    func: u16::from_le_bytes([e[0], e[1]]),
+                    func,
                     instance: u16::from_le_bytes([e[2], e[3]]),
                     revision: e[4],
                     name: String::from_utf8_lossy(name).into_owned(),
@@ -278,6 +280,33 @@ impl Probe {
             if out.len() >= total || count == 0 {
                 return Ok(out);
             }
+        }
+    }
+
+    /// en: Tell the link the argument time of `func`'s ops whose wait core §4.4 lengthens (by its
+    /// name from list): riscv-dm run (timeout_ms) and reset (reset_settle_ms), a wire's attach
+    /// (attach_budget_ms, + hold_ms + reset_settle_ms with the reset TLV), probe.config save
+    /// (max_op_ms). ja: 引数の時間で待ちの延びる op を link に教える。
+    fn note_arg_times(&mut self, func: u16, name: &str) {
+        use crate::link::ArgTime;
+        use crate::registry::{limits, probe_config, target_riscv_dm as dm, wire_rvswd};
+        let t = &mut self.link.arg_time;
+        match name {
+            n if n == dm::NAME => {
+                // connection(u16) pc(u32) timeout_ms(u32) ... (oep-if-debug §4.4)
+                t.insert((func, dm::op::RUN), ArgTime::U32At(6));
+                t.insert(
+                    (func, dm::op::RESET),
+                    ArgTime::Fixed(limits::RESET_SETTLE_MS),
+                );
+            }
+            n if n.starts_with("oep.wire.") => {
+                t.insert((func, wire_rvswd::op::ATTACH), ArgTime::Attach);
+            }
+            n if n == probe_config::NAME => {
+                t.insert((func, probe_config::op::SAVE), ArgTime::MaxOp);
+            }
+            _ => {}
         }
     }
 
@@ -322,6 +351,7 @@ impl Probe {
             )));
         }
         self.max_op_ms = Some(ms);
+        self.link.max_op_ms = Some(ms);
         Ok(ms)
     }
 
