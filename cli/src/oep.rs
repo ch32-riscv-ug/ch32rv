@@ -32,14 +32,15 @@ pub(crate) enum OepAddr {
     Wch(crate::broker::BrokerTarget),
 }
 
-/// en: The one place that decides what an OEP probe is (docs/oep-host.ja.md §3.3, oep-core §3.3).
-/// Until OEP has its own USB PID: a device whose product string (iProduct) starts with `OEP`,
-/// read without opening it. When the PID exists, this becomes a VID:PID check and nothing else
-/// changes.
-/// ja: OEP の probe の判定はここだけ。専用 PID を取るまでは、iProduct が `OEP` で始まる device
-/// (開かずに読める)。PID を取ったら VID:PID の判定に差し替える。
+/// en: The one place that decides what an OEP probe is (oep-core §3.3): a USB device with the
+/// project's VID:PID (1209:4F45, registry `usb`), read without opening it. Any other device is
+/// used only when the user names it (`oep://<unit_id>`, compared with its serial) or picks its
+/// port. iProduct is display text and never decides it.
+/// ja: OEP の probe の判定はここだけ。プロジェクトの VID:PID(1209:4F45)の device。iProduct では
+/// 判定しない。ほかの device は利用者が名指すか口を選んだときだけ使う。
 pub(crate) fn is_oep_device(dev: &ch32rv_usb::UsbDeviceInfo) -> bool {
-    dev.product().is_some_and(|p| p.starts_with("OEP"))
+    use ch32rv_oep::registry::usb;
+    dev.vid() == usb::PROJECT_VID && dev.pid() == usb::PROJECT_PID
 }
 
 /// The OEP probes on USB.

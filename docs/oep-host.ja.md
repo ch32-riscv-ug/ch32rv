@@ -55,7 +55,7 @@
 
 ### 3.3 USB の口の見つけ方
 
-- **OEP の probe の見分け方(oep-core §3.3、2026-10-01 のゼロベース見直しで恒久の規範)**: **device の iProduct が `OEP` で始まる**ことで見分ける(interface の名前では見分けない。PID に替える計画は無くなった。1209:4F45 は参照 firmware の値)。vendor bulk の interface は class 0xFF・subclass 0x4F・protocol 0x45、HID の interface は usage page 0xFF4F・usage 0x45。
+- **OEP の probe の見分け方(oep-core §3.3)**: **プロジェクトの USB ID 1209:4F45 の device** だけを自動で OEP の probe とみなす(2026-10-06、pid.codes で取得)。iProduct は表示の文字で、判定には使わない。ほかの device は、利用者が `oep://<unit_id>` で名指す(USB の serial と大小を区別せず比べる)か、口を選んだときだけ使い、開いたら confirm だけを送り、答えが無ければ閉じる。vendor bulk の interface は class 0xFF・subclass 0x4F・protocol 0x45、HID の interface は usage page 0xFF4F・usage 0x45。
   - 判定は 1 つの関数(`is_oep_device`)にまとめ、後で PID の判定に差し替えられるようにする。discovery(`oep://`)も、serial port を選んだときの「OEP の probe なら raw の serial port の upload は断る」(§6)も、この関数を使う。
   - 名前は device を開かずに読む(nusb の列挙が持つ product の文字列)。
   - fn 0 の describe の `discoverable`(0x4A)= 1 は「この形で列挙している device がある」という意味で、USJ などから開いたときにも分かる。
@@ -68,7 +68,7 @@
   - 同じ VID:PID と serial で、usage page 0xFF00 以上の HID を開き、report 記述子から vendor の report(input と output を持つもの)の ID と大きさを読む(`ch32rv_oep::hid`)。P4 は ID 6、511 byte。
   - report ID があれば、output にも ID を付ける。input は ID を確かめてから count の分を取る。
 - 実機確認(2026-09-29、X035 治具の ESP32-P4 HS、oep-probe-arduino 71800ae): vendor bulk(interface 1)、HID(report ID 6)、serial port のどれでも、target info、TickBoth(4.9 KB)の flash が約 0.20〜0.22 秒で書けた。dmseq の monitor、monitor を開いたままの flash(reset の後も流れ続ける)も通った。既定では vendor bulk が選ばれる(`broker endpoint --json` の `transport`)。
-- Linux の権限: `60-ch32rv.rules`(`doctor --emit-udev`)に、product の文字列が `OEP` で始まる device の USB のノードと hidraw を足した。
+- Linux の権限: `60-ch32rv.rules`(`doctor --emit-udev`)に、1209:4F45 の device の USB のノードと hidraw を足した。
 
 ### 3.4 link の規則(core §5、§9 の MUST をそのまま)
 
