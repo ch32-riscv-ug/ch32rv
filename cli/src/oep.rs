@@ -750,7 +750,7 @@ pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> E
         return c;
     }
     let r = flash_in_session(cli, args, bytes, &mut p, a);
-    // End on every path: the lock is released, the connection stays for the next open.
+    // End on every path (flash_in_session has detached its connection): the lock is released.
     let _ = p.end();
     r
 }
