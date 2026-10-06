@@ -1121,7 +1121,7 @@ impl Broker {
             self.speed_port = None;
             broker_log(
                 &self.key,
-                "port_speed: the probe was back at the boot speed by itself; staying there",
+                "port_speed: a request at the raised speed got no answer (even resent), and the probe answered confirm at the boot speed (link duty 5): staying there",
             );
             return;
         }

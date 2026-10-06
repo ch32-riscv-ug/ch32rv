@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The broker no longer reports "the probe has no oep.probe.link" when the list that looks for it failed (an answer lost twice at the boot speed): the lookup is asked once more, and a failure is logged as what it was. Its fallback line now says what it saw (no answer at the raised speed even resent, then the probe answering confirm at the boot speed) rather than claiming the probe went back by itself.
+- (JA) ブローカーは、oep.probe.link を探す list が失敗したとき(起動時の速さで答えが 2 度失われた)に「probe に oep.probe.link が無い」と出さない: もう 1 回聞き、失敗ならその理由を log に出す。速さが戻ったときの行は、見たこと(上げた速さで送り直しても答えが無く、起動時の速さで confirm に答えた)を書く(probe が自分で戻ったとは言わない)。
+
 - (EN) The broker raises a UART bridge to 500000 only, no longer trying 921600 / 750000 first (oep-spec 32260e5, link §3 host obligation 7): a CH340 at 921600 passed the check and still broke answers on every upload, while 500000 was clean on it and on a CH552. A faster rate only when the user names it in `CH32RV_PORT_SPEED` (`921600,500000`), and then it is adopted only after a full second each way of full-size frames at the in-flight count of use (verify_ms 6000); the in-use drop rule still applies.
 - (JA) ブローカーが UART bridge を上げる速さは 500000 だけにした(921600 / 750000 を先に試さない。oep-spec 32260e5、link §3 の host の義務 7): CH340 は 921600 で確かめを通っても書き込みのたびに答えを壊し、500000 ではそれも CH552 もきれいだった。速い速さは利用者が `CH32RV_PORT_SPEED`(`921600,500000`)で名指したときだけで、そのときは使うときの同時数で最大の大きさのフレームを各方向 1 秒流して通ったときだけ使う(verify_ms 6000)。使っている間に下げる規則はそのまま。
 

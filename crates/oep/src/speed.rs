@@ -141,8 +141,18 @@ fn link_fn(p: &mut Probe) -> Option<u16> {
 /// The UART bridge's transport index and oep.link's fn, when the probe offers port_speed; else
 /// why not.
 fn speed_port(p: &mut Probe) -> Result<(u16, u8), String> {
-    let Some(func) = link_fn(p) else {
-        return Err("the probe has no oep.probe.link".into());
+    // en: Only a probe that lists none has no oep.probe.link: a list that failed (an answer lost
+    // twice at the boot speed) is asked once more, and then reported as what it was - it once
+    // read as "no oep.probe.link" on a probe that has one (V003 jig, 2026-10-06).
+    // ja: list に無いときだけ「無い」。list の失敗はもう 1 回聞き、それでも駄目ならその理由を出す。
+    let mut found = p.interface(link::NAME);
+    if matches!(found, Err(ref e) if !matches!(e, OepError::NoInterface(_))) {
+        found = p.interface(link::NAME);
+    }
+    let func = match found {
+        Ok(i) => i.func,
+        Err(OepError::NoInterface(_)) => return Err("the probe has no oep.probe.link".into()),
+        Err(e) => return Err(format!("looking for oep.probe.link failed: {e}")),
     };
     if !p
         .ops(func)
