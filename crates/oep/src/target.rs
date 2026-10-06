@@ -486,9 +486,14 @@ impl OepDtm<'_> {
     /// `fault` (the probe saw the link drop and could not confirm the words). Both ops are
     /// idempotent: reading or writing the same words again changes nothing else. Seen on the L103
     /// behind the RP2350 (write_block fault, 2 in 60 uploads, 2026-10-06).
-    /// ja: block の read / write を、答えが失われたとき・line / fault のときに送り直す(どちらも何度
-    /// やっても同じ)。
-    fn block_again(&mut self, mut r: Reply, call: (u16, u8, Vec<u8>)) -> Result<Vec<u8>, DmiError> {
+    /// A write_block resumes after the words it reports done (oep-if-debug §4.5).
+    /// ja: block の read / write を、答えが失われたとき・line / fault のときに送り直す。write は
+    /// 書けたと答えた語の後ろから。
+    fn block_again(
+        &mut self,
+        mut r: Reply,
+        mut call: (u16, u8, Vec<u8>),
+    ) -> Result<Vec<u8>, DmiError> {
         let lost = Resolution::Rejected(crate::registry::reject_reasons::RESULT_LOST);
         for _ in 1..BLOCK_TRIES {
             let again = r.resolution == lost
@@ -496,6 +501,19 @@ impl OepDtm<'_> {
                     && matches!(r.payload.get(2), Some(&s) if s == status::LINE || s == status::FAULT));
             if !again {
                 break;
+            }
+            // A write_block that failed with `done` words confirmed written goes on after them:
+            // those are not written twice (a FLASH key written twice jams the controller).
+            if call.1 == dm::op::WRITE_BLOCK && r.resolution != lost {
+                let done = usize::from(le16(&r.payload, 0));
+                let pl = &mut call.2;
+                let count = usize::from(le16(pl, 6));
+                if done > 0 && done < count {
+                    let addr = le32(pl, 2) + 4 * done as u32;
+                    pl[2..6].copy_from_slice(&addr.to_le_bytes());
+                    pl[6..8].copy_from_slice(&((count - done) as u16).to_le_bytes());
+                    pl.drain(8..8 + 4 * done);
+                }
             }
             std::thread::sleep(BLOCK_PAUSE);
             r = self
