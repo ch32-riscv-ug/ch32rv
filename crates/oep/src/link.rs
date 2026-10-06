@@ -113,6 +113,18 @@ fn trace(line: std::fmt::Arguments<'_>, payload: &[u8]) {
     }
 }
 
+/// How often one exchange resends on a broken frame before it waits out the timeout.
+const BROKEN_RESENDS: u32 = 4;
+
+/// The resends one exchange has made.
+#[derive(Default)]
+struct Resent {
+    /// On a broken frame (sent at once).
+    broken: u32,
+    /// After a timeout with nothing arriving (once).
+    timeout: bool,
+}
+
 /// One request to make.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call {
@@ -372,13 +384,16 @@ impl Link {
             reqs.push(req);
         }
         let mut replies: Vec<Option<Reply>> = vec![None; reqs.len()];
-        let mut resent = false;
+        let mut resent = Resent::default();
         // Looks at the boot speed after a raised one stopped answering (once: then it stays there).
         let mut fallbacks = 0;
-        // en: A broken frame starts the resend once; after that the answers are waited for to
-        // the timeout, more broken frames or not (a noisy line breaks several in a row: a second
-        // one must not fail the request, V003 jig at 115200, 2026-10-01).
-        // ja: 壊れたフレームで送り直すのは 1 回。その後は壊れたフレームが続いても時間切れまで待つ。
+        // en: A broken frame starts a resend at once, up to BROKEN_RESENDS times: a bridge with no
+        // flow control loses bytes on long streams of answers at any rate (a CH340 under 6 s of
+        // back-to-back 512-byte answers, 2026-10-07), and waiting out the timeout after the first
+        // resend cost 3 s each time. Past that, the answers are waited for to the timeout, more
+        // broken frames or not. Nothing arriving at all is resent once, after the timeout.
+        // ja: 壊れたフレームではすぐ送り直す(最大 BROKEN_RESENDS 回)。それを越えたら時間切れまで待つ。
+        // 何も届かないときは時間切れの後に 1 回だけ送り直す。
         let on_broken = self.resend_on_broken;
         let r = self.exchange_inner(&reqs, &mut replies, &mut resent, &mut fallbacks);
         self.resend_on_broken = on_broken;
@@ -393,7 +408,7 @@ impl Link {
         &mut self,
         reqs: &[Request],
         replies: &mut [Option<Reply>],
-        resent: &mut bool,
+        resent: &mut Resent,
         fallbacks: &mut u32,
     ) -> Result<(), LinkError> {
         loop {
@@ -420,10 +435,16 @@ impl Link {
                     }
                     self.speed_fallbacks += 1;
                 }
-                Err(LinkError::Timeout(_) | LinkError::Broken) if !*resent && self.resend => {
-                    *resent = true;
+                Err(LinkError::Broken) if resent.broken < BROKEN_RESENDS && self.resend => {
+                    resent.broken += 1;
                     self.resends += 1;
-                    self.resend_on_broken = false;
+                    if resent.broken == BROKEN_RESENDS {
+                        self.resend_on_broken = false;
+                    }
+                }
+                Err(LinkError::Timeout(_)) if !resent.timeout && self.resend => {
+                    resent.timeout = true;
+                    self.resends += 1;
                     if self.framing == Framing::Length {
                         self.resync()?;
                     }
@@ -832,4 +853,107 @@ pub fn open_tcp(addr: &str) -> Result<Link, LinkError> {
     link.timeout = TCP_TIMEOUT;
     link.resend = false;
     Ok(link)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+    use crate::codec::{cobs_decode, encode_result};
+
+    /// A serial port to a probe that breaks the CRC of its first `breaks` answers.
+    struct Lossy {
+        rx: SerialDeframer,
+        out: VecDeque<u8>,
+        breaks: usize,
+        answered: usize,
+    }
+
+    impl ByteStream for Lossy {
+        fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
+            for m in self.rx.push(data) {
+                let req = Request::decode(&m).unwrap();
+                let msg = encode_result(
+                    req.corr,
+                    Resolution::Completed(registry::outcomes::SUCCESS),
+                    &[1, 2, 3],
+                );
+                let mut frame = serial_frame(&msg);
+                self.answered += 1;
+                if self.answered <= self.breaks {
+                    let n = frame.len();
+                    let mut body = cobs_decode(&frame[1..n - 1]).unwrap();
+                    let last = body.len() - 1;
+                    body[last] ^= 0xFF;
+                    frame = vec![0];
+                    frame.extend(crate::codec::cobs_encode(&body));
+                    frame.push(0);
+                }
+                self.out.extend(frame);
+            }
+            Ok(())
+        }
+
+        fn read_timeout(&mut self, buf: &mut [u8], timeout: Duration) -> io::Result<usize> {
+            if self.out.is_empty() {
+                std::thread::sleep(timeout.min(Duration::from_millis(5)));
+                return Ok(0);
+            }
+            let n = buf.len().min(self.out.len());
+            for b in buf.iter_mut().take(n) {
+                *b = self.out.pop_front().unwrap_or(0);
+            }
+            Ok(n)
+        }
+    }
+
+    fn link(breaks: usize) -> Link {
+        let mut l = Link::new(
+            Box::new(Lossy {
+                rx: SerialDeframer::new(0xFFFF),
+                out: VecDeque::new(),
+                breaks,
+                answered: 0,
+            }),
+            Framing::Cobs,
+        );
+        l.resend_on_broken = true;
+        l.set_timeout(Duration::from_millis(400));
+        l
+    }
+
+    fn call() -> Call {
+        Call {
+            func: 2,
+            op: 5,
+            session: Some(7),
+            payload: vec![0; 8],
+        }
+    }
+
+    #[test]
+    fn broken_answers_are_resent_at_once_up_to_four_times() {
+        let mut l = link(4);
+        let t = std::time::Instant::now();
+        assert!(l.call(call()).unwrap().succeeded());
+        assert_eq!(l.resends, 4);
+        // No timeout was waited out.
+        assert!(
+            t.elapsed() < Duration::from_millis(300),
+            "{:?}",
+            t.elapsed()
+        );
+    }
+
+    #[test]
+    fn past_four_broken_the_timeout_is_waited_and_resent_once() {
+        let mut l = link(5);
+        let t = std::time::Instant::now();
+        assert!(l.call(call()).unwrap().succeeded());
+        assert_eq!(l.resends, 5);
+        assert!(t.elapsed() >= Duration::from_millis(400));
+        // Six broken answers: four at once, one after the timeout, then nothing more.
+        let mut l = link(6);
+        assert!(matches!(l.call(call()), Err(LinkError::Timeout(_))));
+    }
 }

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) On an OEP probe's serial port, a broken answer (bad CRC or COBS) is resent at once up to 4 times in one exchange, instead of once and then waiting out the 3 s timeout: a bridge without flow control (a CH340) loses bytes on long runs of answers at any rate, and each loss after the first resend cost 3 s. Nothing arriving at all is still resent once after the timeout.
+- (JA) OEP の probe の serial の口で、壊れた答え(CRC か COBS の誤り)は、1 回の交換で最大 4 回まですぐ送り直す(1 回送り直して 3 秒の時間切れを待つのをやめた): 流れの制御の無い bridge(CH340)は、どの速さでも長く続く答えでバイトを落とし、最初の送り直しの後の落ちが 1 回 3 秒かかっていた。何も届かないときは、今までどおり時間切れの後に 1 回送り直す。
+
 - (EN) The broker no longer reports "the probe has no oep.probe.link" when the list that looks for it failed (an answer lost twice at the boot speed): the lookup is asked once more, and a failure is logged as what it was. Its fallback line now says what it saw (no answer at the raised speed even resent, then the probe answering confirm at the boot speed) rather than claiming the probe went back by itself.
 - (JA) ブローカーは、oep.probe.link を探す list が失敗したとき(起動時の速さで答えが 2 度失われた)に「probe に oep.probe.link が無い」と出さない: もう 1 回聞き、失敗ならその理由を log に出す。速さが戻ったときの行は、見たこと(上げた速さで送り直しても答えが無く、起動時の速さで confirm に答えた)を書く(probe が自分で戻ったとは言わない)。
 
