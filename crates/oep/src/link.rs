@@ -82,6 +82,37 @@ pub struct Limits {
     pub boot_id: u32,
 }
 
+/// en: `CH32RV_OEP_TRACE=<file>`: one line per OEP request sent and result received on this
+/// process's links (time, pid, direction, corr, then fn op session_id payload-length for a request
+/// and resolution detail payload-length for a result, and the payload's first bytes), for counting
+/// what an upload asks of a probe. Off by default. A broker writes its upstream link's: set it
+/// where the broker starts (a client's environment, when the client starts the broker).
+/// ja: `CH32RV_OEP_TRACE=<file>` で、OEP の要求と答えを 1 行ずつ書く(既定は無し)。
+fn trace(line: std::fmt::Arguments<'_>, payload: &[u8]) {
+    use std::io::Write as _;
+    let Some(path) = std::env::var_os("CH32RV_OEP_TRACE") else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+        let head: String = payload
+            .iter()
+            .take(16)
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        // One write per line: a broker and its clients may share the file.
+        let text = format!("{t:.4} {} {line} {head}\n", std::process::id());
+        let _ = f.write_all(text.as_bytes());
+    }
+}
+
 /// One request to make.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Call {
@@ -431,6 +462,18 @@ impl Link {
             while next < todo.len() && outstanding.len() < inflight {
                 let i = todo[next];
                 let msg = reqs[i].encode();
+                let r = &reqs[i];
+                trace(
+                    format_args!(
+                        "> {:5} fn {} op 0x{:02x} sid {:08x} len {}",
+                        r.corr,
+                        r.func,
+                        r.op,
+                        r.session.unwrap_or(0),
+                        r.payload.len()
+                    ),
+                    &r.payload,
+                );
                 if !outstanding.is_empty() && bytes_out + msg.len() > window {
                     break;
                 }
@@ -478,6 +521,10 @@ impl Link {
                         resolution,
                         payload,
                     }) if c == corr => {
+                        trace(
+                            format_args!("< {c:5} {resolution:?} len {}", payload.len()),
+                            &payload,
+                        );
                         return Ok(Reply {
                             resolution,
                             payload,

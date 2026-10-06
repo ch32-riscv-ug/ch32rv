@@ -125,6 +125,7 @@ flag > 環境変数 > 設定ファイル > 既定値。
 | `CH32RV_OEP_TRANSPORT` | `vendor-bulk` / `hid` / `serial`: OEP の probe につなぐ経路の順の始まりを変える(docs/oep-host.ja.md §3.3) |
 | `CH32RV_PORT_SPEED` | `off`、または速さの並び(`921600,500000`): ブローカーが UART bridge の probe との serial を上げるとき(oep-core §3.5 port_speed)に試す速さ。未設定は 921600、750000、500000 の順。切り分け用で、契約の外 |
 | `CH32RV_USB_TRACE` | file の path: OEP の vendor bulk の書き込みと IN の完了を 1 行ずつ記録する |
+| `CH32RV_OEP_TRACE` | file の path: OEP の要求と答えを 1 行ずつ記録する(時刻、pid、向き、corr、fn / op / session_id / payload の長さ、payload の先頭)。ブローカーの上流の分は、ブローカーを起動したプロセスの環境に置く(切り分け用、契約の外) |
 
 ### 3.3 設定ファイル
 
