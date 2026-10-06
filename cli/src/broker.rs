@@ -49,6 +49,11 @@ const RESPAWN_EVERY: Duration = Duration::from_millis(400);
 /// 止まったとき、気づいて起動時の速さへ戻すまで切れない長さ。
 const LEASE_MS: u32 = 10_000;
 const KEEPALIVE_EVERY: Duration = Duration::from_millis(1000);
+/// How long after the speed went down the broker raises it again (when no request waits), and
+/// how many times a session: one lost answer must not cost the raised speed for the rest of a
+/// long session (two sweeps 150 / 136 s against 66 s on the V003 jig, 2026-10-07).
+const RAISE_AGAIN_AFTER: Duration = Duration::from_secs(20);
+const RAISES_AGAIN: u32 = 3;
 
 // ---- where a broker is ----
 
@@ -523,6 +528,9 @@ fn serve_target(
         ledger: Ledger::default(),
         key: key.clone(),
         endpoint: json!({"port": port, "pid": std::process::id(), "time": now_ms(), "transport": transport}),
+        raise_rates: speed_port.and(port_speed_rates()),
+        raise_again_at: None,
+        raises_left: RAISES_AGAIN,
         speed_port,
         speed_window: std::collections::VecDeque::new(),
         speed_ratio_rule,
@@ -757,6 +765,11 @@ struct Broker {
     speed_ratio_rule: bool,
     /// The link's `speed_fallbacks` already logged.
     fallbacks_seen: u64,
+    /// The rates to raise to again after the speed went down (None: port_speed off or never
+    /// committed), when to try next, and how many tries are left this session.
+    raise_rates: Option<Vec<u32>>,
+    raise_again_at: Option<Instant>,
+    raises_left: u32,
 }
 
 /// How long a broker about to end still takes a new connection (after its endpoint is gone).
@@ -795,6 +808,9 @@ impl Broker {
                             None => return Ok(()),
                         }
                         continue;
+                    }
+                    if self.raise_again() {
+                        last_upstream = Instant::now();
                     }
                     if last_upstream.elapsed() >= KEEPALIVE_EVERY {
                         self.keepalive()?;
@@ -845,6 +861,8 @@ impl Broker {
                 if self.relayed_restart {
                     return Ok(());
                 }
+                // Also between busy batches: a monitor's steady reads never leave the broker idle.
+                self.raise_again();
                 last_upstream = Instant::now();
             } else if last_upstream.elapsed() >= KEEPALIVE_EVERY {
                 // Only connections and goodbyes came: the lease still needs its keepalive.
@@ -1119,9 +1137,10 @@ impl Broker {
         if fallbacks != self.fallbacks_seen {
             self.fallbacks_seen = fallbacks;
             self.speed_port = None;
+            self.lowered();
             broker_log(
                 &self.key,
-                "port_speed: a request at the raised speed got no answer (even resent), and the probe answered confirm at the boot speed (link duty 5): staying there",
+                "port_speed: a request at the raised speed got no answer (even resent), and the probe answered confirm at the boot speed (link duty 5): at the boot speed for now",
             );
             return;
         }
@@ -1157,6 +1176,7 @@ impl Broker {
             let ok = ch32rv_oep::speed::revert(p, port);
             self.speed_port = None;
             self.speed_window.clear();
+            self.lowered();
             broker_log(
                 &self.key,
                 &format!(
@@ -1165,6 +1185,50 @@ impl Broker {
                 ),
             );
         }
+    }
+
+    /// en: The speed went down: try raising it again later (link §3 lets the host raise again).
+    /// ja: 速さが下がった。後でもう一度上げる。
+    fn lowered(&mut self) {
+        if self.raise_rates.is_some() && self.raises_left > 0 {
+            self.raise_again_at = Some(Instant::now() + RAISE_AGAIN_AFTER);
+        }
+    }
+
+    /// en: Once [`RAISE_AGAIN_AFTER`] has passed since the speed went down, between requests: run
+    /// port_speed again (the same check as at the start), at most [`RAISES_AGAIN`] times a
+    /// session. Clients that ask meanwhile wait for it (about a second). True when it talked to
+    /// the probe. ja: 要求が無い間に、下がってから一定時間たったら port_speed をやり直す(1 session
+    /// に数回まで)。
+    fn raise_again(&mut self) -> bool {
+        let due = self.raise_again_at.is_some_and(|t| Instant::now() >= t);
+        let (Some(rates), true, Upstream::Oep(p)) = (self.raise_rates.clone(), due, &mut self.up)
+        else {
+            return false;
+        };
+        self.raise_again_at = None;
+        self.raises_left = self.raises_left.saturating_sub(1);
+        match ch32rv_oep::speed::raise_speed(
+            p,
+            &rates,
+            Duration::from_secs(6),
+            self.speed_ratio_rule,
+        ) {
+            Ok(r) => {
+                let committed = r.trials.iter().any(|t| t.committed);
+                if committed {
+                    self.speed_port = r.port;
+                    self.speed_window.clear();
+                    self.fallbacks_seen = p.link().speed_fallbacks;
+                }
+                broker_log(&self.key, &format!("port_speed again: {}", r.summary()));
+                if !committed {
+                    self.lowered();
+                }
+            }
+            Err(e) => broker_log(&self.key, &format!("port_speed again: {e}")),
+        }
+        true
     }
 
     /// The broker's own keepalive, watched like any request (a raised speed may break under it).
@@ -1221,6 +1285,7 @@ impl Broker {
         self.find_fns();
         self.speed_port = None;
         self.speed_window.clear();
+        self.lowered();
         if let Upstream::Oep(p) = &mut self.up {
             self.fallbacks_seen = p.link().speed_fallbacks;
             // The clients' requests now go in the new session.

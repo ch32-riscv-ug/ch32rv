@@ -412,12 +412,36 @@ impl Link {
         fallbacks: &mut u32,
     ) -> Result<(), LinkError> {
         loop {
+            // en: Above the boot speed the first wait is short (half of port_speed_idle_max_ms):
+            // a request lost on the way gets no answer at all, and waiting the whole timeout
+            // (3 s) let the probe's own idle rule (3 s with no good frame) take it back to the
+            // boot speed before the host resent - six times in one bench window, each costing the
+            // raised speed for the rest of the session (2026-10-07). The resend at the raised
+            // speed is a good frame to the probe and keeps it up; only when the resend too gets
+            // nothing does host duty 5 take the link down.
+            // ja: 上げた速さでは最初の待ちを短く(idle の上限の半分)する。全部待つと probe が自分の idle
+            // の規則で先に戻ってしまう。上げた速さのまま送り直し、それにも答えが無いときだけ義務 5。
+            let quick = self.baud != self.base_baud && !resent.timeout && self.resend;
+            let full = self.timeout;
+            if quick {
+                self.timeout = full.min(Duration::from_millis(u64::from(
+                    timing::PORT_SPEED_IDLE_MAX_MS / 2,
+                )));
+            }
             let r = self.pump(reqs, replies);
+            self.timeout = full;
             if matches!(r, Err(LinkError::Timeout(_))) {
                 self.lost += 1;
             }
             match r {
                 Ok(()) => return Ok(()),
+                Err(LinkError::Timeout(_)) if quick => {
+                    resent.timeout = true;
+                    self.resends += 1;
+                    if self.framing == Framing::Length {
+                        self.resync()?;
+                    }
+                }
                 // en: Above the boot speed and no answer (oep-core §3.5, host duty 5): back to the
                 // boot speed, confirm until port_speed_idle_max_ms + 1000 ms. It converges either
                 // way - a probe still up there takes these confirms as broken and goes back after
@@ -861,11 +885,13 @@ mod tests {
     use super::*;
     use crate::codec::{cobs_decode, encode_result};
 
-    /// A serial port to a probe that breaks the CRC of its first `breaks` answers.
+    /// A serial port to a probe that breaks the CRC of its first `breaks` answers, after losing
+    /// its first `silent` requests outright (no answer at all).
     struct Lossy {
         rx: SerialDeframer,
         out: VecDeque<u8>,
         breaks: usize,
+        silent: usize,
         answered: usize,
     }
 
@@ -873,6 +899,10 @@ mod tests {
         fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
             for m in self.rx.push(data) {
                 let req = Request::decode(&m).unwrap();
+                if self.silent > 0 {
+                    self.silent -= 1;
+                    continue;
+                }
                 let msg = encode_result(
                     req.corr,
                     Resolution::Completed(registry::outcomes::SUCCESS),
@@ -905,14 +935,23 @@ mod tests {
             }
             Ok(n)
         }
+
+        fn set_baud(&mut self, _: u32) -> io::Result<()> {
+            Ok(())
+        }
     }
 
     fn link(breaks: usize) -> Link {
+        lossy(breaks, 0)
+    }
+
+    fn lossy(breaks: usize, silent: usize) -> Link {
         let mut l = Link::new(
             Box::new(Lossy {
                 rx: SerialDeframer::new(0xFFFF),
                 out: VecDeque::new(),
                 breaks,
+                silent,
                 answered: 0,
             }),
             Framing::Cobs,
@@ -955,5 +994,25 @@ mod tests {
         // Six broken answers: four at once, one after the timeout, then nothing more.
         let mut l = link(6);
         assert!(matches!(l.call(call()), Err(LinkError::Timeout(_))));
+    }
+
+    #[test]
+    fn a_lost_request_at_a_raised_speed_is_resent_there_before_the_probe_goes_back() {
+        // Raised: the first wait is half of port_speed_idle_max_ms, then the resend at the same
+        // speed answers - no fallback to the boot speed.
+        let mut l = lossy(0, 1);
+        l.set_timeout(Duration::from_secs(3));
+        l.base_baud = Some(115_200);
+        l.baud = Some(500_000);
+        let t = std::time::Instant::now();
+        assert!(l.call(call()).unwrap().succeeded());
+        assert_eq!((l.resends, l.speed_fallbacks), (1, 0));
+        let half = u64::from(timing::PORT_SPEED_IDLE_MAX_MS / 2);
+        assert!(
+            t.elapsed() < Duration::from_millis(half + 500),
+            "{:?}",
+            t.elapsed()
+        );
+        assert_eq!(l.baud, Some(500_000));
     }
 }

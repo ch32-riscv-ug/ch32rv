@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) A raised port speed is kept through a lost request: above the boot speed the first wait for an answer is 1.5 s (half of port_speed_idle_max_ms) and the request is resent at the raised speed, before the probe's own 3 s idle rule takes it back; only when the resend too gets nothing does the link go to the boot speed. When the speed did go down (that, or too many broken frames, or a new session), the broker raises it again 20 s later, between requests, up to 3 times a session. On the V003 jig one lost request had kept a whole sweep at 115200 (150 s against 66 s).
+- (JA) 上げた速さは、要求が 1 つ失われても保つ: 上げた速さでは答えの最初の待ちを 1.5 秒(port_speed_idle_max_ms の半分)にし、probe が自分の 3 秒の idle の規則で戻る前に、上げた速さのまま送り直す。それにも答えが無いときだけ起動時の速さに戻る。速さが下がったとき(それ、壊れの多さ、新しい session)は、ブローカーが 20 秒後に要求の合間で上げ直す(1 session に 3 回まで)。V003 の治具では、1 つ失われた要求で sweep 全体が 115200 のままだった(66 秒に対し 150 秒)。
+
 - (EN) On an OEP probe's serial port, a broken answer (bad CRC or COBS) is resent at once up to 4 times in one exchange, instead of once and then waiting out the 3 s timeout: a bridge without flow control (a CH340) loses bytes on long runs of answers at any rate, and each loss after the first resend cost 3 s. Nothing arriving at all is still resent once after the timeout.
 - (JA) OEP の probe の serial の口で、壊れた答え(CRC か COBS の誤り)は、1 回の交換で最大 4 回まですぐ送り直す(1 回送り直して 3 秒の時間切れを待つのをやめた): 流れの制御の無い bridge(CH340)は、どの速さでも長く続く答えでバイトを落とし、最初の送り直しの後の落ちが 1 回 3 秒かかっていた。何も届かないときは、今までどおり時間切れの後に 1 回送り直す。
 
