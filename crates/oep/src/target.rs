@@ -475,6 +475,40 @@ impl DtmAccess for OepDtm<'_> {
     }
 }
 
+/// How often a block op that came back `line` / `fault`, or whose answer was lost, is sent again.
+const BLOCK_TRIES: usize = 4;
+/// The pause before sending it again (a link drop on rvswd takes a few ms to clear).
+const BLOCK_PAUSE: Duration = Duration::from_millis(10);
+
+impl OepDtm<'_> {
+    /// en: A read_block / write_block answer, sent again (as a new request, after a short pause)
+    /// while it is `result_lost` (the answer was lost and not kept, core §5.2) or reports `line` /
+    /// `fault` (the probe saw the link drop and could not confirm the words). Both ops are
+    /// idempotent: reading or writing the same words again changes nothing else. Seen on the L103
+    /// behind the RP2350 (write_block fault, 2 in 60 uploads, 2026-10-06).
+    /// ja: block の read / write を、答えが失われたとき・line / fault のときに送り直す(どちらも何度
+    /// やっても同じ)。
+    fn block_again(&mut self, mut r: Reply, call: (u16, u8, Vec<u8>)) -> Result<Vec<u8>, DmiError> {
+        let lost = Resolution::Rejected(crate::registry::reject_reasons::RESULT_LOST);
+        for _ in 1..BLOCK_TRIES {
+            let again = r.resolution == lost
+                || (matches!(r.resolution, Resolution::Completed(_))
+                    && matches!(r.payload.get(2), Some(&s) if s == status::LINE || s == status::FAULT));
+            if !again {
+                break;
+            }
+            std::thread::sleep(BLOCK_PAUSE);
+            r = self
+                .probe
+                .exchange(vec![call.clone()])
+                .map_err(transport)?
+                .pop()
+                .ok_or_else(|| short("block"))?;
+        }
+        completed(r)
+    }
+}
+
 impl TargetAccess for OepDtm<'_> {
     fn max_block_words(&self) -> usize {
         self.max_words
@@ -494,23 +528,7 @@ impl TargetAccess for OepDtm<'_> {
         }
         let replies = self.probe.exchange(calls.clone()).map_err(transport)?;
         for (r, call) in replies.into_iter().zip(calls) {
-            // en: The answer was lost on the way and the probe did not keep it for the resend
-            // (core §5.2 lets it skip large answers: `result_lost`). A read changes nothing, so it
-            // is asked again as a new request (seen on the V003 jig's CP2102, 2026-10-01).
-            // ja: 答えが途中で失われ、probe は再送用に覚えていなかった(大きな応答は覚えなくてよい)。
-            // read は何も変えないので、新しい要求としてもう一度聞く。
-            let r = if r.resolution
-                == Resolution::Rejected(crate::registry::reject_reasons::RESULT_LOST)
-            {
-                self.probe
-                    .exchange(vec![call])
-                    .map_err(transport)?
-                    .pop()
-                    .ok_or_else(|| short("read_block"))?
-            } else {
-                r
-            };
-            let a = completed(r)?;
+            let a = self.block_again(r, call)?;
             if a.len() < 3 {
                 return Err(short("read_block"));
             }
@@ -531,7 +549,7 @@ impl TargetAccess for OepDtm<'_> {
     }
 
     fn write_words(&mut self, addr: u32, words: &[u32]) -> Result<(), DmiError> {
-        let calls = words
+        let calls: Vec<(u16, u8, Vec<u8>)> = words
             .chunks(self.max_words)
             .enumerate()
             .map(|(i, chunk)| {
@@ -544,8 +562,9 @@ impl TargetAccess for OepDtm<'_> {
                 (self.func, dm::op::WRITE_BLOCK, pl)
             })
             .collect();
-        for r in self.probe.exchange(calls).map_err(transport)? {
-            let a = completed(r)?;
+        let replies = self.probe.exchange(calls.clone()).map_err(transport)?;
+        for (r, call) in replies.into_iter().zip(calls) {
+            let a = self.block_again(r, call)?;
             match a.get(2) {
                 Some(&s) if s == status::OK => {}
                 Some(&s) => return Err(failed("write_block", s)),

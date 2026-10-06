@@ -14,7 +14,7 @@
 use std::time::Duration;
 
 use ch32rv_dmi::access::regno;
-use ch32rv_dmi::{DmiError, TargetAccess};
+use ch32rv_dmi::{DmiError, ResetMode, TargetAccess};
 
 use crate::Segment;
 
@@ -122,23 +122,37 @@ fn bytes(w: &[u32]) -> Vec<u8> {
     w.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
+/// en: Unlock the FLASH controller (both key pairs) and read CTLR back. A key write lost on the
+/// way (a link drop on rvswd makes a write vanish while the request still succeeds) leaves the
+/// controller locked, and a key sequence out of order keeps it locked until a reset: so a CTLR
+/// still locked is met with a reset-halt and the keys again, up to 3 times (seen on the L103
+/// behind the RP2350, 2026-10-06). The hart is reset-halted on entry anyway (see [`program`]).
+/// ja: FLASH controller の鍵を入れて CTLR を読み直す。鍵の書き込みが線の途切れで消えると lock の
+/// まま残り、順の崩れた鍵は reset まで lock を保つので、lock のままなら reset-halt して鍵を入れ直す
+/// (最大 3 回)。
 fn unlock<T: TargetAccess + ?Sized>(t: &mut T) -> Result<(), LoaderError> {
-    let ctlr = t.read_words(FLASH_CTLR, 1)?.first().copied().unwrap_or(0);
-    if ctlr & (CTLR_LOCK | CTLR_FLOCK) != 0 {
-        for (reg, key) in [
-            (FLASH_KEYR, KEY1),
-            (FLASH_KEYR, KEY2),
-            (FLASH_MODEKEYR, KEY1),
-            (FLASH_MODEKEYR, KEY2),
-        ] {
-            t.write_words(reg, &[key])?;
+    let mut ctlr = 0;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            t.reset(ResetMode::HaltAtReset)?;
+        }
+        ctlr = t.read_words(FLASH_CTLR, 1)?.first().copied().unwrap_or(0);
+        if ctlr & (CTLR_LOCK | CTLR_FLOCK) != 0 {
+            for (reg, key) in [
+                (FLASH_KEYR, KEY1),
+                (FLASH_KEYR, KEY2),
+                (FLASH_MODEKEYR, KEY1),
+                (FLASH_MODEKEYR, KEY2),
+            ] {
+                t.write_words(reg, &[key])?;
+            }
+        }
+        ctlr = t.read_words(FLASH_CTLR, 1)?.first().copied().unwrap_or(0);
+        if ctlr & (CTLR_LOCK | CTLR_FLOCK) == 0 {
+            return Ok(());
         }
     }
-    let ctlr = t.read_words(FLASH_CTLR, 1)?.first().copied().unwrap_or(0);
-    if ctlr & (CTLR_LOCK | CTLR_FLOCK) != 0 {
-        return Err(LoaderError::StillLocked(ctlr));
-    }
-    Ok(())
+    Err(LoaderError::StillLocked(ctlr))
 }
 
 fn lock<T: TargetAccess + ?Sized>(t: &mut T) -> Result<(), LoaderError> {
@@ -364,6 +378,127 @@ mod tests {
             })
         );
         assert_eq!(plan_for_family("CH32NOPE"), None);
+    }
+
+    /// A FLASH controller that loses the first `drop` writes (a link drop: the write vanishes,
+    /// the request succeeds) and stays locked after keys out of order until a reset.
+    struct Fpec {
+        ctlr: u32,
+        keyr: Vec<u32>,
+        modekeyr: Vec<u32>,
+        jammed: bool,
+        drop: usize,
+        resets: usize,
+    }
+
+    impl Fpec {
+        fn new(drop: usize) -> Self {
+            Fpec {
+                ctlr: CTLR_LOCK | CTLR_FLOCK,
+                keyr: Vec::new(),
+                modekeyr: Vec::new(),
+                jammed: false,
+                drop,
+                resets: 0,
+            }
+        }
+
+        fn key(seq: &mut Vec<u32>, k: u32, jammed: &mut bool) -> bool {
+            seq.push(k);
+            match seq.as_slice() {
+                [KEY1] => false,
+                [KEY1, KEY2] => {
+                    seq.clear();
+                    !*jammed
+                }
+                _ => {
+                    seq.clear();
+                    *jammed = true;
+                    false
+                }
+            }
+        }
+    }
+
+    impl ch32rv_dmi::DtmAccess for Fpec {
+        fn dmi_read(&mut self, _: u8) -> Result<u32, DmiError> {
+            Ok(0)
+        }
+        fn dmi_write(&mut self, _: u8, _: u32) -> Result<(), DmiError> {
+            Ok(())
+        }
+        fn dmi_nop(&mut self) -> Result<(), DmiError> {
+            Ok(())
+        }
+    }
+
+    impl TargetAccess for Fpec {
+        fn max_block_words(&self) -> usize {
+            64
+        }
+        fn read_words(&mut self, addr: u32, count: usize) -> Result<Vec<u32>, DmiError> {
+            Ok(vec![if addr == FLASH_CTLR { self.ctlr } else { 0 }; count])
+        }
+        fn write_words(&mut self, addr: u32, words: &[u32]) -> Result<(), DmiError> {
+            if self.drop > 0 {
+                self.drop -= 1;
+                return Ok(());
+            }
+            let k = words[0];
+            if addr == FLASH_KEYR && Self::key(&mut self.keyr, k, &mut self.jammed) {
+                self.ctlr &= !CTLR_LOCK;
+            }
+            if addr == FLASH_MODEKEYR && Self::key(&mut self.modekeyr, k, &mut self.jammed) {
+                self.ctlr &= !CTLR_FLOCK;
+            }
+            Ok(())
+        }
+        fn run_until_halt(
+            &mut self,
+            pc: u32,
+            _: &[(u16, u32)],
+            _: &[u16],
+            _: Duration,
+        ) -> Result<ch32rv_dmi::RunResult, DmiError> {
+            Ok(ch32rv_dmi::RunResult {
+                stopped: true,
+                dpc: pc,
+                elapsed_us: 0,
+                outs: Vec::new(),
+            })
+        }
+        fn halt(&mut self) -> Result<(), DmiError> {
+            Ok(())
+        }
+        fn resume_once(&mut self) -> Result<(), DmiError> {
+            Ok(())
+        }
+        fn reset(&mut self, _: ResetMode) -> Result<ch32rv_dmi::ResetResult, DmiError> {
+            *self = Fpec {
+                resets: self.resets + 1,
+                drop: self.drop,
+                ..Fpec::new(0)
+            };
+            Ok(ch32rv_dmi::ResetResult { pc: 0 })
+        }
+    }
+
+    #[test]
+    fn a_lost_key_write_is_met_with_a_reset_and_the_keys_again() {
+        let mut ok = Fpec::new(0);
+        unlock(&mut ok).unwrap();
+        assert_eq!((ok.ctlr, ok.resets), (0, 0));
+        // KEY1 lost: KEY2 alone jams the controller until a reset.
+        let mut lost = Fpec::new(1);
+        unlock(&mut lost).unwrap();
+        assert_eq!((lost.ctlr, lost.resets), (0, 1));
+        // Never getting through: StillLocked after 3 tries.
+        let mut dead = Fpec::new(usize::MAX);
+        assert!(matches!(
+            unlock(&mut dead),
+            Err(LoaderError::StillLocked(_))
+        ));
+        assert_eq!(dead.resets, 2);
     }
 
     #[test]
