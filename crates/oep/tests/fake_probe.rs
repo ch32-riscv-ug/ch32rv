@@ -1,8 +1,8 @@
 //! en: The link and session layers against the spec side's fake probe (oep-client-python
 //! `endpoint.Endpoint`), served over TCP by `tests/fake/serve.py`. The fake is the shared
 //! "working spec" (ArduinoCore-CH32RV decision, 2026-09-29); Python runs only here, through `uv`.
-//! Skipped, with a note, when uv or the client checkout is missing ($OEP_CLIENT_PYTHON, default
-//! `../dev_oep/oep-client-python` next to the ch32rv checkout's parent).
+//! Skipped, with a note, when uv or the client is missing (fake/uv.rs: $OEP_CLIENT_PYTHON, else
+//! `../dev_oep/oep-client-python` next to the ch32rv checkout's parent, at the pinned commit).
 //! ja: link と session を spec 側の偽の probe で試験する。uv か client が無ければ skip。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -31,27 +31,12 @@ impl Drop for Fake {
     }
 }
 
-fn client_dir() -> PathBuf {
-    std::env::var_os("OEP_CLIENT_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../../dev_oep/oep-client-python")
-        })
-}
-
 /// en: Start oep-client-python's `fake_serve` with `args` (and `env` for the loader hook), or
 /// `None` (skip) when it cannot run here. `--run-hook` is always given: ch32rv's loader played in
 /// `tests/fake/loader_hook.py`.
 /// ja: `fake_serve` を起動する。動かせない環境では None(skip)。
 fn fake_env(args: &[&str], env: &[(&str, &str)]) -> Option<Fake> {
-    let dir = client_dir();
-    if !dir.join("src/oep_client/fake_serve.py").exists() {
-        eprintln!(
-            "skip: no oep-client-python with fake_serve at {}",
-            dir.display()
-        );
-        return None;
-    }
+    let dir = uv::client_dir()?;
     let hook = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fake/loader_hook.py:loader");
     let mut cmd = uv::uv_run(&dir);
     cmd.args(["python", "-m", "oep_client.fake_serve"])

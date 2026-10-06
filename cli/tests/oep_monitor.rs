@@ -9,7 +9,6 @@
 mod uv;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::path::PathBuf;
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -22,21 +21,8 @@ impl Drop for Kill {
     }
 }
 
-fn root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")
-}
-
 fn fake_pty(args: &[&str]) -> Option<(Kill, String)> {
-    let dir = std::env::var_os("OEP_CLIENT_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root().join("../../dev_oep/oep-client-python"));
-    if !dir.join("src/oep_client/fake_serve.py").exists() {
-        eprintln!(
-            "skip: no oep-client-python with fake_serve at {}",
-            dir.display()
-        );
-        return None;
-    }
+    let dir = uv::client_dir()?;
     let mut child = uv::uv_run(&dir)
         .args(["python", "-m", "oep_client.fake_serve", "--pty"])
         .args(args)

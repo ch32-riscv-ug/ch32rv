@@ -28,16 +28,7 @@ fn root() -> PathBuf {
 }
 
 fn fake(args: &[&str]) -> Option<Fake> {
-    let dir = std::env::var_os("OEP_CLIENT_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root().join("../../dev_oep/oep-client-python"));
-    if !dir.join("src/oep_client/fake_serve.py").exists() {
-        eprintln!(
-            "skip: no oep-client-python with fake_serve at {}",
-            dir.display()
-        );
-        return None;
-    }
+    let dir = uv::client_dir()?;
     let hook = root().join("crates/oep/tests/fake/loader_hook.py:loader");
     let mut child = uv::uv_run(&dir)
         .args(["python", "-m", "oep_client.fake_serve"])
@@ -265,9 +256,9 @@ fn a_raw_upload_to_a_probe_not_on_usb_is_not_sent_to_its_slots() {
 fn flash_where_the_host_picks_the_pins() {
     // A probe whose wire takes its pins from the host (role_channels) and has no slot: ch32rv
     // scans for the pair with a target (the fake's is the first, GP0 / GP1) and attaches there.
-    let dir = std::env::var_os("OEP_CLIENT_PYTHON")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| root().join("../../dev_oep/oep-client-python"));
+    let Some(dir) = uv::client_dir() else {
+        return;
+    };
     let has_profile = std::fs::read_to_string(dir.join("src/oep_client/fake.py"))
         .is_ok_and(|t| t.contains("rp2350-pins"));
     if !has_profile {

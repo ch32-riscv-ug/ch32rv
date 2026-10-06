@@ -284,7 +284,7 @@ binary の扱い:
 1. 長さ見出しの CDC / USJ の firmware と話す手段は持たない。USJ の X035 治具は、probe の firmware が COBS になってから使う。それまでは偽の probe(fake_serve の pty)と V003 治具(UART bridge、今も COBS)で試す。
 2. RAM loader は RV32EC の 1 本(buffered / direct)。wlink の V003 loader と参照の X035 loader は使わない。速さは「LinkE + ch32rv と大きく離れていなければよい、詰めるのは後」。実機で比べた結果は b2 に報告する(実機の試験は b2 の bench で、声をかけてから)。
 3. gdb と monitor が同じ probe を使うときの形(§8(c))は確認中。
-4. 結合試験は oep-client-python の偽の probe を使う(Python は試験のときだけ uv で動かす)。Rust で同じものは作らない。上流に fake_serve(pty と TCP)が入ったら、`crates/oep/tests/fake/serve.py` は消してそちらに乗り換える。
+4. 結合試験は oep-client-python の偽の probe を使う(Python は試験のときだけ uv で動かす)。Rust で同じものは作らない。fake は出ている probe と同じ wire の commit に固定する(`crates/oep/tests/fake/uv.rs` の `FAKE_REV`、隣の checkout から `git archive` で `target/` に取り出す。`$OEP_CLIENT_PYTHON` を与えればその checkout をそのまま使う)。2026-10-06 時点は f91da22(0300973 から fake は簡素化後の wire で、probe 0.0.28 はまだ旧 wire)。ch32rv が新しい wire に移るときに上げる。上流に fake_serve(pty と TCP)が入ったら、`crates/oep/tests/fake/serve.py` は消してそちらに乗り換える。
 
 ## 12. 実装の順
 
