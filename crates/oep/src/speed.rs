@@ -5,14 +5,14 @@
 //! broke -> commit at the new speed when nothing broke; else revert and back to the boot speed.
 //! Every trial is reported (what passed, KB/s each way, how many requests in flight, how long), for
 //! the broker's log: which rates to try and whether to remember them is decided from what is seen.
-//! port_speed, source and sink are `oep.link`'s (oep-if-link), an optional interface found by name.
+//! port_speed, source and sink are `oep.probe.link`'s (oep-if-link), an optional interface found by name.
 //! ja: `port_speed`(oep.link)。UART bridge の probe との serial を、長い session(ブローカー)の間だけ起動時の
 //! 速さより上げる。参照 client の `raise_speed` と同じ手順。試した結果はすべて返す(ブローカーの log 用)。
 
 use std::time::{Duration, Instant};
 
 use crate::link::{Call, LinkError};
-use crate::registry::{core, link, outcomes, reject_reasons};
+use crate::registry::{core, outcomes, probe_link as link, reject_reasons};
 use crate::session::{OepError, Probe};
 
 /// One rate tried.
@@ -124,7 +124,7 @@ const VERIFY_BYTES: usize = 32 * 1024;
 /// (oep-if-link §2, `link_source_overhead_bytes`); sink's request the same, to keep both alike.
 const VERIFY_ROOM: usize = crate::registry::limits::LINK_SOURCE_OVERHEAD_BYTES as usize;
 
-/// The probe's `oep.link` fn (None: it has none).
+/// The probe's `oep.probe.link` fn (None: it has none).
 fn link_fn(p: &mut Probe) -> Option<u16> {
     p.interface(link::NAME).ok().map(|i| i.func)
 }
@@ -133,7 +133,7 @@ fn link_fn(p: &mut Probe) -> Option<u16> {
 /// why not.
 fn speed_port(p: &mut Probe) -> Result<(u16, u8), String> {
     let Some(func) = link_fn(p) else {
-        return Err("the probe has no oep.link".into());
+        return Err("the probe has no oep.probe.link".into());
     };
     if !p
         .ops(func)

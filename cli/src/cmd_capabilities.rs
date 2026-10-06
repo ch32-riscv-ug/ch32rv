@@ -98,11 +98,11 @@ fn oep_capabilities(cli: &Cli, cmd: &str, a: &crate::oep::OepAddr) -> ExitCode {
         let fw = text(&core, oep_core::tlvs::describe::FIRMWARE).unwrap_or_default();
         // Optional ops are declared by each fn's ops tag (core §1.2, §7.4).
         let port_speed = p
-            .interface(ch32rv_oep::registry::link::NAME)
+            .interface(ch32rv_oep::registry::probe_link::NAME)
             .and_then(|i| p.ops(i.func))
             .ok()
             .flatten()
-            .is_some_and(|o| o.contains(&ch32rv_oep::registry::link::op::PORT_SPEED));
+            .is_some_and(|o| o.contains(&ch32rv_oep::registry::probe_link::op::PORT_SPEED));
         let dm_ops = p
             .interface(target_riscv_dm::NAME)
             .and_then(|i| p.ops(i.func))

@@ -517,6 +517,9 @@ fn serve_target(
         wires,
         clients: HashMap::new(),
         sessions: HashMap::new(),
+        plan_fn: None,
+        restart_fn: None,
+        relayed_restart: false,
         ledger: Ledger::default(),
         key: key.clone(),
         endpoint: json!({"port": port, "pid": std::process::id(), "time": now_ms(), "transport": transport}),
@@ -525,8 +528,10 @@ fn serve_target(
         speed_ratio_rule,
         fallbacks_seen: 0,
     };
+    b.find_fns();
     let r = b.run(&rx);
     match &r {
+        Ok(()) if b.relayed_restart => broker_log(&key, "down: the probe is restarting"),
         Ok(()) => broker_log(&key, "down: no client left"),
         Err(e) => broker_log(&key, &format!("down on an upstream error: {e}")),
     }
@@ -536,7 +541,9 @@ fn serve_target(
     {
         let _ = std::fs::remove_file(endpoint_file(&key));
     }
-    b.up.end();
+    if !b.relayed_restart {
+        b.up.end();
+    }
     match r {
         Ok(()) => ExitCode::SUCCESS,
         Err(_) => ExitCode::from(ErrorKind::TransferFailed.exit_code()),
@@ -731,6 +738,12 @@ struct Broker {
     /// Each client's open session (its id): a request under any other id is answered
     /// no_session, as a probe answers one for a session that ended (core §6.2).
     sessions: HashMap<u64, u32>,
+    /// The probe's `oep.probe.plan` and `oep.probe.restart` fns, when it has them.
+    plan_fn: Option<u16>,
+    restart_fn: Option<u16>,
+    /// A client's restart was relayed: the broker ends without ending its session (the probe is
+    /// restarting and answers nothing).
+    relayed_restart: bool,
     ledger: Ledger,
     /// The runtime key and what the endpoint file says, to take it down and put it back.
     key: String,
@@ -829,6 +842,9 @@ impl Broker {
             }
             if !msgs.is_empty() {
                 self.serve_batch(msgs)?;
+                if self.relayed_restart {
+                    return Ok(());
+                }
                 last_upstream = Instant::now();
             } else if last_upstream.elapsed() >= KEEPALIVE_EVERY {
                 // Only connections and goodbyes came: the lease still needs its keepalive.
@@ -918,8 +934,8 @@ impl Broker {
                 self.send(id, &ok);
                 continue;
             }
-            if req.func == oep_core::FN
-                && req.op == oep_core::op::RESTART
+            if self.restart_fn == Some(req.func)
+                && req.op == registry::probe_restart::op::RESTART
                 && matches!(self.up, Upstream::Oep(_))
             {
                 self.flush(&mut pending, &mut calls)?;
@@ -941,60 +957,54 @@ impl Broker {
         self.flush(&mut pending, &mut calls)
     }
 
-    /// en: A client's restart (core §6.6): forwarded under the broker's session; on its success
-    /// answer (passed on first) the broker goes back to the boot speed, confirms until the probe
-    /// answers again within its restart_max_ms, and opens a new session - every client's session
-    /// ended with the restart. True when the probe restarted. A probe that does not come back
-    /// ends the broker (its clients start over). ja: client の restart を自分の session で中継し、
-    /// 答えを返してから probe の戻りを待って新しい session を開く。戻らなければブローカーは終わる。
+    /// en: A client's restart (oep-if-restart §2, §3): forwarded under the broker's session like
+    /// any locking op, its answer passed on; after a success the broker closes its transport to
+    /// the probe and ends (transports §1: the transport to the probe is gone), so every client
+    /// starts over - the one that restarted the probe waits for it (restart_max_ms) and its next
+    /// open starts a new broker. True when the broker is to end.
+    /// ja: client の restart を自分の session で中継し、答えを返す。成功ならブローカーは probe への
+    /// 経路を閉じて終わる(client はやり直す)。
     fn restart(&mut self, id: u64, req: &Request) -> Result<bool, String> {
         let Upstream::Oep(p) = &mut self.up else {
             return Ok(false);
         };
-        let wait = p.restart_max_ms().ok().flatten().unwrap_or(10_000);
-        let answer =
-            match p.request_restart() {
-                Ok(()) => Ok(()),
-                Err(ch32rv_oep::session::OepError::Rejected { reason, payload }) => Err(
-                    encode_result(req.corr, Resolution::Rejected(reason), &payload),
-                ),
-                Err(ch32rv_oep::session::OepError::Failed { outcome, payload }) => Err(
-                    encode_result(req.corr, Resolution::Completed(outcome), &payload),
-                ),
-                Err(ch32rv_oep::session::OepError::Locked { .. }) => Err(encode_result(
+        let (answer, restarting) = match p.request_restart() {
+            Ok(()) => (
+                encode_result(req.corr, Resolution::Completed(outcomes::SUCCESS), &[]),
+                true,
+            ),
+            Err(ch32rv_oep::session::OepError::Rejected { reason, payload }) => (
+                encode_result(req.corr, Resolution::Rejected(reason), &payload),
+                false,
+            ),
+            Err(ch32rv_oep::session::OepError::Failed { outcome, payload }) => (
+                encode_result(req.corr, Resolution::Completed(outcome), &payload),
+                false,
+            ),
+            Err(ch32rv_oep::session::OepError::Locked { .. }) => (
+                encode_result(req.corr, Resolution::Rejected(reject_reasons::LOCKED), &[]),
+                false,
+            ),
+            // No answer: it may have restarted all the same. The client hears result_lost and
+            // checks the boot_id itself; the broker ends either way (it cannot tell).
+            Err(_) => (
+                encode_result(
                     req.corr,
-                    Resolution::Rejected(reject_reasons::LOCKED),
+                    Resolution::Rejected(reject_reasons::RESULT_LOST),
                     &[],
-                )),
-                // No answer: it may have restarted all the same - the confirm's boot_id tells.
-                Err(_) => Ok(()),
-            };
-        if let Err(refused) = answer {
-            self.send(id, &refused);
-            return Ok(false);
-        }
-        let ok = encode_result(req.corr, Resolution::Completed(outcomes::SUCCESS), &[]);
-        self.send(id, &ok);
-        broker_log(
-            &self.key,
-            &format!("client {id}: restart - waiting for the probe (up to {wait} ms)"),
-        );
-        let Upstream::Oep(p) = &mut self.up else {
-            return Ok(false);
+                ),
+                true,
+            ),
         };
-        let changed = p
-            .await_restart(Duration::from_millis(u64::from(wait)))
-            .map_err(|e| format!("the probe did not come back after its restart: {e}"))?;
-        broker_log(
-            &self.key,
-            if changed {
-                "upstream: the probe restarted - opening a new session"
-            } else {
-                "upstream: the probe answers with the same boot_id (no restart) - opening a new session"
-            },
-        );
-        self.restart_session()?;
-        Ok(true)
+        self.send(id, &answer);
+        if restarting {
+            broker_log(
+                &self.key,
+                &format!("client {id}: restart relayed - closing the probe's transport and ending"),
+            );
+            self.relayed_restart = true;
+        }
+        Ok(restarting)
     }
 
     /// en: Send `calls` in one pipelined exchange and answer `pending` in order.
@@ -1190,6 +1200,17 @@ impl Broker {
 
     /// en: A new upstream session after a restart or no_session: the clients' connections and
     /// plans are gone, and the raised speed with them. ja: 再起動か no_session の後の新しい session。
+    /// Learn the plan and restart fns (again after a restart: the numbers may change).
+    fn find_fns(&mut self) {
+        if let Upstream::Oep(p) = &mut self.up {
+            self.plan_fn = p.interface(registry::probe_plan::NAME).ok().map(|i| i.func);
+            self.restart_fn = p
+                .interface(registry::probe_restart::NAME)
+                .ok()
+                .map(|i| i.func);
+        }
+    }
+
     fn restart_session(&mut self) -> Result<(), String> {
         self.up.reopen_fresh()?;
         self.swept();
@@ -1197,6 +1218,7 @@ impl Broker {
         self.sessions.clear();
         // A restarted probe may number its interfaces anew.
         self.wires = self.up.wires()?;
+        self.find_fns();
         self.speed_port = None;
         self.speed_window.clear();
         if let Upstream::Oep(p) = &mut self.up {
@@ -1279,16 +1301,16 @@ impl Broker {
                     p.extend_from_slice(&LEASE_MS.to_le_bytes());
                     Some(ok(&p))
                 }
-                // Pushes are not relayed yet (console rev 1 has none).
-                o if o == oep_core::op::SUBSCRIBE || o == oep_core::op::UNSUBSCRIBE => {
-                    Some(encode_result(
-                        req.corr,
-                        Resolution::Rejected(reject_reasons::UNAVAILABLE),
-                        &[],
-                    ))
-                }
                 _ => None,
             };
+        }
+        // Pushes are not relayed: a subscribe to any interface (0x30 / 0x32 in every interface's op
+        // space, core §11.3) is refused here.
+        if req.func != oep_core::FN
+            && (req.op == registry::constants::OP_SUBSCRIBE
+                || req.op == registry::constants::OP_UNSUBSCRIBE)
+        {
+            return Some(refuse(reject_reasons::UNAVAILABLE));
         }
         // A detach while another client still uses the connection only drops this client's use.
         if self.wires.contains(&req.func) && req.op == wire_rvswd::op::DETACH {
@@ -1326,14 +1348,15 @@ impl Broker {
                 }
                 _ => {}
             }
-        } else if req.func == oep_core::FN && req.op == oep_core::op::PLAN_APPLY {
+        } else if Some(req.func) == self.plan_fn && req.op == registry::probe_plan::op::PLAN_APPLY {
             if let Ok(tlvs) = parse_tlvs(&req.payload) {
                 let fns = self.ledger.plans.entry(id).or_default();
                 for t in tlvs.iter().filter(|t| t.value.len() >= 2) {
                     fns.insert(u16::from_le_bytes([t.value[0], t.value[1]]));
                 }
             }
-        } else if req.func == oep_core::FN && req.op == oep_core::op::PLAN_RELEASE {
+        } else if Some(req.func) == self.plan_fn && req.op == registry::probe_plan::op::PLAN_RELEASE
+        {
             let fns = self.ledger.plans.entry(id).or_default();
             match req.payload.first() {
                 Some(0) | None => fns.clear(),
@@ -1379,8 +1402,8 @@ impl Broker {
             calls.push((
                 id,
                 Call {
-                    func: oep_core::FN,
-                    op: oep_core::op::PLAN_RELEASE,
+                    func: self.plan_fn.unwrap_or(oep_core::FN),
+                    op: registry::probe_plan::op::PLAN_RELEASE,
                     session: Some(self.sid),
                     payload: p,
                 },

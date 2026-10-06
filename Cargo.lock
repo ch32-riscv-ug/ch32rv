@@ -214,6 +214,7 @@ version = "0.18.0"
 dependencies = [
  "ch32rv-dmi",
  "ch32rv-flash",
+ "serde_json",
  "serialport",
  "thiserror",
 ]

@@ -97,7 +97,23 @@ fn discovery_and_session_over_cobs_with_console_noise() {
     assert_eq!(l.max_frame, 1024);
 
     let all = p.list("").unwrap();
-    assert_eq!(all[0].name, "oep.core");
+    // fn 0 is the core: never listed (core §7.2).
+    assert!(all.iter().all(|i| i.func != 0));
+    // clock (core §7.7): lock- and session-free, the probe's own time in this boot.
+    let c = p
+        .link()
+        .call(ch32rv_oep::link::Call {
+            func: registry::core::FN,
+            op: registry::core::op::CLOCK,
+            session: None,
+            payload: Vec::new(),
+        })
+        .unwrap();
+    assert!(c.succeeded());
+    assert_eq!(
+        u32::from_le_bytes(c.payload[..4].try_into().unwrap()),
+        p.limits().boot_id
+    );
     assert!(all.iter().any(|i| i.name == "oep.target.riscv-dm"));
     assert!(all.iter().any(|i| i.name == "oep.wire.rvswd"));
     // list matches on label boundaries (core §7.2): `oep` finds every standard interface, `oep.`

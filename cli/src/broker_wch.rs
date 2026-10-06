@@ -43,8 +43,8 @@ const CONN: u16 = 1;
 /// A console keeps this much output for its readers.
 const CONSOLE_KEEP: usize = 64 * 1024;
 
-const INTERFACES: [(u16, &str); 6] = [
-    (oep_core::FN, oep_core::NAME),
+/// What list answers: fn 0 (the core) is never listed (core §7.2).
+const INTERFACES: [(u16, &str); 5] = [
     (FN_RVSWD, registry::wire_rvswd::NAME),
     (FN_SWIO, registry::wire_swio::NAME),
     (FN_DM, dm::NAME),
@@ -76,6 +76,8 @@ pub(crate) struct WchUpstream {
     lent: Option<(u64, bool)>,
     /// What confirm reports: new for every broker (a restart of it is a new "boot").
     boot_id: u32,
+    /// The broker's "boot", for `clock`'s uptime_ns.
+    started: std::time::Instant,
 }
 
 /// The `max_op_ms` this broker declares (fn 0 describe): a run of longer is unsupported.
@@ -168,6 +170,7 @@ impl WchUpstream {
             lock_timeout,
             lent: None,
             boot_id: ch32rv_oep::session::random_session_id().max(1),
+            started: std::time::Instant::now(),
         }
     }
 
@@ -211,6 +214,13 @@ impl WchUpstream {
     fn core(&mut self, c: &Call) -> Reply {
         let p = &c.payload;
         match c.op {
+            // boot_id(u32) uptime_ns(u64): this broker is the probe here, its clock since it started.
+            o if o == oep_core::op::CLOCK => {
+                let mut out = self.boot_id.to_le_bytes().to_vec();
+                let ns = u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                out.extend_from_slice(&ns.to_le_bytes());
+                ok(out)
+            }
             o if o == oep_core::op::LIST => {
                 let (Some(&flags), Some(first), Some(&n)) = (p.first(), le16(p, 1), p.get(3))
                 else {
@@ -257,8 +267,7 @@ impl WchUpstream {
                             o::END,
                             o::KEEPALIVE,
                             o::LOCK_STATE,
-                            o::SUBSCRIBE,
-                            o::UNSUBSCRIBE,
+                            o::CLOCK,
                         ]));
                         v
                     }

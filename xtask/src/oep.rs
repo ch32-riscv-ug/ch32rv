@@ -113,9 +113,11 @@ pub fn generate(spec: &Path, source: Source) -> Result<String, String> {
                     .as_array()
                     .ok_or("`interface` is not an array of tables")?;
                 for iface in list {
-                    interface(&mut out, iface)?;
+                    interface(&mut out, iface, false)?;
                 }
             }
+            // fn 0, the core: no name, never listed, versioned by confirm's revision.
+            "core" => interface(&mut out, value, true)?,
             "timing" | "limits" => table(&mut out, key, value, "u32", 0)?,
             _ => table(&mut out, key, value, "u8", 0)?,
         }
@@ -171,20 +173,40 @@ fn table(
     Ok(())
 }
 
-fn interface(out: &mut String, v: &Value) -> Result<(), String> {
+/// One `[[interface]]` as `pub mod <name>`, or (`core`) the nameless `[core]` table as
+/// `pub mod core` with `FN = 0` and no `NAME`.
+fn interface(out: &mut String, v: &Value, core: bool) -> Result<(), String> {
     let t = v.as_table().ok_or("an `interface` entry is not a table")?;
-    let name = t
-        .get("name")
-        .and_then(Value::as_str)
-        .ok_or("an interface has no name")?;
-    let module = name
-        .strip_prefix("oep.")
-        .ok_or_else(|| format!("interface `{name}` does not start with `oep.`"))?;
-    let _ = writeln!(out, "/// `{name}`\npub mod {} {{", ident(module));
-    let _ = writeln!(out, "    pub const NAME: &str = {name:?};");
+    if core {
+        let _ = writeln!(
+            out,
+            "/// fn 0, the core (no name, not listed)\npub mod core {{"
+        );
+        let _ = writeln!(out, "    pub const FN: u16 = 0;");
+    }
+    let name = if core {
+        "core"
+    } else {
+        t.get("name")
+            .and_then(Value::as_str)
+            .ok_or("an interface has no name")?
+    };
+    if !core {
+        let module = name
+            .strip_prefix("oep.")
+            .ok_or_else(|| format!("interface `{name}` does not start with `oep.`"))?;
+        let _ = writeln!(out, "/// `{name}`\npub mod {} {{", ident(module));
+        let _ = writeln!(out, "    pub const NAME: &str = {name:?};");
+    }
     for (k, val) in t {
         match k.as_str() {
             "name" => {}
+            // The target family, for the document and the registry's readers (core §13 rule 8).
+            "target" => {
+                if let Some(f) = val.as_str() {
+                    let _ = writeln!(out, "    pub const TARGET: &str = {f:?};");
+                }
+            }
             "fn" => {
                 let f = int(Some(val), &format!("{name}.fn"))?;
                 check_fits(f, "u16", &format!("{name}.fn"))?;

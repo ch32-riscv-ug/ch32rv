@@ -325,22 +325,29 @@ impl Probe {
         Ok(ms)
     }
 
-    /// en: fn 0 describe's `restart_max_ms` (core §7.5): the longest from restart's answer until
-    /// the probe answers confirm again. `None`: not declared (the probe offers no restart).
-    /// ja: fn 0 の describe の restart_max_ms。宣言が無ければ None。
+    /// en: `oep.probe.restart`'s `restart_max_ms` (oep-if-restart §1): the longest from restart's
+    /// answer until the probe answers confirm again. `None`: the probe offers no restart.
+    /// ja: oep.probe.restart の restart_max_ms。restart が無ければ None。
     pub fn restart_max_ms(&mut self) -> Result<Option<u32>, OepError> {
+        use crate::registry::probe_restart as r;
+        let Ok(i) = self.interface(r::NAME) else {
+            return Ok(None);
+        };
         Ok(self
-            .describe(core::FN)?
+            .describe(i.func)?
             .iter()
-            .find(|t| t.tag == core::tlvs::describe::RESTART_MAX_MS && t.value.len() == 4)
+            .find(|t| t.tag == r::tlvs::describe::RESTART_MAX_MS && t.value.len() == 4)
             .map(|t| le32(&t.value, 0)))
     }
 
-    /// en: Send `restart` (core §6.6, under the session) and check its answer; the probe restarts
-    /// right after it. The session is gone with it: [`Self::await_restart`] waits for the probe.
+    /// en: Send `oep.probe.restart` restart (oep-if-restart §2, under the session) and check its
+    /// answer; the probe restarts right after it. The session is gone with it:
+    /// [`Self::await_restart`] waits for the probe.
     /// ja: restart を送り、答えを確かめる。probe はその直後に再起動し、session は無くなる。
     pub fn request_restart(&mut self) -> Result<(), OepError> {
-        let r = self.call(core::FN, core::op::RESTART, Vec::new())?;
+        use crate::registry::probe_restart as r;
+        let func = self.interface(r::NAME)?.func;
+        let r = self.call(func, r::op::RESTART, Vec::new())?;
         check(r)?;
         self.session = None;
         self.forget_interfaces();
@@ -379,6 +386,7 @@ impl Probe {
     /// en: The ops `func` declares in its describe's `ops` tag (core §1.2, §7.4: base(u8) bitmap,
     /// every op the fn offers, the optional ones included); `None` when the describe carries none
     /// (a probe that does not conform yet: the caller sends and lets the probe answer).
+    /// An ops tag that is not the one encoding core §7.4 allows is an error (the fn is not used).
     /// ja: `func` の describe の ops(base + bitmap)が立てる op。ops が無ければ None。
     pub fn ops(&mut self, func: u16) -> Result<Option<Vec<u8>>, OepError> {
         if let Some(o) = self.ops.get(&func) {
@@ -389,19 +397,13 @@ impl Probe {
             if t.tag != crate::registry::describe_common::OPS {
                 continue;
             }
-            let Some((&base, bitmap)) = t.value.split_first() else {
-                continue;
-            };
-            let set = found.get_or_insert_with(Vec::new);
-            for (i, byte) in bitmap.iter().enumerate() {
-                for bit in 0..8 {
-                    if byte & (1 << bit) != 0
-                        && let Ok(op) = u8::try_from(usize::from(base) + i * 8 + bit)
-                    {
-                        set.push(op);
-                    }
-                }
-            }
+            let set = decode_ops(&t.value).ok_or_else(|| {
+                OepError::Malformed(format!(
+                    "fn {func} declares its ops in a form core §7.4 does not allow ({:02x?})",
+                    t.value
+                ))
+            })?;
+            found.get_or_insert_with(Vec::new).extend(set);
         }
         if let Some(set) = found.as_mut() {
             set.sort_unstable();
@@ -434,6 +436,31 @@ impl Probe {
             }
         }
     }
+}
+
+/// en: The ops set a describe `ops` value declares (core §7.4: base(u8) bitmap), or `None` when
+/// it is not the one encoding the core allows: 2..=33 bytes, base + 8 x bitmap bytes <= 256, bit 0
+/// set (base is the lowest op) and the last byte non-zero. A host does not use an fn whose ops
+/// break this (fn 0's: the probe).
+/// ja: describe の ops の値が立てる op の集合。core が許す唯一の符号でなければ None。
+pub fn decode_ops(v: &[u8]) -> Option<Vec<u8>> {
+    let canonical = (2..=33).contains(&v.len())
+        && usize::from(v[0]) + 8 * (v.len() - 1) <= 256
+        && v[1] & 1 != 0
+        && v.last() != Some(&0);
+    if !canonical {
+        return None;
+    }
+    let base = usize::from(v[0]);
+    let mut out = Vec::new();
+    for (i, byte) in v[1..].iter().enumerate() {
+        for bit in 0..8 {
+            if byte & (1 << bit) != 0 {
+                out.push(u8::try_from(base + i * 8 + bit).ok()?);
+            }
+        }
+    }
+    Some(out)
 }
 
 /// The payload of a completed-success answer, or the typed error.

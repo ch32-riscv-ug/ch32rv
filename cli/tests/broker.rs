@@ -241,57 +241,60 @@ fn the_broker_opens_a_new_session_after_the_probe_restarts() {
 
 #[test]
 fn a_client_restarts_the_probe_through_the_broker() {
-    // restart (core §6.6) from a client: the broker forwards it under its own session, passes the
-    // answer on, waits for the probe (restart_max_ms) and opens a new session. The client's
-    // session ended with it: it confirms (a new boot_id), opens again and attaches.
+    // oep.probe.restart's restart from a client (oep-if-restart §3): the broker forwards it under
+    // its own session, passes the success answer on, then closes its transport to the probe and
+    // ends (transports §1). The client waits for the probe and starts over: a new broker finds
+    // the probe with a new boot_id, and attach works there.
     let Some((_fake, pty)) = fake_pty() else {
         return;
     };
-    let _broker = Kill(
-        Command::new(env!("CARGO_BIN_EXE_ch32rv"))
-            .args(["broker", "serve", "--probe", &format!("port:{pty}")])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .spawn()
-            .unwrap(),
-    );
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let ep = loop {
-        if let Some(ep) = endpoint(&pty) {
-            break ep;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the broker published no endpoint"
-        );
-        std::thread::sleep(Duration::from_millis(50));
+    let start = || {
+        Kill(
+            Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+                .args(["broker", "serve", "--probe", &format!("port:{pty}")])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .spawn()
+                .unwrap(),
+        )
     };
-    let mut a = client(&ep);
+    let wait_endpoint = || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Some(ep) = endpoint(&pty) {
+                break ep;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "the broker published no endpoint"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    let mut first = start();
+    let mut a = client(&wait_endpoint());
     let opt = AttachOptions {
         halt: true,
         ..AttachOptions::default()
     };
-    let conn = attach(&mut a, WireKind::Rvswd, opt).unwrap().connection;
+    attach(&mut a, WireKind::Rvswd, opt).unwrap();
     let before = a.limits().boot_id;
     let wait = a
         .restart_max_ms()
         .unwrap()
-        .expect("the fake declares restart_max_ms");
+        .expect("the fake offers oep.probe.restart");
     a.request_restart().unwrap();
-    assert!(
-        a.await_restart(Duration::from_millis(u64::from(wait) + 5000))
-            .unwrap(),
-        "the boot_id did not change"
-    );
-    assert_ne!(a.limits().boot_id, before);
-    assert!(halted(&mut a, conn).is_err());
-    a.open(
-        ch32rv_oep::session::random_session_id(),
-        3000,
-        false,
-        Some("test"),
-    )
-    .unwrap();
-    let again = attach(&mut a, WireKind::Rvswd, opt).unwrap();
-    halted(&mut a, again.connection).unwrap();
+    // The broker ends on its own after passing the answer on.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while first.0.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "the broker did not end");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(a);
+    std::thread::sleep(Duration::from_millis(u64::from(wait)));
+    let _second = start();
+    let mut b = client(&wait_endpoint());
+    assert_ne!(b.limits().boot_id, before, "the boot_id did not change");
+    let again = attach(&mut b, WireKind::Rvswd, opt).unwrap();
+    halted(&mut b, again.connection).unwrap();
 }
