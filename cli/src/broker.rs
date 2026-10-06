@@ -631,6 +631,11 @@ impl Upstream {
             Upstream::Oep(p) => match p.keepalive() {
                 Ok(()) => Ok(false),
                 Err(ch32rv_oep::session::OepError::Expired) => self.reopen().map(|()| true),
+                Err(ch32rv_oep::session::OepError::Rejected { reason, .. })
+                    if reason == reject_reasons::NO_SESSION =>
+                {
+                    self.reopen_fresh().map(|()| true)
+                }
                 Err(e) => Err(e.to_string()),
             },
             Upstream::Wch(_) => Ok(false),
@@ -650,6 +655,34 @@ impl Upstream {
         p.open(sid, LEASE_MS, false, Some(&owner))
             .map(|_| ())
             .map_err(|e| e.to_string())
+    }
+
+    /// en: Open the probe under a new session id, its interfaces learned again: after a restart
+    /// (a changed boot_id) or `no_session` (the probe no longer knows our session). Everything the
+    /// clients held is gone; the link stays at the speed it is at (a restarted probe is at its
+    /// boot speed). ja: 新しい session id で開き直し、interface を取り直す(再起動か no_session の後)。
+    fn reopen_fresh(&mut self) -> Result<(), String> {
+        let Upstream::Oep(p) = self else {
+            return Ok(());
+        };
+        p.forget_interfaces();
+        let owner = format!("ch32rv broker pid {}", std::process::id());
+        p.open(
+            ch32rv_oep::session::random_session_id(),
+            LEASE_MS,
+            false,
+            Some(&owner),
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+    }
+
+    /// Whether the probe restarted since the broker's session was opened (seen in a confirm).
+    fn rebooted(&self) -> bool {
+        match self {
+            Upstream::Oep(p) => p.rebooted(),
+            Upstream::Wch(_) => false,
+        }
     }
 
     /// Work between requests (a WCH-Link's consoles are polled here); how soon to come back.
@@ -928,6 +961,7 @@ impl Broker {
             );
         }
         self.watch_speed(after.1 - before.1, after.2 - before.2, after.3 - before.3);
+        self.watch_restart()?;
         // en: The lease lapsed under these requests (a long stall of the host): the probe released
         // every client's connections. Pass the answers on (each client hears `expired` and starts
         // again) and open the probe again for what comes next.
@@ -939,6 +973,16 @@ impl Broker {
         {
             self.up.reopen()?;
             self.swept();
+        }
+        // en: The probe no longer knows the broker's session (it restarted, or another host took
+        // it in between): pass the answers on, and open a new session for what comes next.
+        // ja: probe が session を知らない(再起動など): 答えはそのまま返し、新しい session で開き直す。
+        if replies
+            .iter()
+            .any(|r| r.resolution == Resolution::Rejected(reject_reasons::NO_SESSION))
+        {
+            broker_log(&self.key, "upstream: no_session - opening a new session");
+            self.restart_session()?;
         }
         let mut replies = replies.into_iter();
         for p in pending {
@@ -1031,6 +1075,35 @@ impl Broker {
         }
         let after = self.up.losses();
         self.watch_speed(after.1 - before.1, after.2 - before.2, after.3 - before.3);
+        self.watch_restart()?;
+        Ok(())
+    }
+
+    /// en: A confirm the link sent (a speed fallback, a recheck) answered another boot_id than the
+    /// broker's open: the probe restarted (oep-core §6.5, §3.5 host duty 5). Say so and open a new
+    /// session, rather than wait for the next request's no_session.
+    /// ja: link の confirm の boot_id が open と違う: probe が再起動した。log に出し、開き直す。
+    fn watch_restart(&mut self) -> Result<(), String> {
+        if self.up.rebooted() {
+            broker_log(
+                &self.key,
+                "upstream: the probe restarted (its boot_id changed) - opening a new session",
+            );
+            self.restart_session()?;
+        }
+        Ok(())
+    }
+
+    /// en: A new upstream session after a restart or no_session: the clients' connections and
+    /// plans are gone, and the raised speed with them. ja: 再起動か no_session の後の新しい session。
+    fn restart_session(&mut self) -> Result<(), String> {
+        self.up.reopen_fresh()?;
+        self.swept();
+        self.speed_port = None;
+        self.speed_window.clear();
+        if let Upstream::Oep(p) = &mut self.up {
+            self.fallbacks_seen = p.link().speed_fallbacks;
+        }
         Ok(())
     }
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The broker survives a probe restart: when the probe answers `no_session`, or a confirm the broker sends (a speed fallback, a recheck) carries another boot_id than its open, it logs it, opens a new session with its interfaces learned again, and goes on (the clients' connections and plans are gone and they start again). Before, it reopened only after `expired`, and a restarted probe took the broker down.
+- (JA) ブローカーは probe の再起動を越えて続く: probe が `no_session` で答えたとき、またはブローカーの confirm(速さの戻り、確かめ直し)の boot_id が open のときと違うとき、log に出し、interface を取り直した新しい session で開き直して続ける(client の接続と plan は消えるので、client はやり直す)。以前は `expired` のときだけ開き直し、再起動した probe ではブローカーが終わっていた。
+
 - (EN) Probe selection compares serial numbers and OEP unit ids case aside (`--probe serial:<sn>`, `oep://<unit_id>/…`; oep-core §3.3). A raw upload to a serial port is sent to the probe's `oep://` slots when the probe's unit id is the serial of an OEP device on USB, instead of by describe `discoverable` (which only the project's VID:PID sets now). Registry from oep-spec's latest.
 - (JA) probe の選び方で、serial number と OEP の unit id は英字の大小を区別せずに比べる(`--probe serial:<sn>`、`oep://<unit_id>/…`。oep-core §3.3)。serial の口への書き込みを `oep://` のスロットへ案内するのは、probe の unit id が USB の OEP の device の serial と同じときにした(describe の `discoverable` は、今はプロジェクトの VID:PID のときだけ立つため)。registry は oep-spec の最新から。
 

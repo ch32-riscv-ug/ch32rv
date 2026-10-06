@@ -341,6 +341,19 @@ impl Probe {
         Ok(ms)
     }
 
+    /// en: Whether the probe restarted since this session was opened: the last confirm answer
+    /// carried another boot_id than the open did (oep-core §6.5). ja: open の後に再起動したか。
+    pub fn rebooted(&self) -> bool {
+        matches!((self.boot_id, self.link.last_boot_id), (Some(a), Some(b)) if a != b)
+    }
+
+    /// Forget the name → fn mapping and the declarations learned from the probe (after a restart,
+    /// or a session the probe no longer knows).
+    pub fn forget_interfaces(&mut self) {
+        self.fns.clear();
+        self.max_op_ms = None;
+    }
+
     /// `describe` of `func`, following `more`.
     pub fn describe(&mut self, func: u16) -> Result<Vec<Tlv>, OepError> {
         let mut out = Vec::new();

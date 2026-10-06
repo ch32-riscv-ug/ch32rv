@@ -192,6 +192,8 @@ pub struct Link {
     /// Times the probe was found back at the boot speed by itself (diagnostics; the owner of the
     /// link then stays there for the session, oep-core §3.5).
     pub speed_fallbacks: u64,
+    /// The boot_id of the last confirm answer seen (a changed one means the probe restarted).
+    pub last_boot_id: Option<u32>,
 }
 
 impl Link {
@@ -218,6 +220,7 @@ impl Link {
             baud: None,
             inflight_cap: 0,
             speed_fallbacks: 0,
+            last_boot_id: None,
         }
     }
 
@@ -303,6 +306,7 @@ impl Link {
         self.cobs.set_max(usize::from(limits.max_frame));
         self.length.set_max(usize::from(limits.max_frame));
         self.limits = Some(limits);
+        self.last_boot_id = Some(limits.boot_id);
         Ok(limits)
     }
 
@@ -575,9 +579,18 @@ impl Link {
         let saved = (self.timeout, self.resend_on_broken);
         self.timeout = timeout;
         self.resend_on_broken = false;
-        let ok = self.wait_result(req.corr).is_ok();
+        let got = self.wait_result(req.corr);
         (self.timeout, self.resend_on_broken) = saved;
-        ok
+        match got {
+            Ok(r) => {
+                if r.succeeded() && r.payload.len() >= 17 {
+                    let p = &r.payload;
+                    self.last_boot_id = Some(u32::from_le_bytes([p[13], p[14], p[15], p[16]]));
+                }
+                true
+            }
+            Err(_) => false,
+        }
     }
 
     /// en: Back at the boot speed, confirmed there: confirms every 0.25 s up to `wait` (a probe
