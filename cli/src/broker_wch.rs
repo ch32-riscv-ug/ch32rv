@@ -135,10 +135,26 @@ fn name_matches(name: &str, prefix: &str, exact: bool) -> bool {
 }
 
 fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
-    let mut v = vec![tag, value.len() as u8];
-    v.extend_from_slice(value);
+    let mut v = Vec::new();
+    ch32rv_oep::codec::put_tlv(&mut v, tag, false, value);
     v
 }
+
+/// The describe `ops` tag for `ops` (core §7.4: base(u8) bitmap).
+fn ops_tlv(ops: &[u8]) -> Vec<u8> {
+    let base = ops.iter().copied().min().unwrap_or(0);
+    let top = ops.iter().copied().max().unwrap_or(0);
+    let mut v = vec![base];
+    v.resize(1 + usize::from(top - base) / 8 + 1, 0);
+    for &op in ops {
+        let i = usize::from(op - base);
+        v[1 + i / 8] |= 1 << (i % 8);
+    }
+    tlv(registry::describe_common::OPS, &v)
+}
+
+/// What a console stream's send queue holds (describe send_queue, oep-if-console §1, §2).
+const SEND_QUEUE: usize = 256;
 
 impl WchUpstream {
     pub(crate) fn new(entry: Entry, lock_timeout: Duration) -> Self {
@@ -209,9 +225,8 @@ impl WchUpstream {
                 let mut out = (hits.len() as u16).to_le_bytes().to_vec();
                 let page = &hits[usize::from(first).min(hits.len())..];
                 out.push(page.len() as u8);
-                // Each entry behind its length (core §2.3): fn, instance, revision, flags, name.
+                // Each entry: fn, instance, revision, flags, name (core §7.2; no element length).
                 for (func, name) in page {
-                    out.push((7 + name.len()) as u8);
                     out.extend_from_slice(&func.to_le_bytes());
                     out.extend_from_slice(&0u16.to_le_bytes()); // instance
                     out.extend_from_slice(&[1, 0, name.len() as u8]);
@@ -233,6 +248,18 @@ impl WchUpstream {
                             oep_core::tlvs::describe::MAX_OP_MS,
                             &MAX_OP_MS.to_le_bytes(),
                         ));
+                        use oep_core::op as o;
+                        v.extend(ops_tlv(&[
+                            o::CONFIRM,
+                            o::LIST,
+                            o::DESCRIBE,
+                            o::OPEN,
+                            o::END,
+                            o::KEEPALIVE,
+                            o::LOCK_STATE,
+                            o::SUBSCRIBE,
+                            o::UNSUBSCRIBE,
+                        ]));
                         v
                     }
                     FN_RVSWD | FN_SWIO => {
@@ -241,23 +268,49 @@ impl WchUpstream {
                             registry::describe_common::MAX_CLOCK_HZ,
                             &6_000_000u32.to_le_bytes(),
                         ));
+                        v.extend(ops_tlv(&[wire::op::ATTACH, wire::op::DETACH]));
                         v
                     }
                     FN_DM => {
-                        let mut v = tlv(registry::describe_common::FEATURES, &0x7u32.to_le_bytes());
-                        v.extend(tlv(
+                        let mut v = tlv(
                             registry::describe_common::MAX_LENGTH,
                             &(BLOCK_MAX_LENGTH as u16).to_le_bytes(),
-                        ));
+                        );
+                        v.extend(ops_tlv(&[
+                            dm::op::DMI,
+                            dm::op::HALT,
+                            dm::op::RESUME,
+                            dm::op::RESET,
+                            dm::op::READ_BLOCK,
+                            dm::op::WRITE_BLOCK,
+                            dm::op::RUN,
+                        ]));
                         v
                     }
-                    FN_CONSOLE => tlv(
-                        console::tlvs::describe::MECHANISMS,
-                        &[
-                            console::enums::mechanism::DMDATA,
-                            console::enums::mechanism::DMSEQ,
-                        ],
-                    ),
+                    FN_CONSOLE => {
+                        let mut v = tlv(
+                            console::tlvs::describe::MECHANISMS,
+                            &[
+                                console::enums::mechanism::DMDATA,
+                                console::enums::mechanism::DMSEQ,
+                            ],
+                        );
+                        v.extend(tlv(
+                            console::tlvs::describe::SEND_QUEUE,
+                            &(SEND_QUEUE as u16).to_le_bytes(),
+                        ));
+                        v.extend(ops_tlv(&[
+                            console::op::OPEN,
+                            console::op::READ,
+                            console::op::MARKS,
+                            console::op::WRITE,
+                            console::op::CLOSE,
+                            console::op::CLEAR,
+                            console::op::MARK,
+                        ]));
+                        v
+                    }
+                    FN_WCHLINK => ops_tlv(&[OP_LEND, OP_RECLAIM]),
                     _ => return rejected(reject_reasons::UNAVAILABLE),
                 };
                 let mut out = vec![0u8];
@@ -664,9 +717,12 @@ impl WchUpstream {
                 let Some(x) = self.consoles.get_mut(&id) else {
                     return rejected(reject_reasons::UNAVAILABLE);
                 };
+                // accepted = min(count, free room in the send queue) (oep-if-console §2).
                 let data = p.get(4..4 + usize::from(n)).unwrap_or(&[]);
-                x.input.extend_from_slice(data);
-                ok((data.len() as u16).to_le_bytes().to_vec())
+                let room = SEND_QUEUE.saturating_sub(x.input.len());
+                let taken = &data[..data.len().min(room)];
+                x.input.extend_from_slice(taken);
+                ok((taken.len() as u16).to_le_bytes().to_vec())
             }
             o if o == console::op::CLOSE => {
                 if let Some(id) = le16(p, 0) {

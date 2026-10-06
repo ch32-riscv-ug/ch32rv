@@ -1,17 +1,18 @@
 //! en: `port_speed` (oep-core §3.5): raise the serial link to a UART-bridge probe above its boot
 //! speed for a long session (the broker), the way the reference client's `raise_speed` does: try
 //! (answered at the speed now) -> switch the host side, 20 ms, confirm -> verify both ways with
-//! max_frame-sized frames (link_source / link_sink), pipelined first, then one at a time when that
+//! max_frame-sized frames (oep.link source / sink), pipelined first, then one at a time when that
 //! broke -> commit at the new speed when nothing broke; else revert and back to the boot speed.
 //! Every trial is reported (what passed, KB/s each way, how many requests in flight, how long), for
 //! the broker's log: which rates to try and whether to remember them is decided from what is seen.
-//! ja: `port_speed`。UART bridge の probe との serial を、長い session(ブローカー)の間だけ起動時の
+//! port_speed, source and sink are `oep.link`'s (oep-if-link), an optional interface found by name.
+//! ja: `port_speed`(oep.link)。UART bridge の probe との serial を、長い session(ブローカー)の間だけ起動時の
 //! 速さより上げる。参照 client の `raise_speed` と同じ手順。試した結果はすべて返す(ブローカーの log 用)。
 
 use std::time::{Duration, Instant};
 
 use crate::link::{Call, LinkError};
-use crate::registry::{core, outcomes, reject_reasons};
+use crate::registry::{core, link, outcomes, reject_reasons};
 use crate::session::{OepError, Probe};
 
 /// One rate tried.
@@ -119,23 +120,33 @@ const VERIFY_TIME: Duration = Duration::from_secs(1);
 /// allows (oep-core §3.5), against a host that died; the broker's 1 s keepalive keeps it up.
 const IDLE_MS: u32 = crate::registry::timing::PORT_SPEED_IDLE_MAX_MS;
 const VERIFY_BYTES: usize = 32 * 1024;
-/// What the verify's frames leave of max_frame: link_source / link_sink carry max_frame − 16
-/// bytes (oep-core §3.5, room for the headers and the frame's own bytes).
-const VERIFY_ROOM: usize = 16;
+/// What the verify's frames leave of max_frame: source carries at most max_frame − 26 bytes
+/// (oep-if-link §2, `link_source_overhead_bytes`); sink's request the same, to keep both alike.
+const VERIFY_ROOM: usize = crate::registry::limits::LINK_SOURCE_OVERHEAD_BYTES as usize;
 
-/// The UART bridge's transport index, when the probe declares port_speed; else why not.
-fn speed_port(p: &mut Probe) -> Result<u8, String> {
-    let tlvs = p.describe(core::FN).map_err(|e| e.to_string())?;
-    if !tlvs
-        .iter()
-        .any(|t| t.tag == core::tlvs::describe::PORT_SPEED && t.value.first() == Some(&1))
+/// The probe's `oep.link` fn (None: it has none).
+fn link_fn(p: &mut Probe) -> Option<u16> {
+    p.interface(link::NAME).ok().map(|i| i.func)
+}
+
+/// The UART bridge's transport index and oep.link's fn, when the probe offers port_speed; else
+/// why not.
+fn speed_port(p: &mut Probe) -> Result<(u16, u8), String> {
+    let Some(func) = link_fn(p) else {
+        return Err("the probe has no oep.link".into());
+    };
+    if !p
+        .ops(func)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|o| o.contains(&link::op::PORT_SPEED))
     {
         return Err("the probe does not declare port_speed".into());
     }
+    let tlvs = p.describe(core::FN).map_err(|e| e.to_string())?;
     tlvs.iter()
         .filter(|t| t.tag == core::tlvs::describe::TRANSPORT && t.value.len() >= 2)
         .find(|t| t.value[1] == core::enums::transport_kind::UART_BRIDGE)
-        .map(|t| t.value[0])
+        .map(|t| (func, t.value[0]))
         .ok_or_else(|| "the probe has no UART bridge".into())
 }
 
@@ -175,8 +186,8 @@ pub fn raise_speed(
         report.why = Some("no session (the rate lasts as long as one)".into());
         return Ok(report);
     }
-    let port = match speed_port(p) {
-        Ok(port) => port,
+    let (func, port) = match speed_port(p) {
+        Ok(fp) => fp,
         Err(why) => {
             report.why = Some(why);
             return Ok(report);
@@ -198,8 +209,8 @@ pub fn raise_speed(
             ..SpeedTrial::default()
         };
         let tried = p.call(
-            core::FN,
-            core::op::PORT_SPEED,
+            func,
+            link::op::PORT_SPEED,
             port_speed_body(port, rate, STEP_TRY, VERIFY_MS, 0),
         );
         match tried {
@@ -253,7 +264,7 @@ pub fn raise_speed(
                 trial.broken_in = 0;
                 trial.broken_out = 0;
                 trial.broken_both = 0;
-                ok = verify(p, rate, n, &mut trial, by_share);
+                ok = verify(p, func, rate, n, &mut trial, by_share);
                 if ok {
                     trial.inflight = n;
                     break;
@@ -264,8 +275,8 @@ pub fn raise_speed(
         if ok {
             let committed = p
                 .call(
-                    core::FN,
-                    core::op::PORT_SPEED,
+                    func,
+                    link::op::PORT_SPEED,
                     port_speed_body(port, rate, STEP_COMMIT, 0, IDLE_MS),
                 )
                 .ok()
@@ -294,8 +305,8 @@ pub fn raise_speed(
             let session = p.session_id();
             let _ = p.link().exchange_once(
                 vec![Call {
-                    func: core::FN,
-                    op: core::op::PORT_SPEED,
+                    func,
+                    op: link::op::PORT_SPEED,
                     session,
                     payload: port_speed_body(port, rate, STEP_REVERT, 0, 0),
                 }],
@@ -326,11 +337,12 @@ enum Phase {
     Both,
 }
 
-/// en: Both ways with max_frame-sized frames, `inflight` at a time: link_source (in), link_sink
-/// (out), then the two interleaved (both); stops at the first frame that breaks.
+/// en: Both ways with max_frame-sized frames, `inflight` at a time: source (in), sink (out), then
+/// the two interleaved (both); stops at the first frame that breaks.
 /// ja: 両方向に max_frame の大きさで流す(in、次に out)。最初に壊れた所で止める。
 fn verify(
     p: &mut Probe,
+    func: u16,
     rate: u32,
     inflight: usize,
     trial: &mut SpeedTrial,
@@ -340,7 +352,7 @@ fn verify(
     let max_frame = usize::from(limits.max_frame);
     let n_in = max_frame.saturating_sub(VERIFY_ROOM);
     let n_out = max_frame.saturating_sub(VERIFY_ROOM);
-    // The wait floor of oep-core §4.4 for each link_source / link_sink: host_wait_add_ms plus the
+    // The wait floor of oep-core §4.4 for each source / sink: host_wait_add_ms plus the
     // transfer time of a UART bridge, (L + max_frame x (1 + notify_pending_max_frames)) x 10 / baud,
     // L the request's frame length on the wire (at most max_frame and its framing).
     let transfer = (max_frame + 8) as f64
@@ -349,7 +361,11 @@ fn verify(
         / f64::from(rate.max(1));
     let timeout = Duration::from_millis(u64::from(crate::registry::timing::HOST_WAIT_ADD_MS))
         + Duration::from_secs_f64(transfer);
-    let pattern: Vec<u8> = (0..n_in).map(|k| k as u8).collect();
+    // source's answer: len(u16) data, the data k & 0xFF (oep-if-link §2).
+    let mut pattern: Vec<u8> = (n_in as u16).to_le_bytes().to_vec();
+    pattern.extend((0..n_in).map(|k| k as u8));
+    let mut sink: Vec<u8> = (n_out as u16).to_le_bytes().to_vec();
+    sink.extend((0..n_out).map(|k| (k * 7) as u8));
     // In, out, then both at once: a line may carry each way alone and break when both run
     // (oep-core §3.5; a CH340 at 921600 under a fixture UART's stream, 2026-10-01).
     for phase in [Phase::In, Phase::Out, Phase::Both] {
@@ -378,17 +394,17 @@ fn verify(
                 .map(|&inward| {
                     if inward {
                         Call {
-                            func: core::FN,
-                            op: core::op::LINK_SOURCE,
+                            func,
+                            op: link::op::SOURCE,
                             session: None,
                             payload: (n_in as u32).to_le_bytes().to_vec(),
                         }
                     } else {
                         Call {
-                            func: core::FN,
-                            op: core::op::LINK_SINK,
+                            func,
+                            op: link::op::SINK,
                             session: None,
-                            payload: (0..n_out).map(|k| (k * 7) as u8).collect(),
+                            payload: sink.clone(),
                         }
                     }
                 })
@@ -400,11 +416,7 @@ fn verify(
                 .zip(&kinds)
                 .take_while(|(r, inward)| {
                     r.resolution == crate::codec::Resolution::Completed(outcomes::SUCCESS)
-                        && if **inward {
-                            r.payload == pattern
-                        } else {
-                            r.payload.get(..4) == Some(&(n_out as u32).to_le_bytes()[..])
-                        }
+                        && (!**inward || r.payload == pattern)
                 })
                 .count();
             moved += kinds[..good]
@@ -467,10 +479,13 @@ pub fn revert(p: &mut Probe, port: u8) -> bool {
     }
     let rate = p.link().baud().unwrap_or(base);
     let session = p.session_id();
+    let Some(func) = link_fn(p) else {
+        return p.link().back_to_base(wait_back());
+    };
     let _ = p.link().exchange_once(
         vec![Call {
-            func: core::FN,
-            op: core::op::PORT_SPEED,
+            func,
+            op: link::op::PORT_SPEED,
             session,
             payload: port_speed_body(port, rate, STEP_REVERT, 0, 0),
         }],

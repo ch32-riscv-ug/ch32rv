@@ -73,13 +73,11 @@ pub fn capabilities(cli: &Cli) -> ExitCode {
 }
 
 /// en: The matrix for an OEP probe: attach without halting, then read what the probe declares
-/// (riscv-dm features, console mechanisms, a fixture UART, port_speed) and what ch32rv builds on
-/// them. ja: OEP の probe の表。止めずに attach し、probe の宣言(riscv-dm の features、console の
+/// (riscv-dm ops, console mechanisms, a fixture UART, port_speed) and what ch32rv builds on
+/// them. ja: OEP の probe の表。止めずに attach し、probe の宣言(riscv-dm の ops、console の
 /// mechanism、fixture UART、port_speed)と ch32rv がその上で組むものを出す。
 fn oep_capabilities(cli: &Cli, cmd: &str, a: &crate::oep::OepAddr) -> ExitCode {
-    use ch32rv_oep::registry::{
-        core as oep_core, describe_common, target_console, target_riscv_dm,
-    };
+    use ch32rv_oep::registry::{core as oep_core, target_console, target_riscv_dm};
     crate::oep::with_attached(cli, cmd, a, false, |x| {
         let family = x.family.clone().unwrap_or_else(|| "unknown".to_owned());
         let sku =
@@ -98,20 +96,26 @@ fn oep_capabilities(cli: &Cli, cmd: &str, a: &crate::oep::OepAddr) -> ExitCode {
         let core = p.describe(oep_core::FN).unwrap_or_default();
         let model = text(&core, oep_core::tlvs::describe::MODEL).unwrap_or_else(|| "OEP".into());
         let fw = text(&core, oep_core::tlvs::describe::FIRMWARE).unwrap_or_default();
-        let port_speed = core
-            .iter()
-            .any(|t| t.tag == oep_core::tlvs::describe::PORT_SPEED && t.value.first() == Some(&1));
-        let features = p
-            .interface(target_riscv_dm::NAME)
-            .and_then(|i| p.describe(i.func))
+        // Optional ops are declared by each fn's ops tag (core §1.2, §7.4).
+        let port_speed = p
+            .interface(ch32rv_oep::registry::link::NAME)
+            .and_then(|i| p.ops(i.func))
             .ok()
-            .and_then(|d| {
-                d.iter()
-                    .find(|t| t.tag == describe_common::FEATURES && t.value.len() == 4)
-                    .map(|t| u32::from_le_bytes([t.value[0], t.value[1], t.value[2], t.value[3]]))
-            })
-            .unwrap_or(0);
-        let (blocks, run) = (features & 1 != 0, features & 2 != 0);
+            .flatten()
+            .is_some_and(|o| o.contains(&ch32rv_oep::registry::link::op::PORT_SPEED));
+        let dm_ops = p
+            .interface(target_riscv_dm::NAME)
+            .and_then(|i| p.ops(i.func))
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let blocks = [
+            target_riscv_dm::op::READ_BLOCK,
+            target_riscv_dm::op::WRITE_BLOCK,
+        ]
+        .iter()
+        .all(|op| dm_ops.contains(op));
+        let run = dm_ops.contains(&target_riscv_dm::op::RUN);
         let mechanisms: Vec<u8> = p
             .interface(target_console::NAME)
             .and_then(|i| p.describe(i.func))

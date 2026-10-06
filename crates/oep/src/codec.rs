@@ -267,8 +267,11 @@ pub struct Tlv {
     pub value: Vec<u8>,
 }
 
-/// Append a request TLV; `critical` sets bit 7 (the probe must honour it or refuse). A value of
-/// 255 bytes or more takes the long form `tag 0xFF len(u16) value` (core §2.2).
+/// A TLV's header: tag(u8) len(u16) (core §2.2).
+pub const TLV_HEADER: usize = 3;
+
+/// Append a request TLV `tag(u8) len(u16) value` (core §2.2, one form for every length);
+/// `critical` sets bit 7 (the probe must honour it or refuse).
 pub fn put_tlv(out: &mut Vec<u8>, tag: u8, critical: bool, value: &[u8]) {
     let t = if critical {
         tag | registry::constants::TAG_CRITICAL
@@ -276,48 +279,35 @@ pub fn put_tlv(out: &mut Vec<u8>, tag: u8, critical: bool, value: &[u8]) {
         tag
     };
     out.push(t);
-    if value.len() >= 0xFF {
-        out.push(0xFF);
-        out.extend_from_slice(&(value.len().min(0xFFFF) as u16).to_le_bytes());
-    } else {
-        out.push(value.len() as u8);
-    }
+    out.extend_from_slice(&(value.len().min(0xFFFF) as u16).to_le_bytes());
     out.extend_from_slice(value);
 }
 
-/// Parse a response TLV list. A truncated item, or the long form holding a value short enough
-/// for the short one, means the whole result is broken (core §2.2, §4.3).
+/// Parse a response TLV list. A truncated item means the whole result is broken (core §2.2,
+/// §4.3).
 pub fn parse_tlvs(mut b: &[u8]) -> Result<Vec<Tlv>, DecodeError> {
     let mut out = Vec::new();
     while !b.is_empty() {
-        if b.len() < 2 {
+        if b.len() < TLV_HEADER {
             return Err(DecodeError::TruncatedTlv);
         }
-        let (head, len) = if b[1] == 0xFF {
-            if b.len() < 4 {
-                return Err(DecodeError::TruncatedTlv);
-            }
-            let len = usize::from(u16::from_le_bytes([b[2], b[3]]));
-            if len < 0xFF {
-                return Err(DecodeError::TruncatedTlv);
-            }
-            (4, len)
-        } else {
-            (2, usize::from(b[1]))
-        };
-        if b.len() < head + len {
+        let len = usize::from(u16::from_le_bytes([b[1], b[2]]));
+        if b.len() < TLV_HEADER + len {
             return Err(DecodeError::TruncatedTlv);
         }
         out.push(Tlv {
             tag: b[0],
-            value: b[head..head + len].to_vec(),
+            value: b[TLV_HEADER..TLV_HEADER + len].to_vec(),
         });
-        b = &b[head + len..];
+        b = &b[TLV_HEADER + len..];
     }
     Ok(out)
 }
 
 // ---- messages ----
+
+/// A request's header: role corr(u16) fn(u16) op session_id(u32) (core §4.1).
+pub const REQUEST_HEADER: usize = 10;
 
 /// A request to send.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -325,27 +315,20 @@ pub struct Request {
     pub corr: u16,
     pub func: u16,
     pub op: u8,
-    /// `Some` sends role 0x81 with the session id after the header.
+    /// The header's session_id: `None` sends 0, a request that belongs to no session
+    /// (core §4.1).
     pub session: Option<u32>,
     pub payload: Vec<u8>,
 }
 
 impl Request {
     pub fn encode(&self) -> Vec<u8> {
-        let role = registry::roles::REQUEST
-            | if self.session.is_some() {
-                registry::constants::ROLE_SESSION_FLAG
-            } else {
-                0
-            };
-        let mut out = Vec::with_capacity(10 + self.payload.len());
-        out.push(role);
+        let mut out = Vec::with_capacity(REQUEST_HEADER + self.payload.len());
+        out.push(registry::roles::REQUEST);
         out.extend_from_slice(&self.corr.to_le_bytes());
         out.extend_from_slice(&self.func.to_le_bytes());
         out.push(self.op);
-        if let Some(sid) = self.session {
-            out.extend_from_slice(&sid.to_le_bytes());
-        }
+        out.extend_from_slice(&self.session.unwrap_or(0).to_le_bytes());
         out.extend_from_slice(&self.payload);
         out
     }
@@ -353,31 +336,19 @@ impl Request {
 
 impl Request {
     /// en: Decode a request (the broker's side: a client sends it). `None` when it is not a
-    /// request or is shorter than its header.
+    /// request or is shorter than its header; session_id 0 comes back as `None`.
     /// ja: 要求を解く(ブローカーの側で、client が送ったもの)。要求でないか header より短ければ None。
     pub fn decode(m: &[u8]) -> Option<Request> {
-        let role = *m.first()?;
-        let session_flag = registry::constants::ROLE_SESSION_FLAG;
-        if role & !session_flag != registry::roles::REQUEST || m.len() < 6 {
+        if *m.first()? != registry::roles::REQUEST || m.len() < REQUEST_HEADER {
             return None;
         }
-        let corr = u16::from_le_bytes([m[1], m[2]]);
-        let func = u16::from_le_bytes([m[3], m[4]]);
-        let op = m[5];
-        let (session, at) = if role & session_flag != 0 {
-            if m.len() < 10 {
-                return None;
-            }
-            (Some(u32::from_le_bytes([m[6], m[7], m[8], m[9]])), 10)
-        } else {
-            (None, 6)
-        };
+        let sid = u32::from_le_bytes([m[6], m[7], m[8], m[9]]);
         Some(Request {
-            corr,
-            func,
-            op,
-            session,
-            payload: m[at..].to_vec(),
+            corr: u16::from_le_bytes([m[1], m[2]]),
+            func: u16::from_le_bytes([m[3], m[4]]),
+            op: m[5],
+            session: (sid != 0).then_some(sid),
+            payload: m[REQUEST_HEADER..].to_vec(),
         })
     }
 }
@@ -585,7 +556,12 @@ mod tests {
             session: Some(0x0908_0706),
             payload: vec![0xAA],
         };
-        assert_eq!(r.encode(), vec![0x81, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xAA]);
+        assert_eq!(r.encode(), vec![0x01, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0xAA]);
+        let none = Request {
+            session: None,
+            ..r.clone()
+        };
+        assert_eq!(none.encode(), vec![0x01, 1, 2, 3, 4, 5, 0, 0, 0, 0, 0xAA]);
         let m = Incoming::decode(&[0x02, 0x01, 0x02, 0x00, 0x08, 0x10, 0x27, 0, 0]).unwrap();
         assert_eq!(
             m,
@@ -637,24 +613,20 @@ mod tests {
         assert_eq!(b[0], 0x81);
         let t = parse_tlvs(&b).unwrap();
         assert_eq!(t[0].value, 1_000_000u32.to_le_bytes().to_vec());
-        assert_eq!(parse_tlvs(&[0x10, 5, 1]), Err(DecodeError::TruncatedTlv));
+        assert_eq!(parse_tlvs(&[0x10, 5, 0, 1]), Err(DecodeError::TruncatedTlv));
     }
 
     #[test]
     fn long_tlvs() {
-        // 255 bytes and more: `tag 0xFF len(u16) value`; 254 stays short.
-        for n in [254usize, 255, 600] {
+        // One form for every length: tag len(u16) value.
+        for n in [0usize, 254, 255, 600] {
             let v = vec![0xA5; n];
             let mut b = Vec::new();
             put_tlv(&mut b, 0x02, false, &v);
-            assert_eq!(b[1] == 0xFF, n >= 255, "{n}");
+            assert_eq!(&b[..3], &[0x02, n as u8, (n >> 8) as u8], "{n}");
             assert_eq!(parse_tlvs(&b).unwrap()[0].value, v);
         }
-        // The long form holding a short value is broken.
-        assert_eq!(
-            parse_tlvs(&[0x02, 0xFF, 3, 0, 1, 2, 3]),
-            Err(DecodeError::TruncatedTlv)
-        );
+        assert_eq!(parse_tlvs(&[0x02, 3]), Err(DecodeError::TruncatedTlv));
     }
 
     #[test]

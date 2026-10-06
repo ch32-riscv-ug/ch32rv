@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
+use std::time::Duration;
 
 use crate::codec::{Resolution, Tlv, parse_tlvs, put_tlv};
 use crate::link::{Call, Limits, Link, LinkError, Reply};
@@ -25,11 +26,6 @@ pub enum OepError {
         /// What the holder called itself in its open (core §6.4), if it did.
         owner: Option<String>,
     },
-    /// en: The session's lease lapsed and the probe released what it held (core §6.2): open
-    /// again; nothing the session made is there any more.
-    /// ja: lease が切れ、probe は session の資源を外した。open からやり直す。
-    #[error("the probe's session lease lapsed and its resources were released: open again")]
-    Expired,
     #[error("the probe rejected the request: reason 0x{reason:02x}")]
     Rejected { reason: u8, payload: Vec<u8> },
     #[error("the request failed on the probe (outcome 0x{outcome:02x})")]
@@ -54,10 +50,6 @@ pub struct Interface {
 pub struct Opened {
     pub lease_ms: u32,
     pub boot_id: u32,
-    /// The same session id took the lock again and its resources are still there (`resumed` 1).
-    pub resumed: bool,
-    /// The same session id, but after a lapse: its resources were released (`resumed` 2).
-    pub swept: bool,
 }
 
 /// What `lock_state` answered.
@@ -99,6 +91,8 @@ pub struct Probe {
     /// The probe's `max_op_ms` (fn 0 describe), learned once per boot.
     max_op_ms: Option<u32>,
     fns: HashMap<String, Interface>,
+    /// Each fn's declared ops (describe tag `ops`), learned once per boot; `None` = no ops tag.
+    ops: HashMap<u16, Option<Vec<u8>>>,
 }
 
 impl Probe {
@@ -112,6 +106,7 @@ impl Probe {
             boot_id: None,
             max_op_ms: None,
             fns: HashMap::new(),
+            ops: HashMap::new(),
         })
     }
 
@@ -131,7 +126,7 @@ impl Probe {
         self.boot_id
     }
 
-    /// A lock-free core request (role 0x01).
+    /// A lock-free core request (session_id 0).
     fn core_call(&mut self, op: u8, payload: Vec<u8>) -> Result<Vec<u8>, OepError> {
         let r = self.link.call(Call {
             func: core::FN,
@@ -142,7 +137,7 @@ impl Probe {
         check(r)
     }
 
-    /// A request under the session (role 0x81).
+    /// A request under the session (its session_id in the header).
     pub fn call(&mut self, func: u16, op: u8, payload: Vec<u8>) -> Result<Reply, OepError> {
         Ok(self.link.call(Call {
             func,
@@ -168,9 +163,11 @@ impl Probe {
         )?)
     }
 
-    /// en: `open`: take the lock with `session_id`. `force` steals it (the caller decides when).
-    /// `owner` names this host for others who find the probe locked (1..32 bytes; display only).
-    /// ja: `open`。`owner` はロックに阻まれた他の host に見せる名前(1〜32 byte、表示専用)。
+    /// en: `open`: take the lock with `session_id` (in the header, core §6.4). `force` steals it
+    /// (the caller decides when). `owner` names this host for others who find the probe locked
+    /// (1..32 bytes; display only). There is no resume: a session that ended stays ended, and
+    /// an open with this host's last id while the lock is free is a new session like any other.
+    /// ja: `open`。`owner` はロックに阻まれた他の host に見せる名前(1〜32 byte、表示専用)。再開は無い。
     pub fn open(
         &mut self,
         session_id: u32,
@@ -178,8 +175,7 @@ impl Probe {
         force: bool,
         owner: Option<&str>,
     ) -> Result<Opened, OepError> {
-        let mut p = Vec::with_capacity(9);
-        p.extend_from_slice(&session_id.to_le_bytes());
+        let mut p = Vec::with_capacity(5);
         p.extend_from_slice(&lease_ms.to_le_bytes());
         p.push(u8::from(force));
         if let Some(o) = owner.filter(|o| !o.is_empty()) {
@@ -189,28 +185,22 @@ impl Probe {
         let r = self.link.call(Call {
             func: core::FN,
             op: core::op::OPEN,
-            session: None,
+            session: Some(session_id),
             payload: p,
         })?;
         let p = check(r)?;
-        if p.len() < 9 {
+        if p.len() < 8 {
             return Err(OepError::Malformed(
-                "open answer shorter than 9 bytes".into(),
+                "open answer shorter than 8 bytes".into(),
             ));
         }
         let opened = Opened {
             lease_ms: le32(&p, 0),
             boot_id: le32(&p, 4),
-            resumed: p[8] == core::enums::resumed::RESUMED,
-            swept: p[8] == core::enums::resumed::SWEPT,
         };
-        // A new boot means new fn numbers (and no resources): forget the cache. So does an open
-        // with this host's last session_id answered resumed = 0: the probe no longer knows that
-        // session (a reboot whose boot_id repeated, or another host in between; oep-core §6.5).
-        let forgotten = self.session == Some(session_id) && p[8] == core::enums::resumed::NEW;
-        if self.boot_id != Some(opened.boot_id) || opened.boot_id == 0 || forgotten {
-            self.fns.clear();
-            self.max_op_ms = None;
+        // A new boot means new fn numbers (and no resources): forget the cache (oep-core §6.5).
+        if self.boot_id != Some(opened.boot_id) {
+            self.forget_interfaces();
         }
         self.boot_id = Some(opened.boot_id);
         // The link's view of the boot is this open's from now on (a restart is told by a later
@@ -222,7 +212,7 @@ impl Probe {
         Ok(opened)
     }
 
-    /// `end`: release the lock; the session's resources stay for the next open.
+    /// `end`: release the lock and everything the session made (core §6.4, §9).
     pub fn end(&mut self) -> Result<(), OepError> {
         let r = self.call(core::FN, core::op::END, Vec::new())?;
         check(r)?;
@@ -268,25 +258,16 @@ impl Probe {
             let total = usize::from(u16::from_le_bytes([a[0], a[1]]));
             let count = usize::from(a[2]);
             let mut at = 3;
-            // count x (len(u8), entry); an entry longer than ch32rv knows is read up to what it
-            // knows (core §2.3: readers skip the unknown tail, writers only append).
+            // count x entry, each fn(u16) instance(u16) revision(u8) flags(u8) name_len(u8) name
+            // (core §2.3, §7.2: no element length).
             for _ in 0..count {
-                let Some(&len) = a.get(at) else {
-                    return Err(OepError::Malformed("list entry cut short".into()));
-                };
                 let e = a
-                    .get(at + 1..at + 1 + usize::from(len))
+                    .get(at..at + 7)
                     .ok_or_else(|| OepError::Malformed("list entry cut short".into()))?;
-                at += 1 + usize::from(len);
-                // fn(u16) instance(u16) revision(u8) flags(u8) name_len(u8) name
-                if e.len() < 7 {
-                    return Err(OepError::Malformed(
-                        "list entry shorter than 7 bytes".into(),
-                    ));
-                }
-                let name = e
-                    .get(7..7 + usize::from(e[6]))
+                let name = a
+                    .get(at + 7..at + 7 + usize::from(e[6]))
                     .ok_or_else(|| OepError::Malformed("list entry name cut short".into()))?;
+                at += 7 + name.len();
                 out.push(Interface {
                     func: u16::from_le_bytes([e[0], e[1]]),
                     instance: u16::from_le_bytes([e[2], e[3]]),
@@ -344,6 +325,43 @@ impl Probe {
         Ok(ms)
     }
 
+    /// en: fn 0 describe's `restart_max_ms` (core §7.5): the longest from restart's answer until
+    /// the probe answers confirm again. `None`: not declared (the probe offers no restart).
+    /// ja: fn 0 の describe の restart_max_ms。宣言が無ければ None。
+    pub fn restart_max_ms(&mut self) -> Result<Option<u32>, OepError> {
+        Ok(self
+            .describe(core::FN)?
+            .iter()
+            .find(|t| t.tag == core::tlvs::describe::RESTART_MAX_MS && t.value.len() == 4)
+            .map(|t| le32(&t.value, 0)))
+    }
+
+    /// en: Send `restart` (core §6.6, under the session) and check its answer; the probe restarts
+    /// right after it. The session is gone with it: [`Self::await_restart`] waits for the probe.
+    /// ja: restart を送り、答えを確かめる。probe はその直後に再起動し、session は無くなる。
+    pub fn request_restart(&mut self) -> Result<(), OepError> {
+        let r = self.call(core::FN, core::op::RESTART, Vec::new())?;
+        check(r)?;
+        self.session = None;
+        self.forget_interfaces();
+        Ok(())
+    }
+
+    /// en: Wait for the restarted probe (`wait`: its restart_max_ms, read before the restart) and
+    /// confirm it again; true when it came back with another boot_id (false: the same one - the
+    /// restart did not happen). An error when it did not answer within `wait`.
+    /// ja: 再起動した probe を待って confirm し直す。boot_id が変われば true。戻らなければ error。
+    pub fn await_restart(&mut self, wait: Duration) -> Result<bool, OepError> {
+        let before = self.boot_id.or(Some(self.limits.boot_id));
+        if !self.link.await_restart(wait) {
+            return Err(OepError::Link(LinkError::Timeout(wait)));
+        }
+        self.limits = self.link.confirm()?;
+        self.boot_id = Some(self.limits.boot_id);
+        self.link.reset_corr();
+        Ok(before != Some(self.limits.boot_id))
+    }
+
     /// en: Whether the probe restarted since this session was opened: the last confirm answer
     /// carried another boot_id than the open did (oep-core §6.5). ja: open の後に再起動したか。
     pub fn rebooted(&self) -> bool {
@@ -355,6 +373,47 @@ impl Probe {
     pub fn forget_interfaces(&mut self) {
         self.fns.clear();
         self.max_op_ms = None;
+        self.ops.clear();
+    }
+
+    /// en: The ops `func` declares in its describe's `ops` tag (core §1.2, §7.4: base(u8) bitmap,
+    /// every op the fn offers, the optional ones included); `None` when the describe carries none
+    /// (a probe that does not conform yet: the caller sends and lets the probe answer).
+    /// ja: `func` の describe の ops(base + bitmap)が立てる op。ops が無ければ None。
+    pub fn ops(&mut self, func: u16) -> Result<Option<Vec<u8>>, OepError> {
+        if let Some(o) = self.ops.get(&func) {
+            return Ok(o.clone());
+        }
+        let mut found: Option<Vec<u8>> = None;
+        for t in self.describe(func)? {
+            if t.tag != crate::registry::describe_common::OPS {
+                continue;
+            }
+            let Some((&base, bitmap)) = t.value.split_first() else {
+                continue;
+            };
+            let set = found.get_or_insert_with(Vec::new);
+            for (i, byte) in bitmap.iter().enumerate() {
+                for bit in 0..8 {
+                    if byte & (1 << bit) != 0
+                        && let Ok(op) = u8::try_from(usize::from(base) + i * 8 + bit)
+                    {
+                        set.push(op);
+                    }
+                }
+            }
+        }
+        if let Some(set) = found.as_mut() {
+            set.sort_unstable();
+            set.dedup();
+        }
+        self.ops.insert(func, found.clone());
+        Ok(found)
+    }
+
+    /// Whether `func` offers `op` by its ops tag (true when it declares no ops: the probe decides).
+    pub fn offers(&mut self, func: u16, op: u8) -> Result<bool, OepError> {
+        Ok(self.ops(func)?.is_none_or(|o| o.contains(&op)))
     }
 
     /// `describe` of `func`, following `more`.
@@ -399,7 +458,6 @@ pub fn check(r: Reply) -> Result<Vec<u8>, OepError> {
                 owner,
             })
         }
-        Resolution::Rejected(reason) if reason == reject_reasons::EXPIRED => Err(OepError::Expired),
         Resolution::Rejected(reason) => Err(OepError::Rejected {
             reason,
             payload: r.payload,

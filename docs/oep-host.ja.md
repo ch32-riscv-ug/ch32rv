@@ -96,7 +96,7 @@
   - 対話的なコマンド(flash、read、target info)は 3 秒。ブローカーは 10 秒(上げた速さの立て直しが収まる長さ)で、keepalive を 1 秒ごとに送る。
   - pytest の `oep_host` は 10 秒(WF §4.3。client 側の話)。
   - run の timeout は lease と応答待ちより十分短くする(run の間、probe は他の要求に答えない)。run の timeout と dmi の待ちは fn 0 describe の `max_op_ms`(0x4D、参照 firmware は 10000)以下に詰める(2026-10-01、`Probe::max_op_ms`)。
-  - lease が切れた後の要求は `rejected expired`(0x0E)になる(`OepError::Expired`)。黙って再開はしない。ブローカーは expired を受けたら同じ session_id で open し直し(`resumed` = 2)、台帳を捨てる。client はそれぞれ expired を受けてやり直す。
+  - lease が切れた後の要求は `rejected no_session` になる(再開は無い、2026-10-06)。ブローカーは no_session を受けたら新しい session_id で open し直し、台帳と client の session を捨てる。client はそれぞれ no_session を受けて open からやり直す。
 - **lock の奪い方(WF §4.3)**:
   - `open` が `locked` で返ったとき、transport が serial 1 本だけの probe なら、その場で force する(排他で開けた時点で、前の持ち主は死んでいる)。
   - それ以外の probe では、`lock_state` の残り時間を待つ(上限 5 秒)。持ち主が lease を延ばし続けていれば、exit 13(`device-busy`)にする。force は `--force-lock` を明示したときだけ。
@@ -224,7 +224,7 @@ binary の扱い:
 - **終わり方**: **client が 0 になったらすぐ終わる**(待ち時間なし)。transport を閉じ、`<key>.oep` を消す。probe を失ったとき(抜かれた、boot_id が変わった)は、client に切断で知らせてから終わる。
 - **client から見ると OEP そのもの**(spec の TCP の形 `length(u16) message`)。ブローカーは次のことをする。
   - client ごとに corr を付け替え、probe への pipeline に混ぜる。応答は元の corr に戻して、その client にだけ返す。
-  - client の `open` / `end` / `keepalive` / `lock_state` は受け止めて、自分で答える。open は `resumed = 0` と本物の boot_id を返す。client の owner の名前は台帳に持ち、`broker endpoint --json` で一覧できるようにする。
+  - client の `open` / `end` / `keepalive` / `lock_state` は受け止めて、自分で答える。open は lease_ms と本物の boot_id を返し、client の session id を覚える(それ以外の id の要求には no_session。end でその client の接続と plan を外す)。client の owner の名前は台帳に持ち、`broker endpoint --json` で一覧できるようにする。
   - confirm / list / describe は、ブローカーが持っている写しで答える(boot_id が変わったら取り直す)。
   - 1 つの client の要求の並びは崩さない(probe は順に処理する)。client をまたいだ並びは到着順。
 - **client ごとの資源の台帳**:
@@ -278,6 +278,7 @@ binary の扱い:
   - ブローカーは host の実装で spec の外
 
 - **ゼロベース見直しへの追従(2026-10-01、oep-spec 37278b6、fake = oep-client-python 7b56c15)**: TLV の長い形(`tag 0xFF len(u16)`)、confirm の boot_id、read の応答の len(console / fixture UART)、マークの time_ns(22 byte)、dmi の nvals(u16)、run の nvals(u8)と stopped 2、attach の一本化(method 0 / 1、max_speed は必須なので ch32rv は常に送る(呼び出し側の値、無ければ線の describe の max_clock_hz、無ければ 1 MHz)、応答の flags は `attach_flags`、bit3 で TLV 0x11 dpc)、scan の skip は TLV 0x02、probe.config のスロットは retry_ms(u32)と max_speed_hz(固定部 19 byte)、スロットの状態は `state` op(0x06)、`discoverable`(0x4A)、資源番号は 1 つの空間(WCH のブローカーは connection 1、ストリームは 2 から)。probe は op の外に target の状態を持ち越さないので、ch32rv の OEP の resume は dpc を読むたびに DATA0 / DATA1 を戻す。
+- **簡素化への追従(2026-10-06、oep-spec 3c96daf、fake = oep-client-python 305852a、probe = oep-probe-arduino 0.0.29 以降)**: 要求の見出しは常に 10 byte で session_id を持つ(0 = session なし。role 0x81 は無い)。TLV は `tag len(u16) value` の 1 つの形。並び(list、scan、marks、probe.config の state)は要素の長さを持たない(要素の形は revision で決まる)。スロットの固定部は boot_reset を足して 20 byte、slot_state は reset_at_ns を足す。再開は無い: end・lease 切れ・force で session の資源はすべて外れ、その id は no_session(ブローカーは `no_session` で新しい session を開く。`expired` は無い)。任意の op は各 fn の describe の `ops`(base + bitmap)で知る(features では知らない)。port_speed と線の試験は `oep.link`(source は len(u16) data、最大 max_frame − 26 byte、sink は count(u16) data)。fn 0 の `restart`(op 0x14、任意)と `restart_max_ms`(describe 0x4F): ブローカーは client の restart を自分の session で中継し、答えを返してから起動時の速さで confirm を restart_max_ms まで繰り返し、新しい session を開く(client の session は終わる)。旧 wire との互換は持たない(凍結前の方針、2026-10-06 のユーザーの判断。USB の probe は 1209:4F45 で見分ける)。
 
 ## 11. 決まったこと
 

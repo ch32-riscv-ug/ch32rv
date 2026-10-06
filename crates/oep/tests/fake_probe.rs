@@ -122,17 +122,27 @@ fn discovery_and_session_over_cobs_with_console_noise() {
 
     let sid = random_session_id();
     let o = p.open(sid, 3000, false, Some("ch32rv test")).unwrap();
-    assert!(!o.resumed);
+    assert_eq!(o.boot_id, p.limits().boot_id);
     assert!(p.lock_state().unwrap().locked);
     p.keepalive().unwrap();
     p.end().unwrap();
     assert!(!p.lock_state().unwrap().locked);
-    // The same id takes the lock back and is told so.
-    assert!(
-        p.open(sid, 3000, false, Some("ch32rv test"))
-            .unwrap()
-            .resumed
+    // No resume (core §6.4): the ended session's id is no_session, a new open is a new session.
+    let r = p
+        .link()
+        .call(ch32rv_oep::link::Call {
+            func: registry::core::FN,
+            op: registry::core::op::KEEPALIVE,
+            session: Some(sid),
+            payload: Vec::new(),
+        })
+        .unwrap();
+    assert_eq!(
+        r.resolution,
+        ch32rv_oep::codec::Resolution::Rejected(registry::reject_reasons::NO_SESSION)
     );
+    p.open(random_session_id(), 3000, false, Some("ch32rv test"))
+        .unwrap();
     p.end().unwrap();
     // Noise and the leading 0x00 of every answer were filtered, never mistaken for answers.
     assert_eq!(p.link().resyncs, 0);
@@ -174,8 +184,7 @@ fn another_session_is_locked_out_until_it_forces() {
         }
         other => panic!("expected Locked, got {other:?}"),
     }
-    let o = p.open(0x2222_2222, 5000, true, None).unwrap();
-    assert!(!o.resumed);
+    p.open(0x2222_2222, 5000, true, None).unwrap();
     p.end().unwrap();
 }
 

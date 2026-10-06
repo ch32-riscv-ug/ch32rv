@@ -2,19 +2,19 @@
 //! (`target/oep-client-venv`), synced once - under a file lock, so the test processes running in
 //! parallel never install into it at the same time (they did into the client's shared `.venv`, and
 //! a fake that died while uv reinstalled failed the test, 2026-10-01).
-//! The fake is taken at `FAKE_REV`, the client's last commit on the wire the released probes
-//! speak (oep-probe-arduino 0.0.28): from 0300973 on, the client and its fake speak the
-//! 2026-10-06 simplified wire (10-byte header, TLV len u16, no resume, oep.link), which ch32rv
-//! follows once a probe build speaks it. `$OEP_CLIENT_PYTHON` names a checkout used as it is.
+//! The fake is taken at `FAKE_REV`, a commit on the wire ch32rv speaks (the 2026-10-06
+//! simplified wire, oep-spec 3c96daf, oep-probe-arduino 0.0.29): the fake moves with the spec
+//! ahead of the probes, so ch32rv raises it when it follows. `$OEP_CLIENT_PYTHON` names a
+//! checkout used as it is.
 //! ja: テスト用の oep-client-python の `uv run`。ch32rv 専用の環境で、file lock の下で 1 回だけ sync
-//! する(並行するテストが同時に install しないように)。fake は出ている probe と同じ wire の
-//! `FAKE_REV` で取り出す(新しい wire へは probe が出てから移る)。
+//! する(並行するテストが同時に install しないように)。fake は ch32rv の話す wire の commit
+//! `FAKE_REV` で取り出す(ch32rv が追従するときに上げる)。
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// The client's last commit on the wire of oep-probe-arduino 0.0.28 (before 0300973).
-const FAKE_REV: &str = "f91da22";
+/// oep-client-python on oep-spec 3c96daf (restart and restart_max_ms).
+const FAKE_REV: &str = "305852a";
 
 fn target_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();

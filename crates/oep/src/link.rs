@@ -614,6 +614,36 @@ impl Link {
         }
     }
 
+    /// en: After restart's answer (oep-core §6.6): back to the boot speed (oep-if-link §3 host duty
+    /// 6), wait `restart_after_answer_ms`, then confirm until one answers or `wait` (the probe's
+    /// restart_max_ms) has passed since the answer. The probe answers nothing between its answer
+    /// and its restart, so a confirm that answers is the new boot's (its boot_id is then
+    /// `last_boot_id`). False: the probe did not come back (the caller treats it as gone).
+    /// ja: restart の応答の後: 起動時の速さに戻り、100 ms 待ってから restart_max_ms まで confirm を
+    /// 繰り返す。答えた confirm は新しい起動のもの。戻らなければ false。
+    pub fn await_restart(&mut self, wait: Duration) -> bool {
+        let deadline = Instant::now() + wait;
+        self.inflight_cap = 0;
+        if let Some(base) = self.base_baud
+            && self.set_baud(base).is_err()
+        {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(u64::from(
+            registry::limits::RESTART_AFTER_ANSWER_MS,
+        )));
+        loop {
+            if self.confirm_raw(Duration::from_millis(400)) {
+                return true;
+            }
+            if Instant::now() >= deadline {
+                return false;
+            }
+            // A transport that went away (a USB device re-enumerating) fails at once: pace it.
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
     /// en: Requests as they are, pipelined `inflight` at a time, with no resend: the answers that
     /// came, in order, up to the first that did not (a measuring tool: port_speed's verify).
     /// ja: 要求をそのまま `inflight` 本ずつ送り、送り直さない。来た答えを順に、最初に来なかった所まで返す。

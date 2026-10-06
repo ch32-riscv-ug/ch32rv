@@ -212,13 +212,20 @@ fn the_broker_opens_a_new_session_after_the_probe_restarts() {
         }
     }
 
-    // The old connection is gone with the restart (the request may meet no_session, or the
-    // broker's keepalive may have reopened first: either way it fails) ...
+    // The old connection is gone with the restart, and so is the client's session (core §9:
+    // the request meets no_session, from the probe or the broker) ...
     assert!(halted(&mut a, conn).is_err());
-    // ... and the broker is still there, with a new session: a fresh attach works.
+    // ... and the broker is still there, with a new session: the client opens again and a fresh
+    // attach works.
     let deadline = Instant::now() + Duration::from_secs(5);
     let again = loop {
-        match attach(&mut a, WireKind::Rvswd, opt) {
+        let opened = a.open(
+            ch32rv_oep::session::random_session_id(),
+            3000,
+            false,
+            Some("test"),
+        );
+        match opened.and_then(|_| attach(&mut a, WireKind::Rvswd, opt)) {
             Ok(at) => break at,
             Err(e) => {
                 assert!(
@@ -229,5 +236,62 @@ fn the_broker_opens_a_new_session_after_the_probe_restarts() {
             }
         }
     };
+    halted(&mut a, again.connection).unwrap();
+}
+
+#[test]
+fn a_client_restarts_the_probe_through_the_broker() {
+    // restart (core §6.6) from a client: the broker forwards it under its own session, passes the
+    // answer on, waits for the probe (restart_max_ms) and opens a new session. The client's
+    // session ended with it: it confirms (a new boot_id), opens again and attaches.
+    let Some((_fake, pty)) = fake_pty() else {
+        return;
+    };
+    let _broker = Kill(
+        Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+            .args(["broker", "serve", "--probe", &format!("port:{pty}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let ep = loop {
+        if let Some(ep) = endpoint(&pty) {
+            break ep;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the broker published no endpoint"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut a = client(&ep);
+    let opt = AttachOptions {
+        halt: true,
+        ..AttachOptions::default()
+    };
+    let conn = attach(&mut a, WireKind::Rvswd, opt).unwrap().connection;
+    let before = a.limits().boot_id;
+    let wait = a
+        .restart_max_ms()
+        .unwrap()
+        .expect("the fake declares restart_max_ms");
+    a.request_restart().unwrap();
+    assert!(
+        a.await_restart(Duration::from_millis(u64::from(wait) + 5000))
+            .unwrap(),
+        "the boot_id did not change"
+    );
+    assert_ne!(a.limits().boot_id, before);
+    assert!(halted(&mut a, conn).is_err());
+    a.open(
+        ch32rv_oep::session::random_session_id(),
+        3000,
+        false,
+        Some("test"),
+    )
+    .unwrap();
+    let again = attach(&mut a, WireKind::Rvswd, opt).unwrap();
     halted(&mut a, again.connection).unwrap();
 }

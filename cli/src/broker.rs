@@ -516,6 +516,7 @@ fn serve_target(
         sid,
         wires,
         clients: HashMap::new(),
+        sessions: HashMap::new(),
         ledger: Ledger::default(),
         key: key.clone(),
         endpoint: json!({"port": port, "pid": std::process::id(), "time": now_ms(), "transport": transport}),
@@ -624,17 +625,16 @@ impl Upstream {
         }
     }
 
-    /// Renew the lease; `Ok(true)` when it had lapsed and the session was opened again (the
-    /// probe released everything it held, core §6.2).
+    /// Renew the lease; `Ok(true)` when the probe no longer knew the session (the lease lapsed:
+    /// it released everything, core §6.4) and the caller is to open a new one.
     fn keepalive(&mut self) -> Result<bool, String> {
         match self {
             Upstream::Oep(p) => match p.keepalive() {
                 Ok(()) => Ok(false),
-                Err(ch32rv_oep::session::OepError::Expired) => self.reopen().map(|()| true),
                 Err(ch32rv_oep::session::OepError::Rejected { reason, .. })
                     if reason == reject_reasons::NO_SESSION =>
                 {
-                    self.reopen_fresh().map(|()| true)
+                    Ok(true)
                 }
                 Err(e) => Err(e.to_string()),
             },
@@ -642,25 +642,11 @@ impl Upstream {
         }
     }
 
-    /// en: Open the probe again under the same session id after the lease lapsed (it answers
-    /// `resumed` 2: nothing of the old session is left). ja: lease 切れの後、同じ session id で開き直す。
-    fn reopen(&mut self) -> Result<(), String> {
-        let Upstream::Oep(p) = self else {
-            return Ok(());
-        };
-        let sid = p
-            .session_id()
-            .unwrap_or_else(ch32rv_oep::session::random_session_id);
-        let owner = format!("ch32rv broker pid {}", std::process::id());
-        p.open(sid, LEASE_MS, false, Some(&owner))
-            .map(|_| ())
-            .map_err(|e| e.to_string())
-    }
-
     /// en: Open the probe under a new session id, its interfaces learned again: after a restart
-    /// (a changed boot_id) or `no_session` (the probe no longer knows our session). Everything the
-    /// clients held is gone; the link stays at the speed it is at (a restarted probe is at its
-    /// boot speed). ja: 新しい session id で開き直し、interface を取り直す(再起動か no_session の後)。
+    /// (a changed boot_id) or `no_session` (the probe no longer knows our session: there is no
+    /// resume, core §6.4). Everything the clients held is gone; the link stays at the speed it is
+    /// at (a restarted probe is at its boot speed). ja: 新しい session id で開き直し、interface を
+    /// 取り直す(再起動か no_session の後。再開は無い)。
     fn reopen_fresh(&mut self) -> Result<(), String> {
         let Upstream::Oep(p) = self else {
             return Ok(());
@@ -742,6 +728,9 @@ struct Broker {
     sid: u32,
     wires: BTreeSet<u16>,
     clients: HashMap<u64, TcpStream>,
+    /// Each client's open session (its id): a request under any other id is answered
+    /// no_session, as a probe answers one for a session that ended (core §6.2).
+    sessions: HashMap<u64, u32>,
     ledger: Ledger,
     /// The runtime key and what the endpoint file says, to take it down and put it back.
     key: String,
@@ -833,6 +822,7 @@ impl Broker {
                         }
                         self.up.client_gone(id);
                         self.clients.remove(&id);
+                        self.sessions.remove(&id);
                         broker_log(&self.key, &format!("client {id} gone"));
                     }
                 }
@@ -882,16 +872,58 @@ impl Broker {
         Some(ev)
     }
 
-    /// Answer `msgs` in order: session requests locally, the rest through one pipelined exchange.
+    /// en: Answer `msgs` in order: session requests locally, the rest through pipelined
+    /// exchanges. An end (it releases the client's share first) and a restart (forwarded alone,
+    /// then the broker waits for the probe and opens a new session) split the batch, so what
+    /// came before them reaches the probe before them.
+    /// ja: `msgs` を順に答える。end と restart は batch を区切る(それより前のものを先に probe へ)。
     fn serve_batch(&mut self, msgs: Vec<(u64, Vec<u8>)>) -> Result<(), String> {
         let mut pending = Vec::with_capacity(msgs.len());
         let mut calls = Vec::new();
+        let mut restarted = false;
         for (id, m) in msgs {
             let Some(req) = Request::decode(&m) else {
                 continue; // not a request: dropped, as a probe drops an unknown role
             };
+            // en: Sent before the clients could know of a restart earlier in this batch: not sent
+            // on (oep-transports §1): no_session under a session, result_lost otherwise.
+            // ja: 同じ batch の restart の後ろの要求は送らない(session つきは no_session、ほかは result_lost)。
+            if restarted {
+                let open = req.func == oep_core::FN && req.op == oep_core::op::OPEN;
+                let reason = if req.session.is_some() && !open {
+                    reject_reasons::NO_SESSION
+                } else {
+                    reject_reasons::RESULT_LOST
+                };
+                pending.push(Pending::Local(
+                    id,
+                    encode_result(req.corr, Resolution::Rejected(reason), &[]),
+                ));
+                continue;
+            }
             if let Some(answer) = self.local(id, &req) {
                 pending.push(Pending::Local(id, answer));
+                continue;
+            }
+            if req.func == oep_core::FN && req.op == oep_core::op::END {
+                self.flush(&mut pending, &mut calls)?;
+                self.sessions.remove(&id);
+                if let Err(e) = self.release(id) {
+                    broker_log(
+                        &self.key,
+                        &format!("client {id}: release at end failed: {e}"),
+                    );
+                }
+                let ok = encode_result(req.corr, Resolution::Completed(outcomes::SUCCESS), &[]);
+                self.send(id, &ok);
+                continue;
+            }
+            if req.func == oep_core::FN
+                && req.op == oep_core::op::RESTART
+                && matches!(self.up, Upstream::Oep(_))
+            {
+                self.flush(&mut pending, &mut calls)?;
+                restarted = self.restart(id, &req)?;
                 continue;
             }
             calls.push((
@@ -906,6 +938,74 @@ impl Broker {
             ));
             pending.push(Pending::Forward(id, req));
         }
+        self.flush(&mut pending, &mut calls)
+    }
+
+    /// en: A client's restart (core §6.6): forwarded under the broker's session; on its success
+    /// answer (passed on first) the broker goes back to the boot speed, confirms until the probe
+    /// answers again within its restart_max_ms, and opens a new session - every client's session
+    /// ended with the restart. True when the probe restarted. A probe that does not come back
+    /// ends the broker (its clients start over). ja: client の restart を自分の session で中継し、
+    /// 答えを返してから probe の戻りを待って新しい session を開く。戻らなければブローカーは終わる。
+    fn restart(&mut self, id: u64, req: &Request) -> Result<bool, String> {
+        let Upstream::Oep(p) = &mut self.up else {
+            return Ok(false);
+        };
+        let wait = p.restart_max_ms().ok().flatten().unwrap_or(10_000);
+        let answer =
+            match p.request_restart() {
+                Ok(()) => Ok(()),
+                Err(ch32rv_oep::session::OepError::Rejected { reason, payload }) => Err(
+                    encode_result(req.corr, Resolution::Rejected(reason), &payload),
+                ),
+                Err(ch32rv_oep::session::OepError::Failed { outcome, payload }) => Err(
+                    encode_result(req.corr, Resolution::Completed(outcome), &payload),
+                ),
+                Err(ch32rv_oep::session::OepError::Locked { .. }) => Err(encode_result(
+                    req.corr,
+                    Resolution::Rejected(reject_reasons::LOCKED),
+                    &[],
+                )),
+                // No answer: it may have restarted all the same - the confirm's boot_id tells.
+                Err(_) => Ok(()),
+            };
+        if let Err(refused) = answer {
+            self.send(id, &refused);
+            return Ok(false);
+        }
+        let ok = encode_result(req.corr, Resolution::Completed(outcomes::SUCCESS), &[]);
+        self.send(id, &ok);
+        broker_log(
+            &self.key,
+            &format!("client {id}: restart - waiting for the probe (up to {wait} ms)"),
+        );
+        let Upstream::Oep(p) = &mut self.up else {
+            return Ok(false);
+        };
+        let changed = p
+            .await_restart(Duration::from_millis(u64::from(wait)))
+            .map_err(|e| format!("the probe did not come back after its restart: {e}"))?;
+        broker_log(
+            &self.key,
+            if changed {
+                "upstream: the probe restarted - opening a new session"
+            } else {
+                "upstream: the probe answers with the same boot_id (no restart) - opening a new session"
+            },
+        );
+        self.restart_session()?;
+        Ok(true)
+    }
+
+    /// en: Send `calls` in one pipelined exchange and answer `pending` in order.
+    /// ja: `calls` を 1 回の pipeline で送り、`pending` を順に答える。
+    fn flush(
+        &mut self,
+        pending: &mut Vec<Pending>,
+        calls: &mut Vec<(u64, Call)>,
+    ) -> Result<(), String> {
+        let pending = std::mem::take(pending);
+        let calls = std::mem::take(calls);
         let before = self.up.losses();
         let n_calls = calls.len();
         let replies = if calls.is_empty() {
@@ -962,21 +1062,11 @@ impl Broker {
         }
         self.watch_speed(after.1 - before.1, after.2 - before.2, after.3 - before.3);
         self.watch_restart()?;
-        // en: The lease lapsed under these requests (a long stall of the host): the probe released
-        // every client's connections. Pass the answers on (each client hears `expired` and starts
-        // again) and open the probe again for what comes next.
-        // ja: lease が切れていた(host が長く止まった)。probe は全 client の接続を外した。答えはそのまま
-        // 返し(client は expired を受けてやり直す)、次の要求のために開き直す。
-        if replies
-            .iter()
-            .any(|r| r.resolution == Resolution::Rejected(reject_reasons::EXPIRED))
-        {
-            self.up.reopen()?;
-            self.swept();
-        }
-        // en: The probe no longer knows the broker's session (it restarted, or another host took
-        // it in between): pass the answers on, and open a new session for what comes next.
-        // ja: probe が session を知らない(再起動など): 答えはそのまま返し、新しい session で開き直す。
+        // en: The probe no longer knows the broker's session (its lease lapsed under a long stall
+        // of the host, it restarted, or another host took it in between): pass the answers on,
+        // and open a new session for what comes next.
+        // ja: probe が session を知らない(lease 切れ、再起動など): 答えはそのまま返し、新しい session
+        // で開き直す。
         if replies
             .iter()
             .any(|r| r.resolution == Resolution::Rejected(reject_reasons::NO_SESSION))
@@ -1071,7 +1161,11 @@ impl Broker {
     fn keepalive(&mut self) -> Result<(), String> {
         let before = self.up.losses();
         if self.up.keepalive()? {
-            self.swept();
+            broker_log(
+                &self.key,
+                "upstream: no_session on keepalive - opening a new session",
+            );
+            self.restart_session()?;
         }
         let after = self.up.losses();
         self.watch_speed(after.1 - before.1, after.2 - before.2, after.3 - before.3);
@@ -1099,6 +1193,10 @@ impl Broker {
     fn restart_session(&mut self) -> Result<(), String> {
         self.up.reopen_fresh()?;
         self.swept();
+        // Every client's session ended with the broker's (core §9): they open again.
+        self.sessions.clear();
+        // A restarted probe may number its interfaces anew.
+        self.wires = self.up.wires()?;
         self.speed_port = None;
         self.speed_window.clear();
         if let Upstream::Oep(p) = &mut self.up {
@@ -1125,6 +1223,16 @@ impl Broker {
     /// The broker's own answer to `req`, or `None` to forward it.
     fn local(&mut self, id: u64, req: &Request) -> Option<Vec<u8>> {
         let ok = |p: &[u8]| encode_result(req.corr, Resolution::Completed(outcomes::SUCCESS), p);
+        let refuse = |r: u8| encode_result(req.corr, Resolution::Rejected(r), &[]);
+        let open = req.func == oep_core::FN && req.op == oep_core::op::OPEN;
+        // A session id that is not the client's open session (never opened, ended, or ended by a
+        // restart): no_session, as the probe answers (core §6.2).
+        if let Some(sid) = req.session
+            && !open
+            && self.sessions.get(&id) != Some(&sid)
+        {
+            return Some(refuse(reject_reasons::NO_SESSION));
+        }
         if req.func == oep_core::FN {
             let op = req.op;
             return match op {
@@ -1138,22 +1246,34 @@ impl Broker {
                     p.extend_from_slice(&l.window.to_le_bytes());
                     p.push(l.max_inflight);
                     p.extend_from_slice(&l.boot_id.to_le_bytes());
+                    // A relaying broker's transport index is 0xFF (oep-core §7.1, transports §1).
+                    ch32rv_oep::codec::put_tlv(
+                        &mut p,
+                        oep_core::tlvs::confirm_answer::TRANSPORT,
+                        false,
+                        &[0xFF],
+                    );
                     Some(ok(&p))
                 }
+                // lease_ms(u32) force(u8) [TLV owner]; the session id is the header's (core §6.4).
                 o if o == oep_core::op::OPEN => {
-                    let lease = req
+                    let Some(sid) = req.session else {
+                        return Some(refuse(reject_reasons::MALFORMED));
+                    };
+                    let Some(lease) = req
                         .payload
-                        .get(4..8)
+                        .get(..4)
                         .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                        .filter(|&l| l != 0)
-                        .unwrap_or(LEASE_MS)
-                        .clamp(1000, 60_000);
+                    else {
+                        return Some(refuse(reject_reasons::MALFORMED));
+                    };
+                    let lease = if lease == 0 { LEASE_MS } else { lease }.clamp(1000, 60_000);
+                    self.sessions.insert(id, sid);
                     let mut p = lease.to_le_bytes().to_vec();
                     p.extend_from_slice(&self.up.boot_id().to_le_bytes());
-                    p.push(0);
                     Some(ok(&p))
                 }
-                o if o == oep_core::op::END || o == oep_core::op::KEEPALIVE => Some(ok(&[])),
+                o if o == oep_core::op::KEEPALIVE => Some(ok(&[])),
                 o if o == oep_core::op::LOCK_STATE => {
                     let mut p = vec![1u8];
                     p.extend_from_slice(&LEASE_MS.to_le_bytes());

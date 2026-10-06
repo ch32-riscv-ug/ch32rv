@@ -206,20 +206,11 @@ impl PosStream {
             let (Some(&more), Some(&count)) = (a.first(), a.get(1)) else {
                 return Ok(found);
             };
-            // count x (len(u8), mark); mark = serial u32, position u64, kind u8, time_ns u64,
-            // detail u8 (22 bytes, oep-if-common §1.3), and an unknown tail is skipped (core §2.3).
-            let mut at = 2;
-            let mut marks = Vec::new();
-            for _ in 0..count {
-                let Some(&len) = a.get(at) else { break };
-                let Some(m) = a.get(at + 1..at + 1 + usize::from(len)) else {
-                    break;
-                };
-                at += 1 + usize::from(len);
-                if m.len() >= 22 {
-                    marks.push(m);
-                }
-            }
+            // count x mark; mark = serial u32, position u64, kind u8, time_ns u64, detail u8
+            // (22 bytes, oep-if-common §1.3; no element length, core §2.3).
+            let marks: Vec<&[u8]> = (0..usize::from(count))
+                .map_while(|k| a.get(2 + k * 22..2 + (k + 1) * 22))
+                .collect();
             for m in marks {
                 let serial = u32::from_le_bytes([m[0], m[1], m[2], m[3]]);
                 let pos = u64::from_le_bytes([m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]]);
