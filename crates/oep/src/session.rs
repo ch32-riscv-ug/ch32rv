@@ -330,6 +330,13 @@ impl Probe {
             .iter()
             .find(|t| t.tag == core::tlvs::describe::MAX_OP_MS && t.value.len() == 4)
             .map_or(2000, |t| le32(&t.value, 0));
+        // 1..=max_op_ms_max (oep-core §7.5, C-47): a probe declaring anything else is not used.
+        if !(1..=crate::registry::limits::MAX_OP_MS_MAX).contains(&ms) {
+            return Err(OepError::Malformed(format!(
+                "the probe declares max_op_ms {ms}, outside 1..={}",
+                crate::registry::limits::MAX_OP_MS_MAX
+            )));
+        }
         self.max_op_ms = Some(ms);
         Ok(ms)
     }
