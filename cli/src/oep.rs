@@ -90,8 +90,9 @@ pub(crate) fn net_target(a: &OepAddr) -> Option<crate::broker::BrokerTarget> {
 /// describe; a few seconds at most). `None` when it cannot be reached or does not say.
 /// ja: `addr` の probe が describe で言う unit id(短く直接つないで読む)。届かなければ None。
 fn unit_at(addr: &str) -> Option<String> {
-    // en: Known already, and its broker runs: that broker holds the probe's connection, and a
-    // probe may serve only so many (the virtual bench one at a time), so it is not asked again.
+    // en: Known already, and its broker runs: that broker holds one of the probe's connections,
+    // and a probe serves only a few (the reference probe and the virtual bench 3), so it is not
+    // asked again.
     // ja: 既に分かっていてそのブローカーが動いていれば聞き直さない(probe は同時接続が限られる)。
     let memo = ch32rv_usb::runtime_dir().join(format!(
         "{}.unit",
