@@ -367,7 +367,7 @@ fn the_arduino_monitor_opens_a_tcp_port() {
             "--tcp",
             "0",
         ])
-        .args(["--framing", "length", "--unit-id", &unit])
+        .args(["--unit-id", &unit])
         .args(["--target-id", "0x20310500"])
         .args(["--console", "uptime %d\r\n", "--every", "50"])
         .stdin(Stdio::piped())
