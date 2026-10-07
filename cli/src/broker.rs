@@ -347,7 +347,7 @@ pub(crate) fn endpoint(cli: &Cli) -> ExitCode {
     let target = match crate::oep::addr(cli, CMD) {
         Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => BrokerTarget::Serial(p),
         Ok(Some(OepAddr::Wch(t))) => t,
-        Ok(Some(OepAddr::Tcp(_))) => {
+        Ok(Some(OepAddr::Tcp(_) | OepAddr::Net { .. })) => {
             return fail(
                 cli,
                 CMD,
@@ -417,7 +417,7 @@ pub(crate) fn serve(cli: &Cli) -> ExitCode {
         Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => BrokerTarget::Serial(p),
         // A broker for this Link already answers: this one leaves (the flock would say so too).
         Ok(Some(OepAddr::Wch(_))) => return ExitCode::SUCCESS,
-        Ok(Some(OepAddr::Tcp(_))) => {
+        Ok(Some(OepAddr::Tcp(_) | OepAddr::Net { .. })) => {
             return fail(
                 cli,
                 CMD,

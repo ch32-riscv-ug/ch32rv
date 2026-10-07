@@ -75,7 +75,9 @@ fn list_ports() -> Vec<Value> {
 /// 前回の一覧。普通の serial port は開かない。
 fn oep_ports() -> Vec<Value> {
     let mut out = Vec::new();
-    for dev in crate::oep::oep_devices() {
+    let devices = crate::oep::oep_devices();
+    let on_usb: Vec<String> = devices.iter().map(crate::oep::probe_id).collect();
+    for dev in devices {
         let Some(path) = crate::oep::oep_port(&dev) else {
             continue;
         };
@@ -95,6 +97,7 @@ fn oep_ports() -> Vec<Value> {
             }
         }
     }
+    out.extend(net_oep_ports(&on_usb));
     out
 }
 
@@ -109,9 +112,55 @@ fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<V
         }
         None => crate::oep::connect_for_listing(path, quick).ok()?.0,
     };
-    let slots = ch32rv_oep::config::slots(&mut p).ok()?;
-    let states = ch32rv_oep::config::slot_states(&mut p).unwrap_or_default();
-    let id = crate::oep::probe_id(dev);
+    let props = json!({
+        "vid": format!("0x{:04x}", dev.vid()),
+        "pid": format!("0x{:04x}", dev.pid()),
+        "port": path,
+    });
+    slot_entries(&mut p, &crate::oep::probe_id(dev), &props)
+}
+
+/// en: OEP probes on the local network that are not on USB (DNS-SD `_oep._tcp`, oep-spec
+/// transports §3), listed like the USB ones: one `oep://<unit_id>/<slot>` per slot, read over TCP
+/// (lock-free) after describe confirmed the unit id; the last listing when it cannot be read.
+/// ja: USB に無い、ネットワークの OEP の probe(DNS-SD)。USB のものと同じくスロットごとに出す。
+fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
+    let mut out = Vec::new();
+    for f in crate::mdns::browse(std::time::Duration::from_millis(600)) {
+        let (Some(unit), Some(addr)) = (f.unit_id.clone(), f.endpoint()) else {
+            continue;
+        };
+        if on_usb.iter().any(|u| u.eq_ignore_ascii_case(&unit)) {
+            continue;
+        }
+        let cache = crate::broker::listing_cache(&format!("tcp-{unit}"));
+        let read = crate::oep::open_net(&addr, &unit).ok().and_then(|mut p| {
+            p.link().set_timeout(std::time::Duration::from_millis(500));
+            slot_entries(&mut p, &unit, &json!({"tcp": addr, "instance": f.instance}))
+        });
+        match read {
+            Some(ports) => {
+                let _ = std::fs::write(&cache, Value::Array(ports.clone()).to_string());
+                out.extend(ports);
+            }
+            None => {
+                if let Some(Value::Array(ports)) = std::fs::read_to_string(&cache)
+                    .ok()
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                {
+                    out.extend(ports);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The probe's slots as discovery ports `oep://<id>/<slot>`, `props` added to each one's
+/// properties.
+fn slot_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> Option<Vec<Value>> {
+    let slots = ch32rv_oep::config::slots(p).ok()?;
+    let states = ch32rv_oep::config::slot_states(p).unwrap_or_default();
     let db = ch32rv_target::Db::builtin();
     Some(
         slots
@@ -128,10 +177,18 @@ fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<V
                 let state = match st.map(|x| x.state) {
                     Some(0) => "connected",
                     Some(1) => "absent",
-                    Some(2) => "lock-mismatch",
-                    Some(3) => "no-target-id",
                     _ => "unknown",
                 };
+                let mut properties = json!({
+                    "slot": s.name,
+                    "state": state,
+                    "chip": family,
+                });
+                if let (Some(m), Some(extra)) = (properties.as_object_mut(), props.as_object()) {
+                    for (k, v) in extra {
+                        m.insert(k.clone(), v.clone());
+                    }
+                }
                 json!({
                     "address": format!("oep://{id}/{}", s.name),
                     "label": match &family {
@@ -141,14 +198,7 @@ fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<V
                     "protocol": "oep",
                     "protocolLabel": "OEP probe",
                     "hardwareId": format!("{id}/{}", s.name),
-                    "properties": {
-                        "vid": format!("0x{:04x}", dev.vid()),
-                        "pid": format!("0x{:04x}", dev.pid()),
-                        "slot": s.name,
-                        "state": state,
-                        "chip": family,
-                        "port": path,
-                    },
+                    "properties": properties,
                 })
             })
             .collect(),
@@ -698,7 +748,7 @@ impl Backend {
                 .then(|| crate::oep::OepAddr::Wch(crate::broker::BrokerTarget::wch(e)))
         });
         if let Some(oep) = wch_via_broker.as_ref().or(r.oep.as_ref())
-            && (s.source != MonitorSource::Uart || matches!(oep, crate::oep::OepAddr::Slot { .. }))
+            && (s.source != MonitorSource::Uart || oep.slot().is_some())
         {
             use crate::oep::StreamWanted;
             use ch32rv_oep::stream::Mechanism;

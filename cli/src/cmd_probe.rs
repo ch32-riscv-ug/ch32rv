@@ -297,8 +297,23 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
     // identity of its own and is not listed (it is reached by its serial port).
     // ja: USB の OEP の probe も出す(`kind: "oep"`)。USB の記述子だけから作り、開かない(ブローカーが
     // 持っているかもしれない)。`serial` は unit id。UART bridge の probe は USB の同一性が無いので出さない。
+    // en: OEP probes on the local network (DNS-SD `_oep._tcp`, transports §3): a probe also on
+    // USB gets its `tcp` endpoint added, one only on the network is a row of its own (`serial` is
+    // the announced unit id; nothing is opened).
+    // ja: ネットワークの OEP の probe(DNS-SD)。USB にもあれば `tcp` を足し、無ければ行を足す(開かない)。
+    let mut net = crate::mdns::browse(std::time::Duration::from_millis(600));
     for dev in crate::oep::oep_devices() {
-        let v = serde_json::json!({
+        let id = crate::oep::probe_id(&dev);
+        let tcp = net
+            .iter()
+            .position(|f| {
+                f.unit_id
+                    .as_deref()
+                    .is_some_and(|u| u.eq_ignore_ascii_case(&id))
+            })
+            .map(|i| net.remove(i))
+            .and_then(|f| f.endpoint());
+        let mut v = serde_json::json!({
             "kind": "oep",
             "model": dev.product(),
             "serial": dev.serial(),
@@ -306,6 +321,9 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
             "topology": dev.topology(),
             "ports": dev.serial_ports(),
         });
+        if let (Some(t), Some(m)) = (tcp, v.as_object_mut()) {
+            m.insert("tcp".into(), t.into());
+        }
         lines.push(format!(
             "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} -",
             "oep",
@@ -317,10 +335,31 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         ));
         probes_json.push(v);
     }
+    let mut network = Vec::new();
+    for f in net {
+        let (Some(unit), Some(addr)) = (f.unit_id.clone(), f.endpoint()) else {
+            continue;
+        };
+        lines.push(format!(
+            "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} -",
+            "oep",
+            "tcp",
+            unit,
+            "-",
+            f.instance.trim_end_matches("._oep._tcp.local"),
+            addr
+        ));
+        network.push(serde_json::json!({
+            "kind": "oep",
+            "unit_id": unit,
+            "tcp": addr,
+            "instance": f.instance,
+        }));
+    }
 
     if cli.json {
         let mut env = ResultEnvelope::success("probe.list");
-        env.result = Some(serde_json::json!({ "probes": probes_json }));
+        env.result = Some(serde_json::json!({ "probes": probes_json, "network": network }));
         env.warnings = all_warnings;
         crate::print_envelope(&env)
     } else {

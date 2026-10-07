@@ -25,6 +25,7 @@ mod cmd_run;
 mod cmd_target;
 mod cmd_write;
 mod config;
+mod mdns;
 mod oep;
 mod parse;
 mod progress;

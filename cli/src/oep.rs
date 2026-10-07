@@ -28,8 +28,54 @@ pub(crate) enum OepAddr {
     Slot { path: String, slot: String },
     /// `tcp:<host:port>`: a probe's TCP transport, or a ch32rv broker.
     Tcp(String),
+    /// A probe found by DNS-SD on the local network (`_oep._tcp`, transports §3), named by its
+    /// unit id (`tcp:<unit_id>`, or `oep://<unit_id>/<slot>` when it is not on USB): its endpoint,
+    /// the unit id describe must answer, and the slot when the address names one.
+    Net {
+        addr: String,
+        unit: String,
+        slot: Option<String>,
+    },
     /// A WCH-Link, reached through its broker (which maps OEP onto the Link).
     Wch(crate::broker::BrokerTarget),
+}
+
+impl OepAddr {
+    /// The slot the address names (`oep://<probe>/<slot>`), if it does.
+    pub(crate) fn slot(&self) -> Option<&str> {
+        match self {
+            OepAddr::Slot { slot, .. } => Some(slot),
+            OepAddr::Net { slot, .. } => slot.as_deref(),
+            _ => None,
+        }
+    }
+}
+
+/// How long a lookup by unit id browses DNS-SD (a probe answers its query at once; this covers a
+/// slow Wi-Fi).
+const BROWSE_WAIT: Duration = Duration::from_millis(1500);
+
+/// en: A probe found by DNS-SD, opened over TCP: used only when describe's unit_id is the one
+/// named (transports §3; the TXT record is only a pointer). ja: DNS-SD で見つけた probe を TCP で開く。
+/// describe の unit_id が名指したものと同じときだけ使う。
+pub(crate) fn open_net(addr: &str, unit: &str) -> Result<Probe, String> {
+    let link = ch32rv_oep::link::open_tcp(addr).map_err(|e| format!("{addr}: {e}"))?;
+    let mut p = Probe::connect(link).map_err(|e| format!("{addr}: {e}"))?;
+    let said = p
+        .describe(ch32rv_oep::registry::core::FN)
+        .ok()
+        .and_then(|t| {
+            t.into_iter()
+                .find(|t| t.tag == ch32rv_oep::registry::core::tlvs::describe::UNIT_ID)
+        })
+        .map(|t| String::from_utf8_lossy(&t.value).into_owned());
+    match said {
+        Some(u) if u.eq_ignore_ascii_case(unit) => Ok(p),
+        Some(u) => Err(format!(
+            "{addr} announced unit {unit} but describes itself as {u}: not used"
+        )),
+        None => Err(format!("{addr} does not say its unit_id: not used")),
+    }
 }
 
 /// en: The one place that decides what an OEP probe is (oep-core §3.3): a USB device with the
@@ -278,8 +324,24 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
         .into_iter()
         // unit_id against the USB serial, case aside (oep-core §3.3: some OSes and tools show the
         // serial in capitals; unit_id's characters keep distinct values distinct).
-        .find(|d| probe_id(d).eq_ignore_ascii_case(id))
-        .ok_or_else(|| format!("no OEP probe {id} is connected"))?;
+        .find(|d| probe_id(d).eq_ignore_ascii_case(id));
+    // Not on USB: a probe announcing that unit id on the local network (DNS-SD).
+    let Some(dev) = dev else {
+        let f = crate::mdns::find_unit(id, BROWSE_WAIT).ok_or_else(|| {
+            format!(
+                "no OEP probe {id} is connected over USB or announced on the local network \
+                 (mDNS: name it tcp:<host>:<port> where mDNS does not reach)"
+            )
+        })?;
+        let addr = f
+            .endpoint()
+            .ok_or_else(|| format!("OEP probe {id} announces no reachable endpoint"))?;
+        return Ok(OepAddr::Net {
+            addr,
+            unit: id.to_owned(),
+            slot: Some(slot.to_owned()),
+        });
+    };
     let path = oep_port(&dev).ok_or_else(|| format!("OEP probe {id} has no serial port"))?;
     Ok(OepAddr::Slot {
         path,
@@ -293,7 +355,33 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
 /// ja: `--probe` が OEP の probe を指すか(`tcp:`、`port:oep://…`、WCH-Link のものでない serial port)。
 pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
     match crate::cmd_probe::parse_selector(cli, cmd)? {
-        Some(Selector::Tcp(a)) => Ok(Some(OepAddr::Tcp(a))),
+        // `tcp:<host>:<port>` as given; `tcp:<unit_id>` (no port) found by DNS-SD.
+        Some(Selector::Tcp(a)) if a.contains(':') => Ok(Some(OepAddr::Tcp(a))),
+        Some(Selector::Tcp(unit)) => match crate::mdns::find_unit(&unit, BROWSE_WAIT) {
+            Some(f) => match f.endpoint() {
+                Some(addr) => Ok(Some(OepAddr::Net {
+                    addr,
+                    unit,
+                    slot: None,
+                })),
+                None => Err(fail(
+                    cli,
+                    cmd,
+                    ErrorKind::DeviceNotFound,
+                    format!("OEP probe {unit} announces no reachable endpoint"),
+                    None,
+                )),
+            },
+            None => Err(fail(
+                cli,
+                cmd,
+                ErrorKind::DeviceNotFound,
+                format!("no OEP probe {unit} is announced on the local network (DNS-SD _oep._tcp)"),
+                Some(
+                    "mDNS stays on the local link: name it tcp:<host>:<port> where it does not reach",
+                ),
+            )),
+        },
         Some(Selector::Port(p)) if p.starts_with("oep://") => resolve_oep_url(&p)
             .map(Some)
             .map_err(|m| fail(cli, cmd, ErrorKind::DeviceNotFound, m, None)),
@@ -362,6 +450,10 @@ fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
             })?,
         OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t)
             .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?,
+        OepAddr::Net { addr, unit, .. } => {
+            return open_net(addr, unit)
+                .map_err(|m| fail(cli, cmd, ErrorKind::DeviceOpenFailed, m, None));
+        }
         OepAddr::Wch(t) => crate::broker::client_link_for(t)
             .map_err(|m| fail(cli, cmd, ErrorKind::DeviceOpenFailed, m, None))?,
     };
@@ -509,7 +601,7 @@ impl Place {
 
 fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place, String> {
     let slots = ch32rv_oep::config::slots(p).map_err(|e| e.to_string())?;
-    if let OepAddr::Slot { slot, .. } = a {
+    if let Some(slot) = a.slot() {
         let s = slots
             .iter()
             .find(|s| s.name == *slot)
@@ -1103,12 +1195,20 @@ impl ConsoleSession {
         wanted: StreamWanted,
         chip: Option<&str>,
     ) -> Result<Self, String> {
-        let link = match a {
-            OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => crate::broker::client_link(p)?,
-            OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t).map_err(|e| e.to_string())?,
-            OepAddr::Wch(t) => crate::broker::client_link_for(t)?,
+        let mut probe = match a {
+            OepAddr::Net { addr, unit, .. } => open_net(addr, unit)?,
+            _ => {
+                let link = match a {
+                    OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => {
+                        crate::broker::client_link(p)?
+                    }
+                    OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t).map_err(|e| e.to_string())?,
+                    OepAddr::Wch(t) => crate::broker::client_link_for(t)?,
+                    OepAddr::Net { .. } => unreachable!("opened above"),
+                };
+                Probe::connect(link).map_err(|e| e.to_string())?
+            }
         };
-        let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
         let owner = format!("ch32rv monitor pid {}", std::process::id());
         probe
             .open(random_session_id(), 3000, false, Some(&owner))
@@ -1337,9 +1437,9 @@ const NRST_HOLD_MS: u16 = 20;
 /// or the probe's only slot. ja: スロットの NRST の線(address のスロット、またはただ 1 つのスロット)。
 fn nrst_line(p: &mut Probe, a: &OepAddr) -> Result<u16, String> {
     let slots = ch32rv_oep::config::slots(p).map_err(|e| e.to_string())?;
-    let name = match a {
-        OepAddr::Slot { slot, .. } => slot.clone(),
-        _ if slots.len() == 1 => slots[0].name.clone(),
+    let name = match a.slot() {
+        Some(slot) => slot.to_owned(),
+        None if slots.len() == 1 => slots[0].name.clone(),
         _ => {
             return Err(format!(
                 "name the slot (`oep://<probe>/<slot>`) to find its NRST line ({} slot(s) on this probe)",

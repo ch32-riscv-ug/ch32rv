@@ -129,6 +129,20 @@
         "properties": {
           "result": {
             "properties": {
+              "network": {
+                "description": "USB に無く、ローカルネットワークで DNS-SD(_oep._tcp、oep-spec transports §3)に名乗った OEP probe。開いて確かめてはいない",
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["kind", "unit_id", "tcp"],
+                  "properties": {
+                    "kind": { "type": "string", "enum": ["oep"] },
+                    "unit_id": { "type": "string", "description": "TXT の unit_id。--probe tcp:<unit_id> や oep://<unit_id>/<slot> で名指す" },
+                    "tcp": { "type": "string", "description": "<address>:<port>" },
+                    "instance": { "type": "string", "description": "DNS-SD の instance の名前(表示用)" }
+                  }
+                }
+              },
               "probes": {
                 "description": "つながっている probe。WCH-Link と USB の OEP probe",
                 "type": "array",
@@ -142,6 +156,7 @@
                     "topology": { "type": "string", "description": "<bus>-<ports>" },
                     "ports": { "type": "array", "items": { "type": "string" } },
                     "model": { "type": "string", "description": "表示用の名前(照合には使わない)" },
+                    "tcp": { "type": "string", "description": "OEP だけ。同じ probe が DNS-SD(_oep._tcp)でも見つかったときの <address>:<port>" },
                     "variant": { "type": "string", "description": "WCH-Link だけ。probe.variant と同じ" },
                     "mode": { "type": "string", "enum": ["riscv", "dap", "iap", "isp", "unknown"] },
                     "firmware": {
