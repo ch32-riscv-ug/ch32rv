@@ -62,25 +62,68 @@ pub(crate) fn browse(wait: Duration) -> Vec<Found> {
     browse_at(target(), wait)
 }
 
+/// en: One socket per IPv4 interface, each sending its multicast out of that interface: the OS
+/// picks only one for a socket bound to 0.0.0.0, and on Windows that is often a virtual adapter
+/// (WSL's, Hyper-V's), where no probe answers (a probe on Wi-Fi answered only the query sent out
+/// of the Wi-Fi adapter, 2026-10-07). A target that is not multicast (a test's responder) gets
+/// one plain socket.
+/// ja: IPv4 の口ごとに 1 つのソケット(その口からマルチキャストを出す)。0.0.0.0 では OS が 1 つの口
+/// しか選ばず、Windows ではそれが仮想のアダプタのことが多い。
+fn sockets(to: SocketAddr) -> Vec<UdpSocket> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let mut out = Vec::new();
+    if to.ip().is_multicast() {
+        for i in if_addrs::get_if_addrs().unwrap_or_default() {
+            let if_addrs::IfAddr::V4(a) = &i.addr else {
+                continue;
+            };
+            let Ok(s) = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP)) else {
+                continue;
+            };
+            let ready = s.bind(&SocketAddr::from((a.ip, 0)).into()).is_ok()
+                && s.set_multicast_if_v4(&a.ip).is_ok();
+            if ready {
+                let _ = s.set_multicast_ttl_v4(255);
+                let _ = s.set_multicast_loop_v4(true);
+                out.push(UdpSocket::from(s));
+            }
+        }
+    }
+    if out.is_empty()
+        && let Ok(s) = UdpSocket::bind(("0.0.0.0", 0))
+    {
+        let _ = s.set_multicast_ttl_v4(255);
+        out.push(s);
+    }
+    for s in &out {
+        let _ = s.set_nonblocking(true);
+    }
+    out
+}
+
 fn browse_at(to: SocketAddr, wait: Duration) -> Vec<Found> {
-    let Ok(sock) = UdpSocket::bind(("0.0.0.0", 0)) else {
+    let socks = sockets(to);
+    if socks.is_empty() {
         return Vec::new();
+    }
+    let send = |q: &[u8]| {
+        for s in &socks {
+            let _ = s.send_to(q, to);
+        }
     };
-    let _ = sock.set_multicast_ttl_v4(255);
     let mut st = State::default();
     let deadline = Instant::now() + wait;
     let mut asked: Vec<(String, u16)> = vec![(SERVICE.to_owned(), T_PTR)];
-    let _ = sock.send_to(&query(&asked), to);
+    send(&query(&asked));
     let mut buf = [0u8; 9000];
     let mut next_ask = Instant::now() + wait / 3;
     while Instant::now() < deadline {
-        let left = deadline.saturating_duration_since(Instant::now());
-        let _ = sock.set_read_timeout(Some(
-            left.min(Duration::from_millis(50))
-                .max(Duration::from_millis(1)),
-        ));
-        if let Ok((n, _)) = sock.recv_from(&mut buf) {
-            st.feed(&buf[..n]);
+        let mut got = false;
+        for s in &socks {
+            while let Ok((n, _)) = s.recv_from(&mut buf) {
+                st.feed(&buf[..n]);
+                got = true;
+            }
         }
         // Ask for what the answers left out (SRV / TXT of an instance, A of a host), once.
         if Instant::now() >= next_ask {
@@ -91,9 +134,12 @@ fn browse_at(to: SocketAddr, wait: Duration) -> Vec<Found> {
                 .filter(|q| !asked.contains(q))
                 .collect();
             if !more.is_empty() {
-                let _ = sock.send_to(&query(&more), to);
+                send(&query(&more));
                 asked.extend(more);
             }
+        }
+        if !got {
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
     st.found()
