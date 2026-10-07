@@ -467,10 +467,11 @@ fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
     fail(cli, cmd, kind, e.to_string(), hint)
 }
 
-/// en: Connect and confirm. A serial port goes through its broker (started if it is not running,
-/// docs/oep-host.ja.md §7.2): the broker holds the port and the probe's session, and this command
-/// is one of its clients. `tcp:` is a direct connection (a probe's TCP transport, or a broker).
-/// ja: 接続して confirm。serial port はブローカー経由(無ければ起動)。`tcp:` は直接つなぐ。
+/// en: Connect and confirm, through the probe's broker whatever the transport (started if it is
+/// not running, docs/oep-host.ja.md §7.2): the broker holds the probe and its session, and this
+/// command is one of its clients. Only a `tcp:` address that is a ch32rv broker itself is
+/// connected to directly. ja: 接続して confirm。経路によらずブローカー経由(無ければ起動)。
+/// この PC のブローカー自身を指す `tcp:` だけ直接つなぐ。
 fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
     let link = match a {
         OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => crate::broker::client_link(p)
