@@ -62,16 +62,74 @@ const BROWSE_WAIT: Duration = Duration::from_millis(1500);
 pub(crate) fn net_target(a: &OepAddr) -> Option<crate::broker::BrokerTarget> {
     match a {
         OepAddr::Tcp(t) if crate::broker::is_broker_endpoint(t) => None,
-        OepAddr::Tcp(t) => Some(crate::broker::BrokerTarget::Net {
-            addr: t.clone(),
-            unit: None,
-        }),
+        // Named by address: read the unit id from the probe itself (confirm and describe, both
+        // lock-free), so the address meets the broker its unit id has.
+        OepAddr::Tcp(t) => {
+            let unit = unit_at(t);
+            if unit.is_none() {
+                eprintln!(
+                    "warning[oep-unit-unknown]: {t} did not say its unit id; its broker is keyed by the address"
+                );
+            }
+            Some(crate::broker::BrokerTarget::Net {
+                addr: t.clone(),
+                unit,
+                by_unit: false,
+            })
+        }
         OepAddr::Net { addr, unit, .. } => Some(crate::broker::BrokerTarget::Net {
             addr: addr.clone(),
             unit: Some(unit.clone()),
+            by_unit: true,
         }),
         _ => None,
     }
+}
+
+/// en: The unit id the probe at `addr` describes, from a short direct look (connect, confirm,
+/// describe; a few seconds at most). `None` when it cannot be reached or does not say.
+/// ja: `addr` の probe が describe で言う unit id(短く直接つないで読む)。届かなければ None。
+fn unit_at(addr: &str) -> Option<String> {
+    // en: Known already, and its broker runs: that broker holds the probe's connection, and a
+    // probe may serve only so many (the virtual bench one at a time), so it is not asked again.
+    // ja: 既に分かっていてそのブローカーが動いていれば聞き直さない(probe は同時接続が限られる)。
+    let memo = ch32rv_usb::runtime_dir().join(format!(
+        "{}.unit",
+        ch32rv_usb::sanitize_key(&format!("oep-tcp-{addr}"))
+    ));
+    if let Some(u) = std::fs::read_to_string(&memo)
+        .ok()
+        .map(|t| t.trim().to_owned())
+        .filter(|u| !u.is_empty())
+    {
+        let t = crate::broker::BrokerTarget::Net {
+            addr: addr.to_owned(),
+            unit: Some(u.clone()),
+            by_unit: false,
+        };
+        if crate::broker::existing_link_for(&t).is_some() {
+            return Some(u);
+        }
+    }
+    let u = read_unit(addr)?;
+    let _ = std::fs::create_dir_all(ch32rv_usb::runtime_dir());
+    let _ = std::fs::write(&memo, format!("{u}\n"));
+    Some(u)
+}
+
+fn read_unit(addr: &str) -> Option<String> {
+    use std::net::ToSocketAddrs;
+    let sa = addr.to_socket_addrs().ok()?.next()?;
+    let s = std::net::TcpStream::connect_timeout(&sa, Duration::from_secs(2)).ok()?;
+    let _ = s.set_nodelay(true);
+    let mut link = ch32rv_oep::link::Link::new(Box::new(s), ch32rv_oep::link::Framing::Length);
+    link.set_timeout(Duration::from_secs(2));
+    let mut p = Probe::connect(link).ok()?;
+    p.describe(ch32rv_oep::registry::core::FN)
+        .ok()?
+        .into_iter()
+        .find(|t| t.tag == ch32rv_oep::registry::core::tlvs::describe::UNIT_ID)
+        .map(|t| String::from_utf8_lossy(&t.value).to_ascii_lowercase())
 }
 
 /// en: A probe found by DNS-SD, opened over TCP: used only when describe's unit_id is the one

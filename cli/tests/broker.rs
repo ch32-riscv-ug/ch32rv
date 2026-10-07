@@ -373,5 +373,21 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
         "--json",
     ]);
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(v["result"]["endpoint"].as_str().is_some(), "{v}");
+    let by_unit = v["result"]["endpoint"].as_str().map(str::to_owned);
+    assert!(by_unit.is_some(), "{v}");
+    // Named by address it is the same broker: the address's probe says its unit id, and the
+    // broker is keyed by it (one owner per probe on this host, also where mDNS does not reach).
+    let out = ch32rv(&[
+        "broker",
+        "endpoint",
+        "--probe",
+        &format!("tcp:127.0.0.1:{port}"),
+        "--json",
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["result"]["endpoint"].as_str().map(str::to_owned),
+        by_unit,
+        "{v}"
+    );
 }

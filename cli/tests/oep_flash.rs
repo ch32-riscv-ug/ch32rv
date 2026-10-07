@@ -30,9 +30,19 @@ fn root() -> PathBuf {
 fn fake(args: &[&str]) -> Option<Fake> {
     let dir = uv::client_dir()?;
     let hook = root().join("crates/oep/tests/virtual_bench/loader_hook.py:loader");
+    // en: A unit id of its own per virtual probe: ch32rv keys a TCP probe's broker by unit id (one
+    // owner per probe), and tests running at once must not meet each other's probe as one.
+    // ja: virtual probe ごとに別の unit id(TCP の probe のブローカーは unit id が key)。
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let unit = format!(
+        "{:08x}{:04x}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    );
     let mut child = uv::uv_run(&dir)
         .args(["python", "-m", "oep_client.virtual_bench_serve"])
         .args(args)
+        .args(["--unit-id", &unit])
         .arg("--run-hook")
         .arg(&hook)
         .stdin(Stdio::piped())
@@ -74,15 +84,7 @@ const V203: &str = "0x20310500";
 
 #[test]
 fn flash_over_tcp() {
-    let Some(f) = fake(&[
-        "--tcp",
-        "0",
-        "--once",
-        "--framing",
-        "length",
-        "--target-id",
-        V203,
-    ]) else {
+    let Some(f) = fake(&["--tcp", "0", "--framing", "length", "--target-id", V203]) else {
         return;
     };
     let port = f.at.strip_prefix("PORT ").unwrap();

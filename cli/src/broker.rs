@@ -204,10 +204,15 @@ fn write_endpoint(key: &str, v: &Value) -> std::io::Result<()> {
 pub(crate) enum BrokerTarget {
     /// An OEP probe on this serial port.
     Serial(String),
-    /// An OEP probe on TCP: its endpoint, and its unit id when it was named by one (found by
-    /// DNS-SD). Named by unit id, its broker shares the key a USB probe of that unit id has, so a
-    /// probe reached both ways still has one owner on this host.
-    Net { addr: String, unit: Option<String> },
+    /// An OEP probe on TCP: its endpoint, its unit id (from DNS-SD, or read from the probe when
+    /// it was named by address; `None` only when it could not be reached), and whether it was
+    /// named by unit id (then the broker finds it by DNS-SD again at each start). Keyed by unit
+    /// id - the key a USB probe of that unit id has - so every way to one probe meets one broker.
+    Net {
+        addr: String,
+        unit: Option<String>,
+        by_unit: bool,
+    },
     /// A WCH-Link, named by its USB serial (else its position).
     Wch { id: String, selector: String },
 }
@@ -236,9 +241,9 @@ impl BrokerTarget {
             BrokerTarget::Net { unit: Some(u), .. } => {
                 ch32rv_usb::sanitize_key(&format!("oep-{}", u.to_ascii_lowercase()))
             }
-            BrokerTarget::Net { addr, unit: None } => {
-                ch32rv_usb::sanitize_key(&format!("oep-tcp-{addr}"))
-            }
+            BrokerTarget::Net {
+                addr, unit: None, ..
+            } => ch32rv_usb::sanitize_key(&format!("oep-tcp-{addr}")),
             BrokerTarget::Wch { id, .. } => ch32rv_usb::sanitize_key(&format!("wch-{id}")),
         }
     }
@@ -248,8 +253,12 @@ impl BrokerTarget {
             BrokerTarget::Serial(p) => format!("port:{p}"),
             // By unit id the broker resolves it again by DNS-SD (the address may change when the
             // probe joins its Wi-Fi again).
-            BrokerTarget::Net { unit: Some(u), .. } => format!("tcp:{u}"),
-            BrokerTarget::Net { addr, unit: None } => format!("tcp:{addr}"),
+            BrokerTarget::Net {
+                unit: Some(u),
+                by_unit: true,
+                ..
+            } => format!("tcp:{u}"),
+            BrokerTarget::Net { addr, .. } => format!("tcp:{addr}"),
             BrokerTarget::Wch { selector, .. } => selector.clone(),
         }
     }
@@ -356,9 +365,17 @@ pub(crate) fn is_broker_endpoint(addr: &str) -> bool {
         .flatten()
         .flatten()
         .filter(|e| e.path().extension().is_some_and(|x| x == "oep"))
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
-        .filter_map(|t| serde_json::from_str::<Value>(&t).ok())
-        .any(|v| v.get("port").and_then(Value::as_u64) == Some(port))
+        .filter_map(|e| {
+            let key = e.path().file_stem()?.to_string_lossy().into_owned();
+            let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
+            Some((key, v))
+        })
+        .filter(|(_, v)| v.get("port").and_then(Value::as_u64) == Some(port))
+        // Only a broker that still runs (holds its flock): a broker that died leaves its file,
+        // and its port may now be anyone's.
+        .any(|(key, _)| {
+            ch32rv_usb::DeviceLock::acquire(&format!("{key}.broker"), Duration::ZERO).is_err()
+        })
 }
 
 /// A link to `target`'s broker if one runs; never starts one.
@@ -529,7 +546,7 @@ fn serve_target(
             save_sid(&key, sid);
             (Upstream::Oep(Box::new(probe)), sid)
         }
-        (BrokerTarget::Net { addr, unit }, _) => {
+        (BrokerTarget::Net { addr, unit, .. }, _) => {
             transport = "tcp";
             let opened = match unit {
                 Some(u) => crate::oep::open_net(addr, u),

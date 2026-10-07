@@ -138,6 +138,7 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
         let target = crate::broker::BrokerTarget::Net {
             addr: addr.clone(),
             unit: Some(unit.clone()),
+            by_unit: true,
         };
         let opened = match crate::broker::existing_link_for(&target) {
             Some(l) => ch32rv_oep::session::Probe::connect(l).map_err(|e| e.to_string()),
