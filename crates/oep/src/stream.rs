@@ -78,6 +78,63 @@ impl PosStream {
         })
     }
 
+    /// en: Whether this console stream is still open, by `streams` (lock-free, oep-if-console
+    /// §1): `Some(false)` when it is closed (its connection was lost and closed, mark detail 4) or
+    /// no longer listed, `None` for a stream that is not a console's. A read of a closed stream
+    /// still answers its kept bytes, so this is how a reader learns of it.
+    /// ja: console のストリームがまだ開いているか(streams で見る)。閉じたものも read は答えるので、
+    /// 閉じたことはこれで知る。
+    pub fn is_open(&self, p: &mut Probe) -> Result<Option<bool>, OepError> {
+        let Kind::Console { func, stream } = self.kind else {
+            return Ok(None);
+        };
+        let mut first: u8 = 0;
+        for _ in 0..16 {
+            let a = check(p.link().call(crate::link::Call {
+                func,
+                op: console::op::STREAMS,
+                session: None,
+                payload: vec![first],
+            })?)?;
+            let (Some(&more), Some(&count)) = (a.first(), a.get(1)) else {
+                return Err(OepError::Malformed("streams answer too short".into()));
+            };
+            // count x (stream(u16) connection(u16) mechanism(u8) users(u8) state(u8))
+            for k in 0..usize::from(count) {
+                let Some(e) = a.get(2 + 7 * k..2 + 7 * (k + 1)) else {
+                    break;
+                };
+                if u16::from_le_bytes([e[0], e[1]]) == stream {
+                    return Ok(Some(e[6] == console::enums::stream_state::OPEN));
+                }
+            }
+            first = first.saturating_add(count);
+            if more == 0 || count == 0 {
+                break;
+            }
+        }
+        Ok(Some(false))
+    }
+
+    /// en: Open the console again on `connection` (after a lost line was attached again): the
+    /// probe reopens a closed stream at the same place and mechanism under the same number, so the
+    /// reader keeps its position; under another number it starts at the last reset mark.
+    /// ja: console を開き直す。同じ場所と mechanism なら同じ番号で開き、位置はそのまま。
+    pub fn reopen_console(
+        &mut self,
+        p: &mut Probe,
+        connection: u16,
+        mech: Mechanism,
+    ) -> Result<(), OepError> {
+        let old = self.kind;
+        let fresh = Self::open_console(p, connection, mech)?;
+        self.kind = fresh.kind;
+        if self.kind != old {
+            self.start_at_last_reset(p)?;
+        }
+        Ok(())
+    }
+
     /// en: The fixture's UART, set to `baud`; returns the real baud. A probe may offer several
     /// `oep.fixture.uart`, and only one with pins planned takes a configure (the others answer
     /// unavailable), so each is tried in order and the first that takes it is used.

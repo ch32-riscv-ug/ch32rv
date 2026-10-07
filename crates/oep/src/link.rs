@@ -123,11 +123,14 @@ pub enum ArgTime {
     Fixed(u32),
     /// A u32 of ms at this payload offset (riscv-dm run's timeout_ms).
     U32At(usize),
-    /// A wire attach: attach_budget_ms, plus hold_ms + reset_settle_ms with the reset TLV.
-    Attach,
-    /// The probe's max_op_ms (probe.config save).
+    /// The probe's max_op_ms (attach, scan and riscv-dm reset, oep-if-debug §1 / §4.3; probe.config
+    /// save).
     MaxOp,
 }
+
+/// How long a host waits after restart's answer before it reopens and confirms (host guide §5.2;
+/// the probe begins its restart within it).
+const RESTART_AFTER_ANSWER: Duration = Duration::from_millis(100);
 
 /// How often one exchange resends on a broken frame before it waits out the timeout.
 const BROKEN_RESENDS: u32 = 4;
@@ -320,7 +323,7 @@ impl Link {
             && self.timeout >= Duration::from_secs(1)
         {
             let deadline = Instant::now()
-                + Duration::from_millis(u64::from(timing::PORT_SPEED_IDLE_MAX_MS) + 1000);
+                + Duration::from_millis(u64::from(timing::PORT_SPEED_IDLE_MS) + 1000);
             while !self.confirm_raw(Duration::from_millis(400)) && Instant::now() < deadline {}
         }
         let mut payload = constants::CONFIRM_REQUEST_MAGIC.as_bytes().to_vec();
@@ -447,7 +450,7 @@ impl Link {
             let full = self.timeout;
             if quick {
                 self.timeout = full.min(Duration::from_millis(u64::from(
-                    timing::PORT_SPEED_IDLE_MAX_MS / 2,
+                    timing::PORT_SPEED_IDLE_MS / 2,
                 )));
             }
             let r = self.pump(reqs, replies);
@@ -474,8 +477,7 @@ impl Link {
                 // そこで送り直す。通らなければリンクの失敗(上げた速さに戻って待ち直さない)。
                 Err(LinkError::Timeout(_)) if *fallbacks < 1 && self.baud != self.base_baud => {
                     *fallbacks += 1;
-                    let wait =
-                        Duration::from_millis(u64::from(timing::PORT_SPEED_IDLE_MAX_MS) + 1000);
+                    let wait = Duration::from_millis(u64::from(timing::PORT_SPEED_IDLE_MS) + 1000);
                     if !self.back_to_base(wait) {
                         return Err(LinkError::Timeout(wait));
                     }
@@ -583,19 +585,6 @@ impl Link {
                 .get(*at..*at + 4)
                 .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])),
             Some(ArgTime::MaxOp) => self.max_op_ms.unwrap_or(10_000),
-            Some(ArgTime::Attach) => {
-                // method(u8), then TLVs: reset (0x05) = channel(u16) hold_ms(u16).
-                let reset = crate::codec::parse_tlvs(p.get(1..).unwrap_or(&[]))
-                    .ok()
-                    .and_then(|t| t.into_iter().find(|t| t.tag & 0x7F == 0x05))
-                    .and_then(|t| {
-                        t.value
-                            .get(2..4)
-                            .map(|b| u32::from(u16::from_le_bytes([b[0], b[1]])))
-                    });
-                registry::limits::ATTACH_BUDGET_MS
-                    + reset.map_or(0, |hold| hold + registry::limits::RESET_SETTLE_MS)
-            }
         };
         let transfer = match (self.framing, self.baud) {
             (Framing::Cobs, Some(baud)) if baud > 0 => {
@@ -783,9 +772,7 @@ impl Link {
         {
             return false;
         }
-        std::thread::sleep(Duration::from_millis(u64::from(
-            registry::limits::RESTART_AFTER_ANSWER_MS,
-        )));
+        std::thread::sleep(RESTART_AFTER_ANSWER);
         loop {
             if self.confirm_raw(Duration::from_millis(400)) {
                 return true;
@@ -840,14 +827,15 @@ impl Link {
     }
 
     /// en: Length framing lost its boundaries (core §5.1): discard input until it has been quiet
-    /// for `resync_quiet_ms`, then confirm with a fresh corr until its answer comes back. Pushes
+    /// for longer than `probe_frame_gap_ms` (the probe drops a frame cut short by then; transports
+    /// §5), then confirm with a fresh corr until its answer comes back. Pushes
     /// that keep the input busy are not stopped here (the session layer sends the blind
     /// unsubscribe / end, which it alone can address).
-    /// ja: 長さ見出しの境界を失った: 50 ms 静かになるまで捨て、新しい corr で confirm を送り、その答えを
+    /// ja: 長さ見出しの境界を失った: probe_frame_gap_ms より長く静かになるまで捨て、新しい corr で confirm を送り、その答えを
     /// 待つ(最大 3 回)。
     pub fn resync(&mut self) -> Result<(), LinkError> {
         self.resyncs += 1;
-        let quiet = Duration::from_millis(u64::from(timing::RESYNC_QUIET_MS));
+        let quiet = Duration::from_millis(u64::from(timing::PROBE_FRAME_GAP_MS) + 50);
         for _ in 0..3 {
             let give_up = Instant::now() + Duration::from_secs(1);
             let mut last = Instant::now();
@@ -1069,7 +1057,7 @@ mod tests {
         let t = std::time::Instant::now();
         assert!(l.call(call()).unwrap().succeeded());
         assert_eq!((l.resends, l.speed_fallbacks), (1, 0));
-        let half = u64::from(timing::PORT_SPEED_IDLE_MAX_MS / 2);
+        let half = u64::from(timing::PORT_SPEED_IDLE_MS / 2);
         assert!(
             t.elapsed() < Duration::from_millis(half + 500),
             "{:?}",

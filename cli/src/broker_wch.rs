@@ -128,14 +128,6 @@ fn le32(b: &[u8], at: usize) -> Option<u32> {
     ]))
 }
 
-/// Label-boundary prefix match (core §7.2).
-fn name_matches(name: &str, prefix: &str, exact: bool) -> bool {
-    if exact {
-        return name == prefix;
-    }
-    prefix.is_empty() || name == prefix || name.starts_with(&format!("{prefix}."))
-}
-
 fn tlv(tag: u8, value: &[u8]) -> Vec<u8> {
     let mut v = Vec::new();
     ch32rv_oep::codec::put_tlv(&mut v, tag, false, value);
@@ -155,7 +147,7 @@ fn ops_tlv(ops: &[u8]) -> Vec<u8> {
     tlv(registry::describe_common::OPS, &v)
 }
 
-/// What a console stream's send queue holds (describe send_queue, oep-if-console §1, §2).
+/// What a console stream's send queue holds (the probe sizes it, oep-if-console §2).
 const SEND_QUEUE: usize = 256;
 
 impl WchUpstream {
@@ -222,16 +214,11 @@ impl WchUpstream {
                 ok(out)
             }
             o if o == oep_core::op::LIST => {
-                let (Some(&flags), Some(first), Some(&n)) = (p.first(), le16(p, 1), p.get(3))
-                else {
+                // first(u16): every interface from there (core §7.2; the host filters).
+                let Some(first) = le16(p, 0) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
-                let prefix = String::from_utf8_lossy(p.get(4..4 + usize::from(n)).unwrap_or(&[]))
-                    .into_owned();
-                let hits: Vec<&(u16, &str)> = INTERFACES
-                    .iter()
-                    .filter(|(_, name)| name_matches(name, &prefix, flags & 1 != 0))
-                    .collect();
+                let hits: Vec<&(u16, &str)> = INTERFACES.iter().collect();
                 let mut out = (hits.len() as u16).to_le_bytes().to_vec();
                 let page = &hits[usize::from(first).min(hits.len())..];
                 out.push(page.len() as u8);
@@ -304,10 +291,6 @@ impl WchUpstream {
                                 console::enums::mechanism::DMSEQ,
                             ],
                         );
-                        v.extend(tlv(
-                            console::tlvs::describe::SEND_QUEUE,
-                            &(SEND_QUEUE as u16).to_le_bytes(),
-                        ));
                         v.extend(ops_tlv(&[
                             console::op::OPEN,
                             console::op::READ,
@@ -502,7 +485,7 @@ impl WchUpstream {
                 };
                 out.extend_from_slice(&hz.to_le_bytes());
                 if chip_id != 0 && chip_id != u32::MAX {
-                    let mut v = vec![registry::common::enum_::target_id_scheme::WCH_DMI_7F];
+                    let mut v = vec![registry::common::enum_::target_id_scheme::DMI_7F];
                     v.extend_from_slice(&chip_id.to_le_bytes());
                     out.extend(tlv(wire::tlvs::attach_answer::TARGET_ID, &v));
                 }
@@ -568,11 +551,12 @@ impl WchUpstream {
                         } else {
                             (true, 0b01)
                         };
-                        let mut out = vec![status::OK, flags, 1];
+                        // status(u8) flags(u8) pc(u32)
+                        let mut out = vec![status::OK, flags];
                         out.extend_from_slice(&r.pc.to_le_bytes());
                         if reached { ok(out) } else { failed(out) }
                     }
-                    Err(_) => failed(vec![status::FAULT]),
+                    Err(_) => failed(vec![status::FAULT, 0, 0, 0, 0, 0]),
                 }
             }
             o if o == dm::op::READ_BLOCK => {

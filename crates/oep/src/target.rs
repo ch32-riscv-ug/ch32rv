@@ -124,7 +124,7 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
         .find(|t| t.tag == wire::tlvs::attach_answer::TARGET_ID)
         .and_then(|t| {
             (t.value.len() == 5
-                && t.value[0] == crate::registry::common::enum_::target_id_scheme::WCH_DMI_7F)
+                && t.value[0] == crate::registry::common::enum_::target_id_scheme::DMI_7F)
                 .then(|| le32(&t.value, 1))
         });
     // connection(u16), id(u32: DMSTATUS), flags(u8: attach_flags), speed_hz(u32), [TLV]
@@ -196,6 +196,56 @@ pub fn scan_all(p: &mut Probe, kind: WireKind) -> Result<Vec<Found>, OepError> {
         skip += u32::from(tried);
     }
     Ok(found)
+}
+
+/// One live connection of a wire (oep-if-debug §2.1 `connections`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Connection {
+    pub connection: u16,
+    /// The slot it belongs to (0xFF: a host's).
+    pub slot: u8,
+    /// The target id read at attach: (scheme, value).
+    pub target_id: Option<(u8, Vec<u8>)>,
+}
+
+/// en: `connections` of the wire at `func` (lock-free), following `more`: each entry is
+/// connection(u16) swdio(u16) swclk(u16) speed_hz(u32) users(u8) slot(u8) tid_scheme(u8)
+/// tid_len(u8) tid. ja: wire の connections(ロック不要)。
+pub fn connections(p: &mut Probe, func: u16) -> Result<Vec<Connection>, OepError> {
+    let mut out = Vec::new();
+    for _ in 0..16 {
+        let first = u8::try_from(out.len()).unwrap_or(u8::MAX);
+        let a = check(p.link().call(crate::link::Call {
+            func,
+            op: wire::op::CONNECTIONS,
+            session: None,
+            payload: vec![first],
+        })?)?;
+        let (Some(&more), Some(&count)) = (a.first(), a.get(1)) else {
+            return Err(OepError::Malformed("connections answer too short".into()));
+        };
+        let mut at = 2;
+        for _ in 0..count {
+            let e = a
+                .get(at..at + 14)
+                .ok_or_else(|| OepError::Malformed("connections entry cut short".into()))?;
+            let len = usize::from(e[13]);
+            let tid = a
+                .get(at + 14..at + 14 + len)
+                .ok_or_else(|| OepError::Malformed("connections tid cut short".into()))?
+                .to_vec();
+            out.push(Connection {
+                connection: le16(e, 0),
+                slot: e[11],
+                target_id: (e[12] != 0).then_some((e[12], tid)),
+            });
+            at += 14 + len;
+        }
+        if more == 0 || count == 0 {
+            break;
+        }
+    }
+    Ok(out)
 }
 
 /// `detach`: drop this session's use of the connection (`force` closes it for everyone).
@@ -664,19 +714,17 @@ impl TargetAccess for OepDtm<'_> {
         if a.len() == 1 {
             return Err(failed("reset", a[0]));
         }
-        if a.len() < 7 {
+        // status(u8) flags(u8) pc(u32) [TLV] (oep-if-debug §4.3).
+        if a.len() < 6 {
             return Err(short("reset"));
         }
         if a[0] != status::OK {
             return Err(failed("reset", a[0]));
         }
         if !reached {
-            return Err(DmiError::NotReached(format!(
-                "flags 0x{:02x}, {} attempt(s)",
-                a[1], a[2]
-            )));
+            return Err(DmiError::NotReached(format!("flags 0x{:02x}", a[1])));
         }
-        Ok(ResetResult { pc: le32(&a, 3) })
+        Ok(ResetResult { pc: le32(&a, 2) })
     }
 }
 

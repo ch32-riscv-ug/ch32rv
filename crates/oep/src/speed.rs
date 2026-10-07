@@ -125,13 +125,12 @@ fn verify_ms(rate: u32) -> u16 {
     if rate > DEFAULT_MAX_RATE { 6000 } else { 2500 }
 }
 const VERIFY_TIME: Duration = Duration::from_secs(1);
-/// Once committed, the probe goes back after this long with no good frame: the most the spec
-/// allows (oep-core §3.5), against a host that died; the broker's 1 s keepalive keeps it up.
-const IDLE_MS: u32 = crate::registry::timing::PORT_SPEED_IDLE_MAX_MS;
 const VERIFY_BYTES: usize = 32 * 1024;
-/// What the verify's frames leave of max_frame: source carries at most max_frame − 26 bytes
-/// (oep-if-link §2, `link_source_overhead_bytes`); sink's request the same, to keep both alike.
-const VERIFY_ROOM: usize = crate::registry::limits::LINK_SOURCE_OVERHEAD_BYTES as usize;
+/// What the verify's frames leave of max_frame: source carries at most max_frame − 7 bytes (its
+/// answer's header 5 and len 2, oep-if-link §2); sink's request max_frame − 12 (the request
+/// header 10 and count 2).
+const SOURCE_ROOM: usize = 7;
+const SINK_ROOM: usize = 12;
 
 /// The probe's `oep.probe.link` fn (None: it has none).
 fn link_fn(p: &mut Probe) -> Option<u16> {
@@ -169,12 +168,11 @@ fn speed_port(p: &mut Probe) -> Result<(u16, u8), String> {
         .ok_or_else(|| "the probe has no UART bridge".into())
 }
 
-fn port_speed_body(port: u8, rate: u32, step: u8, verify_ms: u16, idle_ms: u32) -> Vec<u8> {
-    let mut b = vec![port];
-    b.extend_from_slice(&rate.to_le_bytes());
+/// baud(u32) step(u8) verify_ms(u16) (oep-if-link §1): the port is the one the request came on.
+fn port_speed_body(rate: u32, step: u8, verify_ms: u16) -> Vec<u8> {
+    let mut b = rate.to_le_bytes().to_vec();
     b.push(step);
     b.extend_from_slice(&verify_ms.to_le_bytes());
-    b.extend_from_slice(&idle_ms.to_le_bytes());
     b
 }
 
@@ -230,7 +228,7 @@ pub fn raise_speed(
         let tried = p.call(
             func,
             link::op::PORT_SPEED,
-            port_speed_body(port, rate, STEP_TRY, verify_ms(rate), 0),
+            port_speed_body(rate, STEP_TRY, verify_ms(rate)),
         );
         match tried {
             Ok(r) if r.succeeded() => {
@@ -296,7 +294,7 @@ pub fn raise_speed(
                 .call(
                     func,
                     link::op::PORT_SPEED,
-                    port_speed_body(port, rate, STEP_COMMIT, 0, IDLE_MS),
+                    port_speed_body(rate, STEP_COMMIT, 0),
                 )
                 .ok()
                 .is_some_and(|r| r.succeeded());
@@ -327,7 +325,7 @@ pub fn raise_speed(
                     func,
                     op: link::op::PORT_SPEED,
                     session,
-                    payload: port_speed_body(port, rate, STEP_REVERT, 0, 0),
+                    payload: port_speed_body(rate, STEP_REVERT, 0),
                 }],
                 1,
                 Duration::from_millis(300),
@@ -369,8 +367,8 @@ fn verify(
 ) -> bool {
     let limits = p.limits();
     let max_frame = usize::from(limits.max_frame);
-    let n_in = max_frame.saturating_sub(VERIFY_ROOM);
-    let n_out = max_frame.saturating_sub(VERIFY_ROOM);
+    let n_in = max_frame.saturating_sub(SOURCE_ROOM);
+    let n_out = max_frame.saturating_sub(SINK_ROOM);
     // The wait floor of oep-core §4.4 for each source / sink: host_wait_add_ms plus the
     // transfer time of a UART bridge, (L + max_frame x (1 + notify_pending_max_frames)) x 10 / baud,
     // L the request's frame length on the wire (at most max_frame and its framing).
@@ -495,7 +493,7 @@ fn verify(
 /// fine: the probe goes back on its own too), then the host side, confirmed. True when the link
 /// answers at the boot speed. ja: probe と揃って起動時の速さに戻る(戻すを今の速さで送り、host も
 /// 戻して confirm)。
-pub fn revert(p: &mut Probe, port: u8) -> bool {
+pub fn revert(p: &mut Probe) -> bool {
     let Some(base) = p.link().base_baud() else {
         return false;
     };
@@ -512,7 +510,7 @@ pub fn revert(p: &mut Probe, port: u8) -> bool {
             func,
             op: link::op::PORT_SPEED,
             session,
-            payload: port_speed_body(port, rate, STEP_REVERT, 0, 0),
+            payload: port_speed_body(rate, STEP_REVERT, 0),
         }],
         1,
         Duration::from_millis(300),

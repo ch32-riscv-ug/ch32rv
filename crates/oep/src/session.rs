@@ -244,11 +244,14 @@ impl Probe {
     /// `oep.wire.rvswd`; `""` lists everything), following the pages.
     pub fn list(&mut self, prefix: &str) -> Result<Vec<Interface>, OepError> {
         let mut out = Vec::new();
+        let mut seen = 0usize;
+        // A label-boundary match, done here: `oep.wire` finds `oep.wire.rvswd`, `oep.` nothing.
+        let wanted = |name: &str| {
+            prefix.is_empty() || name == prefix || name.starts_with(&format!("{prefix}."))
+        };
         loop {
-            let mut p = vec![0u8];
-            p.extend_from_slice(&(out.len() as u16).to_le_bytes());
-            p.push(prefix.len() as u8);
-            p.extend_from_slice(prefix.as_bytes());
+            // first(u16) only: the host filters by name (core §7.2).
+            let p = (seen as u16).to_le_bytes().to_vec();
             let a = self.core_call(core::op::LIST, p)?;
             if a.len() < 3 {
                 return Err(OepError::Malformed(
@@ -269,39 +272,41 @@ impl Probe {
                     .ok_or_else(|| OepError::Malformed("list entry name cut short".into()))?;
                 at += 7 + name.len();
                 let func = u16::from_le_bytes([e[0], e[1]]);
-                self.note_arg_times(func, &String::from_utf8_lossy(name));
-                out.push(Interface {
-                    func,
-                    instance: u16::from_le_bytes([e[2], e[3]]),
-                    revision: e[4],
-                    name: String::from_utf8_lossy(name).into_owned(),
-                });
+                let name = String::from_utf8_lossy(name).into_owned();
+                self.note_arg_times(func, &name);
+                seen += 1;
+                if wanted(&name) {
+                    out.push(Interface {
+                        func,
+                        instance: u16::from_le_bytes([e[2], e[3]]),
+                        revision: e[4],
+                        name,
+                    });
+                }
             }
-            if out.len() >= total || count == 0 {
+            if seen >= total || count == 0 {
                 return Ok(out);
             }
         }
     }
 
     /// en: Tell the link the argument time of `func`'s ops whose wait core §4.4 lengthens (by its
-    /// name from list): riscv-dm run (timeout_ms) and reset (reset_settle_ms), a wire's attach
-    /// (attach_budget_ms, + hold_ms + reset_settle_ms with the reset TLV), probe.config save
-    /// (max_op_ms). ja: 引数の時間で待ちの延びる op を link に教える。
+    /// name from list): riscv-dm run (timeout_ms); riscv-dm reset, a wire's attach and scan, and
+    /// probe.config save (max_op_ms, oep-if-debug §1 / §4.3).
+    /// ja: 引数の時間で待ちの延びる op を link に教える。
     fn note_arg_times(&mut self, func: u16, name: &str) {
         use crate::link::ArgTime;
-        use crate::registry::{limits, probe_config, target_riscv_dm as dm, wire_rvswd};
+        use crate::registry::{probe_config, target_riscv_dm as dm, wire_rvswd};
         let t = &mut self.link.arg_time;
         match name {
             n if n == dm::NAME => {
                 // connection(u16) pc(u32) timeout_ms(u32) ... (oep-if-debug §4.4)
                 t.insert((func, dm::op::RUN), ArgTime::U32At(6));
-                t.insert(
-                    (func, dm::op::RESET),
-                    ArgTime::Fixed(limits::RESET_SETTLE_MS),
-                );
+                t.insert((func, dm::op::RESET), ArgTime::MaxOp);
             }
             n if n.starts_with("oep.wire.") => {
-                t.insert((func, wire_rvswd::op::ATTACH), ArgTime::Attach);
+                t.insert((func, wire_rvswd::op::ATTACH), ArgTime::MaxOp);
+                t.insert((func, wire_rvswd::op::SCAN), ArgTime::MaxOp);
             }
             n if n == probe_config::NAME => {
                 t.insert((func, probe_config::op::SAVE), ArgTime::MaxOp);

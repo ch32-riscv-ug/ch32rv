@@ -657,7 +657,7 @@ impl Upstream {
                 }
                 let back = l.baud() != l.base_baud()
                     && l.back_to_base(Duration::from_millis(
-                        u64::from(ch32rv_oep::registry::timing::PORT_SPEED_IDLE_MAX_MS) + 1000,
+                        u64::from(ch32rv_oep::registry::timing::PORT_SPEED_IDLE_MS) + 1000,
                     ));
                 if back {
                     l.speed_fallbacks += 1;
@@ -1161,9 +1161,9 @@ impl Broker {
     /// では直近 3 秒の(壊れ + 失われ)の割合が 10 % を超えたら(50 フレーム未満は判定しない)、それより
     /// 前の probe では 5 秒に 2 つ壊れたら。
     fn watch_speed(&mut self, broken: u64, good: u64, lost: u64) {
-        let Some(port) = self.speed_port else {
+        if self.speed_port.is_none() {
             return;
-        };
+        }
         let Upstream::Oep(p) = &mut self.up else {
             return;
         };
@@ -1207,7 +1207,7 @@ impl Broker {
         };
         if let Some(why) = why {
             let rate = p.link().baud().unwrap_or(0);
-            let ok = ch32rv_oep::speed::revert(p, port);
+            let ok = ch32rv_oep::speed::revert(p);
             self.speed_port = None;
             self.speed_window.clear();
             self.lowered();

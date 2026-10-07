@@ -3,7 +3,7 @@
 //! parallel never install into it at the same time (they did into the client's shared `.venv`, and
 //! a fake that died while uv reinstalled failed the test, 2026-10-01).
 //! The fake is taken at `FAKE_REV`, a commit on the wire ch32rv speaks (the 2026-10-06
-//! simplified wire and the 2026-10-06 structure, oep-spec 498ae95, oep-probe-arduino 0.0.29): the fake moves with the spec
+//! simplified wire and the 2026-10-06 structure and the 2026-10-07 rule review, oep-spec 0f455a0, oep-probe-arduino 0.0.29): the fake moves with the spec
 //! ahead of the probes, so ch32rv raises it when it follows. `$OEP_CLIENT_PYTHON` names a
 //! checkout used as it is.
 //! ja: テスト用の oep-client-python の `uv run`。ch32rv 専用の環境で、file lock の下で 1 回だけ sync
@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// oep-client-python on oep-spec 498ae95 (the nameless core, oep.probe.*, clock).
-const FAKE_REV: &str = "6326df9";
+/// oep-client-python on oep-spec 0f455a0 (the 2026-10-07 rule review), with `lose`.
+const FAKE_REV: &str = "9cda373";
 
 fn target_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();

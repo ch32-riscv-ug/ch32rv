@@ -1067,7 +1067,14 @@ pub(crate) struct ConsoleSession {
     /// The connection to detach at the end (the console's), if any.
     attached: Option<(WireKind, u16)>,
     max_read: u16,
+    /// Where a console attached and with which mechanism, to attach again after a lost line.
+    relink: Option<(Place, ch32rv_oep::stream::Mechanism)>,
+    /// Since when the console has read nothing (its stream is checked after RELINK_CHECK).
+    quiet_since: Instant,
 }
+
+/// How long a console reads nothing before the monitor checks that its stream is still open.
+const RELINK_CHECK: Duration = Duration::from_secs(1);
 
 /// Where a [`ConsoleSession`]'s bytes come from.
 enum Backing {
@@ -1098,6 +1105,7 @@ impl ConsoleSession {
         probe
             .open(random_session_id(), 3000, false, Some(&owner))
             .map_err(|e| e.to_string())?;
+        let mut relink = None;
         let (stream, attached) = match wanted {
             StreamWanted::FixtureUart(baud) => {
                 let (s, _) = ch32rv_oep::stream::PosStream::open_uart(&mut probe, baud).map_err(
@@ -1159,6 +1167,7 @@ impl ConsoleSession {
                         .map_err(|e| e.to_string())?;
                 s.start_at_last_reset(&mut probe)
                     .map_err(|e| e.to_string())?;
+                relink = Some((place, mech));
                 (Backing::Stream(s), Some((wire, at.connection)))
             }
         };
@@ -1168,16 +1177,27 @@ impl ConsoleSession {
             stream,
             attached,
             max_read,
+            relink,
+            quiet_since: Instant::now(),
         })
     }
 
     /// What arrived since the last poll (RTT: one exchange, which also hands over pending input).
     pub(crate) fn poll(&mut self) -> Result<Vec<u8>, String> {
         match &mut self.stream {
-            Backing::Stream(s) => s
-                .poll(&mut self.probe, self.max_read)
-                .map(|c| c.data)
-                .map_err(|e| e.to_string()),
+            Backing::Stream(s) => {
+                let data = s
+                    .poll(&mut self.probe, self.max_read)
+                    .map(|c| c.data)
+                    .map_err(|e| e.to_string())?;
+                if !data.is_empty() {
+                    self.quiet_since = Instant::now();
+                } else if self.quiet_since.elapsed() >= RELINK_CHECK {
+                    self.quiet_since = Instant::now();
+                    self.relink_if_closed()?;
+                }
+                Ok(data)
+            }
             Backing::Rtt {
                 connection,
                 parts,
@@ -1188,6 +1208,31 @@ impl ConsoleSession {
                 crate::source::rtt_poll(&mut t, *channels, input).map_err(|e| e.to_string())
             }
         }
+    }
+
+    /// en: A console that went quiet: if its stream was closed - the probe gave up on a lost line
+    /// and closed the connection (oep-if-debug §2, P1: it no longer wakes a live line on its own,
+    /// so a board reset or sleep can end it) - attach again (a host-requested attach may wake the
+    /// line) and reopen the console, which continues under the same number and position. A slot's
+    /// connection is attached again by the probe itself; the attach then just joins it.
+    /// ja: 黙った console のストリームが閉じていたら(probe が線を失って接続を閉じた)、attach し直して
+    /// console を開き直す(同じ番号と位置で続く)。
+    fn relink_if_closed(&mut self) -> Result<(), String> {
+        let (Backing::Stream(s), Some((place, mech))) = (&mut self.stream, &self.relink) else {
+            return Ok(());
+        };
+        if s.is_open(&mut self.probe).map_err(|e| e.to_string())? != Some(false) {
+            return Ok(());
+        }
+        let Ok(at) = attach(&mut self.probe, place.wire, place.options(false, None)) else {
+            // Not back yet (still in reset, unplugged): try again at the next quiet check.
+            return Ok(());
+        };
+        s.reopen_console(&mut self.probe, at.connection, *mech)
+            .map_err(|e| e.to_string())?;
+        self.attached = Some((place.wire, at.connection));
+        eprintln!("monitor: the target's debug line was lost; attached again");
+        Ok(())
     }
 
     /// Send input; returns how many bytes were taken (resend the rest later). RTT keeps it and

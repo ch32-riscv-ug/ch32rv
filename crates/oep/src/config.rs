@@ -27,48 +27,36 @@ pub struct Slot {
     /// The console mechanism (`oep.target.console`), or 0xFF: a slot without a console.
     pub mechanism: u8,
     pub name: String,
-    /// The lock: (scheme, mask, value), when the slot has one.
-    pub lock: Option<(u8, Vec<u8>, Vec<u8>)>,
 }
 
 impl Slot {
-    /// en: `slot(u8) wire_fn(u16) swdio(u16) swclk(u16) attach(u8) boot_reset(u8) retry_ms(u32)
-    /// max_speed_hz(u32) idle_clock(u8) mechanism(u8) name_len(u8) name lock_len(u8)
-    /// [lock_scheme(u8) lock_mask(n) lock_value(n)]`, lock_len = 0 or 1 + 2n; the item ends with
-    /// the lock (oep-if-probe-config §1.1, core §2.3). Only the current shape: until v1 is
-    /// frozen the tools follow each change together, with no compatibility for older probes (the
-    /// user's policy, 2026-09-30).
+    /// en: `slot(u8) wire_fn(u16) swdio(u16) swclk(u16) attach(u8) retry_ms(u32)
+    /// max_speed_hz(u32) idle_clock(u8) mechanism(u8) name_len(u8) name`; the item ends with its
+    /// name (oep-if-probe-config §1.1). Only the current shape: until v1 is frozen the tools
+    /// follow each change together, with no compatibility for older probes (the user's policy,
+    /// 2026-09-30).
     /// ja: 今の形だけを読む(v1 の凍結までは各ツールが変更にまとめて追従し、古い probe との互換は持たない)。
     fn parse(v: &[u8]) -> Option<Slot> {
-        const FIXED: usize = 20;
-        if v.len() < FIXED + 1 {
+        const FIXED: usize = 19;
+        if v.len() < FIXED {
             return None;
         }
         let le16 = |i: usize| u16::from_le_bytes([v[i], v[i + 1]]);
         let le32 = |i: usize| u32::from_le_bytes([v[i], v[i + 1], v[i + 2], v[i + 3]]);
         let name_end = FIXED + usize::from(v[FIXED - 1]);
         let name = String::from_utf8_lossy(v.get(FIXED..name_end)?).into_owned();
-        let lock_len = usize::from(*v.get(name_end)?);
-        let lock = if lock_len == 0 {
-            None
-        } else {
-            let l = v.get(name_end + 1..name_end + 1 + lock_len)?;
-            let n = (lock_len - 1) / 2;
-            (n >= 1).then(|| (l[0], l[1..1 + n].to_vec(), l[1 + n..1 + 2 * n].to_vec()))
-        };
-        let hz = le32(13);
+        let hz = le32(12);
         Some(Slot {
             slot: v[0],
             wire_fn: le16(1),
             swdio: le16(3),
             swclk: le16(5),
             at_boot: v[7] == cfg::enums::slot_attach::AT_BOOT,
-            retry_ms: le32(9),
+            retry_ms: le32(8),
             max_speed: (hz != 0).then_some(hz),
-            idle_clock: v[17],
-            mechanism: v[18],
+            idle_clock: v[16],
+            mechanism: v[17],
             name,
-            lock,
         })
     }
 }
@@ -77,45 +65,41 @@ impl Slot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SlotState {
     pub slot: u8,
-    /// 0 connected, 1 absent, 2 lock mismatch, 3 no target id.
+    /// 0 connected, 1 absent.
     pub state: u8,
     /// The slot's connection, when it has one.
     pub connection: Option<u16>,
     /// When the last automatic attach was tried (the probe's clock, ns; None: never tried).
     pub last_try_at_ns: Option<u64>,
-    /// The target id seen: (scheme, value).
+    /// The target id of the slot's connection (scheme, value), from the wire's `connections`
+    /// (the slot state carries none since oep-spec e8c7cd6).
     pub target_id: Option<(u8, Vec<u8>)>,
 }
 
 impl SlotState {
-    /// `slot(u8) state(u8) connection(u16) last_try_at_ns(u64) reset_at_ns(u64) tid_scheme(u8)
-    /// tid_len(u8) tid` (oep-if-probe-config §3.3): the state and the bytes it took.
+    /// `slot(u8) state(u8) connection(u16) last_try_at_ns(u64)` (oep-if-probe-config §3.3): 12
+    /// bytes.
     fn parse(v: &[u8]) -> Option<(SlotState, usize)> {
-        if v.len() < 22 {
-            return None;
-        }
+        let v = v.get(..12)?;
         let conn = u16::from_le_bytes([v[2], v[3]]);
         let mut last = [0u8; 8];
         last.copy_from_slice(&v[4..12]);
         let last = u64::from_le_bytes(last);
-        let scheme = v[20];
-        let len = usize::from(v[21]);
-        let tid = v.get(22..22 + len)?.to_vec();
         let st = SlotState {
             slot: v[0],
             state: v[1],
             connection: (conn != 0).then_some(conn),
             last_try_at_ns: (last != u64::MAX).then_some(last),
-            target_id: (scheme != 0).then_some((scheme, tid)),
+            target_id: None,
         };
-        Some((st, 22 + len))
+        Some((st, 12))
     }
 
     /// The WCH chip id seen (target_id scheme 1), if any.
     pub fn wch_chip_id(&self) -> Option<u32> {
         match &self.target_id {
             Some((s, v))
-                if *s == crate::registry::common::enum_::target_id_scheme::WCH_DMI_7F
+                if *s == crate::registry::common::enum_::target_id_scheme::DMI_7F
                     && v.len() == 4 =>
             {
                 Some(u32::from_le_bytes([v[0], v[1], v[2], v[3]]))
@@ -248,6 +232,26 @@ pub fn slot_states(p: &mut Probe) -> Result<Vec<SlotState>, OepError> {
             break;
         }
     }
+    // The target id of each connected slot, from its wire's connections (lock-free; best effort:
+    // a slot without one just has no target id).
+    if out.iter().any(|st| st.connection.is_some()) {
+        let wires: Vec<u16> = p
+            .list("oep.wire")
+            .unwrap_or_default()
+            .into_iter()
+            .map(|i| i.func)
+            .collect();
+        for func in wires {
+            for c in crate::target::connections(p, func).unwrap_or_default() {
+                if let Some(st) = out
+                    .iter_mut()
+                    .find(|st| st.connection == Some(c.connection))
+                {
+                    st.target_id = c.target_id;
+                }
+            }
+        }
+    }
     Ok(out)
 }
 
@@ -256,21 +260,18 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    fn item(name: &str, lock: &[u8]) -> Vec<u8> {
+    fn item(name: &str) -> Vec<u8> {
         let mut v = vec![1u8];
         v.extend_from_slice(&3u16.to_le_bytes()); // wire_fn
         v.extend_from_slice(&7u16.to_le_bytes()); // swdio
         v.extend_from_slice(&8u16.to_le_bytes()); // swclk
         v.push(cfg::enums::slot_attach::AT_BOOT);
-        v.push(0); // boot_reset
         v.extend_from_slice(&5000u32.to_le_bytes()); // retry_ms
         v.extend_from_slice(&400_000u32.to_le_bytes());
         v.push(1); // idle_clock low
         v.push(2); // mechanism dmseq
         v.push(name.len() as u8);
         v.extend_from_slice(name.as_bytes());
-        v.push(lock.len() as u8); // lock_len
-        v.extend_from_slice(lock);
         v
     }
 
@@ -289,31 +290,22 @@ mod tests {
 
     #[test]
     fn reads_the_slot_with_line_settings() {
-        let s = Slot::parse(&item("x035", &[])).unwrap();
+        let s = Slot::parse(&item("x035")).unwrap();
         assert_eq!(s.name, "x035");
         assert_eq!((s.swdio, s.swclk, s.retry_ms), (7, 8, 5000));
         assert_eq!(s.max_speed, Some(400_000));
         assert_eq!((s.idle_clock, s.mechanism), (1, 2));
-        assert!(s.at_boot && s.lock.is_none());
+        assert!(s.at_boot);
     }
 
     #[test]
-    fn a_locked_slot_with_line_settings() {
-        let s = Slot::parse(&item("x", &[1, 0xff, 0xff, 0x35, 0x06])).unwrap();
-        assert_eq!(s.name, "x");
-        assert_eq!(s.lock, Some((1, vec![0xff, 0xff], vec![0x35, 0x06])));
-    }
-
-    #[test]
-    fn a_slot_state_with_its_reset_time_and_tid() {
+    fn a_slot_state_is_twelve_bytes() {
         let mut v = vec![0u8, 0, 2, 0];
         v.extend_from_slice(&7u64.to_le_bytes()); // last_try_at_ns
-        v.extend_from_slice(&u64::MAX.to_le_bytes()); // reset_at_ns: none
-        v.extend_from_slice(&[1, 4, 0x00, 0x05, 0x31, 0x20]);
         v.push(0xEE); // the next element
         let (st, used) = SlotState::parse(&v).unwrap();
-        assert_eq!(used, 26);
-        assert_eq!(st.connection, Some(2));
-        assert_eq!(st.wch_chip_id(), Some(0x2031_0500));
+        assert_eq!(used, 12);
+        assert_eq!((st.connection, st.last_try_at_ns), (Some(2), Some(7)));
+        assert_eq!(st.target_id, None);
     }
 }

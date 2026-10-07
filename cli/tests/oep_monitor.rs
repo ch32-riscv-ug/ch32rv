@@ -264,3 +264,56 @@ fn describe_lists_every_chip_name_configure_takes() {
         assert_eq!(m.cmd(&format!("CONFIGURE chip {name}"))["message"], "OK");
     }
 }
+
+#[test]
+fn the_monitor_attaches_again_after_the_probe_loses_the_line() {
+    // P1 (oep-if-debug §2): a probe no longer wakes a live line on its own; it closes the
+    // connection and its console stream (mark detail 4). The monitor sees the stream closed when
+    // it goes quiet, attaches again and reopens the console, and the output goes on. The fake's
+    // `lose` line plays the lost line.
+    let Some((mut fake, pty)) = fake_pty(&[
+        "--target-id",
+        "0x20310500",
+        "--console",
+        "uptime %d\r\n",
+        "--every",
+        "50",
+    ]) else {
+        return;
+    };
+    let mut m = Monitor::start();
+    m.cmd("HELLO 1 \"test\"");
+    assert_eq!(m.cmd("CONFIGURE source dmseq")["message"], "OK");
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = l.local_addr().unwrap();
+    let r = m.cmd(&format!("OPEN {at} {pty}"));
+    assert_eq!(r["message"], "OK", "{r}");
+    let (mut sock, _) = l.accept().unwrap();
+    sock.set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let mut buf = [0u8; 512];
+    let mut read_for = |sock: &mut std::net::TcpStream, d: Duration| {
+        let mut got = Vec::new();
+        let end = Instant::now() + d;
+        while Instant::now() < end {
+            if let Ok(n) = sock.read(&mut buf) {
+                got.extend_from_slice(&buf[..n]);
+            }
+        }
+        String::from_utf8_lossy(&got).into_owned()
+    };
+    assert!(read_for(&mut sock, Duration::from_secs(1)).contains("uptime"));
+    {
+        let i = fake.0.stdin.as_mut().unwrap();
+        writeln!(i, "lose").unwrap();
+        i.flush().unwrap();
+    }
+    // The stream closed; once quiet for a second the monitor finds it and attaches again.
+    let _ = read_for(&mut sock, Duration::from_millis(1500));
+    let after = read_for(&mut sock, Duration::from_secs(3));
+    assert!(
+        after.contains("uptime"),
+        "no output after the lost line: {after:?}"
+    );
+    drop(m.stdin.take());
+}
