@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) An OEP probe on TCP is used through its broker, as one on a serial port or USB is (the user's decision: the same behaviour on every transport): monitor and flash at once, `broker endpoint --probe tcp:...` (so the pytest plugin finds it), a lingering broker's session taken back, the same messages and exit codes. Its broker is keyed by unit id when named by one (the same key a USB probe of that unit id has: one owner per probe on this host; it resolves the unit id by DNS-SD again each time it starts) or by address. A `tcp:` address that is a ch32rv broker on this host is still opened directly. A lookup by unit id stops as soon as the probe answers.
+- (JA) TCP の OEP の probe も、serial や USB の probe と同じくブローカーを通して使う(ユーザーの判断: どの経路でも同じ振る舞い): monitor と flash の同時使用、`broker endpoint --probe tcp:…`(pytest のプラグインが見つけられる)、残った session の取り戻し、同じメッセージと exit code。ブローカーの key は、unit id で名指せば unit id(同じ unit id の USB の probe と同じ key: この PC での持ち主は 1 つ。起動のたびに DNS-SD で引き直す)、ほかはアドレス。この PC の ch32rv のブローカーを指す `tcp:` は今までどおり直接つなぐ。unit id での検索は probe が答えたらすぐ終える。
+
 - (EN) `--probe` takes `tcp://host[:port]` as the other OEP clients write it, also behind `port:` (an IDE's port address); without a port, the host or unit id is found by DNS-SD (the unit id in TXT, the SRV host name or an address). A monitor over TCP waits out another host's lock as the other commands do (a broker on the probe's other transport lingers 3 s after its last client, then ends its session), and its first line says "over TCP" instead of naming a broker.
 - (JA) `--probe` は、ほかの OEP の client と同じ `tcp://host[:port]` も受ける(`port:` の後ろでも。IDE の port の address)。port が無ければ、host か unit id を DNS-SD で探す(TXT の unit id、SRV の host 名、address)。TCP の monitor は、ほかのコマンドと同じく別の host のロックを待つ(probe の別の経路のブローカーは、最後の client の後 3 秒残ってから session を終える)。最初の行は、ブローカーではなく「over TCP」と言う。
 

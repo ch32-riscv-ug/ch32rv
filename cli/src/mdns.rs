@@ -59,7 +59,7 @@ fn target() -> SocketAddr {
 /// Nothing found (no network, mDNS blocked) is an empty list, never an error.
 /// ja: `wait` の間 `_oep._tcp` を引く。見つからなければ空(誤りにしない)。
 pub(crate) fn browse(wait: Duration) -> Vec<Found> {
-    browse_at(target(), wait)
+    browse_at(target(), wait, &|_: &[Found]| false)
 }
 
 /// en: One socket per IPv4 interface, each sending its multicast out of that interface: the OS
@@ -101,7 +101,8 @@ fn sockets(to: SocketAddr) -> Vec<UdpSocket> {
     out
 }
 
-fn browse_at(to: SocketAddr, wait: Duration) -> Vec<Found> {
+/// Browse up to `wait`, or until `enough` says what was found so far will do.
+fn browse_at(to: SocketAddr, wait: Duration, enough: &dyn Fn(&[Found]) -> bool) -> Vec<Found> {
     let socks = sockets(to);
     if socks.is_empty() {
         return Vec::new();
@@ -138,6 +139,9 @@ fn browse_at(to: SocketAddr, wait: Duration) -> Vec<Found> {
                 asked.extend(more);
             }
         }
+        if got && enough(&st.snapshot()) {
+            break;
+        }
         if !got {
             std::thread::sleep(Duration::from_millis(5));
         }
@@ -149,18 +153,23 @@ fn browse_at(to: SocketAddr, wait: Duration) -> Vec<Found> {
 /// host name (with or without `.local`), else one of its addresses (`tcp://<host>` with the port
 /// from SRV). ja: `name` が指す probe(unit_id、無ければ SRV の host 名か address)。
 pub(crate) fn find_named(name: &str, wait: Duration) -> Option<Found> {
-    let all = browse(wait);
     let host = |f: &Found| {
         let h = f.host.trim_end_matches('.');
         h.eq_ignore_ascii_case(name)
             || h.strip_suffix(".local")
                 .is_some_and(|b| b.eq_ignore_ascii_case(name))
     };
-    let by_unit = all.iter().position(|f| {
+    let unit = |f: &Found| {
         f.unit_id
             .as_deref()
             .is_some_and(|u| u.eq_ignore_ascii_case(name))
+    };
+    // Done as soon as the unit id answered with an endpoint (a host name or address may also be
+    // a later instance's: those wait for the whole browse).
+    let all = browse_at(target(), wait, &|fs: &[Found]| {
+        fs.iter().any(|f| unit(f) && f.endpoint().is_some())
     });
+    let by_unit = all.iter().position(unit);
     let i = by_unit.or_else(|| all.iter().position(host)).or_else(|| {
         all.iter()
             .position(|f| f.addrs.iter().any(|a| a.to_string() == name))
@@ -170,11 +179,16 @@ pub(crate) fn find_named(name: &str, wait: Duration) -> Option<Found> {
 
 /// The probe whose TXT unit_id is `unit_id` (case aside, oep-core §3.3), browsing up to `wait`.
 pub(crate) fn find_unit(unit_id: &str, wait: Duration) -> Option<Found> {
-    browse(wait).into_iter().find(|f| {
+    let unit = |f: &Found| {
         f.unit_id
             .as_deref()
             .is_some_and(|u| u.eq_ignore_ascii_case(unit_id))
+    };
+    browse_at(target(), wait, &|fs: &[Found]| {
+        fs.iter().any(|f| unit(f) && f.endpoint().is_some())
     })
+    .into_iter()
+    .find(unit)
 }
 
 // ---- the DNS message form (RFC 1035 §4), only what a browse needs ----
@@ -356,6 +370,15 @@ impl State {
         q
     }
 
+    /// What [`Self::found`] would give now.
+    fn snapshot(&self) -> Vec<Found> {
+        Self {
+            instances: self.instances.clone(),
+            hosts: self.hosts.clone(),
+        }
+        .found()
+    }
+
     /// The instances of `_oep._tcp`, with their hosts' addresses.
     fn found(self) -> Vec<Found> {
         self.instances
@@ -445,7 +468,7 @@ pub(crate) mod tests {
             r.send_to(&announce("abc123", 7450, [10, 0, 0, 5]), from)
                 .unwrap();
         });
-        let f = browse_at(at, Duration::from_millis(300));
+        let f = browse_at(at, Duration::from_millis(300), &|_: &[Found]| false);
         t.join().unwrap();
         assert_eq!(f.len(), 1);
         assert_eq!(f[0].unit_id.as_deref(), Some("abc123"));

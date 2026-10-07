@@ -55,6 +55,25 @@ impl OepAddr {
 /// slow Wi-Fi).
 const BROWSE_WAIT: Duration = Duration::from_millis(1500);
 
+/// en: The broker target of a TCP address: the probe's endpoint and unit id (`None`: the address
+/// is a ch32rv broker on this host, opened directly). Every OEP probe is used through its broker,
+/// whatever the transport (the user's decision, 2026-10-07: the same behaviour everywhere).
+/// ja: TCP のアドレスのブローカーの対象。この PC のブローカー自身なら None(直接つなぐ)。
+pub(crate) fn net_target(a: &OepAddr) -> Option<crate::broker::BrokerTarget> {
+    match a {
+        OepAddr::Tcp(t) if crate::broker::is_broker_endpoint(t) => None,
+        OepAddr::Tcp(t) => Some(crate::broker::BrokerTarget::Net {
+            addr: t.clone(),
+            unit: None,
+        }),
+        OepAddr::Net { addr, unit, .. } => Some(crate::broker::BrokerTarget::Net {
+            addr: addr.clone(),
+            unit: Some(unit.clone()),
+        }),
+        _ => None,
+    }
+}
+
 /// en: A probe found by DNS-SD, opened over TCP: used only when describe's unit_id is the one
 /// named (transports §3; the TXT record is only a pointer). ja: DNS-SD で見つけた probe を TCP で開く。
 /// describe の unit_id が名指したものと同じときだけ使う。
@@ -464,12 +483,24 @@ fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
                     Some("the probe's broker could not start or be reached"),
                 )
             })?,
-        OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t)
-            .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?,
-        OepAddr::Net { addr, unit, .. } => {
-            return open_net(addr, unit)
-                .map_err(|m| fail(cli, cmd, ErrorKind::DeviceOpenFailed, m, None));
-        }
+        OepAddr::Tcp(_) | OepAddr::Net { .. } => match net_target(a) {
+            Some(t) => crate::broker::client_link_for(&t).map_err(|m| {
+                fail(
+                    cli,
+                    cmd,
+                    ErrorKind::DeviceOpenFailed,
+                    m,
+                    Some("the probe's broker could not start or be reached"),
+                )
+            })?,
+            None => {
+                let OepAddr::Tcp(t) = a else {
+                    return Err(fail(cli, cmd, ErrorKind::Usage, "no tcp address", None));
+                };
+                ch32rv_oep::link::open_tcp(t)
+                    .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?
+            }
+        },
         OepAddr::Wch(t) => crate::broker::client_link_for(t)
             .map_err(|m| fail(cli, cmd, ErrorKind::DeviceOpenFailed, m, None))?,
     };
@@ -1233,20 +1264,18 @@ impl ConsoleSession {
         wanted: StreamWanted,
         chip: Option<&str>,
     ) -> Result<Self, String> {
-        let mut probe = match a {
-            OepAddr::Net { addr, unit, .. } => open_net(addr, unit)?,
-            _ => {
-                let link = match a {
-                    OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => {
-                        crate::broker::client_link(p)?
-                    }
+        let link = match a {
+            OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => crate::broker::client_link(p)?,
+            OepAddr::Tcp(_) | OepAddr::Net { .. } => match net_target(a) {
+                Some(t) => crate::broker::client_link_for(&t)?,
+                None => match a {
                     OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t).map_err(|e| e.to_string())?,
-                    OepAddr::Wch(t) => crate::broker::client_link_for(t)?,
-                    OepAddr::Net { .. } => unreachable!("opened above"),
-                };
-                Probe::connect(link).map_err(|e| e.to_string())?
-            }
+                    _ => return Err("no tcp address".into()),
+                },
+            },
+            OepAddr::Wch(t) => crate::broker::client_link_for(t)?,
         };
+        let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
         let owner = format!("ch32rv monitor pid {}", std::process::id());
         // A probe on TCP may still be held by another host's session - a broker on its other
         // transport lingering after its last client, ending it seconds later: wait out its

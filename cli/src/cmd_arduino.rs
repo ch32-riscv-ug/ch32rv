@@ -134,7 +134,16 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
             continue;
         }
         let cache = crate::broker::listing_cache(&format!("tcp-{unit}"));
-        let read = crate::oep::open_net(&addr, &unit).ok().and_then(|mut p| {
+        // Through its broker when one runs (never started here), else a brief direct look.
+        let target = crate::broker::BrokerTarget::Net {
+            addr: addr.clone(),
+            unit: Some(unit.clone()),
+        };
+        let opened = match crate::broker::existing_link_for(&target) {
+            Some(l) => ch32rv_oep::session::Probe::connect(l).map_err(|e| e.to_string()),
+            None => crate::oep::open_net(&addr, &unit),
+        };
+        let read = opened.ok().and_then(|mut p| {
             p.link().set_timeout(std::time::Duration::from_millis(500));
             slot_entries(&mut p, &unit, &json!({"tcp": addr, "instance": f.instance}))
         });

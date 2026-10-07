@@ -204,6 +204,10 @@ fn write_endpoint(key: &str, v: &Value) -> std::io::Result<()> {
 pub(crate) enum BrokerTarget {
     /// An OEP probe on this serial port.
     Serial(String),
+    /// An OEP probe on TCP: its endpoint, and its unit id when it was named by one (found by
+    /// DNS-SD). Named by unit id, its broker shares the key a USB probe of that unit id has, so a
+    /// probe reached both ways still has one owner on this host.
+    Net { addr: String, unit: Option<String> },
     /// A WCH-Link, named by its USB serial (else its position).
     Wch { id: String, selector: String },
 }
@@ -229,6 +233,12 @@ impl BrokerTarget {
     pub(crate) fn key(&self) -> String {
         match self {
             BrokerTarget::Serial(p) => key_for(p),
+            BrokerTarget::Net { unit: Some(u), .. } => {
+                ch32rv_usb::sanitize_key(&format!("oep-{}", u.to_ascii_lowercase()))
+            }
+            BrokerTarget::Net { addr, unit: None } => {
+                ch32rv_usb::sanitize_key(&format!("oep-tcp-{addr}"))
+            }
             BrokerTarget::Wch { id, .. } => ch32rv_usb::sanitize_key(&format!("wch-{id}")),
         }
     }
@@ -236,6 +246,10 @@ impl BrokerTarget {
     fn selector(&self) -> String {
         match self {
             BrokerTarget::Serial(p) => format!("port:{p}"),
+            // By unit id the broker resolves it again by DNS-SD (the address may change when the
+            // probe joins its Wi-Fi again).
+            BrokerTarget::Net { unit: Some(u), .. } => format!("tcp:{u}"),
+            BrokerTarget::Net { addr, unit: None } => format!("tcp:{addr}"),
             BrokerTarget::Wch { selector, .. } => selector.clone(),
         }
     }
@@ -324,6 +338,29 @@ pub(crate) fn client_link(path: &str) -> Result<Link, String> {
     client_link_for(&BrokerTarget::Serial(path.to_owned()))
 }
 
+/// en: Whether `addr` (`host:port`) is a ch32rv broker on this host, from the endpoint files: such
+/// an address is a broker's client port, opened directly (a broker is never put in front of a
+/// broker). ja: `addr` がこの PC の ch32rv のブローカーか(endpoint の file から)。そうなら直接つなぐ。
+pub(crate) fn is_broker_endpoint(addr: &str) -> bool {
+    let Some((host, port)) = addr.rsplit_once(':') else {
+        return false;
+    };
+    if !matches!(host, "127.0.0.1" | "localhost") {
+        return false;
+    }
+    let Ok(port) = port.parse::<u64>() else {
+        return false;
+    };
+    std::fs::read_dir(ch32rv_usb::runtime_dir())
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "oep"))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .filter_map(|t| serde_json::from_str::<Value>(&t).ok())
+        .any(|v| v.get("port").and_then(Value::as_u64) == Some(port))
+}
+
 /// A link to `target`'s broker if one runs; never starts one.
 pub(crate) fn existing_link_for(target: &BrokerTarget) -> Option<Link> {
     let v = read_endpoint(&target.key())?;
@@ -347,15 +384,18 @@ pub(crate) fn endpoint(cli: &Cli) -> ExitCode {
     let target = match crate::oep::addr(cli, CMD) {
         Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => BrokerTarget::Serial(p),
         Ok(Some(OepAddr::Wch(t))) => t,
-        Ok(Some(OepAddr::Tcp(_) | OepAddr::Net { .. })) => {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::Usage,
-                "a tcp: endpoint has no broker",
-                None,
-            );
-        }
+        Ok(Some(a @ (OepAddr::Tcp(_) | OepAddr::Net { .. }))) => match crate::oep::net_target(&a) {
+            Some(t) => t,
+            None => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    "this tcp: address is a broker itself",
+                    None,
+                );
+            }
+        },
         Ok(None) => match crate::cmd_probe::select_entry(cli, CMD) {
             Ok(e) => BrokerTarget::wch(&e),
             Err(c) => return c,
@@ -417,15 +457,18 @@ pub(crate) fn serve(cli: &Cli) -> ExitCode {
         Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => BrokerTarget::Serial(p),
         // A broker for this Link already answers: this one leaves (the flock would say so too).
         Ok(Some(OepAddr::Wch(_))) => return ExitCode::SUCCESS,
-        Ok(Some(OepAddr::Tcp(_) | OepAddr::Net { .. })) => {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::Usage,
-                "a tcp: endpoint needs no broker",
-                None,
-            );
-        }
+        Ok(Some(a @ (OepAddr::Tcp(_) | OepAddr::Net { .. }))) => match crate::oep::net_target(&a) {
+            Some(t) => t,
+            None => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    "this tcp: address is a broker itself",
+                    None,
+                );
+            }
+        },
         Ok(None) => match crate::cmd_probe::select_entry(cli, CMD) {
             Ok(e) => {
                 let t = BrokerTarget::wch(&e);
@@ -480,6 +523,32 @@ fn serve_target(
                 broker_log(&key, "ended the previous broker's session");
             }
             let sid = match crate::oep::open_with_lock_rule(&mut probe, serial, &owner, LEASE_MS) {
+                Ok(s) => s,
+                Err(e) => return report_error(e.to_string()),
+            };
+            save_sid(&key, sid);
+            (Upstream::Oep(Box::new(probe)), sid)
+        }
+        (BrokerTarget::Net { addr, unit }, _) => {
+            transport = "tcp";
+            let opened = match unit {
+                Some(u) => crate::oep::open_net(addr, u),
+                None => ch32rv_oep::link::open_tcp(addr)
+                    .map_err(|e| e.to_string())
+                    .and_then(|l| Probe::connect(l).map_err(|e| e.to_string())),
+            };
+            let mut probe = match opened {
+                Ok(p) => p,
+                Err(m) => return report_error(format!("{addr}: {m}")),
+            };
+            let owner = format!("ch32rv broker pid {}", std::process::id());
+            if let Some(old) = saved_sid(&key)
+                && probe.open(old, LEASE_MS, false, Some(&owner)).is_ok()
+            {
+                let _ = probe.end();
+                broker_log(&key, "ended the previous broker's session");
+            }
+            let sid = match crate::oep::open_with_lock_rule(&mut probe, false, &owner, LEASE_MS) {
                 Ok(s) => s,
                 Err(e) => return report_error(e.to_string()),
             };

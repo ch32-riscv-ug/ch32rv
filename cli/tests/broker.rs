@@ -347,11 +347,13 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
 
     // The unit id, and the URL forms the other OEP clients take (also behind `port:`, an IDE's
     // port address).
+    // By address first (a broker keyed by the address), then by unit id (one keyed by it, as a USB
+    // probe of that unit id would be), whose broker `broker endpoint` names below.
     for probe in [
-        format!("tcp:{unit}"),
-        format!("tcp://{unit}"),
         format!("tcp://127.0.0.1:{port}"),
         format!("port:tcp://127.0.0.1:{port}"),
+        format!("tcp:{unit}"),
+        format!("tcp://{unit}"),
     ] {
         let out = ch32rv(&["target", "info", "--probe", &probe, "--json"]);
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -361,4 +363,15 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
             "{probe}: {v}"
         );
     }
+    // A probe on TCP is used through its broker like one on a serial port: the broker the
+    // commands started is still lingering, and `broker endpoint` names it.
+    let out = ch32rv(&[
+        "broker",
+        "endpoint",
+        "--probe",
+        &format!("tcp:{unit}"),
+        "--json",
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["result"]["endpoint"].as_str().is_some(), "{v}");
 }

@@ -596,12 +596,8 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
         Err(m) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, m, None),
     };
     if !cli.json {
-        let via = match a {
-            crate::oep::OepAddr::Tcp(_) | crate::oep::OepAddr::Net { .. } => "over TCP",
-            _ => "through the probe's broker",
-        };
         eprintln!(
-            "monitor: {} {via} (Ctrl-C to stop; stdin goes to the target)",
+            "monitor: {} through the probe's broker (Ctrl-C to stop; stdin goes to the target)",
             c.source_name()
         );
     }
