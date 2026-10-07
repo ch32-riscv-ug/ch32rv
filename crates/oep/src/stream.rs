@@ -108,13 +108,14 @@ impl PosStream {
         let Kind::Console { func, stream } = self.kind else {
             return Ok(None);
         };
-        let mut first: u8 = 0;
+        // first(u16) (oep-if-console §1, oep-spec 0098b56).
+        let mut first: u16 = 0;
         for _ in 0..16 {
             let a = check(p.link().call(crate::link::Call {
                 func,
                 op: console::op::STREAMS,
                 session: None,
-                payload: vec![first],
+                payload: first.to_le_bytes().to_vec(),
             })?)?;
             let (Some(&more), Some(&count)) = (a.first(), a.get(1)) else {
                 return Err(OepError::Malformed("streams answer too short".into()));
@@ -128,7 +129,7 @@ impl PosStream {
                     return Ok(Some(e[6] == console::enums::stream_state::OPEN));
                 }
             }
-            first = first.saturating_add(count);
+            first = first.saturating_add(u16::from(count));
             if more == 0 || count == 0 {
                 break;
             }

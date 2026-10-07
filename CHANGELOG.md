@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The OEP console `streams` request sends `first` as a u16 (oep-spec 0098b56, external review §12): the monitor uses it to find a stream closed by a lost line. Registry from oep-spec d801f02.
+- (JA) OEP の console の `streams` の要求は `first` を u16 で送る(oep-spec 0098b56、外部レビュー §12): monitor は線を失って閉じたストリームを見つけるのに使う。registry は oep-spec d801f02 から。
+
 - (EN) `probe list` lists a network probe only when a short confirm + describe at its endpoint answers the unit id it announced: `_oep._tcp` stays an unregistered name another service may announce too (oep-spec host guide §4.1). The rest are dropped with warning `oep-tcp-unverified`. The looks run in parallel; a probe whose broker runs is not asked again.
 - (JA) `probe list` は、ネットワークの probe を、名乗った unit id に短い confirm と describe で答えたときだけ出す: `_oep._tcp` は登録しない名前で、他のサービスも名乗りうる(oep-spec host ガイド §4.1)。ほかは警告 `oep-tcp-unverified` をつけて除く。確かめは並行して行い、ブローカーが動いている probe には聞き直さない。
 
