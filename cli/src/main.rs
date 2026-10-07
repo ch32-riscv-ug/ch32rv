@@ -104,7 +104,7 @@ fn borrow_link(cli: &Cli) -> Option<broker::Lend> {
         | Command::Write(_)
         | Command::Run(_) => true,
         Command::Monitor(m) => {
-            m.cmd.is_some() || matches!(m.source, MonitorSource::Sdi | MonitorSource::Rtt)
+            m.cmd.is_some() || matches!(m.source, Some(MonitorSource::Sdi | MonitorSource::Rtt))
         }
         _ => false,
     };

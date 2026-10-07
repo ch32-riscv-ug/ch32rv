@@ -39,34 +39,38 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Err(c) => return c,
     };
     match (&addr, args.source) {
-        // A WCH-Link's broker: rtt and uart open the Link / its CDC as before (borrowing it).
-        (Some(crate::oep::OepAddr::Wch(_)), MonitorSource::Uart | MonitorSource::Rtt)
+        // A WCH-Link's broker: rtt and uart (the default) open the Link / its CDC as before
+        // (borrowing it).
+        (
+            Some(crate::oep::OepAddr::Wch(_)),
+            None | Some(MonitorSource::Uart | MonitorSource::Rtt),
+        )
         | (None, _) => {}
         // en: An OEP probe has no "uart" of its own: say so, rather than falling through to the
         // WCH-Link lookup and reporting the selector as matching nothing. (rtt goes to run_oep:
         // ch32rv runs it over the probe's riscv-dm.)
         // ja: OEP の probe に「uart」は無い。WCH-Link を探しに行って selector が何にも当たらない、と
         // 言う代わりにそう言う(rtt は run_oep へ。ch32rv が probe の riscv-dm の上で行う)。
-        (Some(_), MonitorSource::Uart) => {
+        (Some(_), Some(MonitorSource::Uart)) => {
             return fail(
                 cli,
                 "monitor",
                 ErrorKind::CapabilityUnsupported,
                 "an OEP probe has no uart source here",
                 Some(
-                    "its fixture UART is `fixture-uart` in `arduino monitor`; a UART bridge's own \
-                     serial port opens with --port <path>",
+                    "leave --source out for the target's console (the slot's mechanism, else \
+                     dmseq), or name one: dmseq / dmdata / sdi, rtt, or fixture-uart (the fixture's \
+                     UART)",
                 ),
             );
         }
         (Some(a), _) => return run_oep(cli, args, a),
     }
-    match args.source {
+    let source = args.source.unwrap_or(MonitorSource::Uart);
+    match source {
         MonitorSource::Uart => run_uart(cli, args),
         MonitorSource::Sdi => run_sdi(cli, args),
-        MonitorSource::Dmdata | MonitorSource::Dmseq | MonitorSource::Rtt => {
-            run_dmi(cli, args.source)
-        }
+        MonitorSource::Dmdata | MonitorSource::Dmseq | MonitorSource::Rtt => run_dmi(cli, source),
         MonitorSource::FixtureUart => fail(
             cli,
             "monitor",
@@ -570,17 +574,19 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
     use ch32rv_oep::stream::Mechanism;
     const CMD: &str = "monitor";
     let wanted = match args.source {
-        MonitorSource::Dmdata => StreamWanted::Console(Mechanism::Dmdata),
-        MonitorSource::Dmseq => StreamWanted::Console(Mechanism::Dmseq),
-        MonitorSource::Sdi => StreamWanted::Console(Mechanism::Sdi),
-        MonitorSource::FixtureUart => StreamWanted::FixtureUart(args.baud),
-        MonitorSource::Rtt => StreamWanted::Rtt,
-        MonitorSource::Uart => {
+        // No --source: the target's console, by the slot's mechanism (else dmseq).
+        None => StreamWanted::ConsoleDefault,
+        Some(MonitorSource::Dmdata) => StreamWanted::Console(Mechanism::Dmdata),
+        Some(MonitorSource::Dmseq) => StreamWanted::Console(Mechanism::Dmseq),
+        Some(MonitorSource::Sdi) => StreamWanted::Console(Mechanism::Sdi),
+        Some(MonitorSource::FixtureUart) => StreamWanted::FixtureUart(args.baud),
+        Some(MonitorSource::Rtt) => StreamWanted::Rtt,
+        Some(MonitorSource::Uart) => {
             return fail(
                 cli,
                 CMD,
                 ErrorKind::CapabilityUnsupported,
-                format!("{} is not served through a broker", args.source.as_str()),
+                "uart is not served through a broker",
                 None,
             );
         }
@@ -592,17 +598,18 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
     if !cli.json {
         eprintln!(
             "monitor: {} through the probe's broker (Ctrl-C to stop; stdin goes to the target)",
-            args.source.as_str()
+            c.source_name()
         );
     }
     let input = source::spawn_reader(std::io::stdin());
     let mut pending = Vec::new();
-    let mut sink = Sink::new(cli, args.source.as_str());
+    let source_name = c.source_name();
+    let mut sink = Sink::new(cli, source_name);
     let deadline = run_duration(cli).map(|d| Instant::now() + d);
     loop {
         if deadline.is_some_and(|d| Instant::now() >= d) {
             sink.finish();
-            return finish_ok(cli, CMD, args.source.as_str(), Vec::new());
+            return finish_ok(cli, CMD, source_name, Vec::new());
         }
         source::drain_input(&input, &mut pending);
         if !pending.is_empty() {

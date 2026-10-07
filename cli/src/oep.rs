@@ -476,6 +476,8 @@ struct Place {
     pins: Option<(u16, u16)>,
     max_speed: Option<u32>,
     idle_clock: Option<u8>,
+    /// The slot's console mechanism (`oep.target.console`), when it has one.
+    mechanism: Option<u8>,
 }
 
 impl Place {
@@ -485,6 +487,7 @@ impl Place {
             pins: Some((s.swdio, s.swclk)),
             max_speed: s.max_speed,
             idle_clock: Some(s.idle_clock),
+            mechanism: (s.mechanism != 0xFF).then_some(s.mechanism),
         }
     }
 
@@ -588,6 +591,7 @@ fn place_by_scan(p: &mut Probe, wire: WireKind, chip: Option<&str>) -> Result<Pl
         pins: None,
         max_speed: None,
         idle_clock: None,
+        mechanism: None,
     };
     if !host_picks_pins(p, wire) {
         return Ok(bare);
@@ -966,6 +970,8 @@ fn check_family_text(chip_id: Option<u32>, chip: Option<&str>) -> Result<Option<
 pub(crate) enum StreamWanted {
     /// The target's console, by mechanism (needs a connection).
     Console(ch32rv_oep::stream::Mechanism),
+    /// The target's console by the slot's mechanism, else dmseq (`monitor` without --source).
+    ConsoleDefault,
     /// The fixture's UART at this baud (no connection needed).
     FixtureUart(u32),
     /// SEGGER RTT in the target's RAM, run by ch32rv over the probe's riscv-dm (the probe's
@@ -1071,6 +1077,8 @@ pub(crate) struct ConsoleSession {
     relink: Option<(Place, ch32rv_oep::stream::Mechanism)>,
     /// Since when the console has read nothing (its stream is checked after RELINK_CHECK).
     quiet_since: Instant,
+    /// What is read, as `--source` names it (the mechanism chosen when none was given).
+    source_name: &'static str,
 }
 
 /// How long a console reads nothing before the monitor checks that its stream is still open.
@@ -1106,6 +1114,12 @@ impl ConsoleSession {
             .open(random_session_id(), 3000, false, Some(&owner))
             .map_err(|e| e.to_string())?;
         let mut relink = None;
+        let mut source_name = match wanted {
+            StreamWanted::FixtureUart(_) => "fixture-uart",
+            StreamWanted::Rtt => "rtt",
+            StreamWanted::Console(m) => m.name(),
+            StreamWanted::ConsoleDefault => "dmseq",
+        };
         let (stream, attached) = match wanted {
             StreamWanted::FixtureUart(baud) => {
                 let (s, _) = ch32rv_oep::stream::PosStream::open_uart(&mut probe, baud).map_err(
@@ -1156,8 +1170,16 @@ impl ConsoleSession {
                     Some((wire, at.connection)),
                 )
             }
-            StreamWanted::Console(mech) => {
+            StreamWanted::Console(_) | StreamWanted::ConsoleDefault => {
                 let place = choose_place(&mut probe, a, chip)?;
+                let mech = match wanted {
+                    StreamWanted::Console(m) => m,
+                    _ => place
+                        .mechanism
+                        .and_then(ch32rv_oep::stream::Mechanism::from_code)
+                        .unwrap_or(ch32rv_oep::stream::Mechanism::Dmseq),
+                };
+                source_name = mech.name();
                 let wire = place.wire;
                 let at = attach(&mut probe, wire, place.options(false, None))
                     .map_err(|e| e.to_string())?;
@@ -1179,6 +1201,7 @@ impl ConsoleSession {
             max_read,
             relink,
             quiet_since: Instant::now(),
+            source_name,
         })
     }
 
@@ -1256,6 +1279,11 @@ impl ConsoleSession {
                 .map_err(|e| e.to_string()),
             Backing::Rtt { .. } => Ok(()),
         }
+    }
+
+    /// What is read, as `--source` names it.
+    pub(crate) fn source_name(&self) -> &'static str {
+        self.source_name
     }
 
     /// Whether this session is RTT (polled at RTT's pace: each poll halts the hart briefly).

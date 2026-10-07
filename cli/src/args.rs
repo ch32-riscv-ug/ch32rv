@@ -483,8 +483,10 @@ pub enum DmiCmd {
 pub struct MonitorArgs {
     #[command(subcommand)]
     pub cmd: Option<MonitorCmd>,
-    #[arg(long, value_enum, default_value = "uart")]
-    pub source: MonitorSource,
+    /// Default: `uart` on a WCH-Link; on an OEP probe the console by its slot's mechanism (else
+    /// dmseq)
+    #[arg(long, value_enum)]
+    pub source: Option<MonitorSource>,
     /// The serial port's path (default: the CDC of the probe --probe selects)
     #[arg(long)]
     pub port: Option<String>,

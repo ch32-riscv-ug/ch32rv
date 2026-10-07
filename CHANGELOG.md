@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `ch32rv monitor` without `--source` on an OEP probe reads the target's console by its slot's mechanism (dmseq when the slot names none or there is no slot), instead of failing with "no uart source"; on a WCH-Link the default stays `uart`. `--source uart` on an OEP probe now points at the console sources and fixture-uart.
+- (JA) OEP の probe で `--source` を省いた `ch32rv monitor` は、スロットの mechanism(スロットが名指さないか無ければ dmseq)で target の console を読む(「uart の source が無い」で止まらない)。WCH-Link での既定は今までどおり `uart`。OEP の probe での `--source uart` は、console の source と fixture-uart を案内する。
+
 - (EN) OEP on the 2026-10-07 rule review (oep-spec 0f455a0; oep-probe-arduino 0.0.29-dev+f32a3ef and up): list sends `first` only and ch32rv filters names itself; port_speed is baud, step and verify_ms (no port, no idle_ms; the probe goes back after 3 s with no good frame); a slot ends with its name (no lock, no boot_reset) and a slot's state is 12 bytes, its target id now read from the wire's `connections`; riscv-dm reset answers status, flags and pc; attach, scan and reset count max_op_ms as their argument time; the link test's frames carry max_frame − 7 (source) / − 12 (sink) bytes; `dmi_7f` names the WCH chip id scheme.
 - (JA) OEP を 2026-10-07 の規則の見直しに(oep-spec 0f455a0。oep-probe-arduino 0.0.29-dev+f32a3ef 以降): list は `first` だけを送り、名前は ch32rv が絞る。port_speed は baud、step、verify_ms(port と idle_ms は無い。probe は 3 秒正常なフレームが無ければ戻る)。スロットは名前で終わり(錠も boot_reset も無い)、スロットの状態は 12 byte で、target id は線の `connections` から読む。riscv-dm の reset は status、flags、pc で答える。attach、scan、reset の引数の時間は max_op_ms。線の試験のフレームは max_frame − 7(source)/ − 12(sink)byte。WCH の chip id の scheme は `dmi_7f`。
 

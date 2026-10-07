@@ -855,7 +855,7 @@ fn finish_flash(
         drop(session);
         let margs = crate::args::MonitorArgs {
             cmd: None,
-            source,
+            source: Some(source),
             port: None,
             baud: 115_200,
         };
@@ -927,7 +927,7 @@ fn finish_lent_ok(
     if let Some(source) = monitor {
         let margs = crate::args::MonitorArgs {
             cmd: None,
-            source,
+            source: Some(source),
             port: None,
             baud: 115_200,
         };

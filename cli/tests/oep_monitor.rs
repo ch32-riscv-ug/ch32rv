@@ -317,3 +317,35 @@ fn the_monitor_attaches_again_after_the_probe_loses_the_line() {
     );
     drop(m.stdin.take());
 }
+
+#[test]
+fn plain_monitor_on_an_oep_probe_reads_the_targets_console() {
+    // `ch32rv monitor` with no --source on an OEP probe: the target's console by the slot's
+    // mechanism, else dmseq (on a WCH-Link the default stays uart).
+    let Some((_fake, pty)) = fake_pty(&[
+        "--target-id",
+        "0x20310500",
+        "--console",
+        "uptime %d\r\n",
+        "--every",
+        "50",
+    ]) else {
+        return;
+    };
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        .args([
+            "monitor",
+            "--probe",
+            &format!("port:{pty}"),
+            "--duration",
+            "2",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(stdout.contains("uptime"), "{stdout:?} / {stderr}");
+    assert!(stderr.contains("monitor: dm"), "{stderr}");
+}

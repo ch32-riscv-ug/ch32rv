@@ -26,6 +26,26 @@ pub enum Mechanism {
 }
 
 impl Mechanism {
+    /// The mechanism of a code (a slot's `mechanism`), if ch32rv knows it.
+    pub fn from_code(code: u8) -> Option<Self> {
+        use console::enums::mechanism as m;
+        match code {
+            c if c == m::SDI => Some(Mechanism::Sdi),
+            c if c == m::DMDATA => Some(Mechanism::Dmdata),
+            c if c == m::DMSEQ => Some(Mechanism::Dmseq),
+            _ => None,
+        }
+    }
+
+    /// Its name as `--source` spells it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Mechanism::Sdi => "sdi",
+            Mechanism::Dmdata => "dmdata",
+            Mechanism::Dmseq => "dmseq",
+        }
+    }
+
     fn code(self) -> u8 {
         use console::enums::mechanism as m;
         match self {
