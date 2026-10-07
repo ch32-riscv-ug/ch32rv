@@ -599,7 +599,29 @@ impl Place {
     }
 }
 
-fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place, String> {
+/// Why no place was chosen: no target answered anywhere, or the rest (several, a slot not
+/// found, ...), with the exit kind each one is.
+struct PlaceError {
+    kind: ErrorKind,
+    msg: String,
+}
+
+impl From<String> for PlaceError {
+    fn from(msg: String) -> Self {
+        PlaceError {
+            kind: ErrorKind::TargetAmbiguous,
+            msg,
+        }
+    }
+}
+
+impl From<PlaceError> for String {
+    fn from(e: PlaceError) -> String {
+        e.msg
+    }
+}
+
+fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place, PlaceError> {
     let slots = ch32rv_oep::config::slots(p).map_err(|e| e.to_string())?;
     if let Some(slot) = a.slot() {
         let s = slots
@@ -659,12 +681,12 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
                 .iter()
                 .map(|x| format!("{}: {}", x.name, x.family.as_deref().unwrap_or("no target")))
                 .collect();
-            Err(format!(
+            Err(PlaceError::from(format!(
                 "{} slot(s) match {}: {}",
                 matches.len(),
                 chip.map_or("a target".to_owned(), |c| format!("--chip {c}")),
                 list.join(", ")
-            ))
+            )))
         }
     }
 }
@@ -677,7 +699,7 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
 /// ja: スロットが無いとき、`wire` のどこに target が居るか。ピンを probe が決める線(channel_group)は
 /// pins 無しの attach を受ける。host が選ぶ線(role_channels)は組が 2 つ以上だと断るので、scan して
 /// target の居る組を使う(複数なら、スロットと同じく各組の chip と `--chip` で絞る)。
-fn place_by_scan(p: &mut Probe, wire: WireKind, chip: Option<&str>) -> Result<Place, String> {
+fn place_by_scan(p: &mut Probe, wire: WireKind, chip: Option<&str>) -> Result<Place, PlaceError> {
     let bare = Place {
         wire,
         pins: None,
@@ -697,10 +719,13 @@ fn place_by_scan(p: &mut Probe, wire: WireKind, chip: Option<&str>) -> Result<Pl
         })
         .collect();
     match places.as_slice() {
-        [] => Err(format!(
-            "no target found on any pin pair of {} (scan)",
-            wire.interface()
-        )),
+        [] => Err(PlaceError {
+            kind: ErrorKind::TargetNoResponse,
+            msg: format!(
+                "no target found on any pin pair of {} (scan)",
+                wire.interface()
+            ),
+        }),
         [one] => Ok(*one),
         _ => {
             let db = ch32rv_target::Db::builtin();
@@ -733,12 +758,12 @@ fn place_by_scan(p: &mut Probe, wire: WireKind, chip: Option<&str>) -> Result<Pl
                             format!("pins {d}/{c}: {}", f.as_deref().unwrap_or("no target"))
                         })
                         .collect();
-                    Err(format!(
+                    Err(PlaceError::from(format!(
                         "{} pin pair(s) match {}: {} (register a slot for the board's pins)",
                         matches.len(),
                         chip.map_or("a target".to_owned(), |c| format!("--chip {c}")),
                         list.join(", ")
-                    ))
+                    )))
                 }
             }
         }
@@ -862,14 +887,11 @@ fn flash_in_session(
     const CMD: &str = "flash";
     let place = match choose_place(p, a, cli.chip.as_deref()) {
         Ok(v) => v,
-        Err(m) => {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::TargetAmbiguous,
-                m,
-                Some("name the slot with oep://<probe>/<slot>, or the board's family with --chip"),
+        Err(e) => {
+            let hint = (e.kind == ErrorKind::TargetAmbiguous).then_some(
+                "name the slot with oep://<probe>/<slot>, or the board's family with --chip",
             );
+            return fail(cli, CMD, e.kind, e.msg, hint);
         }
     };
     let max_speed_hz = match parse::speed(&cli.speed) {
@@ -1473,7 +1495,7 @@ pub(crate) fn with_attached_reset(
     let r = (|| {
         let place = match choose_place(&mut p, a, cli.chip.as_deref()) {
             Ok(v) => v,
-            Err(m) => return fail(cli, cmd, ErrorKind::TargetAmbiguous, m, None),
+            Err(e) => return fail(cli, cmd, e.kind, e.msg, None),
         };
         let wire = place.wire;
         let mut options = place.options(halt, None);

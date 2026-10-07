@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) On an OEP probe without slots, a scan that finds no target anywhere is `target-no-response` (20), no longer `target-ambiguous` (23); several targets that `--chip` cannot tell apart stay 23.
+- (JA) スロットの無い OEP の probe で、scan がどこにも target を見つけないときは `target-no-response`(20)にした(`target-ambiguous`(23)ではない)。`--chip` で絞れない複数の target は今までどおり 23。
+
 - (EN) OEP probes on the local network are found: a probe listening on TCP announces DNS-SD `_oep._tcp` over mDNS (oep-spec transports §3), and ch32rv browses it with a one-shot query of its own, sent out of every IPv4 interface (`if-addrs` and `socket2` added: on Windows a socket on 0.0.0.0 sent it out of WSL's virtual adapter and a probe on Wi-Fi never heard it). `--probe tcp:<unit_id>` and `oep://<unit_id>/<slot>` for a probe not on USB reach it over TCP, used only when describe's unit_id is the one named. `probe list` adds `tcp` to an OEP probe also seen on the network and lists network-only probes under `network` (JSON; the schema gains both, additively); `arduino discovery` lists their slots as `oep://<unit_id>/<slot>`. mDNS stays on the local link: behind a NAT (WSL 2's default, a VM) name the probe as `tcp:<host>:<port>`.
 - (JA) ローカルネットワークの OEP の probe を見つける: TCP で待ち受ける probe は DNS-SD の `_oep._tcp` を mDNS で名乗り(oep-spec transports §3)、ch32rv は自前の 1 回の問い合わせを、IPv4 のすべての口から出して引く(`if-addrs` と `socket2` を足した: Windows では 0.0.0.0 のソケットが WSL の仮想アダプタから出し、Wi-Fi の probe に届かなかった)。`--probe tcp:<unit_id>` と、USB に無い probe の `oep://<unit_id>/<slot>` は TCP でつなぎ、describe の unit_id が名指したものと同じときだけ使う。`probe list` は、ネットワークでも見つかった OEP の probe に `tcp` を足し、ネットワークだけの probe を `network` に出す(JSON。schema に両方を足した。足すだけ)。`arduino discovery` はそのスロットを `oep://<unit_id>/<slot>` で出す。mDNS は同じリンクの中だけ: NAT の裏(WSL 2 の既定、VM)では `tcp:<host>:<port>` で名指す。
 
