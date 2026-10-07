@@ -1,20 +1,21 @@
 //! en: `uv run` of oep-client-python for ch32rv's tests, in ch32rv's own environment
 //! (`target/oep-client-venv`), synced once - under a file lock, so the test processes running in
 //! parallel never install into it at the same time (they did into the client's shared `.venv`, and
-//! a fake that died while uv reinstalled failed the test, 2026-10-01).
-//! The fake is taken at `FAKE_REV`, a commit on the wire ch32rv speaks (the 2026-10-06
-//! simplified wire and the 2026-10-06 structure and the 2026-10-07 rule review, oep-spec 0f455a0, oep-probe-arduino 0.0.29): the fake moves with the spec
-//! ahead of the probes, so ch32rv raises it when it follows. `$OEP_CLIENT_PYTHON` names a
-//! checkout used as it is.
+//! a virtual probe that died while uv reinstalled failed the test, 2026-10-01).
+//! The virtual bench (oep-client-python's simulated probe, targets and fixture wiring; called the
+//! fake until 472ec96) is taken at `BENCH_REV`, a commit on the spec ch32rv speaks (oep-spec
+//! f8bb2de, oep-probe-arduino 0.0.29-dev+f32a3ef and up): it moves with the spec ahead of the
+//! probes, so ch32rv raises it when it follows. `$OEP_CLIENT_PYTHON` names a checkout used as it
+//! is.
 //! ja: テスト用の oep-client-python の `uv run`。ch32rv 専用の環境で、file lock の下で 1 回だけ sync
-//! する(並行するテストが同時に install しないように)。fake は ch32rv の話す wire の commit
-//! `FAKE_REV` で取り出す(ch32rv が追従するときに上げる)。
+//! する(並行するテストが同時に install しないように)。virtual bench(旧 fake)は ch32rv の話す仕様の
+//! commit `BENCH_REV` で取り出す(ch32rv が追従するときに上げる)。
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// oep-client-python on oep-spec 0f455a0 (the 2026-10-07 rule review), with `lose`.
-const FAKE_REV: &str = "9cda373";
+/// oep-client-python on oep-spec f8bb2de: the virtual bench, with `lose` and `reboot`.
+const BENCH_REV: &str = "b9e4a00";
 
 fn target_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
@@ -25,14 +26,14 @@ fn target_dir() -> PathBuf {
 }
 
 fn venv() -> PathBuf {
-    target_dir().join(format!("oep-client-venv-{FAKE_REV}"))
+    target_dir().join(format!("oep-client-venv-{BENCH_REV}"))
 }
 
-/// en: The oep-client-python to run the fake from: `$OEP_CLIENT_PYTHON` as it is, else the
-/// sibling checkout's `FAKE_REV` extracted (`git archive`, the checkout itself untouched) under
+/// en: The oep-client-python to run the virtual bench from: `$OEP_CLIENT_PYTHON` as it is, else the
+/// sibling checkout's `BENCH_REV` extracted (`git archive`, the checkout itself untouched) under
 /// `target/`. None, with a note, when neither is there.
-/// ja: fake を動かす oep-client-python。`$OEP_CLIENT_PYTHON` はそのまま、無ければ隣の checkout の
-/// `FAKE_REV` を target/ の下に取り出す(checkout には触らない)。どちらも無ければ None。
+/// ja: virtual bench を動かす oep-client-python。`$OEP_CLIENT_PYTHON` はそのまま、無ければ隣の checkout の
+/// `BENCH_REV` を target/ の下に取り出す(checkout には触らない)。どちらも無ければ None。
 pub fn client_dir() -> Option<PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
@@ -43,15 +44,15 @@ pub fn client_dir() -> Option<PathBuf> {
             .ancestors()
             .find(|p| p.join("Cargo.lock").exists())
             .map(|r| r.join("../../dev_oep/oep-client-python"))?;
-        let out = target_dir().join(format!("oep-client-{FAKE_REV}"));
+        let out = target_dir().join(format!("oep-client-{BENCH_REV}"));
         let _guard = Lock::take(&out.with_extension("lock"));
-        if !out.join("src/oep_client/fake_serve.py").exists() {
+        if !out.join("src/oep_client/virtual_bench_serve.py").exists() {
             let _ = std::fs::remove_dir_all(&out);
             std::fs::create_dir_all(&out).ok()?;
             let archive = Command::new("git")
                 .arg("-C")
                 .arg(&checkout)
-                .args(["archive", "--format=tar", FAKE_REV])
+                .args(["archive", "--format=tar", BENCH_REV])
                 .output()
                 .ok()
                 .filter(|o| o.status.success())?;
@@ -69,9 +70,9 @@ pub fn client_dir() -> Option<PathBuf> {
         Some(out)
     })
     .clone()
-    .filter(|d| d.join("src/oep_client/fake_serve.py").exists())
+    .filter(|d| d.join("src/oep_client/virtual_bench_serve.py").exists())
     .or_else(|| {
-        eprintln!("skip: no oep-client-python at {FAKE_REV} (set OEP_CLIENT_PYTHON or check out ../dev_oep/oep-client-python)");
+        eprintln!("skip: no oep-client-python at {BENCH_REV} (set OEP_CLIENT_PYTHON or check out ../dev_oep/oep-client-python)");
         None
     })
 }

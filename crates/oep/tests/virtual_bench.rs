@@ -1,12 +1,12 @@
 //! en: The link and session layers against the spec side's fake probe (oep-client-python
-//! `endpoint.Endpoint`), served over TCP by `tests/fake/serve.py`. The fake is the shared
+//! `endpoint.Endpoint`), served over TCP by `tests/virtual_bench/serve.py`. The fake is the shared
 //! "working spec" (ArduinoCore-CH32RV decision, 2026-09-29); Python runs only here, through `uv`.
-//! Skipped, with a note, when uv or the client is missing (fake/uv.rs: $OEP_CLIENT_PYTHON, else
+//! Skipped, with a note, when uv or the client is missing (virtual_bench/uv.rs: $OEP_CLIENT_PYTHON, else
 //! `../dev_oep/oep-client-python` next to the ch32rv checkout's parent, at the pinned commit).
 //! ja: link と session を spec 側の偽の probe で試験する。uv か client が無ければ skip。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "fake/uv.rs"]
+#[path = "virtual_bench/uv.rs"]
 mod uv;
 use std::io::{BufRead, BufReader};
 use std::net::TcpStream;
@@ -31,15 +31,16 @@ impl Drop for Fake {
     }
 }
 
-/// en: Start oep-client-python's `fake_serve` with `args` (and `env` for the loader hook), or
+/// en: Start oep-client-python's `virtual_bench_serve` with `args` (and `env` for the loader hook), or
 /// `None` (skip) when it cannot run here. `--run-hook` is always given: ch32rv's loader played in
 /// `tests/fake/loader_hook.py`.
-/// ja: `fake_serve` を起動する。動かせない環境では None(skip)。
+/// ja: `virtual_bench_serve` を起動する。動かせない環境では None(skip)。
 fn fake_env(args: &[&str], env: &[(&str, &str)]) -> Option<Fake> {
     let dir = uv::client_dir()?;
-    let hook = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fake/loader_hook.py:loader");
+    let hook =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/virtual_bench/loader_hook.py:loader");
     let mut cmd = uv::uv_run(&dir);
-    cmd.args(["python", "-m", "oep_client.fake_serve"])
+    cmd.args(["python", "-m", "oep_client.virtual_bench_serve"])
         .args(args)
         .arg("--run-hook")
         .arg(&hook)
@@ -62,7 +63,7 @@ fn fake_env(args: &[&str], env: &[(&str, &str)]) -> Option<Fake> {
         .unwrap();
     assert!(
         line.starts_with("PORT ") || line.starts_with("PTY "),
-        "fake_serve said {line:?}"
+        "virtual_bench_serve said {line:?}"
     );
     Some(Fake {
         child,

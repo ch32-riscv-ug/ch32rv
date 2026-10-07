@@ -5,7 +5,7 @@
 //! ja: ブローカーを偽の probe(pty)で試験する。2 つの client、共有の接続の detach、最後の client で終わる。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../crates/oep/tests/fake/uv.rs"]
+#[path = "../../crates/oep/tests/virtual_bench/uv.rs"]
 mod uv;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
@@ -29,7 +29,7 @@ impl Drop for Kill {
 fn fake_pty() -> Option<(Kill, String)> {
     let dir = uv::client_dir()?;
     let mut child = uv::uv_run(&dir)
-        .args(["python", "-m", "oep_client.fake_serve", "--pty"])
+        .args(["python", "-m", "oep_client.virtual_bench_serve", "--pty"])
         .args(["--target-id", "0x20310500"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -143,14 +143,14 @@ fn two_clients_share_one_broker_and_it_ends_with_the_last() {
 
 #[test]
 fn the_broker_opens_a_new_session_after_the_probe_restarts() {
-    // oep-client-python's fake_serve restarts on a `reboot` line on its stdin (new boot_id, every
+    // oep-client-python's virtual_bench_serve restarts on a `reboot` line on its stdin (new boot_id, every
     // session forgotten). The broker's next upstream request gets no_session: it passes that on,
     // opens a new session, and the client's next attach goes through (CHANGELOG, 2026-10-06).
     let Some(dir) = uv::client_dir() else {
         return;
     };
     let mut child = uv::uv_run(&dir)
-        .args(["python", "-m", "oep_client.fake_serve", "--pty"])
+        .args(["python", "-m", "oep_client.virtual_bench_serve", "--pty"])
         .args(["--target-id", "0x20310500"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -206,7 +206,7 @@ fn the_broker_opens_a_new_session_after_the_probe_restarts() {
     loop {
         let l = heard
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .expect("fake_serve did not say it rebooted");
+            .expect("virtual_bench_serve did not say it rebooted");
         if l.contains("rebooted") {
             break;
         }

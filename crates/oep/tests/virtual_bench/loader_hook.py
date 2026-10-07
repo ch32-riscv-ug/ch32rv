@@ -1,9 +1,9 @@
-"""ch32rv's RAM loader, played for the fake probe (oep-client-python fake_serve --run-hook).
+"""ch32rv's RAM loader, played for the virtual bench (oep-client-python virtual_bench_serve --run-hook).
 
-The fake has no flash and knows no loader; this plays ch32rv's (docs/oep-host.ja.md §5.1): copy a5
+The virtual target has no flash and knows no loader; this plays ch32rv's (docs/oep-host.ja.md §5.1): copy a5
 pages of a2 bytes from the buffer at a1 to the pages from a0, and stop at the ebreak at pc + 4 with
 a0 = 0.
-Fault injection, from the environment (fake_serve passes its environment on):
+Fault injection, from the environment (virtual_bench_serve passes its environment on):
 
   CH32RV_FAKE_NOSTART=N   the first N runs do not start (stop at pc, as a missed resumereq)
   CH32RV_FAKE_GARBLE=N    the N-th run (1-based, counting the ones that did not start) writes one

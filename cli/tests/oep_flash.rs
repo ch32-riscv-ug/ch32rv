@@ -1,11 +1,11 @@
 //! en: `ch32rv flash` end to end on an OEP probe: the spec side's fake probe (oep-client-python
-//! `fake_serve`) with ch32rv's loader played by `crates/oep/tests/fake/loader_hook.py`, over TCP
+//! `virtual_bench_serve`) with ch32rv's loader played by `crates/oep/tests/virtual_bench/loader_hook.py`, over TCP
 //! (`--probe tcp:`) and over its pty (`--probe port:<pty>`, the serial path with the single-serial
 //! lock rule). Skipped when uv or the client checkout is missing.
 //! ja: OEP の probe での `ch32rv flash` を端から端まで(偽の probe、TCP と pty)。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-#[path = "../../crates/oep/tests/fake/uv.rs"]
+#[path = "../../crates/oep/tests/virtual_bench/uv.rs"]
 mod uv;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
@@ -29,9 +29,9 @@ fn root() -> PathBuf {
 
 fn fake(args: &[&str]) -> Option<Fake> {
     let dir = uv::client_dir()?;
-    let hook = root().join("crates/oep/tests/fake/loader_hook.py:loader");
+    let hook = root().join("crates/oep/tests/virtual_bench/loader_hook.py:loader");
     let mut child = uv::uv_run(&dir)
-        .args(["python", "-m", "oep_client.fake_serve"])
+        .args(["python", "-m", "oep_client.virtual_bench_serve"])
         .args(args)
         .arg("--run-hook")
         .arg(&hook)
@@ -259,7 +259,7 @@ fn flash_where_the_host_picks_the_pins() {
     let Some(dir) = uv::client_dir() else {
         return;
     };
-    let has_profile = std::fs::read_to_string(dir.join("src/oep_client/fake.py"))
+    let has_profile = std::fs::read_to_string(dir.join("src/oep_client/virtual_bench.py"))
         .is_ok_and(|t| t.contains("rp2350-pins"));
     if !has_profile {
         eprintln!("skip: the fake has no rp2350-pins profile");
