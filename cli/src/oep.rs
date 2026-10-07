@@ -354,21 +354,37 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
 /// WCH-Link path.
 /// ja: `--probe` が OEP の probe を指すか(`tcp:`、`port:oep://…`、WCH-Link のものでない serial port)。
 pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
-    match crate::cmd_probe::parse_selector(cli, cmd)? {
-        // `tcp:<host>:<port>` as given; `tcp:<unit_id>` (no port) found by DNS-SD.
+    let sel = match crate::cmd_probe::parse_selector(cli, cmd)? {
+        // `tcp://host[:port]` as the other OEP clients write it, also behind `port:` (an IDE's
+        // port address).
+        Some(Selector::Tcp(a)) => {
+            Some(Selector::Tcp(a.strip_prefix("//").unwrap_or(&a).to_owned()))
+        }
+        Some(Selector::Port(p)) if p.starts_with("tcp:") => {
+            let rest = &p["tcp:".len()..];
+            Some(Selector::Tcp(
+                rest.strip_prefix("//").unwrap_or(rest).to_owned(),
+            ))
+        }
+        other => other,
+    };
+    match sel {
+        // `tcp:<host>:<port>` as given; `tcp:<unit_id>` or `tcp:<host>` (no port) found by DNS-SD
+        // (the unit id in TXT, or the host's SRV name or address).
         Some(Selector::Tcp(a)) if a.contains(':') => Ok(Some(OepAddr::Tcp(a))),
-        Some(Selector::Tcp(unit)) => match crate::mdns::find_unit(&unit, BROWSE_WAIT) {
-            Some(f) => match f.endpoint() {
-                Some(addr) => Ok(Some(OepAddr::Net {
+        Some(Selector::Tcp(name)) => match crate::mdns::find_named(&name, BROWSE_WAIT) {
+            Some(f) => match (f.endpoint(), f.unit_id.clone()) {
+                (Some(addr), Some(unit)) => Ok(Some(OepAddr::Net {
                     addr,
                     unit,
                     slot: None,
                 })),
-                None => Err(fail(
+                (Some(addr), None) => Ok(Some(OepAddr::Tcp(addr))),
+                (None, _) => Err(fail(
                     cli,
                     cmd,
                     ErrorKind::DeviceNotFound,
-                    format!("OEP probe {unit} announces no reachable endpoint"),
+                    format!("OEP probe {name} announces no reachable endpoint"),
                     None,
                 )),
             },
@@ -376,7 +392,7 @@ pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
                 cli,
                 cmd,
                 ErrorKind::DeviceNotFound,
-                format!("no OEP probe {unit} is announced on the local network (DNS-SD _oep._tcp)"),
+                format!("no OEP probe {name} is announced on the local network (DNS-SD _oep._tcp)"),
                 Some(
                     "mDNS stays on the local link: name it tcp:<host>:<port> where it does not reach",
                 ),
@@ -1232,9 +1248,10 @@ impl ConsoleSession {
             }
         };
         let owner = format!("ch32rv monitor pid {}", std::process::id());
-        probe
-            .open(random_session_id(), 3000, false, Some(&owner))
-            .map_err(|e| e.to_string())?;
+        // A probe on TCP may still be held by another host's session - a broker on its other
+        // transport lingering after its last client, ending it seconds later: wait out its
+        // lease as the other commands do (a broker answers open itself and never refuses).
+        open_with_lock_rule(&mut probe, false, &owner, 3000).map_err(|e| e.to_string())?;
         let mut relink = None;
         let mut source_name = match wanted {
             StreamWanted::FixtureUart(_) => "fixture-uart",

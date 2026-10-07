@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `--probe` takes `tcp://host[:port]` as the other OEP clients write it, also behind `port:` (an IDE's port address); without a port, the host or unit id is found by DNS-SD (the unit id in TXT, the SRV host name or an address). A monitor over TCP waits out another host's lock as the other commands do (a broker on the probe's other transport lingers 3 s after its last client, then ends its session), and its first line says "over TCP" instead of naming a broker.
+- (JA) `--probe` は、ほかの OEP の client と同じ `tcp://host[:port]` も受ける(`port:` の後ろでも。IDE の port の address)。port が無ければ、host か unit id を DNS-SD で探す(TXT の unit id、SRV の host 名、address)。TCP の monitor は、ほかのコマンドと同じく別の host のロックを待つ(probe の別の経路のブローカーは、最後の client の後 3 秒残ってから session を終える)。最初の行は、ブローカーではなく「over TCP」と言う。
+
 - (EN) On an OEP probe without slots, a scan that finds no target anywhere is `target-no-response` (20), no longer `target-ambiguous` (23); several targets that `--chip` cannot tell apart stay 23.
 - (JA) スロットの無い OEP の probe で、scan がどこにも target を見つけないときは `target-no-response`(20)にした(`target-ambiguous`(23)ではない)。`--chip` で絞れない複数の target は今までどおり 23。
 

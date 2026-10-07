@@ -345,14 +345,20 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
         "{found}"
     );
 
-    let out = ch32rv(&[
-        "target",
-        "info",
-        "--probe",
-        &format!("tcp:{unit}"),
-        "--json",
-    ]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["ok"], true, "{v}");
-    assert_eq!(v["result"]["target"]["chip_id"], "0x00300500", "{v}");
+    // The unit id, and the URL forms the other OEP clients take (also behind `port:`, an IDE's
+    // port address).
+    for probe in [
+        format!("tcp:{unit}"),
+        format!("tcp://{unit}"),
+        format!("tcp://127.0.0.1:{port}"),
+        format!("port:tcp://127.0.0.1:{port}"),
+    ] {
+        let out = ch32rv(&["target", "info", "--probe", &probe, "--json"]);
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(v["ok"], true, "{probe}: {v}");
+        assert_eq!(
+            v["result"]["target"]["chip_id"], "0x00300500",
+            "{probe}: {v}"
+        );
+    }
 }

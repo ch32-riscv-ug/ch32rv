@@ -145,6 +145,29 @@ fn browse_at(to: SocketAddr, wait: Duration) -> Vec<Found> {
     st.found()
 }
 
+/// en: The probe `name` names, browsing up to `wait`: its TXT unit_id (case aside), else its SRV
+/// host name (with or without `.local`), else one of its addresses (`tcp://<host>` with the port
+/// from SRV). ja: `name` が指す probe(unit_id、無ければ SRV の host 名か address)。
+pub(crate) fn find_named(name: &str, wait: Duration) -> Option<Found> {
+    let all = browse(wait);
+    let host = |f: &Found| {
+        let h = f.host.trim_end_matches('.');
+        h.eq_ignore_ascii_case(name)
+            || h.strip_suffix(".local")
+                .is_some_and(|b| b.eq_ignore_ascii_case(name))
+    };
+    let by_unit = all.iter().position(|f| {
+        f.unit_id
+            .as_deref()
+            .is_some_and(|u| u.eq_ignore_ascii_case(name))
+    });
+    let i = by_unit.or_else(|| all.iter().position(host)).or_else(|| {
+        all.iter()
+            .position(|f| f.addrs.iter().any(|a| a.to_string() == name))
+    })?;
+    all.into_iter().nth(i)
+}
+
 /// The probe whose TXT unit_id is `unit_id` (case aside, oep-core §3.3), browsing up to `wait`.
 pub(crate) fn find_unit(unit_id: &str, wait: Duration) -> Option<Found> {
     browse(wait).into_iter().find(|f| {
