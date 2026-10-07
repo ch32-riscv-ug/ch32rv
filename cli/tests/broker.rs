@@ -44,7 +44,7 @@ fn fake_pty() -> Option<(Kill, String)> {
 }
 
 fn ch32rv(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+    uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
         .args(args)
         .output()
         .unwrap()
@@ -87,7 +87,7 @@ fn two_clients_share_one_broker_and_it_ends_with_the_last() {
     };
     // Start the broker the way a client does, and wait for its endpoint.
     let _broker = Kill(
-        Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
             .args(["broker", "serve", "--probe", &format!("port:{pty}")])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -172,7 +172,7 @@ fn the_broker_opens_a_new_session_after_the_probe_restarts() {
     });
     let _fake = Kill(child);
     let _broker = Kill(
-        Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
             .args(["broker", "serve", "--probe", &format!("port:{pty}")])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -250,7 +250,7 @@ fn a_client_restarts_the_probe_through_the_broker() {
     };
     let start = || {
         Kill(
-            Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+            uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
                 .args(["broker", "serve", "--probe", &format!("port:{pty}")])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())

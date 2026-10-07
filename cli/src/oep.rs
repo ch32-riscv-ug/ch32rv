@@ -427,6 +427,36 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
     })
 }
 
+/// en: A TCP address as written after `tcp:` (a leading `//` of `tcp://` already gone or not):
+/// `<host>:<port>` as given; `<unit_id>` or `<host>` (no port) found by DNS-SD (the unit id in
+/// TXT, or the host's SRV name or address). The one place every path - `--probe`, an IDE's port
+/// address, `port:tcp:` - reads one, so each meets the same broker. Err: the message and a hint.
+/// ja: `tcp:` の後ろのアドレスを解く。`--probe`、IDE の port、`port:tcp:` のどれもここを通る。
+pub(crate) fn tcp_addr(name: &str) -> Result<OepAddr, (String, Option<&'static str>)> {
+    let name = name.strip_prefix("//").unwrap_or(name);
+    if name.contains(':') {
+        return Ok(OepAddr::Tcp(name.to_owned()));
+    }
+    let Some(f) = crate::mdns::find_named(name, BROWSE_WAIT) else {
+        return Err((
+            format!("no OEP probe {name} is announced on the local network (DNS-SD _oep._tcp)"),
+            Some("mDNS stays on the local link: name it tcp:<host>:<port> where it does not reach"),
+        ));
+    };
+    match (f.endpoint(), f.unit_id) {
+        (Some(addr), Some(unit)) => Ok(OepAddr::Net {
+            addr,
+            unit,
+            slot: None,
+        }),
+        (Some(addr), None) => Ok(OepAddr::Tcp(addr)),
+        (None, _) => Err((
+            format!("OEP probe {name} announces no reachable endpoint"),
+            None,
+        )),
+    }
+}
+
 /// en: Whether `--probe` names an OEP probe: `tcp:`, `port:oep://<probe>/<slot>`, or
 /// `port:<path>` for a serial port that no WCH-Link owns. `None` leaves the command on the
 /// WCH-Link path.
@@ -447,35 +477,9 @@ pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
         other => other,
     };
     match sel {
-        // `tcp:<host>:<port>` as given; `tcp:<unit_id>` or `tcp:<host>` (no port) found by DNS-SD
-        // (the unit id in TXT, or the host's SRV name or address).
-        Some(Selector::Tcp(a)) if a.contains(':') => Ok(Some(OepAddr::Tcp(a))),
-        Some(Selector::Tcp(name)) => match crate::mdns::find_named(&name, BROWSE_WAIT) {
-            Some(f) => match (f.endpoint(), f.unit_id.clone()) {
-                (Some(addr), Some(unit)) => Ok(Some(OepAddr::Net {
-                    addr,
-                    unit,
-                    slot: None,
-                })),
-                (Some(addr), None) => Ok(Some(OepAddr::Tcp(addr))),
-                (None, _) => Err(fail(
-                    cli,
-                    cmd,
-                    ErrorKind::DeviceNotFound,
-                    format!("OEP probe {name} announces no reachable endpoint"),
-                    None,
-                )),
-            },
-            None => Err(fail(
-                cli,
-                cmd,
-                ErrorKind::DeviceNotFound,
-                format!("no OEP probe {name} is announced on the local network (DNS-SD _oep._tcp)"),
-                Some(
-                    "mDNS stays on the local link: name it tcp:<host>:<port> where it does not reach",
-                ),
-            )),
-        },
+        Some(Selector::Tcp(name)) => tcp_addr(&name)
+            .map(Some)
+            .map_err(|(m, hint)| fail(cli, cmd, ErrorKind::DeviceNotFound, m, hint)),
         Some(Selector::Port(p)) if p.starts_with("oep://") => resolve_oep_url(&p)
             .map(Some)
             .map_err(|m| fail(cli, cmd, ErrorKind::DeviceNotFound, m, None)),

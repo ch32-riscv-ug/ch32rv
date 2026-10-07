@@ -104,6 +104,48 @@ fn saved_sid(key: &str) -> Option<u32> {
         .filter(|&s| s != 0)
 }
 
+/// en: Remove what brokers that no longer run left in the runtime directory: an endpoint file
+/// whose broker does not hold its flock (it died), and, older than a day, a kept session id or
+/// an address's unit id; logs and lock files older than a week (a lock only when not held).
+/// Only ch32rv's broker files (`oep-*`, `wch-*`); `own` (this broker's key) is left alone.
+/// ja: もう動いていないブローカーが runtime の場所に残したものを消す(死んだブローカーの endpoint、
+/// 1 日より古い session id と unit id、1 週間より古い log と lock)。
+fn sweep_runtime(own: &str) {
+    const DAY: Duration = Duration::from_secs(24 * 3600);
+    let Ok(dir) = std::fs::read_dir(ch32rv_usb::runtime_dir()) else {
+        return;
+    };
+    for e in dir.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !(name.starts_with("oep-") || name.starts_with("wch-")) || name.starts_with(own) {
+            continue;
+        }
+        let age = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .unwrap_or_default();
+        let held = |key: &str| {
+            ch32rv_usb::DeviceLock::acquire(&format!("{key}.broker"), Duration::ZERO).is_err()
+        };
+        let stale = if let Some(key) = name.strip_suffix(".oep") {
+            !held(key)
+        } else if name.ends_with(".sid") || name.ends_with(".unit") {
+            age > DAY
+        } else if let Some(key) = name.strip_suffix(".broker.lock") {
+            age > 7 * DAY && !held(key)
+        } else if name.ends_with(".broker.log") || name.ends_with(".broker.log.1") {
+            age > 7 * DAY
+        } else {
+            false
+        };
+        if stale {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 /// Whether fn 0 describe's firmware (`<major>.<minor>.<patch>`, oep-probe-arduino) is at least
 /// `want`; false when it does not say or says something else.
 fn firmware_at_least(p: &mut ch32rv_oep::session::Probe, want: (u32, u32, u32)) -> bool {
@@ -509,6 +551,7 @@ fn serve_target(
     else {
         return ExitCode::SUCCESS;
     };
+    sweep_runtime(&key);
     let report_error = |m: String| {
         let _ = write_endpoint(
             &key,

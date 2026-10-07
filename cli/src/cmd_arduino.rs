@@ -665,6 +665,16 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
             oep: None,
         });
     }
+    // A probe on TCP (`tcp:<host>:<port>`, `tcp://…`, `tcp:<unit_id>`): the same resolution as
+    // `--probe`, so the monitor meets the broker the upload used.
+    if let Some(rest) = address.strip_prefix("tcp:") {
+        let a = crate::oep::tcp_addr(rest).map_err(|(m, _)| m)?;
+        return Ok(Resolved {
+            entry: None,
+            port: None,
+            oep: Some(a),
+        });
+    }
     if address.starts_with("oep://") {
         let a = crate::oep::resolve_oep_url(address)?;
         return Ok(Resolved {
@@ -758,7 +768,12 @@ impl Backend {
                 .then(|| crate::oep::OepAddr::Wch(crate::broker::BrokerTarget::wch(e)))
         });
         if let Some(oep) = wch_via_broker.as_ref().or(r.oep.as_ref())
-            && (s.source != MonitorSource::Uart || oep.slot().is_some())
+            && (s.source != MonitorSource::Uart
+                || oep.slot().is_some()
+                || matches!(
+                    oep,
+                    crate::oep::OepAddr::Tcp(_) | crate::oep::OepAddr::Net { .. }
+                ))
         {
             use crate::oep::StreamWanted;
             use ch32rv_oep::stream::Mechanism;

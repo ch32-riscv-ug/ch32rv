@@ -46,7 +46,7 @@ struct Monitor {
 
 impl Monitor {
     fn start() -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        let mut child = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
             .args(["arduino", "monitor", "--protocol", "serial"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -129,7 +129,7 @@ fn a_debug_source_streams_the_oep_console_through_the_broker() {
     // The broker lingers 3 s after its last client (an IDE's monitor-then-upload), then ends.
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
-        let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        let out = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
             .args([
                 "broker",
                 "endpoint",
@@ -196,7 +196,7 @@ fn the_cli_monitor_streams_an_oep_console() {
     ]) else {
         return;
     };
-    let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+    let out = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
         .args([
             "monitor",
             "--source",
@@ -226,7 +226,7 @@ fn uart_on_an_oep_probe_says_so_and_rtt_looks_for_the_block() {
         return;
     };
     let run = |source: &str| {
-        let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        let out = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
             .args(["monitor", "--source", source, "--duration", "1"])
             .args(["--probe", &format!("port:{pty}"), "--json"])
             .output()
@@ -332,7 +332,7 @@ fn plain_monitor_on_an_oep_probe_reads_the_targets_console() {
     ]) else {
         return;
     };
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+    let out = uv::with_runtime(std::process::Command::new(env!("CARGO_BIN_EXE_ch32rv")))
         .args([
             "monitor",
             "--probe",
@@ -348,4 +348,60 @@ fn plain_monitor_on_an_oep_probe_reads_the_targets_console() {
     assert!(out.status.success(), "{stderr}");
     assert!(stdout.contains("uptime"), "{stdout:?} / {stderr}");
     assert!(stderr.contains("monitor: dm"), "{stderr}");
+}
+
+#[test]
+fn the_arduino_monitor_opens_a_tcp_port() {
+    // An IDE's port address `tcp:<host>:<port>` (a probe on Wi-Fi): OPEN resolves it as --probe
+    // does and meets the probe's broker (keyed by the unit id the probe describes), and the
+    // console streams. The bench saw OPEN wait for a broker under another key (2026-10-07).
+    let Some(dir) = uv::client_dir() else {
+        return;
+    };
+    let unit = format!("{:08x}cafe", std::process::id());
+    let mut child = uv::uv_run(&dir)
+        .args([
+            "python",
+            "-m",
+            "oep_client.virtual_bench_serve",
+            "--tcp",
+            "0",
+        ])
+        .args(["--framing", "length", "--unit-id", &unit])
+        .args(["--target-id", "0x20310500"])
+        .args(["--console", "uptime %d\r\n", "--every", "50"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    // Kept open: the virtual bench writes on, and a closed pipe would end it.
+    let mut out = BufReader::new(child.stdout.take().unwrap());
+    out.read_line(&mut line).unwrap();
+    let _bench = Kill(child);
+    let port = line.trim().strip_prefix("PORT ").unwrap().to_owned();
+    for address in [
+        format!("tcp:127.0.0.1:{port}"),
+        format!("tcp://127.0.0.1:{port}"),
+    ] {
+        let mut m = Monitor::start();
+        m.cmd("HELLO 1 \"test\"");
+        assert_eq!(m.cmd("CONFIGURE source dmseq")["message"], "OK");
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let at = l.local_addr().unwrap();
+        let r = m.cmd(&format!("OPEN {at} {address}"));
+        assert_eq!(r["message"], "OK", "{address}: {r}");
+        let (mut sock, _) = l.accept().unwrap();
+        sock.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let mut got = Vec::new();
+        let mut buf = [0u8; 256];
+        while !String::from_utf8_lossy(&got).contains("uptime") {
+            let n = sock.read(&mut buf).unwrap();
+            assert!(n > 0, "the monitor closed");
+            got.extend_from_slice(&buf[..n]);
+        }
+        drop(m.stdin.take());
+        let _ = m.child.wait();
+    }
+    drop(out);
 }

@@ -133,3 +133,41 @@ pub fn uv_run(dir: &Path) -> Command {
         .env("UV_PROJECT_ENVIRONMENT", &env);
     c
 }
+
+/// en: A runtime directory of this test process's own (`XDG_RUNTIME_DIR` for the ch32rv it starts,
+/// and the brokers that one starts): the brokers, endpoint and session files of the virtual
+/// probes stay out of the user's, and go with `target/`. Directories older than an hour (earlier
+/// runs) are removed the first time.
+/// ja: この試験プロセス専用の runtime の場所。virtual probe のブローカーのファイルを利用者の場所に残さない。
+#[allow(dead_code)]
+pub fn test_runtime_dir() -> PathBuf {
+    static DIR: OnceLock<PathBuf> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let base = target_dir().join("ch32rv-test-runtime");
+        if let Ok(old) = std::fs::read_dir(&base) {
+            for e in old.flatten() {
+                let stale = e
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.elapsed().ok())
+                    .is_some_and(|a| a.as_secs() > 3600);
+                if stale {
+                    let _ = std::fs::remove_dir_all(e.path());
+                }
+            }
+        }
+        let d = base.join(std::process::id().to_string());
+        let _ = std::fs::create_dir_all(&d);
+        d
+    })
+    .clone()
+}
+
+/// `c` with this test process's runtime directory (see [`test_runtime_dir`]).
+#[allow(dead_code)]
+pub fn with_runtime(mut c: Command) -> Command {
+    // ch32rv uses `$XDG_RUNTIME_DIR/ch32rv`.
+    c.env("XDG_RUNTIME_DIR", test_runtime_dir());
+    c
+}

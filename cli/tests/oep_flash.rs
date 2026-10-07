@@ -60,7 +60,7 @@ fn fake(args: &[&str]) -> Option<Fake> {
 }
 
 fn flash(probe: &str) -> serde_json::Value {
-    let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+    let out = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
         .arg("flash")
         .arg(root().join("tests/fixtures/runtest-ch32v203.bin"))
         .args([
@@ -109,7 +109,7 @@ fn flash_over_the_serial_path() {
 }
 
 fn flash_raw(probe: &str, chip: Option<&str>) -> (bool, serde_json::Value) {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_ch32rv"));
+    let mut cmd = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")));
     cmd.arg("flash")
         .arg(root().join("tests/fixtures/runtest-ch32v203.bin"))
         .args([
@@ -184,7 +184,7 @@ fn two_slots_of_the_family_stop_with_the_list() {
 }
 
 fn run(args: &[&str]) -> (bool, serde_json::Value) {
-    let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+    let out = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
         .args(args)
         .args(["--json", "--non-interactive"])
         .output()
