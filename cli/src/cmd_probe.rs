@@ -301,7 +301,45 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
     // USB gets its `tcp` endpoint added, one only on the network is a row of its own (`serial` is
     // the announced unit id; nothing is opened).
     // ja: ネットワークの OEP の probe(DNS-SD)。USB にもあれば `tcp` を足し、無ければ行を足す(開かない)。
-    let mut net = crate::mdns::browse(std::time::Duration::from_millis(600));
+    let net = crate::mdns::browse(std::time::Duration::from_millis(600));
+    // en: Another service may announce `_oep._tcp` too (the name is not registered): an instance is
+    // listed only when a short confirm + describe at its endpoint answers the unit id it announced
+    // (host guide §4.1); the rest are dropped with a warning. Looked at in parallel, a few seconds
+    // at most; one whose broker runs was looked at already.
+    // ja: `_oep._tcp` は他のサービスも名乗りうるので、短い confirm と describe で名乗った unit id が
+    // 答えるものだけを出す。ほかは警告をつけて除く。
+    let looks: Vec<_> = net
+        .iter()
+        .map(|f| {
+            let addr = f.endpoint();
+            std::thread::spawn(move || addr.as_deref().and_then(crate::oep::unit_at))
+        })
+        .collect();
+    let said: Vec<Option<String>> = looks.into_iter().map(|h| h.join().ok().flatten()).collect();
+    let mut verified = Vec::new();
+    for (f, u) in net.into_iter().zip(said) {
+        let ok = matches!((&f.unit_id, &u), (Some(a), Some(b)) if a.eq_ignore_ascii_case(b));
+        if ok {
+            verified.push(f);
+        } else {
+            all_warnings.push(Warning {
+                code: "oep-tcp-unverified".to_owned(),
+                msg: format!(
+                    "{} announces _oep._tcp{} but {}: not listed",
+                    f.endpoint().unwrap_or_else(|| f.instance.clone()),
+                    f.unit_id
+                        .as_deref()
+                        .map(|u| format!(" as unit {u}"))
+                        .unwrap_or_default(),
+                    match u {
+                        Some(u) => format!("describes itself as {u}"),
+                        None => "does not answer as an OEP probe".to_owned(),
+                    }
+                ),
+            });
+        }
+    }
+    let mut net = verified;
     for dev in crate::oep::oep_devices() {
         let id = crate::oep::probe_id(&dev);
         let tcp = net

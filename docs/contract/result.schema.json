@@ -130,7 +130,7 @@
           "result": {
             "properties": {
               "network": {
-                "description": "USB に無く、ローカルネットワークで DNS-SD(_oep._tcp、oep-spec transports §3)に名乗った OEP probe。開いて確かめてはいない",
+                "description": "USB に無く、ローカルネットワークで DNS-SD(_oep._tcp、oep-spec transports §3)に名乗った OEP probe。名乗った unit_id に confirm と describe で答えたものだけ(答えないものは警告 oep-tcp-unverified で除く)",
                 "type": "array",
                 "items": {
                   "type": "object",

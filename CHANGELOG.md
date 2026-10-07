@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `probe list` lists a network probe only when a short confirm + describe at its endpoint answers the unit id it announced: `_oep._tcp` stays an unregistered name another service may announce too (oep-spec host guide §4.1). The rest are dropped with warning `oep-tcp-unverified`. The looks run in parallel; a probe whose broker runs is not asked again.
+- (JA) `probe list` は、ネットワークの probe を、名乗った unit id に短い confirm と describe で答えたときだけ出す: `_oep._tcp` は登録しない名前で、他のサービスも名乗りうる(oep-spec host ガイド §4.1)。ほかは警告 `oep-tcp-unverified` をつけて除く。確かめは並行して行い、ブローカーが動いている probe には聞き直さない。
+
 - (EN) The Arduino pluggable monitor opens a `tcp:` port (a probe on Wi-Fi): its address is read as `--probe` reads one, so it meets the probe's broker (keyed by unit id) instead of waiting for a broker under a serial-port key that never came ("did not start within 5 s"). A broker starting up removes what dead brokers left in the runtime directory (endpoint files of brokers no longer running; kept session ids and address unit ids older than a day; logs and unheld lock files older than a week).
 - (JA) Arduino の pluggable monitor が `tcp:` の port(Wi-Fi の probe)を開ける: アドレスを `--probe` と同じに解くので、probe のブローカー(unit id が key)に着く(serial の口の key で来ないブローカーを待って「5 s のうちに起動しない」で止まらない)。起動するブローカーは、死んだブローカーが runtime の場所に残したものを消す(動いていないブローカーの endpoint、1 日より古い session id とアドレスの unit id、1 週間より古い log と持たれていない lock)。
 

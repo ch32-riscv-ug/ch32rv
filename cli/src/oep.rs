@@ -89,7 +89,7 @@ pub(crate) fn net_target(a: &OepAddr) -> Option<crate::broker::BrokerTarget> {
 /// en: The unit id the probe at `addr` describes, from a short direct look (connect, confirm,
 /// describe; a few seconds at most). `None` when it cannot be reached or does not say.
 /// ja: `addr` の probe が describe で言う unit id(短く直接つないで読む)。届かなければ None。
-fn unit_at(addr: &str) -> Option<String> {
+pub(crate) fn unit_at(addr: &str) -> Option<String> {
     // en: Known already, and its broker runs: that broker holds one of the probe's connections,
     // and a probe serves only a few (the reference probe and the virtual bench 3), so it is not
     // asked again.
