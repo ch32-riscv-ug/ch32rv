@@ -416,7 +416,7 @@ impl Probe {
     /// en: The ops `func` declares in its describe's `ops` tag (core §1.2, §7.4: base(u8) bitmap,
     /// every op the fn offers, the optional ones included); `None` when the describe carries none
     /// (a probe that does not conform yet: the caller sends and lets the probe answer).
-    /// An ops tag that is not the one encoding core §7.4 allows is an error (the fn is not used).
+    /// A broken ops tag (core §7.4) is an error: the fn is not used.
     /// ja: `func` の describe の ops(base + bitmap)が立てる op。ops が無ければ None。
     pub fn ops(&mut self, func: u16) -> Result<Option<Vec<u8>>, OepError> {
         if let Some(o) = self.ops.get(&func) {
@@ -429,7 +429,7 @@ impl Probe {
             }
             let set = decode_ops(&t.value).ok_or_else(|| {
                 OepError::Malformed(format!(
-                    "fn {func} declares its ops in a form core §7.4 does not allow ({:02x?})",
+                    "fn {func} declares broken ops (core §7.4: {:02x?})",
                     t.value
                 ))
             })?;
@@ -468,17 +468,14 @@ impl Probe {
     }
 }
 
-/// en: The ops set a describe `ops` value declares (core §7.4: base(u8) bitmap), or `None` when
-/// it is not the one encoding the core allows: 2..=33 bytes, base + 8 x bitmap bytes <= 256, bit 0
-/// set (base is the lowest op) and the last byte non-zero. A host does not use an fn whose ops
-/// break this (fn 0's: the probe).
-/// ja: describe の ops の値が立てる op の集合。core が許す唯一の符号でなければ None。
+/// en: The ops set a describe `ops` value declares (core §7.4: base(u8) and a bitmap of 1 byte
+/// or more, base + 8 x bitmap bytes <= 256 - the bitmap never passes op 0xFF), or `None` when the
+/// value breaks that. One set may have several values (a trailing zero byte, base below the
+/// lowest op). A host does not use an fn whose ops are broken.
+/// ja: describe の ops の値が立てる op の集合。形が崩れていれば None。
 pub fn decode_ops(v: &[u8]) -> Option<Vec<u8>> {
-    let canonical = (2..=33).contains(&v.len())
-        && usize::from(v[0]) + 8 * (v.len() - 1) <= 256
-        && v[1] & 1 != 0
-        && v.last() != Some(&0);
-    if !canonical {
+    let valid = v.len() >= 2 && usize::from(v[0]) + 8 * (v.len() - 1) <= 256;
+    if !valid {
         return None;
     }
     let base = usize::from(v[0]);

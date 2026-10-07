@@ -83,6 +83,27 @@ fn endpoint_file(key: &str) -> PathBuf {
     ch32rv_usb::runtime_dir().join(format!("{key}.oep"))
 }
 
+/// en: The broker's session id on the probe, kept while it runs. A probe keeps a session across
+/// a closed transport (transports §3: a USB device that re-enumerated without losing power, a
+/// broker that died), so the next broker opens that id first - taking the session back - and
+/// ends it, instead of meeting `locked` until the old lease runs out.
+/// ja: ブローカーの probe の session id。経路が閉じても probe は session を保つので、次のブローカーは
+/// まずその id で開いて end し、古い lease が切れるまで locked で待たずに済ませる。
+fn sid_file(key: &str) -> PathBuf {
+    ch32rv_usb::runtime_dir().join(format!("{key}.sid"))
+}
+
+fn save_sid(key: &str, sid: u32) {
+    let _ = std::fs::write(sid_file(key), format!("{sid:08x}\n"));
+}
+
+fn saved_sid(key: &str) -> Option<u32> {
+    let text = std::fs::read_to_string(sid_file(key)).ok()?;
+    u32::from_str_radix(text.trim(), 16)
+        .ok()
+        .filter(|&s| s != 0)
+}
+
 /// Whether fn 0 describe's firmware (`<major>.<minor>.<patch>`, oep-probe-arduino) is at least
 /// `want`; false when it does not say or says something else.
 fn firmware_at_least(p: &mut ch32rv_oep::session::Probe, want: (u32, u32, u32)) -> bool {
@@ -450,10 +471,19 @@ fn serve_target(
             };
             let serial = crate::oep::single_serial(&mut probe);
             let owner = format!("ch32rv broker pid {}", std::process::id());
+            // The previous broker's session, if the probe still keeps it: take it back and end it
+            // (everything it held is released), then open as usual.
+            if let Some(old) = saved_sid(&key)
+                && probe.open(old, LEASE_MS, false, Some(&owner)).is_ok()
+            {
+                let _ = probe.end();
+                broker_log(&key, "ended the previous broker's session");
+            }
             let sid = match crate::oep::open_with_lock_rule(&mut probe, serial, &owner, LEASE_MS) {
                 Ok(s) => s,
                 Err(e) => return report_error(e.to_string()),
             };
+            save_sid(&key, sid);
             (Upstream::Oep(Box::new(probe)), sid)
         }
         (BrokerTarget::Wch { .. }, Some(entry)) => (
@@ -551,6 +581,10 @@ fn serve_target(
     }
     if !b.relayed_restart {
         b.up.end();
+    }
+    // Kept after an upstream error: the probe may still hold the session for the next broker.
+    if r.is_ok() {
+        let _ = std::fs::remove_file(sid_file(&key));
     }
     match r {
         Ok(()) => ExitCode::SUCCESS,
@@ -1291,6 +1325,7 @@ impl Broker {
             // The clients' requests now go in the new session.
             if let Some(sid) = p.session_id() {
                 self.sid = sid;
+                save_sid(&self.key, sid);
             }
         }
         Ok(())
