@@ -298,3 +298,61 @@ fn a_client_restarts_the_probe_through_the_broker() {
     let again = attach(&mut b, WireKind::Rvswd, opt).unwrap();
     halted(&mut b, again.connection).unwrap();
 }
+
+#[test]
+fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
+    // virtual_bench_serve --tcp --announce answers `_oep._tcp` DNS-SD on this host (oep-spec
+    // transports §3). `probe list` lists it under `network`, and `--probe tcp:<unit_id>` finds it,
+    // opens it over TCP and checks describe's unit_id.
+    let Some(dir) = uv::client_dir() else {
+        return;
+    };
+    let unit = format!("{:012x}", u64::from(std::process::id()) << 8 | 0xab);
+    let mut child = uv::uv_run(&dir)
+        .args([
+            "python",
+            "-m",
+            "oep_client.virtual_bench_serve",
+            "--tcp",
+            "0",
+        ])
+        .args(["--announce", "--profile", "esp32-v003", "--unit-id", &unit])
+        .args(["--target-id", "0x00300500"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let _bench = Kill(child);
+    let port = line.trim().strip_prefix("PORT ").unwrap().to_owned();
+
+    let out = ch32rv(&["probe", "list", "--json"]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let net = v["result"]["network"].as_array().unwrap();
+    let Some(found) = net.iter().find(|n| n["unit_id"] == unit.as_str()) else {
+        // A host with no multicast route at all (a bare container): nothing to test here.
+        eprintln!("skip: no DNS-SD answer on this host ({net:?})");
+        return;
+    };
+    assert!(
+        found["tcp"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!(":{port}")),
+        "{found}"
+    );
+
+    let out = ch32rv(&[
+        "target",
+        "info",
+        "--probe",
+        &format!("tcp:{unit}"),
+        "--json",
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["ok"], true, "{v}");
+    assert_eq!(v["result"]["target"]["chip_id"], "0x00300500", "{v}");
+}

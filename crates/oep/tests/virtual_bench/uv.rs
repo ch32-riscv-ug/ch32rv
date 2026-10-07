@@ -14,8 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// oep-client-python on oep-spec f8bb2de: the virtual bench, with `lose` and `reboot`.
-const BENCH_REV: &str = "b9e4a00";
+/// oep-client-python on oep-spec f8bb2de and after: the virtual bench, with `lose`, `reboot` and
+/// `--announce` (DNS-SD).
+const BENCH_REV: &str = "013da4b";
 
 fn target_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
