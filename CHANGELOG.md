@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- (EN) Register CH32X315 family `0xe6` and four provisional X315/X305 SKUs from WCH EVT; CH32X315MCU6's ID matches both AttachChip and memory. Reject erased ChipInfo capacity values (`0xe339` / `0xffff`, or zero), use an unambiguous SKU's DB capacity as fallback, and retain the raw capacity/source in `target info`. Shared range checks also use this capacity. X315's DB flash capacity is its 192 KiB zero-wait region (480 KiB total); flash programming remains unverified.
+- (JA) CH32X315 family `0xe6`とX315/X305の4 SKUを暫定登録。MCU6はAttachChipとメモリのIDが一致。ChipInfoの消去済み容量欄 (`0xe339` / `0xffff`、または0)を容量扱いせず、一意なSKUのDB容量へフォールバックし、識別表示に生値と出所を残す。範囲判定も共通の容量を使う。X315のDB容量192 KiBはゼロウェイト領域 (総量480 KiB)で、flash書き込みは未検証。
+
+- (EN) WCH-Link `target info` distinguishes a connected, unregistered target from a connection failure and reports the raw family byte, silicon revision, and DB SRAM size in JSON. Register CH32V205 family `0xce` from a LinkE 2.22 measurement and four provisional SKUs from WCH EVT; CH32V205RCT6's ID is independently confirmed in memory. `db list` exposes provisional status, and the DB digest includes the provisional overlay. Evidence and a local data-request draft are under `docs/data-requests/`; flash programming on V205 remains unverified.
+- (JA) WCH-Linkの `target info` が「通信成功・DB未登録」と接続失敗を区別し、JSONにも生のfamily byte・silicon revision・DBのSRAM容量を出す。LinkE 2.22の実測からCH32V205 family `0xce`を登録し、WCH EVTから4 SKUを暫定収載。CH32V205RCT6のIDはメモリ読取でも確認。`db list`にも暫定状態を出し、DB指紋に暫定overlayを含める。実測資料と未送信の依頼draftを `docs/data-requests/` に保存。V205のflash書き込みは未検証。
+
 - (EN) The OEP console `streams` request sends `first` as a u16 (oep-spec 0098b56, external review §12): the monitor uses it to find a stream closed by a lost line. Registry from oep-spec d801f02.
 - (JA) OEP の console の `streams` の要求は `first` を u16 で送る(oep-spec 0098b56、外部レビュー §12): monitor は線を失って閉じたストリームを見つけるのに使う。registry は oep-spec d801f02 から。
 

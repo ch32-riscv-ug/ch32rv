@@ -84,6 +84,7 @@ pub fn provenance() -> DbProvenance {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for part in [
         GENERATED_SKUS,
+        PROVISIONAL_SKUS,
         GENERATED_OPTION_FIELDS,
         GENERATED_DEBUG_WIRING,
         GENERATED_FLASH_GEOMETRY,
@@ -599,6 +600,8 @@ mod tests {
             (0x0030_0500, "CH32V003F4P6"),
             (0x2500_410f, "CH32V103R8T6"),
             (0x0060_0620, "CH32V006K8U6"), // datasheet 0x00600600, rev nibble 0x2
+            (0x2051_0510, "CH32V205RCT6"), // EVT 0x205105x0, measured rev nibble 0x1
+            (0x3150_0000, "CH32X315MCU6"), // EVT 0x315000x0, measured
         ];
         for (id, want) in cases {
             match db.resolve_by_chip_id(id) {

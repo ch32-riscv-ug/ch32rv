@@ -288,7 +288,7 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     // The clap ArgGroup guarantees exactly one of --range / --region. A named region needs the
     // target's sizes, so resolve it after attach: flash size from the probe (ChipInfo), SRAM from DB.
     let (start, len) = {
-        let flash_bytes = session.chip.as_ref().map(|c| c.flash_bytes).unwrap_or(0);
+        let flash_bytes = session.flash_capacity().0.unwrap_or(0);
         let sram_bytes =
             match ch32rv_target::Db::builtin().resolve_by_chip_id(session.attach.chip_id) {
                 ch32rv_target::Resolution::Sku(s) => s.sram_bytes,

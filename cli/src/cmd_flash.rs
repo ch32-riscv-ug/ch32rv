@@ -329,7 +329,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
     };
     // The probe reports flash size; use it to reject out-of-range segments.
-    let flash_size = session.chip.as_ref().map(|c| c.flash_bytes).unwrap_or(0);
+    let flash_size = session.flash_capacity().0.unwrap_or(0);
     if flash_size > 0
         && let Err(e) = image.check_within_flash(CODE_FLASH_START, flash_size)
     {
@@ -993,7 +993,7 @@ fn flash_via_loader(
         Ok(i) => i,
         Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
     };
-    let flash_size = session.chip.as_ref().map(|c| c.flash_bytes).unwrap_or(0);
+    let flash_size = session.flash_capacity().0.unwrap_or(0);
     if flash_size > 0
         && let Err(e) = image.check_within_flash(CODE_FLASH_START, flash_size)
     {
@@ -1376,7 +1376,7 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
             Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
         }
     } else if let Some(region) = &args.region {
-        let flash_bytes = session.chip.as_ref().map(|c| c.flash_bytes).unwrap_or(0);
+        let flash_bytes = session.flash_capacity().0.unwrap_or(0);
         // erase is flash-only; pass flash_bytes for the SRAM size too so a `ram` spec still resolves
         // to a non-empty range and is then caught by the flash-window check below with a clear error.
         // erase rejects non-flash regions below, so the option base is irrelevant here.
@@ -2235,11 +2235,13 @@ pub(crate) fn family_byte_from_name(name: &str) -> Option<u8> {
     let n = n.strip_prefix("CH32").unwrap_or(&n);
     Some(match n {
         s if s.starts_with("V103") => 0x01,
-        s if s.starts_with("V20") || s.starts_with("V205") => 0x05,
+        s if s.starts_with("V205") || s.starts_with("V203CC") => 0xCE,
+        s if s.starts_with("V20") => 0x05,
         s if s.starts_with("V30") || s.starts_with("V317") => 0x06,
         s if s.starts_with("V003") => 0x09,
         s if s.starts_with("V00") => 0x4E,
         s if s.starts_with("X03") || s.starts_with("X035") => 0x0D,
+        s if s.starts_with("X315") || s.starts_with("X305") => 0xE6,
         s if s.starts_with("L103") => 0x0E,
         s if s.starts_with("643") || s.starts_with("CH643") => 0x0C,
         s if s.starts_with("641") || s.starts_with("CH641") => 0x49,
@@ -2265,6 +2267,16 @@ pub(crate) fn loader_error_kind(e: &ch32rv_flash::loader::LoaderError) -> ErrorK
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn v205_names_use_the_measured_family_byte() {
+        for name in ["CH32V205", "CH32V205RCT6", "ch32v205cct6", "CH32V203CCT6"] {
+            assert_eq!(super::family_byte_from_name(name), Some(0xce), "{name}");
+        }
+        assert_eq!(super::family_byte_from_name("CH32V203C8T6"), Some(0x05));
+        assert_eq!(super::family_byte_from_name("CH32V208RBT6"), Some(0x05));
+        assert_eq!(super::family_byte_from_name("CH32X315MCU6"), Some(0xe6));
+        assert_eq!(super::family_byte_from_name("CH32X305RCT6"), Some(0xe6));
+    }
     use super::{Segment, covered_pages, overlay_page, resolve_erase};
     use ch32rv_contract::policy::EraseMode;
 

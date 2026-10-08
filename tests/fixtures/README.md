@@ -1,5 +1,13 @@
 # テスト用 fixtures
 
+`replay/target-info-v205.ndjson` は2026-10-08にWCH-LinkE 2.22で取得した
+CH32V205RCT6の識別応答。`replay/target-info-unknown.ndjson`はそのfamilyとID/echoを
+未知値に差し替えた合成データで、DB未登録時にも識別情報を表示できるかを検査する。
+測定根拠は [実測文書](../../docs/data-requests/measured/device-id-v205-2026-10-08.md)。
+
+`replay/target-info-x315.ndjson`は同日のCH32X315MCU6実測。容量欄が消去済みパターンでも
+UIDとIDを残し、DB容量へフォールバックする試験に使う ([実測文書](../../docs/data-requests/measured/device-id-x315-2026-10-08.md))。
+
 手動テスト([docs/testing.ja.md](../../docs/testing.ja.md))で転送に使う、ツールチェーン不要のバイナリ。
 
 ## flash 経路テスト(全 family 共通)

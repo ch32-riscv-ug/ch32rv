@@ -320,12 +320,24 @@ ch32rv probe vendor <hex...>                      隠し。backend 固有 comman
 
 ```text
 ch32rv target info                                chip ID/family/SKU 候補(根拠付き)/UID/flash size/保護状態/option 要約/verified
+
 ch32rv target option get
 ch32rv target option set <key>=<value>...         例: rdp=off nrst=gpio split=160/32 debug=off
 ch32rv target option reset                        工場出荷値
 ch32rv target option write-raw <hex> [--yes]      生値(expert)
 ch32rv target protect <on|off> [--yes]            off は全消去を伴う旨を明示
 ```
+
+WCH-Link の `target info` は未登録チップでも接続成功とDB照合結果を分けて表示する。
+`connected (unregistered)` は、応答を取得したがDBにIDが無い状態。JSONの `result` に
+`connection` (`connected`)、`identification` (`identified` / `ambiguous` / `unregistered`)、
+生の `family_byte`、`silicon_revision`、DB由来の `sram_bytes` (未解決時null) を出す。
+既存の `target.chip_id` / `uid` / `flash_bytes` も取得できたものは未登録時に残す。
+収載前のデータは暫定overlayに隔離し、`target.provisional` と警告で明示する。
+容量欄が0または消去済みパターン (`0xffff` / `0xe339`) なら、一意に解決したSKUのDB容量を使い、
+未解決なら容量はnullとする。`result.flash_capacity_raw` は生のKiB欄をhexで残し、
+`flash_capacity_source` (`probe` / `db` / `unavailable`) で出所を示す。X315のDB容量192 KiBは
+ゼロウェイト領域で、総Flash480 KiB (192 + 288)とは区別する。
 
 - 構造化 key は family ごとに DB から導出(`db info <sku>` で一覧可能)。set は read-modify-write-verify。
 - **`option set` 実装(2026-09-02)**: `target option set <key=value ...>` を実装。key は (a) family の USER bit 名(DB の `option_fields` 由来。例 L103 は `CFGCANM/STANDYRST/STOPRST/IWDGSW`、値 0|1)、(b) `rdp=on|off`、(c) `data0=/data1=<byte>`。現在値を read→該当 bit/byte のみ変更→**全補数を再計算**(0xFF^value)→§4.2.1 の直接 controller で erase+program→read-back verify。反映は system reset 後。**`rdp=off` は全消去、`rdp=on` は読めなくなる**旨を明示し確認必須。未知 key は既知フィールド一覧付き usage error(fail-closed)。実機検証(L103): `STOPRST=0` で USER `0xff→0xfd`(補数 `00→02`)、read-back で反映、`STOPRST=1` で復元。**構造化エイリアス(`nrst=gpio`・`split=160/32` 等)や multi-bit フィールドは後続**(RM 名の単一 bit のみ現状対応)。

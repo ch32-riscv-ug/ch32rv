@@ -206,6 +206,8 @@ fn target_info_replays_across_families() {
         ("target-info-v307.ndjson", "CH32V307VCT6"),
         ("target-info-v003.ndjson", "CH32V003F4P6"), // RV32EC part
         ("target-info-v103.ndjson", "CH32V103R8T6"), // via the CH549 Link
+        ("target-info-v205.ndjson", "CH32V205RCT6"), // measured LinkE 2.22, family 0xce
+        ("target-info-x315.ndjson", "CH32X315MCU6"), // measured LinkE 2.22, family 0xe6
     ] {
         let out = Command::new(bin())
             .args(["target", "info", "--json", "--replay", &fixture(fx)])
@@ -221,4 +223,129 @@ fn target_info_replays_across_families() {
             "{fx}: expected {sku}"
         );
     }
+}
+
+#[test]
+fn unregistered_target_still_reports_its_signature_and_connection() {
+    for json in [false, true] {
+        let mut cmd = Command::new(bin());
+        cmd.args([
+            "target",
+            "info",
+            "--replay",
+            &fixture("target-info-unknown.ndjson"),
+        ]);
+        if json {
+            cmd.arg("--json");
+        }
+        let out = cmd.output().expect("run ch32rv");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(out.status.success(), "{stderr}");
+        assert!(!stderr.contains("diverged"), "{stderr}");
+        if json {
+            let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(v["result"]["connection"], "connected");
+            assert_eq!(v["result"]["identification"], "unregistered");
+            assert_eq!(v["result"]["family_byte"], "0x77");
+            assert_eq!(v["target"]["chip_id"], "0xdeadbeef");
+            assert_eq!(v["target"]["flash_bytes"], 262144);
+            assert_eq!(v["target"]["uid"], "0fb8abcd77d2bc4d");
+            assert!(v["target"]["sku"].is_null());
+            assert_eq!(v["warnings"][0]["code"], "family-unknown");
+            assert_eq!(v["warnings"][1]["code"], "sku-unknown");
+        } else {
+            for s in [
+                "connected (unregistered)",
+                "0x77",
+                "0xdeadbeef",
+                "256 KiB",
+                "0fb8abcd77d2bc4d",
+            ] {
+                assert!(stdout.contains(s), "missing {s}: {stdout}");
+            }
+            assert!(stderr.contains("not a connection failure"), "{stderr}");
+        }
+    }
+}
+
+#[test]
+fn v205_registration_exposes_measured_and_provisional_evidence() {
+    let out = Command::new(bin())
+        .args([
+            "target",
+            "info",
+            "--json",
+            "--replay",
+            &fixture("target-info-v205.ndjson"),
+        ])
+        .output()
+        .expect("run ch32rv");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["target"]["family"], "CH32V205");
+    assert_eq!(v["target"]["sku"], "CH32V205RCT6");
+    assert_eq!(v["target"]["verified"], true);
+    assert_eq!(v["target"]["provisional"], true);
+    assert_eq!(v["result"]["identification"], "identified");
+    assert_eq!(v["result"]["family_byte"], "0xce");
+    assert_eq!(v["result"]["silicon_revision"], 1);
+    assert_eq!(v["result"]["sram_bytes"], 32768);
+    assert_eq!(v["result"]["debug_wiring"]["swdio"], "PA13");
+    assert_eq!(v["warnings"][0]["code"], "sku-provisional");
+}
+
+#[test]
+fn x315_erased_capacity_uses_db_and_retains_raw_response() {
+    let out = Command::new(bin())
+        .args([
+            "target",
+            "info",
+            "--json",
+            "--replay",
+            &fixture("target-info-x315.ndjson"),
+        ])
+        .output()
+        .expect("run ch32rv");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["target"]["family"], "CH32X315");
+    assert_eq!(v["target"]["sku"], "CH32X315MCU6");
+    assert_eq!(v["target"]["verified"], true);
+    assert_eq!(v["target"]["provisional"], true);
+    assert_eq!(v["target"]["flash_bytes"], 196608);
+    assert_eq!(v["target"]["uid"], "36a0abcd9eb5bc48");
+    assert_eq!(v["result"]["family_byte"], "0xe6");
+    assert_eq!(v["result"]["sram_bytes"], 65536);
+    assert_eq!(v["result"]["flash_capacity_raw"], "0xe339");
+    assert_eq!(v["result"]["flash_capacity_source"], "db");
+    assert!(
+        v["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "flash-capacity-unavailable")
+    );
+
+    let out = Command::new(bin())
+        .args([
+            "target",
+            "info",
+            "--replay",
+            &fixture("target-info-x315.ndjson"),
+        ])
+        .output()
+        .expect("run ch32rv");
+    assert!(out.status.success());
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("192 KiB (DB; probe capacity unavailable)")
+    );
 }

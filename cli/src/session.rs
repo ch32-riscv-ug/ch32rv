@@ -144,6 +144,18 @@ impl Session {
             }
             Err(_) => None,
         };
+        if let Some(ci) = &chip
+            && reported_flash_bytes(ci).is_none()
+        {
+            let (_, source) = flash_capacity(chip.as_ref(), &db, attach.chip_id);
+            warnings.push(Warning {
+                code: "flash-capacity-unavailable".to_owned(),
+                msg: format!(
+                    "ChipInfo flash capacity 0x{:04x} is zero or an erased pattern; capacity source: {source}",
+                    ci.flash_bytes / 1024
+                ),
+            });
+        }
         Ok(Self {
             link,
             attach,
@@ -167,6 +179,11 @@ impl Session {
         &self.db
     }
 
+    /// Capacity from the probe when populated, otherwise from an unambiguous DB SKU.
+    pub fn flash_capacity(&self) -> (Option<u32>, &'static str) {
+        flash_capacity(self.chip.as_ref(), &self.db, self.attach.chip_id)
+    }
+
     pub fn dm(&mut self) -> DebugModule<'_, WchLink> {
         DebugModule::new(&mut self.link)
     }
@@ -175,6 +192,28 @@ impl Session {
     /// ja: raw probe を借りる(flash/erase/reset は `WchLink` 側)。
     pub fn link(&mut self) -> &mut WchLink {
         &mut self.link
+    }
+}
+
+fn reported_flash_bytes(chip: &ChipInfo) -> Option<u32> {
+    // X315's unpopulated signature reads 0xe339e339, also returned by ChipInfo.
+    match chip.flash_bytes / 1024 {
+        0 | 0xffff | 0xe339 => None,
+        _ => Some(chip.flash_bytes),
+    }
+}
+
+fn flash_capacity(
+    chip: Option<&ChipInfo>,
+    db: &ch32rv_target::Db,
+    chip_id: u32,
+) -> (Option<u32>, &'static str) {
+    if let Some(bytes) = chip.and_then(reported_flash_bytes) {
+        return (Some(bytes), "probe");
+    }
+    match db.resolve_by_chip_id(chip_id) {
+        ch32rv_target::Resolution::Sku(s) if s.flash_bytes > 0 => (Some(s.flash_bytes), "db"),
+        _ => (None, "unavailable"),
     }
 }
 
@@ -269,4 +308,38 @@ pub(crate) fn open_with_retry(entry: &Entry) -> Result<WchLink, WchLinkError> {
         }
     }
     last
+}
+
+#[cfg(test)]
+mod capacity_tests {
+    use super::*;
+
+    #[test]
+    fn erased_capacity_falls_back_only_for_a_resolved_sku() {
+        let db = ch32rv_target::Db::builtin();
+        let mut chip = ChipInfo {
+            flash_bytes: 0,
+            uuid: [1; 8],
+            protection_raw: [0; 4],
+            chip_id_echo: 0x31500000,
+        };
+        for kib in [0, 0xffff, 0xe339] {
+            chip.flash_bytes = kib * 1024;
+            assert_eq!(
+                flash_capacity(Some(&chip), &db, 0x31500000),
+                (Some(196608), "db")
+            );
+            assert_eq!(
+                flash_capacity(Some(&chip), &db, 0xdeadbeef),
+                (None, "unavailable")
+            );
+        }
+        // Valid probe capacities retain precedence, including measured values above the DB's.
+        chip.flash_bytes = 288 * 1024;
+        assert_eq!(
+            flash_capacity(Some(&chip), &db, 0x30700528),
+            (Some(288 * 1024), "probe")
+        );
+        assert_eq!(flash_capacity(None, &db, 0xdeadbeef), (None, "unavailable"));
+    }
 }

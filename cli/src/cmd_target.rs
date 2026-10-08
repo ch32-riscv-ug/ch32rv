@@ -69,7 +69,7 @@ pub fn info(cli: &Cli) -> ExitCode {
         warnings.push(Warning {
             code: "family-unknown".to_owned(),
             msg: format!(
-                "family byte 0x{:02x} is not in the known table (possibly a gap series) - worth recording for data request 0001",
+                "target answered, but family byte 0x{:02x} is not registered; this is not a connection failure",
                 session.attach.family_byte
             ),
         });
@@ -135,12 +135,18 @@ pub fn info(cli: &Cli) -> ExitCode {
             warnings.push(Warning {
                 code: "sku-unknown".to_owned(),
                 msg: format!(
-                    "chip_id 0x{:08x} is not in the generated DB (a gap-series or new part) - worth recording for data request 0001",
+                    "target answered with chip_id 0x{:08x}, but it is not registered in the DB; retain target info --json and --capture output for registration",
                     session.attach.chip_id
                 ),
             });
             (None, None, "- (chip_id not in DB)".to_owned())
         }
+    };
+
+    let identification = identification_status(&resolution);
+    let sram_bytes = match &resolution {
+        ch32rv_target::Resolution::Sku(s) => Some(s.sram_bytes),
+        _ => None,
     };
 
     // Debug wiring (1-wire SWIO vs 2-wire RVSWD) for the resolved series (data request 0002).
@@ -149,6 +155,7 @@ pub fn info(cli: &Cli) -> ExitCode {
         _ => None,
     };
 
+    let (flash_bytes, flash_capacity_source) = session.flash_capacity();
     let chip = session.chip;
     let target = TargetReport {
         sku,
@@ -158,13 +165,20 @@ pub fn info(cli: &Cli) -> ExitCode {
         verified: sku_verified,
         provisional: sku_provisional,
         protected: None,
-        flash_bytes: chip.as_ref().map(|c| c.flash_bytes),
+        flash_bytes,
     };
 
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.probe = Some(probe_report);
         env.result = Some(serde_json::json!({
+            "connection": "connected",
+            "identification": identification,
+            "family_byte": format!("0x{:02x}", session.attach.family_byte),
+            "silicon_revision": (session.attach.chip_id >> 4) & 0x0f,
+            "sram_bytes": sram_bytes,
+            "flash_capacity_source": flash_capacity_source,
+            "flash_capacity_raw": chip.as_ref().map(|c| format!("0x{:04x}", c.flash_bytes / 1024)),
             "protection_raw": chip.as_ref().map(|c| hex(&c.protection_raw)),
             "chip_id_echo": chip.as_ref().map(|c| format!("0x{:08x}", c.chip_id_echo)),
             "debug_wiring": wiring.as_ref().map(|w| serde_json::json!({
@@ -177,17 +191,26 @@ pub fn info(cli: &Cli) -> ExitCode {
     } else {
         print_probe_human(&probe_report);
         println!("---");
+        println!("target:   connected ({identification})");
         println!("family:   {}", target.family.as_deref().unwrap_or("-"));
+        println!("family byte: 0x{:02x}", session.attach.family_byte);
         println!(
             "chip id:  {}  (bits [7:4] = silicon revision)",
             target.chip_id.as_deref().unwrap_or("-")
         );
         println!("uid:      {}", target.uid.as_deref().unwrap_or("-"));
         match target.flash_bytes {
+            Some(b) if flash_capacity_source == "db" => println!(
+                "flash:    {} KiB (DB; probe capacity unavailable)",
+                b / 1024
+            ),
             Some(b) => println!("flash:    {} KiB", b / 1024),
             None => println!("flash:    -"),
         }
         println!("sku:      {sku_line}");
+        if let Some(b) = sram_bytes {
+            println!("sram:     {} KiB (DB)", b / 1024);
+        }
         if let Some(w) = &wiring {
             println!(
                 "debug:    {} (SWDIO/DAT={}{})",
@@ -204,6 +227,15 @@ pub fn info(cli: &Cli) -> ExitCode {
             eprintln!("warning[{}]: {}", w.code, w.msg);
         }
         ExitCode::SUCCESS
+    }
+}
+
+/// A successful attach is distinct from whether its signature is registered in the DB.
+fn identification_status(resolution: &ch32rv_target::Resolution<'_>) -> &'static str {
+    match resolution {
+        ch32rv_target::Resolution::Sku(_) => "identified",
+        ch32rv_target::Resolution::Family(_, _) => "ambiguous",
+        ch32rv_target::Resolution::Unknown => "unregistered",
     }
 }
 

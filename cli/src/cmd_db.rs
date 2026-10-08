@@ -58,6 +58,7 @@ pub fn list(cli: &Cli, family: Option<&str>, verified_only: bool) -> ExitCode {
                     "flash_bytes": s.flash_bytes,
                     "sram_bytes": s.sram_bytes,
                     "verified": s.verified,
+                    "provisional": s.provisional,
                 })
             })
             .collect();
@@ -66,12 +67,12 @@ pub fn list(cli: &Cli, family: Option<&str>, verified_only: bool) -> ExitCode {
         crate::print_envelope(&env)
     } else {
         println!(
-            "{:<16} {:<10} {:<12} {:>6} {:>6}  VERIFIED",
+            "{:<16} {:<10} {:<12} {:>6} {:>6}  VERIFIED  PROVISIONAL",
             "SKU", "FAMILY", "DEVICE_ID", "FLASH", "SRAM"
         );
         for s in &skus {
             println!(
-                "{:<16} {:<10} {:<12} {:>5}K {:>5}K  {}",
+                "{:<16} {:<10} {:<12} {:>5}K {:>5}K  {:<8}  {}",
                 s.sku,
                 s.family,
                 s.device_id
@@ -79,7 +80,8 @@ pub fn list(cli: &Cli, family: Option<&str>, verified_only: bool) -> ExitCode {
                     .unwrap_or_else(|| "-".to_owned()),
                 s.flash_bytes / 1024,
                 s.sram_bytes / 1024,
-                if s.verified { "yes" } else { "" }
+                if s.verified { "yes" } else { "" },
+                if s.provisional { "yes" } else { "" }
             );
         }
         println!("({} SKUs)", skus.len());

@@ -123,6 +123,10 @@ pub fn family_name(byte: u8) -> Option<&'static str> {
         0x86 => "CH32V317",
         0x8B => "CH570/572",
         0xC6 => "CH32H4",
+        // WCH-LinkE 2.22 + CH32V205RCT6, measured 2026-10-08 (target.info capture).
+        0xCE => "CH32V205",
+        // WCH-LinkE 2.22 + CH32X315MCU6, measured 2026-10-08.
+        0xE6 => "CH32X315",
         _ => return None,
     })
 }
@@ -854,6 +858,8 @@ mod tests {
         assert_eq!(family_name(0x06), Some("CH32V30x"));
         assert_eq!(family_name(0x09), Some("CH32V003"));
         assert_eq!(family_name(0x0E), Some("CH32L103"));
+        assert_eq!(family_name(0xCE), Some("CH32V205"));
+        assert_eq!(family_name(0xE6), Some("CH32X315"));
         assert_eq!(family_name(0xFF), None);
     }
 
