@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Bench-verify CH32V205RCT6 and CH32X315MCU6 over WCH-LinkE: controller and RAM-loader flash, UART-free DMDATA/DMSEQ/RTT, SDI output, semihosting, and GDB breakpoints. Enable their flash-controller profiles and `run` without a WCH probe stub. X315 uses 4 KiB PER erase pages with sixteen 256-byte PG_STRT commits; its programming capacity remains the DB's 192 KiB zero-wait region.
+- (JA) CH32V205RCT6 / CH32X315MCU6をLinkEで実機検証し、controller / RAM loaderのFlash書き込みと、probe stubを持たないチップの`run`に対応。UARTなしのDMDATA・DMSEQ・RTT、SDI出力、semihosting、GDB breakpointを確認。X315は4 KiBのPER消去＋256 byteずつ16回のPG_STRT書き込み。書き込み容量はDBのzero-wait領域192 KiBまで。
+
 - (EN) Accept ch32-device-data@773f929: all eight provisional V205/X315 family SKU records match the delivered IDs, addresses, families, capacities, and measured status. Regenerate the DB, remove their provisional rows, and preserve ID verification for CH32V205RCT6 and CH32X315MCU6. Temperature-grade siblings sharing the same silicon ID remain candidates rather than being guessed.
 - (JA) ch32-device-data@773f929を受け入れ。V205/X315 familyの暫定8行と納品データのID・番地・family・容量・実測状態が一致し、生成DBへ移行して暫定行を削除。RCT6とMCU6のID実機確認状態は維持。同じシリコンIDを持つ温度グレード違いは候補として残す。
 

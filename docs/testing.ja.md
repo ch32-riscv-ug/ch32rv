@@ -96,6 +96,12 @@ ch32rv monitor --source rtt --probe serial:<SN>              # SerialRTT(RAM リ
 ch32rv --capture cap.ndjson probe info --probe serial:<SN>   # 問題時に添付する transaction 記録
 ```
 
+### V205 / X315を追加するとき
+
+最初はWCH-LinkEでCPU/Flash/debugの基準を取り、次にOEP経由で同じテストを追試し、Arduinoコアの初期化・周辺機能を確認する。UARTを接続しなくても、[debug-smoke fixture](../tests/fixtures/debug-smoke/README.md)でRAM自己テストとDMDATA / DMSEQ / RTTの双方向通信を確認できる。
+
+2026-10-08にCH32V205RCT6 / CH32X315MCU6をLinkE FW2.22で確認した結果は[実機記録](data-requests/measured/flash-debug-v205-x315-2026-10-08.md)を参照。Flash書き込み・ページ境界での保存・部分消去、reset/step、semihosting、GDBのHW/Flash breakpointまで通過。X315の消去粒度は4 KiB、書き込み粒度は256 byteで、現在の書き込み対象はzero-wait領域192 KiB。元のFlash全体を退避・復元して照合する。
+
 ## 5. 記録テンプレ
 
 | 項目 | 結果 |

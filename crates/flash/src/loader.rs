@@ -1,7 +1,7 @@
 //! en: Programming CH32 flash with ch32rv's own RAM loader over any [`TargetAccess`] probe
 //! (docs/oep-host.ja.md §5): the probe only writes RAM and runs the loader to its ebreak; what to
-//! write and how is decided here from the device DB. Used for OEP probes; the WCH-Link keeps
-//! WCH's stub path.
+//! write and how is decided here from the device DB. Used for OEP probes and for WCH-Link
+//! families without a probe stub; also selectable with `flash --programmer loader`.
 //!
 //! The loader (`loader/ch32_loader.S`, RV32EC, position independent) erases and programs one fast
 //! page per run and always stops at offset 4. Pages are read first and the image laid over them, so
@@ -41,7 +41,7 @@ const CTLR_FLOCK: u32 = 1 << 15;
 /// ja: 1 回の run(最大 [`MAX_BATCH_PAGES`] page)の上限。V103 は 1 page 約 0.2 s なので 8 page で
 /// 約 1.6 s。run の間 probe は答えないので、3 s の lease より短く。
 const RUN_TIMEOUT: Duration = Duration::from_millis(2500);
-/// One run's buffer: its pages back to back after the loader (SRAM is 2 KiB on the smallest part).
+/// Normal batch budget (SRAM is 2 KiB on the smallest part); larger erase pages run singly.
 const BATCH_BYTES: usize = 1024;
 const MAX_BATCH_PAGES: usize = 8;
 
@@ -54,13 +54,15 @@ pub enum LoaderMode {
     PgStart = 1,
     /// Halfword programming + the V103 commit.
     V103 = 2,
+    /// X315: standard 4 KiB page erase, then sixteen 256-byte PG_STRT commits.
+    PgStartPageErase = 3,
 }
 
 /// How to program one family.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LoaderPlan {
     pub mode: LoaderMode,
-    /// The fast page the loader erases and programs per run.
+    /// The erase page the loader programs; X315 uses sixteen smaller programming pages.
     pub page: u32,
 }
 
@@ -68,6 +70,22 @@ pub struct LoaderPlan {
 /// geometry. None when the DB does not know enough to program it safely.
 pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
     let geo = ch32rv_target::flash_geometry(family)?;
+    let method = ch32rv_target::flash_program_method(family)?;
+    if method.confidence == "conflict" {
+        return None;
+    }
+    if family == "CH32X315"
+        && geo.page_erase == 4096
+        && geo.fast_erase == 0
+        && geo.fast_program == 256
+        && method.mode == "direct"
+        && method.commit == "PG_STRT"
+    {
+        return Some(LoaderPlan {
+            mode: LoaderMode::PgStartPageErase,
+            page: geo.page_erase,
+        });
+    }
     let page = geo.fast_program;
     if page == 0 || page != geo.fast_erase || page > 256 || !page.is_multiple_of(4) {
         return None;
@@ -75,7 +93,7 @@ pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
     let mode = if family.eq_ignore_ascii_case("CH32V103") {
         LoaderMode::V103
     } else {
-        match ch32rv_target::flash_program_method(family)?.mode.as_str() {
+        match method.mode.as_str() {
             "buffered" => LoaderMode::Buffered,
             "direct" => LoaderMode::PgStart,
             _ => return None,
@@ -370,6 +388,20 @@ mod tests {
             LoaderMode::Buffered
         );
         assert_eq!(plan_for_family("CH32V003").unwrap().page, 64);
+        assert_eq!(
+            plan_for_family("CH32V205"),
+            Some(LoaderPlan {
+                mode: LoaderMode::Buffered,
+                page: 256
+            })
+        );
+        assert_eq!(
+            plan_for_family("CH32X315"),
+            Some(LoaderPlan {
+                mode: LoaderMode::PgStartPageErase,
+                page: 4096
+            })
+        );
         assert_eq!(
             plan_for_family("CH32V103"),
             Some(LoaderPlan {

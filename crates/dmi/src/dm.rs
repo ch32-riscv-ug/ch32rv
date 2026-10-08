@@ -770,7 +770,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     }
 
     /// en: Fast-page-erase the page at `addr` (page-aligned) with FTER + STRT. `mode` selects the
-    /// family quirks: [`FlashProgMode::V103`] adds the mandatory commit side effect. The hart
+    /// family quirks: X315 uses PER (4 KiB); V103 adds its mandatory commit side effect. The hart
     /// must be halted.
     /// ja: `addr` の fast page を FTER + STRT で消去。`mode` で family 差を選ぶ(V103 は commit 副作用
     /// が必須)。halt 済みで。
@@ -780,14 +780,19 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
             return Err(DmiError::OperationFailed("flash busy".to_owned()));
         }
         let ctlr = self.read_mem32(FLASH_CTLR)?;
-        self.write_mem32(FLASH_CTLR, ctlr | FLASH_FTER)?;
+        let erase_bit = if mode == FlashProgMode::PgStartPageErase {
+            1 << 1
+        } else {
+            FLASH_FTER
+        };
+        self.write_mem32(FLASH_CTLR, ctlr | erase_bit)?;
         self.write_mem32(FLASH_ADDR, addr)?;
         let ctlr = self.read_mem32(FLASH_CTLR)?;
         self.write_mem32(FLASH_CTLR, ctlr | FLASH_STRT)?;
         let statr = self.flash_wait(FLASH_BUSY)?;
-        // Clear FTER regardless, then surface a write-protect error.
+        // Clear the erase request, then surface a write-protect error.
         let ctlr = self.read_mem32(FLASH_CTLR)?;
-        self.write_mem32(FLASH_CTLR, ctlr & !FLASH_FTER)?;
+        self.write_mem32(FLASH_CTLR, ctlr & !erase_bit)?;
         self.write_mem32(FLASH_STATR, statr)?; // write 1s to clear EOP/WPRERR
         if mode == FlashProgMode::V103 {
             self.flash_v103_commit(addr)?;
@@ -803,7 +808,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
 
     /// en: Fast-page-program `data` at `addr` (page-aligned, `data.len()` == the page size, and
     /// the page already erased), using the family's programming `mode`. The hart must be halted.
-    /// Three programming mechanisms exist: [`FlashProgMode::PgStart`] (V20x/V30x - load words,
+    /// X315 splits one 4 KiB erase page into sixteen PGSTART commits. Other mechanisms are: [`FlashProgMode::PgStart`] (V20x/V30x - load words,
     /// then PGSTART), [`FlashProgMode::Buffered`] (V003/X035/L103 - buffer reset, then per-word
     /// write+BUFLOAD, then STRT), and [`FlashProgMode::V103`] (CH32V103 - standard 16-bit halfword
     /// programming via CR_PG with the mandatory commit side effect per word). All verified live.
@@ -815,6 +820,17 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         data: &[u8],
         mode: FlashProgMode,
     ) -> Result<(), DmiError> {
+        if mode == FlashProgMode::PgStartPageErase {
+            if data.len() != 4096 || !addr.is_multiple_of(4096) {
+                return Err(DmiError::OperationFailed(
+                    "X315 programming requires one aligned 4 KiB erase page".to_owned(),
+                ));
+            }
+            for (i, chunk) in data.as_chunks::<256>().0.iter().enumerate() {
+                self.flash_program_page(addr + i as u32 * 256, chunk, FlashProgMode::PgStart)?;
+            }
+            return Ok(());
+        }
         if !data.len().is_multiple_of(4) {
             return Err(DmiError::OperationFailed(
                 "page data length must be a multiple of 4".to_owned(),
@@ -845,6 +861,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
             return Ok(());
         }
         match mode {
+            FlashProgMode::PgStartPageErase => unreachable!("handled above"),
             FlashProgMode::V103 => unreachable!("handled above"),
             FlashProgMode::PgStart => {
                 self.write_mem32(FLASH_CTLR, FLASH_FTPG)?;
@@ -968,6 +985,8 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
 /// ja: family が使う fast-program 方式([`DebugModule::flash_program_page`] 参照)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlashProgMode {
+    /// X315 standard 4 KiB erase with sixteen 256-byte PG_STRT programming pages.
+    PgStartPageErase,
     /// V20x/V30x: load words, then set PGSTART.
     PgStart,
     /// V003/X035/L103: buffer reset, per-word write + BUFLOAD, then STRT.

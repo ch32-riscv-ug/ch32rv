@@ -133,7 +133,7 @@ pub struct FlashCtrlProfile {
 /// controller path this project has driven on real silicon. CH641 and CH643 have no DB row of their
 /// own; they share the CH32V003 / CH32X035 controller (same core generation and geometry), which is
 /// how they were verified here. Bytes that are absent are unsupported by design, not by omission:
-/// the DB knows more families (V006 / V205 / M030 / V407 / X315 / H417), but nothing here has been
+/// the DB knows more families (M030 / V407 / H417), but nothing here has been
 /// run against that silicon, and this path erases and programs flash. CH32V006 (`0x4E`) covers the
 /// whole V00x line (V002/V004/V005/V006/V007/M007), which `ch32-device-data` keys as one family.
 /// ja: family byte → ch32-device-data の family 文字列(実機で往復検証した family のみ)。CH641 /
@@ -149,6 +149,8 @@ fn db_family(family_byte: u8) -> Option<&'static str> {
         0x0C | 0x0D => "CH32X035", // CH643 shares the X035 controller
         0x0E => "CH32L103",
         0x4E => "CH32V006", // V002/V004/V005/V006/V007/M007 share one controller profile
+        0xCE => "CH32V205",
+        0xE6 => "CH32X315",
         _ => return None,
     })
 }
@@ -157,10 +159,10 @@ fn db_family(family_byte: u8) -> Option<&'static str> {
 /// (`cargo xtask db-gen` <- `ch32-device-data`): the page size is the family's fast-erase
 /// granularity, the mode comes from the RM/EVT programming procedure, and the erase pattern from the
 /// erased-cell read value. Returns None when the family is unsupported (see [`db_family`]), when the
-/// data repo marks the procedure `conflict`, when the family has no per-page fast erase, or when the
+/// data repo marks the procedure `conflict`, when the family has no supported per-page erase, or when the
 /// procedure is one this crate cannot drive over DMI - all fail-closed, because the caller uses this
 /// to erase and program flash.
-/// ja: family byte から FLASH-controller profile を引く(生成 DB 由来)。page サイズ = fast erase 粒度、
+/// ja: family byte から FLASH-controller profile を引く(生成 DB 由来)。page サイズ = 消去粒度、
 /// mode = RM/EVT の編程手順、消去パターン = 消去済み読み出し値。未対応・`conflict`・page 消去なし・
 /// DMI で駆動できない手順はすべて None(fail-closed)。
 pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
@@ -172,7 +174,7 @@ pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
 /// ja: DB の family 名から引く版(OEP の probe のように chip id で target を知るとき)。対象は
 /// [`db_family`] の family だけ(同じ理由)。
 pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
-    let family = [0x01, 0x05, 0x06, 0x09, 0x0C, 0x0E, 0x4E]
+    let family = [0x01, 0x05, 0x06, 0x09, 0x0C, 0x0E, 0x4E, 0xCE, 0xE6]
         .into_iter()
         .filter_map(db_family)
         .find(|f| *f == family)?;
@@ -183,11 +185,25 @@ pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
         return None;
     }
     // `erase --range` and flash breakpoints work at the fast-erase page; 0 = block erase only.
-    let page_size = geometry.fast_erase;
+    let page_size = if family == "CH32X315" {
+        geometry.page_erase
+    } else {
+        geometry.fast_erase
+    };
     if page_size == 0 {
         return None;
     }
     let mode = match (method.mode.as_str(), method.buffer_load_bits) {
+        ("direct", _) if family == "CH32X315" => {
+            if page_size != 4096
+                || geometry.fast_erase != 0
+                || geometry.fast_program != 256
+                || method.commit != "PG_STRT"
+            {
+                return None;
+            }
+            FlashProgMode::PgStartPageErase
+        }
         // FTPG, write the words, then PG_STRT.
         ("direct", _) => FlashProgMode::PgStart,
         // FTPG + BUFRST, one word per BUFLOAD, then STRT - drivable word by word over DMI.
@@ -256,6 +272,8 @@ mod tests {
             (0x0E, 256, FlashProgMode::Buffered, false, true),      // CH32L103
             (0x01, 128, FlashProgMode::V103, true, true),           // CH32V103
             (0x4E, 256, FlashProgMode::Buffered, false, true),      // CH32V00x (V006 on the bench)
+            (0xCE, 256, FlashProgMode::Buffered, false, true),      // CH32V205
+            (0xE6, 4096, FlashProgMode::PgStartPageErase, false, false), // CH32X315
         ];
         for (byte, page_size, mode, corrupts, reads_ff) in cases {
             let p = flash_controller_profile(byte).unwrap_or_else(|| {

@@ -119,15 +119,7 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
     // Program the image (unless --no-flash).
     if !args.no_flash {
         let family = session.attach.family_byte;
-        let Some(fp) = params_for_family(family) else {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::CapabilityUnsupported,
-                format!("flashing family 0x{family:02x} is not supported"),
-                None,
-            );
-        };
+        let fp = params_for_family(family);
         let image = match crate::cmd_flash::parse_image(
             &bytes,
             ImageFormat::Auto,
@@ -138,37 +130,70 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
             Ok(i) => i,
             Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
         };
-        // en: Erase before programming, as `flash` does. The stub path is a full-region programmer
-        // that expects erased flash: writing into programmed flash without an erase is refused by
-        // the probe (`0x55`) or - on the CH549 Link, fw 2.12 - simply never answers, so `run`
-        // failed with `transfer timed out` at the image's first address on every attempt while the
-        // same image flashed fine through `flash` (which erases). A WCH-LinkE tolerated it, which
-        // is why the runner worked on the rest of the bench. `run` always programs a whole image
-        // from the flash base, so the chip erase `flash --erase auto` would pick is the right one.
-        // ja: `flash` と同じく書込前に消去する。stub 経路は消去済み flash を前提にした全 region
-        // 書込器で、消去せずに書くと probe が拒否する(`0x55`)か、CH549 Link(fw 2.12)では**応答が
-        // 返ってこない** — `run` は image 先頭で必ず `transfer timed out` になっていた(同じ image が
-        // 消去を伴う `flash` では通る)。WCH-LinkE が黙認するのでベンチの他機では動いていた。`run` は
-        // 常に flash 先頭から image 全体を焼くので、`flash --erase auto` が選ぶ chip erase でよい。
-        if let Err(e) = session.link().erase_flash() {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::TransferFailed,
-                format!("erase before programming failed: {e}"),
-                None,
-            );
+        if let Some(capacity) = session.flash_capacity().0
+            && let Err(e) = image.check_within_flash(ch32rv_flash::CODE_FLASH_START, capacity)
+        {
+            return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None);
         }
-        // One contiguous region, as the stub path requires - see `Image::program_span`: only the
-        // first `write_flash` of a session takes effect, and an ELF's `.data` initialiser arrives
-        // as a segment of its own behind `.text`, so anything else loses the tail of the image.
-        for seg in image.program_span(fp.data_packet_size as u32).iter() {
-            if let Err(e) = session.link().write_flash(seg.addr, &seg.data, &fp, |_| {}) {
+        if let Some(fp) = fp {
+            // en: Erase before programming, as `flash` does. The stub path is a full-region programmer
+            // that expects erased flash: writing into programmed flash without an erase is refused by
+            // the probe (`0x55`) or - on the CH549 Link, fw 2.12 - simply never answers, so `run`
+            // failed with `transfer timed out` at the image's first address on every attempt while the
+            // same image flashed fine through `flash` (which erases). A WCH-LinkE tolerated it, which
+            // is why the runner worked on the rest of the bench. `run` always programs a whole image
+            // from the flash base, so the chip erase `flash --erase auto` would pick is the right one.
+            // ja: `flash` と同じく書込前に消去する。stub 経路は消去済み flash を前提にした全 region
+            // 書込器で、消去せずに書くと probe が拒否する(`0x55`)か、CH549 Link(fw 2.12)では**応答が
+            // 返ってこない** — `run` は image 先頭で必ず `transfer timed out` になっていた(同じ image が
+            // 消去を伴う `flash` では通る)。WCH-LinkE が黙認するのでベンチの他機では動いていた。`run` は
+            // 常に flash 先頭から image 全体を焼くので、`flash --erase auto` が選ぶ chip erase でよい。
+            if let Err(e) = session.link().erase_flash() {
                 return fail(
                     cli,
                     CMD,
                     ErrorKind::TransferFailed,
-                    format!("program failed at {:#010x}: {e}", seg.addr),
+                    format!("erase before programming failed: {e}"),
+                    None,
+                );
+            }
+            // One contiguous region, as the stub path requires - see `Image::program_span`: only the
+            // first `write_flash` of a session takes effect, and an ELF's `.data` initialiser arrives
+            // as a segment of its own behind `.text`, so anything else loses the tail of the image.
+            for seg in image.program_span(fp.data_packet_size as u32).iter() {
+                if let Err(e) = session.link().write_flash(seg.addr, &seg.data, &fp, |_| {}) {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("program failed at {:#010x}: {e}", seg.addr),
+                        None,
+                    );
+                }
+            }
+        } else {
+            let db_family = crate::cmd_target::db_family_of(&mut session);
+            let Some(plan) = ch32rv_flash::loader::plan_for_family(&db_family) else {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::CapabilityUnsupported,
+                    format!("flashing family 0x{family:02x} is not supported"),
+                    None,
+                );
+            };
+            if let Err(e) = session.dm().reset_halt() {
+                return fail(cli, CMD, ErrorKind::TransferFailed, e.to_string(), None);
+            }
+            let mut target = ch32rv_dmi::DmTarget::new(session.link());
+            if let Err(e) =
+                ch32rv_flash::loader::program(&mut target, plan, &image.segments, &mut |_, _| {})
+            {
+                return fail(
+                    cli,
+                    CMD,
+                    crate::cmd_flash::loader_error_kind(&e),
+                    e.to_string(),
                     None,
                 );
             }

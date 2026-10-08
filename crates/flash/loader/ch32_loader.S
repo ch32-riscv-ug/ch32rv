@@ -7,9 +7,10 @@
  *   a3 = 0  buffered : BUFRST, per word store + BUFLOAD, then STRT   (V003, V00x, X035, L103)
  *   a3 = 1  pgstart  : FTPG, per word store (wait WRBSY), then PGSTART (V20x, V30x)
  *   a3 = 2  v103     : PG, halfword stores, then the V103 commit        (V103)
+ *   a3 = 3  x315     : PER erase (4 KiB), sixteen 256-byte PGSTART commits (X315)
  *
  * In:  a0 = first page address (aligned to a2), a1 = source buffer in RAM (a5 pages back to back),
- *      a2 = page bytes (the fast page size: 64 / 128 / 256), a3 = mode, a5 = page count (>= 1).
+ *      a2 = page bytes (the fast page size: 64 / 128 / 256 / 4096), a3 = mode, a5 = page count (>= 1).
  *      a4 is set here to the FLASH base (0x40022000), one register less in the run request so it
  *      fits a probe's smallest frame (64 bytes). FLASH already unlocked, fast mode included (KEYR +
  *      MODEKEYR), and mstatus.MIE clear - the host does both.
@@ -57,6 +58,10 @@ main:
 page:
     /* ---- erase the page: FTER, ADDR, FTER|STRT ---- */
     lui     t0, 0x20            /* FTER = 1 << 17 */
+    li      t1, 3
+    bne     a3, t1, 6f
+    li      t0, 2               /* X315 PER = 1 << 1, 4 KiB */
+6:
     sw      t0, CTLR(a4)
     sw      a0, ADDR(a4)
     addi    t0, t0, 0x40        /* | STRT */
@@ -75,6 +80,8 @@ page:
     add     ra, a1, a2          /* source end */
     beqz    a3, buffered
     li      t0, 1
+    beq     a3, t0, pgstart
+    li      t0, 3
     beq     a3, t0, pgstart
 
 /* ---- CH32V103: standard halfword programming ---- */
@@ -115,6 +122,10 @@ buffered:
 
 /* ---- V20x / V30x: fast page, then PGSTART ---- */
 pgstart:
+    li      t0, 3
+    bne     a3, t0, 7f
+    addi    ra, s1, 256         /* X315 commits one 256-byte program page at a time */
+7:
     lui     t0, 0x10            /* FTPG */
     sw      t0, CTLR(a4)
 5:  lw      t2, 0(s1)
@@ -126,6 +137,11 @@ pgstart:
     lui     t0, 0x210           /* FTPG | PGSTART (1 << 21) */
     sw      t0, CTLR(a4)
     WAIT    BSY
+    li      t0, 3
+    bne     a3, t0, finish
+    sw      zero, CTLR(a4)
+    sub     t0, s0, a0
+    bltu    t0, a2, pgstart
 
 finish:
     lw      t2, STATR(a4)
