@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Accept ch32-device-data@773f929: all eight provisional V205/X315 family SKU records match the delivered IDs, addresses, families, capacities, and measured status. Regenerate the DB, remove their provisional rows, and preserve ID verification for CH32V205RCT6 and CH32X315MCU6. Temperature-grade siblings sharing the same silicon ID remain candidates rather than being guessed.
+- (JA) ch32-device-data@773f929を受け入れ。V205/X315 familyの暫定8行と納品データのID・番地・family・容量・実測状態が一致し、生成DBへ移行して暫定行を削除。RCT6とMCU6のID実機確認状態は維持。同じシリコンIDを持つ温度グレード違いは候補として残す。
+
 - (EN) Register CH32X315 family `0xe6` and four provisional X315/X305 SKUs from WCH EVT; CH32X315MCU6's ID matches both AttachChip and memory. Reject erased ChipInfo capacity values (`0xe339` / `0xffff`, or zero), use an unambiguous SKU's DB capacity as fallback, and retain the raw capacity/source in `target info`. Shared range checks also use this capacity. X315's DB flash capacity is its 192 KiB zero-wait region (480 KiB total); flash programming remains unverified.
 - (JA) CH32X315 family `0xe6`とX315/X305の4 SKUを暫定登録。MCU6はAttachChipとメモリのIDが一致。ChipInfoの消去済み容量欄 (`0xe339` / `0xffff`、または0)を容量扱いせず、一意なSKUのDB容量へフォールバックし、識別表示に生値と出所を残す。範囲判定も共通の容量を使う。X315のDB容量192 KiBはゼロウェイト領域 (総量480 KiB)で、flash書き込みは未検証。
 

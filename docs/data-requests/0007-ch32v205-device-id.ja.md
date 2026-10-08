@@ -1,7 +1,7 @@
 # CH32V205 device ID の追加
 
 - 依頼先: ch32-device-data
-- 状態: draft (ローカルで準備済み、未送信)
+- 状態: 納品・受け入れ済み (2026-10-08、ch32-device-data@773f929)
 - 優先度: 高
 - 関連: [0001](0001-device-id.ja.md)、[実測と資料の照合](measured/device-id-v205-2026-10-08.md)
 
@@ -37,3 +37,9 @@ ch32rvでは暫定 `crates/target/provisional/skus.csv`に4行を収載し、出
 納品時に `cargo xtask db-gen`でID・family・series・容量を照合し、一致した暫定行を削除する。
 生成DBへ移した時もRCT6の `verified=true`を維持するため、xtaskのMEASURED表へ追加する。
 `0xce`のfamily mappingはAttachChip実測としてch32rvに登録済み。
+
+## 2026-10-08 ローカル受け入れ
+
+公式EVTからIDを抽出し、`index/device_ids.csv`へ収載。ID・番地・family・series・容量を
+暫定行と照合して一致を確認し、生成SKU DBへ移行した。暫定8行は削除。
+実測2型番の`verified=true`はMEASURED表へ移して維持した。書き込み検証は未実施。

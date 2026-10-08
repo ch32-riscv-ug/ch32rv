@@ -1,7 +1,7 @@
 # CH32X315 device ID の追加
 
 - 依頼先: ch32-device-data
-- 状態: draft (ローカルで準備済み、未送信)
+- 状態: 納品・受け入れ済み (2026-10-08、ch32-device-data@773f929)
 - 優先度: 高
 - 関連: [0001](0001-device-id.ja.md)、[実測資料](measured/device-id-x315-2026-10-08.md)
 
@@ -34,3 +34,9 @@ UIDとIDは取得できるので、全応答を壊れた値として捨てない
 ch32rvの暫定overlayに4行を登録済み。納品時に生成DBとID/family/series/容量を照合し、
 一致した暫定行を削除する。MCU6のID実機確認はxtaskのMEASURED表で維持する。
 family名`0xe6`は実測根拠でch32rvに登録済み。Flash書き込みは未検証。
+
+## 2026-10-08 ローカル受け入れ
+
+公式EVTからIDを抽出し、`index/device_ids.csv`へ収載。ID・番地・family・series・容量を
+暫定行と照合して一致を確認し、生成SKU DBへ移行した。暫定8行は削除。
+実測2型番の`verified=true`はMEASURED表へ移して維持した。書き込み検証は未実施。

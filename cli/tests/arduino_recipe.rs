@@ -36,7 +36,7 @@ fn upload(chip: &str) -> std::process::Output {
 
 #[test]
 fn a_series_ch32rv_does_not_know_stops_before_the_probe() {
-    let out = upload("CH32V205");
+    let out = upload("CH32V999");
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert_eq!(out.status.code(), Some(20), "{stderr}");
     assert!(stderr.contains("target-not-in-db"), "{stderr}");
@@ -46,7 +46,15 @@ fn a_series_ch32rv_does_not_know_stops_before_the_probe() {
 fn a_known_name_goes_on_to_the_probe() {
     // A series, a family and a SKU ch32rv knows get past the name check; here the probe is
     // missing, so it stops at the open (11), not at the name.
-    for chip in ["CH32V203", "CH32V20x", "CH32V203C8T6"] {
+    for chip in [
+        "CH32V203",
+        "CH32V20x",
+        "CH32V203C8T6",
+        "CH32V205",
+        "CH32V205RCT6",
+        "CH32X315",
+        "CH32X315MCU6",
+    ] {
         let out = upload(chip);
         assert_eq!(
             out.status.code(),

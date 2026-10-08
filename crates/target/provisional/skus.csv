@@ -3,18 +3,3 @@
 # `provisional: true`. Delete a row as soon as the generated DB supplies it.
 # columns: sku,family,series,device_id,id_addr,flash_bytes,sram_bytes,verified,request
 #
-# WCH CH32V205 EVT ch32v205_dbgmcu.c CHIPID table + index/parts.csv geometry.
-# RCT6 ID independently measured via AttachChip and memory at 0x1ffff704.
-# Evidence: docs/data-requests/measured/device-id-v205-2026-10-08.md
-# Delivery requested locally in docs/data-requests/0007-ch32v205-device-id.ja.md.
-CH32V205CCT6,CH32V205,CH32V205,0x20520500,0x1ffff704,262144,32768,false,0007
-CH32V205RCT6,CH32V205,CH32V205,0x20510500,0x1ffff704,262144,32768,true,0007
-CH32V205VCT6,CH32V205,CH32V205,0x20500500,0x1ffff704,262144,32768,false,0007
-CH32V203CCT6,CH32V205,CH32V203,0x20540500,0x1ffff704,262144,32768,false,0007
-# WCH CH32X315 EVT ch32x3x5_dbgmcu.c ID table + index/parts.csv geometry.
-# MCU6 ID measured in AttachChip and memory; ChipInfo capacity is erased (0xe339).
-# Evidence: docs/data-requests/measured/device-id-x315-2026-10-08.md (request 0008).
-CH32X315MCU6,CH32X315,CH32X315,0x31500000,0x1ffff704,196608,65536,true,0008
-CH32X315CCU6,CH32X315,CH32X315,0x31510001,0x1ffff704,196608,65536,false,0008
-CH32X315WCU6,CH32X315,CH32X315,0x31520002,0x1ffff704,196608,65536,false,0008
-CH32X305RCT6,CH32X315,CH32X305,0x31530003,0x1ffff704,196608,65536,false,0008

@@ -270,7 +270,7 @@ fn unregistered_target_still_reports_its_signature_and_connection() {
 }
 
 #[test]
-fn v205_registration_exposes_measured_and_provisional_evidence() {
+fn v205_registration_exposes_delivered_and_measured_evidence() {
     let out = Command::new(bin())
         .args([
             "target",
@@ -290,13 +290,17 @@ fn v205_registration_exposes_measured_and_provisional_evidence() {
     assert_eq!(v["target"]["family"], "CH32V205");
     assert_eq!(v["target"]["sku"], "CH32V205RCT6");
     assert_eq!(v["target"]["verified"], true);
-    assert_eq!(v["target"]["provisional"], true);
+    assert_eq!(v["target"]["provisional"], false);
     assert_eq!(v["result"]["identification"], "identified");
     assert_eq!(v["result"]["family_byte"], "0xce");
     assert_eq!(v["result"]["silicon_revision"], 1);
     assert_eq!(v["result"]["sram_bytes"], 32768);
     assert_eq!(v["result"]["debug_wiring"]["swdio"], "PA13");
-    assert_eq!(v["warnings"][0]["code"], "sku-provisional");
+    assert!(
+        v["warnings"]
+            .as_array()
+            .is_none_or(|warnings| warnings.iter().all(|w| w["code"] != "sku-provisional"))
+    );
 }
 
 #[test]
@@ -320,7 +324,7 @@ fn x315_erased_capacity_uses_db_and_retains_raw_response() {
     assert_eq!(v["target"]["family"], "CH32X315");
     assert_eq!(v["target"]["sku"], "CH32X315MCU6");
     assert_eq!(v["target"]["verified"], true);
-    assert_eq!(v["target"]["provisional"], true);
+    assert_eq!(v["target"]["provisional"], false);
     assert_eq!(v["target"]["flash_bytes"], 196608);
     assert_eq!(v["target"]["uid"], "36a0abcd9eb5bc48");
     assert_eq!(v["result"]["family_byte"], "0xe6");

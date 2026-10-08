@@ -265,14 +265,27 @@ fn generate(data: &Path) -> Result<Vec<(&'static str, String)>, String> {
         return Err("no device_ids rows produced any SKU records".to_owned());
     }
 
-    // Sanity: after masking [7:4], each device_id must map to exactly one SKU (fail-closed on a
-    // real collision so we never generate an ambiguous auto-detect table).
+    // Temperature grades share silicon IDs. Preserve both catalog names: the resolver
+    // returns Family with candidates rather than guessing a grade. Reject other collisions.
     let mut by_masked: BTreeMap<u32, &String> = BTreeMap::new();
     for (pn, s) in &skus {
         let masked = s.device_id & DONT_CARE_MASK;
         if let Some(prev) = by_masked.insert(masked, pn)
             && prev != pn
         {
+            let previous = &skus[prev];
+            let grade_siblings = pn.get(..pn.len() - 1) == prev.get(..prev.len() - 1)
+                && pn.ends_with(['6', '7'])
+                && prev.ends_with(['6', '7']);
+            if grade_siblings
+                && previous.family == s.family
+                && previous.series == s.series
+                && previous.id_addr == s.id_addr
+                && previous.flash_bytes == s.flash_bytes
+                && previous.sram_bytes == s.sram_bytes
+            {
+                continue;
+            }
             return Err(format!(
                 "masked device_id 0x{masked:08x} collides: {prev} and {pn}"
             ));
@@ -580,6 +593,8 @@ const MEASURED: &[&str] = &[
     "CH32L103C8T6",
     "CH32X035C8T6",
     "CH32V006K8U6",
+    "CH32V205RCT6",
+    "CH32X315MCU6",
 ];
 
 /// Minimal CSV reader: returns rows of fields, honouring double-quoted fields (which may contain

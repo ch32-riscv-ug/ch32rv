@@ -599,7 +599,6 @@ mod tests {
             (0x0351_0601, "CH32X035C8T6"),
             (0x0030_0500, "CH32V003F4P6"),
             (0x2500_410f, "CH32V103R8T6"),
-            (0x0060_0620, "CH32V006K8U6"), // datasheet 0x00600600, rev nibble 0x2
             (0x2051_0510, "CH32V205RCT6"), // EVT 0x205105x0, measured rev nibble 0x1
             (0x3150_0000, "CH32X315MCU6"), // EVT 0x315000x0, measured
         ];
@@ -608,6 +607,25 @@ mod tests {
                 Resolution::Sku(s) => assert_eq!(s.sku, want, "chip_id 0x{id:08x}"),
                 other => panic!("chip_id 0x{id:08x} -> {other:?}, want {want}"),
             }
+        }
+    }
+
+    #[test]
+    fn shared_temperature_grade_id_keeps_both_candidates() {
+        let db = Db::builtin();
+        match db.resolve_by_chip_id(0x0060_0620) {
+            Resolution::Family(family, candidates) => {
+                assert_eq!(family, "CH32V006");
+                let names: Vec<_> = candidates.iter().map(|s| s.sku.as_str()).collect();
+                assert_eq!(names, ["CH32V006K8U6", "CH32V006K8U7"]);
+                assert!(candidates.iter().all(|s| !s.provisional));
+                assert!(
+                    candidates
+                        .iter()
+                        .any(|s| s.sku == "CH32V006K8U6" && s.verified)
+                );
+            }
+            other => panic!("shared ID should return family candidates: {other:?}"),
         }
     }
 
