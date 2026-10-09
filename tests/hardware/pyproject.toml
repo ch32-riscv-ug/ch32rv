@@ -1,0 +1,12 @@
+[project]
+name = "ch32rv-oep-hardware-tests"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = ["pytest>=8", "oep-client-python==0.0.31"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+pythonpath = ["."]
+addopts = "-ra --strict-markers"
+junit_family = "legacy"
+markers = ["hardware: explicitly configured physical CLI flash/readback contract"]

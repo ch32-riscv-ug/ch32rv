@@ -1,0 +1,20 @@
+name: OEP consumer tests
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  virtual:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: astral-sh/setup-uv@v6
+      - name: Locked virtual probe and CLI contracts
+        run: |
+          cargo test --locked -p ch32rv-oep
+          cargo test --locked -p ch32rv --test oep_flash --test oep_monitor --test broker
+      - name: Hardware harness guards (no device access)
+        run: uv run --project tests/hardware --locked pytest -c tests/hardware/pyproject.toml tests/hardware/test_guards.py

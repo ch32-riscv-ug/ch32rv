@@ -1,7 +1,7 @@
 //! en: The per-probe broker (docs/oep-host.ja.md §7.2) on the spec side's fake probe (pty): two
 //! clients at once, each with its own corr numbering; a connection both use survives one client's
 //! detach and is detached on the probe only by its last user; the broker ends, and its endpoint
-//! goes, once the last client has left. Skipped when uv or the client checkout is missing.
+//! goes, once the last client has left. The locked virtual backend is required.
 //! ja: ブローカーを偽の probe(pty)で試験する。2 つの client、共有の接続の detach、最後の client で終わる。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -34,7 +34,7 @@ fn fake_pty() -> Option<(Kill, String)> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .ok()?;
+        .expect("failed to launch the required virtual probe");
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)

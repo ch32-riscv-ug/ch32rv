@@ -1,0 +1,15 @@
+# CLI contract settings for ONE installed OEP slot. Not the shared equipment graph schema.
+# Copy to equipment.local.toml; replace identities, slot, image and expected DUT chip.
+schema_version = 1
+example = true
+[probe]
+port = "/dev/serial/by-id/EXAMPLE"
+unit_id = "000000000000"
+selector = "port:oep://000000000000/EXAMPLE"
+[target]
+chip = "CH32L103C8T6"
+chip_id = "0x10310710"
+# chip_id identifies the part, not a unique physical DUT. Add uid when target.info exposes it.
+[flash]
+image = "/path/to/explicit/test-image.bin"
+address = 0x08000000

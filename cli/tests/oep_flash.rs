@@ -1,7 +1,7 @@
 //! en: `ch32rv flash` end to end on an OEP probe: the spec side's fake probe (oep-client-python
 //! `virtual_bench_serve`) with ch32rv's loader played by `crates/oep/tests/virtual_bench/loader_hook.py`, over TCP
 //! (`--probe tcp:`) and over its pty (`--probe port:<pty>`, the serial path with the single-serial
-//! lock rule). Skipped when uv or the client checkout is missing.
+//! lock rule). The locked virtual backend is required.
 //! ja: OEP の probe での `ch32rv flash` を端から端まで(偽の probe、TCP と pty)。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -48,7 +48,7 @@ fn fake(args: &[&str]) -> Option<Fake> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .ok()?;
+        .expect("failed to launch the required virtual probe");
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
@@ -258,15 +258,6 @@ fn a_raw_upload_to_a_probe_not_on_usb_is_not_sent_to_its_slots() {
 fn flash_where_the_host_picks_the_pins() {
     // A probe whose wire takes its pins from the host (role_channels) and has no slot: ch32rv
     // scans for the pair with a target (the fake's is the first, GP0 / GP1) and attaches there.
-    let Some(dir) = uv::client_dir() else {
-        return;
-    };
-    let has_profile = std::fs::read_to_string(dir.join("src/oep_client/virtual_bench.py"))
-        .is_ok_and(|t| t.contains("rp2350-pins"));
-    if !has_profile {
-        eprintln!("skip: the fake has no rp2350-pins profile");
-        return;
-    }
     let Some(f) = fake(&["--pty", "--profile", "rp2350-pins", "--target-id", V203]) else {
         return;
     };

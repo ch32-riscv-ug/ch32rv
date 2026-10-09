@@ -1,0 +1,8 @@
+[project]
+name = "ch32rv-oep-virtual-tests"
+version = "0.0.0"
+requires-python = ">=3.12"
+dependencies = ["oep-client-python"]
+
+[tool.uv.sources]
+oep-client-python = { git = "https://github.com/Open-Embedded-Probe/oep-client-python", rev = "068c6bed7571d637a5b3843ab27d58c50efcf589" }

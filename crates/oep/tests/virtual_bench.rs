@@ -1,9 +1,6 @@
-//! en: The link and session layers against the spec side's fake probe (oep-client-python
-//! `endpoint.Endpoint`), served over TCP by `tests/virtual_bench/serve.py`. The fake is the shared
-//! "working spec" (ArduinoCore-CH32RV decision, 2026-09-29); Python runs only here, through `uv`.
-//! Skipped, with a note, when uv or the client is missing (virtual_bench/uv.rs: $OEP_CLIENT_PYTHON, else
-//! `../dev_oep/oep-client-python` next to the ch32rv checkout's parent, at the pinned commit).
-//! ja: link と session を spec 側の偽の probe で試験する。uv か client が無ければ skip。
+//! Link/session integration against oep-client-python's virtual probe over TCP/PTY.
+//! Python runs only for tests, in the consumer's own locked workspace. Missing setup fails.
+//! ja: 自前のuv.lockで固定した仮想プローブを使用。準備失敗をskipしない。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 #[path = "virtual_bench/uv.rs"]
@@ -31,10 +28,7 @@ impl Drop for Fake {
     }
 }
 
-/// en: Start oep-client-python's `virtual_bench_serve` with `args` (and `env` for the loader hook), or
-/// `None` (skip) when it cannot run here. `--run-hook` is always given: ch32rv's loader played in
-/// `tests/fake/loader_hook.py`.
-/// ja: `virtual_bench_serve` を起動する。動かせない環境では None(skip)。
+/// Start the required virtual probe, with the Rust loader hook.
 fn fake_env(args: &[&str], env: &[(&str, &str)]) -> Option<Fake> {
     let dir = uv::client_dir()?;
     let hook =
@@ -50,13 +44,9 @@ fn fake_env(args: &[&str], env: &[(&str, &str)]) -> Option<Fake> {
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("skip: cannot run uv: {e}");
-            return None;
-        }
-    };
+    let mut child = cmd
+        .spawn()
+        .expect("failed to launch the required virtual probe");
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)

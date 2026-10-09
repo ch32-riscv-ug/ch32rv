@@ -1,7 +1,6 @@
 //! en: `ch32rv arduino monitor` on an OEP probe's serial port (the fake probe's pty), the test
 //! playing arduino-cli: a debug source goes through the probe's broker to its console stream, a
-//! wrong `chip` fails OPEN, and closing stdin ends it and its broker. Skipped when uv or the
-//! client checkout is missing.
+//! wrong `chip` fails OPEN, and closing stdin ends it and its broker. The locked virtual backend is required.
 //! ja: OEP の probe の serial port での `arduino monitor`(試験が arduino-cli の役)。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -29,7 +28,7 @@ fn fake_pty(args: &[&str]) -> Option<(Kill, String)> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
-        .ok()?;
+        .expect("failed to launch the required virtual probe");
     let mut line = String::new();
     BufReader::new(child.stdout.take().unwrap())
         .read_line(&mut line)
