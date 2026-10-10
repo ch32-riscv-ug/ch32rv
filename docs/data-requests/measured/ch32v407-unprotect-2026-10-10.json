@@ -1,0 +1,1 @@
+{"contract":"4","ok":true,"cmd":"target.protect","result":{"after":"a55abf40ff00ff00ff00ff00ff00ff00","before":"ff00bf40ff00ff00ff00ff00ff00ff00","family":"unknown(0xa6)","note":"option bytes take effect after a power-on / system reset","verified":true}}

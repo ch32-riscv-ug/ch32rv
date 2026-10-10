@@ -102,6 +102,10 @@ ch32rv --capture cap.ndjson probe info --probe serial:<SN>   # 問題時に添�
 
 2026-10-08にCH32V205RCT6 / CH32X315MCU6をLinkE FW2.22で確認した結果は[実機記録](data-requests/measured/flash-debug-v205-x315-2026-10-08.md)を参照。Flash書き込み・ページ境界での保存・部分消去、reset/step、semihosting、GDBのHW/Flash breakpointまで通過。X315の消去粒度は4 KiB、書き込み粒度は256 byteで、現在の書き込み対象はzero-wait領域192 KiB。元のFlash全体を退避・復元して照合する。
 
+### V407のデータ取得
+
+2026-10-10のCH32V407WEU6の識別・保護解除・全Flash消去と取得結果は[実測記録](data-requests/measured/device-id-v407-2026-10-10.md)を参照。原本は`target/hil-v407-2026-10-10/`、小さな根拠は`docs/data-requests/measured/`と`tests/fixtures/replay/`に保存する。総Flash992 KiBの消去・再読一致、BOOT28 KiBの別読取一致、RDPR以外のOption保持を確認した。Flash書き込み・loader・GDB等の機能試験とは区別する。
+
 ## 5. 記録テンプレ
 
 | 項目 | 結果 |

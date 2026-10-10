@@ -1,0 +1,1 @@
+{"contract":"4","ok":true,"cmd":"target.option.get","result":{"data0":"0xff","data1":"0xff","db_family":"CH32V407","family":"unknown(0xa6)","raw":"a55abf40ff00ff00ff00ff00ff00ff00","rdpr":"0xa5","read_protected":false,"user":"0xbf","user_bits":{"IWDGSW":true,"STANDYRST":true,"STOPRST":true},"write_protected":false,"wrpr":"0xffffffff"}}
