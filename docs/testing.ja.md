@@ -106,6 +106,10 @@ ch32rv --capture cap.ndjson probe info --probe serial:<SN>   # 問題時に添�
 
 2026-10-10のCH32V407WEU6の識別・保護解除・全Flash消去と取得結果は[実測記録](data-requests/measured/device-id-v407-2026-10-10.md)を参照。原本は`target/hil-v407-2026-10-10/`、小さな根拠は`docs/data-requests/measured/`と`tests/fixtures/replay/`に保存する。総Flash992 KiBの消去・再読一致、BOOT28 KiBの別読取一致、RDPR以外のOption保持を確認した。Flash書き込み・loader・GDB等の機能試験とは区別する。
 
+### M030のデータ取得
+
+2026-10-10のCH32M030G8R7のSWIO接続による[取得記録](data-requests/measured/device-id-m030-2026-10-10.md)。原本は`target/hil-m030-2026-10-10/`、小さな根拠は`docs/data-requests/measured/`と`tests/fixtures/replay/`。Flash64 KiBの再読一致とOption保持を確認し、書き込み・消去は行っていない。容量レジスタは16 KiB相当で資料・DBの64 KiBと不一致のため、生値を保持して未解決とする。
+
 ## 5. 記録テンプレ
 
 | 項目 | 結果 |

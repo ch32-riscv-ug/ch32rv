@@ -22,6 +22,7 @@ ch32rv が必要とするデータは ch32rv 内部で作らず、**資料の持
 - [CH32X315 識別情報](measured/device-id-x315-2026-10-08.md)
 - [CH32V205 / CH32X315 Flash・Debug実機テスト](measured/flash-debug-v205-x315-2026-10-08.md)
 - [CH32V407 識別・保護解除・データ取得](measured/device-id-v407-2026-10-10.md)
+- [CH32M030 識別・データ取得](measured/device-id-m030-2026-10-10.md)
 
 ## 運用ルール
 
