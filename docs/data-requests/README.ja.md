@@ -24,6 +24,7 @@ ch32rv が必要とするデータは ch32rv 内部で作らず、**資料の持
 - [CH32V407 識別・保護解除・データ取得](measured/device-id-v407-2026-10-10.md)
 - [CH32M030 識別・データ取得](measured/device-id-m030-2026-10-10.md)
 - [CH32H417 識別・データ取得](measured/device-id-h417-2026-10-10.md)
+- [CH32H417 / LinkE コア選択の実測](0009-h417-core-selection.ja.md)
 
 ## 運用ルール
 
@@ -46,5 +47,6 @@ ch32rv が必要とするデータは ch32rv 内部で作らず、**資料の持
 | [0006](0006-harness-integration.ja.md) | wch-protocols / ArduinoCore-CH32RV | 自作 probe(DUT harness)との連携 — ch32rv 側の事実と論点 | **要件出し中**(結論は出さない。調整はプロトコル repo) | — |
 | [0007](0007-ch32v205-device-id.ja.md) | ch32-device-data | CH32V205 / CH32V203CCT6 のID収載、RCT6実測 | 納品受け入れ・消費済 (773f929、暫定登録削除済み) | 高 |
 | [0008](0008-ch32x315-device-id.ja.md) | ch32-device-data | CH32X315 / CH32X305 のID収載、MCU6実測 | 納品受け入れ・消費済 (773f929、暫定登録削除済み) | 高 |
+| [0009](0009-h417-core-selection.ja.md) | wch-protocols | H417 / LinkE hartsel 0・1 の選択と CSR 読み出し実測 | draft（引き渡し用資料作成済み） | 高 |
 
 将来の依頼候補(まだ依頼書にしない): WCH-Link firmware の hash→版対応の継続拡充(既存 `evidence/link_firmware.csv` の新版追従)、UF2 family ID / DFU VID:PID 等の bootloader 識別子表(P2 の `boot` 実装時)。
