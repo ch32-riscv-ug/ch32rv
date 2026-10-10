@@ -110,6 +110,10 @@ ch32rv --capture cap.ndjson probe info --probe serial:<SN>   # 問題時に添�
 
 2026-10-10のCH32M030G8R7のSWIO接続による[取得記録](data-requests/measured/device-id-m030-2026-10-10.md)。原本は`target/hil-m030-2026-10-10/`、小さな根拠は`docs/data-requests/measured/`と`tests/fixtures/replay/`。Flash64 KiBの再読一致とOption保持を確認し、書き込み・消去は行っていない。容量レジスタは16 KiB相当で資料・DBの64 KiBと不一致のため、生値を保持して未解決とする。
 
+### H417のデータ取得
+
+2026-10-10のCH32H417QEU6のSWIO接続による[取得記録](data-requests/measured/device-id-h417-2026-10-10.md)。原本は`target/hil-h417-2026-10-10/`、小さな根拠は`docs/data-requests/measured/`と`tests/fixtures/replay/`。Flash960 KiB・BOOT56 KiBの再読一致、Option不変、RAM3領域896 KiBの取得を確認し、書き込み・消去は行っていない。既定コアのGPR/FPR・CSR/DMIを取得したが、第2コア選択はCLI未対応で未取得。
+
 ## 5. 記録テンプレ
 
 | 項目 | 結果 |

@@ -1,0 +1,76 @@
+{
+  "date": "2026-10-10",
+  "probe": "49808F06CE30",
+  "firmware": "2.22",
+  "sku": "CH32H417QEU6",
+  "family": "CH32H4",
+  "family_byte": "0xc6",
+  "chip_id": "0x4170053d",
+  "chip_id_address": "0x1ffff704",
+  "silicon_revision": 3,
+  "uid_probe_8_bytes": "640eb63cb6c99c7f",
+  "uid_raw_12_bytes": "3cb60e647f9cc9b639e339e3",
+  "uid_address": "0x1ffff7e8",
+  "flash_capacity_raw": "0x03c0",
+  "flash_capacity_address": "0x1ffff7e0",
+  "flash_capacity_KiB": 960,
+  "flash_cfgr0": "0x96070200",
+  "dbmode": 1,
+  "flash_bytes_read": 983040,
+  "flash_second_read_identical": true,
+  "flash_sha256": "74845313d09a0521f674fc3cbe71929a66b567fbb1904ec258538212c95d9e97",
+  "boot_bytes_read": 57344,
+  "boot_second_read_identical": true,
+  "boot_sha256": "c57825e13b9047481f5f3d511b02fca0f9186cf612de2cd41e237b5ca8823192",
+  "ram_regions": [
+    {
+      "name": "itcm",
+      "address": "0x200a0000",
+      "bytes": 131072
+    },
+    {
+      "name": "dtcm",
+      "address": "0x200c0000",
+      "bytes": 262144
+    },
+    {
+      "name": "shared",
+      "address": "0x20100000",
+      "bytes": 524288
+    },
+    {
+      "name": "pioc",
+      "address": "0x50040000",
+      "bytes": 4096
+    },
+    {
+      "name": "ipc",
+      "address": "0x40006000",
+      "bytes": 512
+    }
+  ],
+  "system_window_bytes_read": 65536,
+  "option_base": "0x1ffff800",
+  "option_raw": "a55aff00ff00ff00ff00ff00ff00ff00",
+  "options_unchanged": true,
+  "read_protected": false,
+  "write_protected": false,
+  "writes_or_erases_performed": false,
+  "peripheral_blocks": 85,
+  "peripheral_register_entries": 1758,
+  "csr_reads_successful": 50,
+  "dmi_reads_successful": 14,
+  "fpr_reads_successful": 32,
+  "hart_id": "0x00000000",
+  "core1_supported": false,
+  "limitations": [
+    "Only the default debug hart (mhartid=0) was captured. --core 1 fails with capability-unsupported in the current CLI, so the second core register state was not captured.",
+    "FPR f0..f31 were accessed with abstract register numbers 0x1020..0x103f. CLI csr:<number> passes through to abstract register access; these are not architectural CSR addresses.",
+    "RAM/peripheral/register reads are sequential snapshots with debug access effects; peripheral data reads may consume peripheral state.",
+    "Successful CSR/DMI reads do not prove implementation of every probed address.",
+    "RAM banks use the H417 reference-manual addresses; CLI warnings reflect its incomplete H417 RAM map.",
+    "Unconnected external memory and undocumented address space were not scanned.",
+    "Initial attach attempts returned no response. Later low/medium speed attach succeeded.",
+    "Flash programming, erase, loader, second-core selection, and functional communication tests were not performed."
+  ]
+}

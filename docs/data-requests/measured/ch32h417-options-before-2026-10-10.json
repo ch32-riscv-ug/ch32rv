@@ -1,0 +1,1 @@
+{"contract":"4","ok":true,"cmd":"target.option.get","result":{"data0":"0xff","data1":"0xff","db_family":"CH32H417","family":"CH32H4","raw":"a55aff00ff00ff00ff00ff00ff00ff00","rdpr":"0xa5","read_protected":false,"user":"0xff","user_bits":{"IWDGSW":true,"USARTDLEN":true,"USBFSDLEN":true},"write_protected":false,"wrpr":"0xffffffff"}}

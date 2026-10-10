@@ -1,0 +1,1 @@
+{"contract":"4","ok":false,"cmd":"dbg.regs","error":{"code":24,"kind":"capability-unsupported","msg":"--core 1: only core 0 is supported (a second core, H41x, is not implemented)"}}
