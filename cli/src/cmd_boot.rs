@@ -1,6 +1,7 @@
 //! `boot hid flash`: rv003usb/UIAPduino HID scratchpad bootloader.
 
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use ch32rv_boot::{HidBoot, HidBootError};
 use ch32rv_contract::{ErrorKind, ResultEnvelope};
@@ -8,7 +9,12 @@ use ch32rv_contract::{ErrorKind, ResultEnvelope};
 use crate::args::Cli;
 use crate::cmd_probe::fail;
 
-pub fn hid_flash(cli: &Cli, file: &std::path::Path, usb_id: Option<&str>) -> ExitCode {
+pub fn hid_flash(
+    cli: &Cli,
+    file: &std::path::Path,
+    usb_id: Option<&str>,
+    wait_secs: u64,
+) -> ExitCode {
     const CMD: &str = "boot.hid.flash";
     let id = match usb_id.map(parse_usb_id).transpose() {
         Ok(id) => id,
@@ -73,7 +79,8 @@ pub fn hid_flash(cli: &Cli, file: &std::path::Path, usb_id: Option<&str>) -> Exi
         }
         Err(c) => return c,
     };
-    let boot = match HidBoot::open_at(id, topology.as_deref()) {
+    let wait = Duration::from_secs(wait_secs);
+    let boot = match open_waiting(id, topology.as_deref(), wait) {
         Ok(boot) => boot,
         Err(e) => return hid_error(cli, CMD, e),
     };
@@ -107,6 +114,57 @@ pub fn hid_flash(cli: &Cli, file: &std::path::Path, usb_id: Option<&str>) -> Exi
     }
 }
 
+/// en: Open the bootloader, waiting up to `wait` for it to appear. The bootloader is entered by
+/// hand (UIAPduino: RESET held while plugging in, then released at once), so the first miss
+/// prints how, once, on stderr - also under `--progress none`, since the IDE shows only that.
+/// Right after it appears the OS may not have granted access to the node yet, so open failures
+/// are retried too once we have been waiting. Replay never waits.
+/// ja: bootloader を最大 `wait` 待って開く。入るのは手動なので、最初に見つからなかったときに
+/// 入り方を stderr へ 1 回出す(IDE はそれしか見せないので `--progress none` でも出す)。現れた
+/// 直後は OS がノードの権限をまだ付けていないことがあるので、待っていた場合は open の失敗も再試行する。
+fn open_waiting(
+    usb_id: Option<(u16, u16)>,
+    topology: Option<&str>,
+    wait: Duration,
+) -> Result<HidBoot, HidBootError> {
+    let deadline = Instant::now() + wait;
+    let mut waiting = false;
+    loop {
+        let err = match HidBoot::open_at(usb_id, topology) {
+            Ok(boot) => {
+                if waiting {
+                    eprintln!("bootloader found");
+                }
+                return Ok(boot);
+            }
+            Err(e) => e,
+        };
+        let retry = match err {
+            HidBootError::NotFound(..) | HidBootError::NotAt(_) => true,
+            HidBootError::Init(_) | HidBootError::Transfer(_) => waiting,
+            _ => false,
+        };
+        if !retry || ch32rv_usb::replay::active() || Instant::now() >= deadline {
+            return Err(err);
+        }
+        if !waiting {
+            waiting = true;
+            eprintln!(
+                "waiting up to {} s for the HID bootloader ({}) ...",
+                wait.as_secs(),
+                usb_id.map_or("1209:b803 or 1209:b003".to_owned(), |(v, p)| format!(
+                    "{v:04x}:{p:04x}"
+                ))
+            );
+            eprintln!(
+                "  hold RESET, plug in USB, and release RESET right away \
+                 (holding it longer makes the host give up enumerating)"
+            );
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 fn parse_usb_id(value: &str) -> Result<(u16, u16), String> {
     let Some((vid, pid)) = value.split_once(':') else {
         return Err(format!("invalid USB ID `{value}`"));
@@ -133,7 +191,10 @@ fn hid_error(cli: &Cli, cmd: &str, error: HidBootError) -> ExitCode {
             ErrorKind::TransferFailed
         }
     };
-    fail(cli, cmd, kind, error.to_string(), None)
+    let hint = matches!(error, HidBootError::NotFound(..) | HidBootError::NotAt(_)).then_some(
+        "hold RESET, plug in USB, and release RESET right away; --wait <SECS> waits longer",
+    );
+    fail(cli, cmd, kind, error.to_string(), hint)
 }
 
 #[cfg(test)]

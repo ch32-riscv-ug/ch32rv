@@ -686,6 +686,9 @@ pub enum HidBootCmd {
         /// Override bootloader USB identity (VID:PID, e.g. 1209:b803)
         #[arg(long)]
         usb_id: Option<String>,
+        /// Seconds to wait for the bootloader to appear, with an entry hint on stderr (0: fail at once)
+        #[arg(long, value_name = "SECS", default_value_t = 30)]
+        wait: u64,
     },
 }
 

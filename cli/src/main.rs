@@ -256,8 +256,8 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Run(args) => cmd_run::run(cli, args),
         Command::Broker(BrokerCmd::Serve) => broker::serve(cli),
         Command::Broker(BrokerCmd::Endpoint) => broker::endpoint(cli),
-        Command::Boot(BootCmd::Hid(HidBootCmd::Flash { file, usb_id })) => {
-            cmd_boot::hid_flash(cli, file, usb_id.as_deref())
+        Command::Boot(BootCmd::Hid(HidBootCmd::Flash { file, usb_id, wait })) => {
+            cmd_boot::hid_flash(cli, file, usb_id.as_deref(), *wait)
         }
         Command::Complete(a) => cmd_complete(a.shell),
         other => unimplemented_cmd(cli, canonical_name(other)),

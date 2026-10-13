@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `boot hid flash` waits for the bootloader instead of failing at once: `--wait <SECS>` (default 30, `0` for the old behavior). On the first miss it prints on stderr - also under `--progress none`, for the Arduino IDE - how to enter the bootloader: hold RESET, plug in USB, and release RESET right away, since holding it makes the host give up enumerating. A timeout is still exit 10, with the same hint.
+- (JA) `boot hid flash` は bootloader が無いとすぐ失敗せず待つ: `--wait <SECS>`(既定 30、`0` で従来どおり)。最初に見つからなかったとき、入り方(RESET を押したまま USB を接続し、すぐ離す。押し続けると host が列挙をあきらめる)を stderr に出す。Arduino IDE 向けに `--progress none` でも出す。期限切れは従来どおり exit 10 で、同じ入り方を hint に出す。
+
 ## 0.19.0 - 2026-10-08
 
 - (EN) Bench-verify CH32V205RCT6 and CH32X315MCU6 over WCH-LinkE: controller and RAM-loader flash, UART-free DMDATA/DMSEQ/RTT, SDI output, semihosting, and GDB breakpoints. Enable their flash-controller profiles and `run` without a WCH probe stub. X315 uses 4 KiB PER erase pages with sixteen 256-byte PG_STRT commits; its programming capacity remains the DB's 192 KiB zero-wait region.

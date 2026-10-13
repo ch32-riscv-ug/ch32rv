@@ -444,13 +444,19 @@ ch32rv boot dfu flash <FILE> [--alt <n>] [--address <a>] [--usb-id <VID:PID>]   
 ch32rv boot dfu info
 ch32rv boot uf2 flash <FILE>                                   volume 検出→(必要なら変換)→copy→完了監視
 ch32rv boot uart flash|info <FILE> [--node <id>]               tinyboot 系(RS-485 multi-drop 含む)
-ch32rv boot hid flash <FILE> [--usb-id <VID:PID>]              rv003usb / b003fun 系(UIAPduino 等)
+ch32rv boot hid flash <FILE> [--usb-id <VID:PID>] [--wait <SECS>]  rv003usb / b003fun 系(UIAPduino 等)
 ```
 
 HID flashは実装済み。既定で`1209:b803`（UIAPduino）→`1209:b003`（rv003usb）の順に探索し、
 64 byte page単位でpreverify・erase・program・read-back verifyを行ってuser appを起動する。
 `--capture` / `--replay`もHID feature reportを含めて対応する。DFU / UF2 / UARTとboot entryの
 一般化はP2。
+
+bootloaderが見つからないときは、`--wait`の秒数(既定30、`0`で即exit 10)だけ200 ms間隔で探し直す。
+最初に見つからなかった時点で、待つことと入り方(RESETを押したままUSBを接続し、すぐ離す。押し続けると
+hostが列挙をあきらめる)をstderrへ1回出す。IDEの出力欄にはこれしか出ないので、`--progress none`でも出す。
+待っている間に現れた直後のopen失敗(OSがノードの権限を付ける前)も再試行する。期限切れはexit 10で、
+同じ入り方をhintに出す。`--replay`中は待たない。
 
 **任意 VID/PID 指定(実装済み、ユーザー依頼)**: bootloader 系は vendor/build ごとに USB VID:PID が異なる(rv003usb/b003fun 系は既定 `0x1209:0xb003` だが、**UIAPduino は `0x1209:0xb803`** = ボードごとに変わる)。minichlink は PID をソースに **ハードコード**しており、UIAPduino に書くには PID を書き換えて **リビルドが必要**だった(参照: <https://qiita.com/tomorrow56/items/6cae8ddc7470cb64ad7d>)。ch32rv は同じ轍を踏まない:
 
