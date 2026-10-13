@@ -1,0 +1,1 @@
+{"contract":"4","ok":true,"cmd":"read","result":{"addr":"0x1ffff704","len":4,"out":"target/hil-h417-core-cli-2026-10-10/chip-id.bin"}}

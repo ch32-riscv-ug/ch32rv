@@ -310,6 +310,7 @@ pub fn known_bad_firmware(variant: Variant, major: u8, minor: u8) -> Option<&'st
 
 /// An opened WCH-Link (RISC-V mode) session.
 pub struct WchLink {
+    selected_hart: u32,
     iface: UsbInterface,
     timeout: Duration,
 }
@@ -327,7 +328,30 @@ impl WchLink {
         Ok(Self {
             iface,
             timeout: DEFAULT_TIMEOUT,
+            selected_hart: 0,
         })
+    }
+
+    /// Select an H417 hart within the current attach session. Core 0 keeps the legacy path.
+    pub fn select_hart(&mut self, hart: u32) -> Result<(), DmiError> {
+        if hart > 1 {
+            return Err(DmiError::OperationFailed(
+                "only hart 0/1 is supported".into(),
+            ));
+        }
+        if self.dmi_read(0x16)? & (1 << 12) != 0 {
+            return Err(DmiError::OperationFailed("abstract command is busy".into()));
+        }
+        let value = 1 | (hart << 16);
+        self.dmi_write(0x10, value)?;
+        let readback = self.dmi_read(0x10)?;
+        if readback & 0x03ff_ffc1 != value || self.dmi_read(0x11)? & 0x0000_f000 != 0 {
+            return Err(DmiError::OperationFailed(
+                "hart selection unavailable or rejected".into(),
+            ));
+        }
+        self.selected_hart = hart;
+        Ok(())
     }
 
     pub fn set_timeout(&mut self, timeout: Duration) {
@@ -449,6 +473,7 @@ impl WchLink {
     /// ja: DetachChip。掴んでいる target core を解放する。セッション前の状態クリアにも使う。
     pub fn detach_chip(&mut self) -> Result<(), WchLinkError> {
         let _ = self.command(CMD_CONTROL, &[0xff])?;
+        self.selected_hart = 0;
         Ok(())
     }
 
@@ -791,6 +816,10 @@ impl WchLink {
 /// implements DtmAccess, the DM layer stays transport-agnostic). Retries on BUSY.
 /// ja: [`WchLink`] を DMI transport として使う。DM 層は transport 非依存のまま。BUSY は再試行。
 impl DtmAccess for WchLink {
+    fn selected_hart(&self) -> u32 {
+        self.selected_hart
+    }
+
     fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
         for _ in 0..8 {
             let r = self
@@ -817,7 +846,16 @@ impl DtmAccess for WchLink {
                 DmiStatus::Failed => {
                     return Err(DmiError::OperationFailed("dmi write failed".into()));
                 }
-                _ => return Ok(()),
+                _ => {
+                    if addr == 0x10 {
+                        self.selected_hart = if value & 1 == 0 {
+                            0
+                        } else {
+                            ((value >> 16) & 0x3ff) | (((value >> 6) & 0x3ff) << 10)
+                        };
+                    }
+                    return Ok(());
+                }
             }
         }
         Err(DmiError::Timeout)

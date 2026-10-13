@@ -25,6 +25,7 @@ ch32rv が必要とするデータは ch32rv 内部で作らず、**資料の持
 - [CH32M030 識別・データ取得](measured/device-id-m030-2026-10-10.md)
 - [CH32H417 識別・データ取得](measured/device-id-h417-2026-10-10.md)
 - [CH32H417 / LinkE コア選択の実測](0009-h417-core-selection.ja.md)
+- [CH32H417 コア選択の CLI 実装・run-control 実測](measured/h417-core-cli-2026-10-10.md)
 
 ## 運用ルール
 

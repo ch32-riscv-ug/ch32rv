@@ -95,7 +95,7 @@
 ## 9. 受け付けて無視していた global
 
 - `--dry-run`: 対応していないコマンドは exit 2 で断る(4e7808d、実装済み)。
-- `--core`: 0 以外は capability-unsupported(exit 24)で断る(H41x の 2 つ目の core は未実装)。
+- `--core`: 直接 WCH-Link 接続の CH32H417 では `--core 1` の `dbg`（`halt --reset` 除く）と `read` に対応（2026-10-10）。その他の非 0 選択は capability-unsupported(exit 24)で断る。halt / resume / step の DMCONTROL は選択を保持する。根拠は [H417 コア選択実測](data-requests/0009-h417-core-selection.ja.md)。
 - `--connect-under-reset`: 未実装なので exit 24 で断る(warning を出して無視するのをやめる)。
 - config の `[defaults] chip`: 実装する(`--chip` も `CH32RV_CHIP` も無いときに使う)。
 

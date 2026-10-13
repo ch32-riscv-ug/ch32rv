@@ -32,7 +32,7 @@ pub struct Cli {
     /// Target SKU or family (auto-detected when omitted; fail-closed on ambiguity)
     #[arg(long, global = true, env = "CH32RV_CHIP")]
     pub chip: Option<String>,
-    /// Core index for dual-core parts (H41x)
+    /// Core index: H417 core 1 supports direct WCH-Link dbg (without reset) and read
     #[arg(long, global = true, default_value_t = 0)]
     pub core: u32,
     /// Debug speed: low|medium|high|<kHz>

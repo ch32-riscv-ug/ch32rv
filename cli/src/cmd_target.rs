@@ -361,6 +361,10 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 pub(crate) struct DynDtm<'a>(&'a mut dyn ch32rv_dmi::DtmAccess);
 
 impl ch32rv_dmi::DtmAccess for DynDtm<'_> {
+    fn selected_hart(&self) -> u32 {
+        self.0.selected_hart()
+    }
+
     fn dmi_read(&mut self, addr: u8) -> Result<u32, ch32rv_dmi::DmiError> {
         self.0.dmi_read(addr)
     }
@@ -460,6 +464,13 @@ pub(crate) fn on_target_halted(
     f: impl FnOnce(&mut OnTarget<'_, '_>, &str, &str) -> ExitCode,
 ) -> ExitCode {
     match crate::oep::addr(cli, cmd) {
+        Ok(Some(_)) if cli.core != 0 => fail(
+            cli,
+            cmd,
+            ErrorKind::CapabilityUnsupported,
+            "--core 1 currently requires a direct WCH-Link connection",
+            None,
+        ),
         Ok(Some(a)) => crate::oep::with_attached(cli, cmd, &a, halt, |x| {
             let family = x.family.clone().unwrap_or_else(|| "unknown".to_owned());
             let db_family = family.clone();

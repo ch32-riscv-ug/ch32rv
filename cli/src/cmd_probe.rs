@@ -677,7 +677,7 @@ pub(crate) fn attach(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
     let (speed, mut warnings) =
         parse::speed(spec).map_err(|m| fail(cli, cmd, ErrorKind::Usage, m, None))?;
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    Session::attach(
+    let mut session = Session::attach(
         &entry,
         speed,
         timeout,
@@ -686,7 +686,11 @@ pub(crate) fn attach(cli: &Cli, cmd: &str) -> Result<Session, ExitCode> {
         cli.db.as_deref(),
         &mut warnings,
     )
-    .map_err(|e| session_error(cli, cmd, e))
+    .map_err(|e| session_error(cli, cmd, e))?;
+    session
+        .select_core(cli.core)
+        .map_err(|e| fail(cli, cmd, ErrorKind::CapabilityUnsupported, e, None))?;
+    Ok(session)
 }
 
 /// en: Render a [`SessionError`] as the CLI failure envelope with an actionable hint. The single

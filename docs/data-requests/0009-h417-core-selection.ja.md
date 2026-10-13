@@ -1,9 +1,18 @@
 # CH32H417 / LinkE コア選択の実測とプロトコル収載依頼
 
 - 依頼先: `wch-protocols`
-- 状態: draft（引き渡し用資料作成済み）
+- 状態: 収載済み（2026-10-10、wch-protocols に証拠・仕様・残る調査を反映）
 - 優先度: 高（ch32rv の H41x `--core` 対応の根拠）
 - 実測日: 2026-10-10
+
+## 収載先と受け入れ確認
+
+- [RISC-V DM の H417 コア選択・CSR 結果表](../../../wch-protocols/protocols/riscv-debug-module.ja.md#h417-の単一コア選択と-csr-読み出し)
+- [PC↔Link の DmiOp 要求・応答 byte](../../../wch-protocols/protocols/pc-to-link.ja.md#4a-h417-のコア選択を運ぶ-dmiop)
+- [恒久保存した証拠と照合 script](../../../wch-protocols/captures/fixtures/ch32h417-core-select-2026-10-10/README.ja.md)
+- [残る調査](../../../wch-protocols/coverage.ja.md#h417-core-control)、[台帳の受領記録](../../../wch-protocols/experiments/LEDGER.ja.md)
+
+添付 6 ファイルを同一内容で保存し、2 セッション各 332 USB 転送・5 snapshot・25 CSR 読み出しを結果 JSON と出力ログに照合した。verified の対象操作・LinkE FW 2.22・CH32H417QEU6 の限定を明記。実機再測定および ch32rv の CLI / DebugModule 改修は今回の収載に含めない。
 
 ## 結果
 

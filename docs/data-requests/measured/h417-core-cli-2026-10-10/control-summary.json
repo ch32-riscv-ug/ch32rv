@@ -1,0 +1,78 @@
+[
+  {
+    "capture": "core0-id.ndjson",
+    "dmcontrol_writes": [
+      "0x00000001"
+    ]
+  },
+  {
+    "capture": "core1-halt.ndjson",
+    "dmcontrol_writes": [
+      "0x00010001",
+      "0x00010001"
+    ]
+  },
+  {
+    "capture": "core1-id-final.ndjson",
+    "dmcontrol_writes": [
+      "0x00010001",
+      "0x00010001"
+    ]
+  },
+  {
+    "capture": "core1-id.ndjson",
+    "dmcontrol_writes": [
+      "0x00010001",
+      "0x00010001"
+    ]
+  },
+  {
+    "capture": "core1-read.ndjson",
+    "dmcontrol_writes": [
+      "0x00010001",
+      "0x00010001"
+    ]
+  },
+  {
+    "capture": "core1-regs.ndjson",
+    "dmcontrol_writes": [
+      "0x00010001",
+      "0x00010001"
+    ]
+  },
+  {
+    "capture": "core1-resume.ndjson",
+    "dmcontrol_writes": [
+      "0x00010001",
+      "0x10010001",
+      "0x40010001",
+      "0x00010001"
+    ]
+  },
+  {
+    "capture": "core1-step.ndjson",
+    "dmcontrol_writes": [
+      "0x00010001",
+      "0x00010001",
+      "0x10010001",
+      "0x40010001",
+      "0x00010001"
+    ]
+  },
+  {
+    "capture": "same-session-control.ndjson",
+    "dmcontrol_writes": [
+      "0x00010001",
+      "0x00010001",
+      "0x10010001",
+      "0x40010001",
+      "0x00010001",
+      "0x80010001",
+      "0x80010001",
+      "0x80010001",
+      "0x80010001",
+      "0x80010001",
+      "0x00010001"
+    ]
+  }
+]

@@ -1,0 +1,5 @@
+before mhartid=1
+running status=00430c82
+halted status=004f0382
+after mhartid=1
+selection=00010001

@@ -1,0 +1,1 @@
+{"contract":"4","ok":true,"cmd":"dbg.halt","result":{"halted":true,"pc":"0x00000000"}}

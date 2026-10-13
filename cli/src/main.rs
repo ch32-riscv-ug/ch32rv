@@ -94,6 +94,9 @@ fn main() -> std::process::ExitCode {
 /// ja: WCH-Link を自分で開くコマンドは、その Link のブローカーが動いていれば Link を借り、終わったら
 /// 返す。自分でブローカーを通るコマンドは対象外。
 fn borrow_link(cli: &Cli) -> Option<broker::Lend> {
+    if cli.core != 0 {
+        return None;
+    }
     use ch32rv_contract::policy::MonitorSource;
     let direct = match &cli.command {
         Command::Probe(p) => !matches!(p, ProbeCmd::List { .. }),
@@ -142,10 +145,23 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
     // en: Global flags that are accepted but not implemented are refused, not ignored
     // (docs/freeze-decisions.ja.md §9): a run that ignored them would do something else.
     // ja: 受け付けるが未実装の global は、無視せずに断る。
-    if cli.core != 0 || cli.connect_under_reset {
-        let what = if cli.core != 0 {
+    let core_supported = cli.core == 0
+        || (cli.core == 1
+            && matches!(
+                &cli.command,
+                Command::Dbg(
+                    args::DbgCmd::Halt { reset: false }
+                        | args::DbgCmd::Resume
+                        | args::DbgCmd::Step { .. }
+                        | args::DbgCmd::Regs
+                        | args::DbgCmd::Reg(_)
+                        | args::DbgCmd::Dmi(_)
+                ) | Command::Read(_)
+            ));
+    if !core_supported || cli.connect_under_reset {
+        let what = if !core_supported {
             format!(
-                "--core {}: only core 0 is supported (a second core, H41x, is not implemented)",
+                "--core {}: supported nonzero selection is --core 1 with H417 dbg (without reset) or read",
                 cli.core
             )
         } else {

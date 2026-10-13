@@ -95,6 +95,12 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         Self { dtm }
     }
 
+    fn write_control(&mut self, value: u32) -> Result<(), DmiError> {
+        let hart = self.dtm.selected_hart();
+        let selection = ((hart & 0x3ff) << 16) | (((hart >> 10) & 0x3ff) << 6);
+        self.write(DMCONTROL, value | selection)
+    }
+
     pub(crate) fn write(&mut self, addr: u8, value: u32) -> Result<(), DmiError> {
         self.dtm.dmi_write(addr, value)
     }
@@ -130,7 +136,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// に DMSTATUS の `havereset` を立て、実装によっては ack まで halt 状態の表示が更新されない。
     /// haltreq/resumereq は 0 で書くので、保留中の要求は同時に消える。
     pub fn ack_have_reset(&mut self) -> Result<(), DmiError> {
-        self.write(DMCONTROL, 0x1000_0001)
+        self.write_control(0x1000_0001)
     }
 
     /// en: Raw DMSTATUS (`0x11`), for diagnostics and for callers that need to interpret the
@@ -161,7 +167,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     pub fn resume(&mut self) -> Result<(), DmiError> {
         self.ack_have_reset()?;
         for _ in 0..16 {
-            self.write(DMCONTROL, 0x4000_0001)?;
+            self.write_control(0x4000_0001)?;
             // en: `resumeack` and not just `allrunning`: a hart that resumes into an immediate
             // breakpoint is halted again by the time this read lands, but it did take the request.
             // The DM clears the ack when the hart halts on a request, so it cannot be stale here.
@@ -170,7 +176,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
             let s = self.read(DMSTATUS)?;
             if s & (DMSTATUS_ALLRUNNING | DMSTATUS_ALLRESUMEACK) != 0 {
                 // Drop resumereq; leaving it asserted would race the next halt request.
-                self.write(DMCONTROL, 0x0000_0001)?;
+                self.write_control(0x0000_0001)?;
                 return Ok(());
             }
         }
@@ -203,17 +209,17 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// reset-halt はどちらでも正しい。
     pub fn reset_halt(&mut self) -> Result<(), DmiError> {
         // ndmreset + haltreq, then release the reset with haltreq still asserted.
-        self.write(DMCONTROL, 0x8000_0003)?;
-        self.write(DMCONTROL, 0x8000_0001)?;
+        self.write_control(0x8000_0003)?;
+        self.write_control(0x8000_0001)?;
         for _ in 0..64 {
             if self.is_halted()? {
                 break;
             }
-            self.write(DMCONTROL, 0x8000_0001)?;
+            self.write_control(0x8000_0001)?;
         }
         // Drop the halt request and acknowledge the reset (the CH32V00x DM keeps reporting the
         // pre-reset halt/running bits until it is acknowledged).
-        self.write(DMCONTROL, 0x0000_0001)?;
+        self.write_control(0x0000_0001)?;
         self.ack_have_reset()?;
         if self.is_halted()? {
             Ok(())
@@ -229,14 +235,14 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     pub fn halt(&mut self) -> Result<(), DmiError> {
         if !self.is_halted()? {
             for _ in 0..64 {
-                self.write(DMCONTROL, 0x8000_0001)?;
+                self.write_control(0x8000_0001)?;
                 if self.is_halted()? {
                     break;
                 }
             }
         }
         // Clear the halt-request bit.
-        self.write(DMCONTROL, 0x0000_0001)?;
+        self.write_control(0x0000_0001)?;
         if self.is_halted()? {
             Ok(())
         } else {
@@ -1032,6 +1038,7 @@ mod tests {
     struct MockDtm {
         regs: std::collections::HashMap<u8, u32>,
         writes: Vec<(u8, u32)>,
+        hart: u32,
     }
     impl MockDtm {
         fn set(&mut self, addr: u8, v: u32) {
@@ -1039,16 +1046,50 @@ mod tests {
         }
     }
     impl DtmAccess for MockDtm {
+        fn selected_hart(&self) -> u32 {
+            self.hart
+        }
         fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
             Ok(self.regs.get(&addr).copied().unwrap_or(0))
         }
         fn dmi_write(&mut self, addr: u8, value: u32) -> Result<(), DmiError> {
             self.writes.push((addr, value));
             self.regs.insert(addr, value);
+            if addr == DMCONTROL {
+                if value & (1 << 31) != 0 {
+                    self.regs
+                        .insert(DMSTATUS, DMSTATUS_ALLHALTED | DMSTATUS_ANYHALTED);
+                } else if value & (1 << 30) != 0 {
+                    self.regs.insert(
+                        DMSTATUS,
+                        DMSTATUS_ALLRUNNING | DMSTATUS_ANYRUNNING | DMSTATUS_ALLRESUMEACK,
+                    );
+                }
+            }
             Ok(())
         }
         fn dmi_nop(&mut self) -> Result<(), DmiError> {
             Ok(())
+        }
+    }
+
+    #[test]
+    fn hart_control_preserves_selection_across_new_modules() {
+        for hart in [0, 1, 0xabcde] {
+            let mut m = MockDtm {
+                hart,
+                ..Default::default()
+            };
+            // Separate modules mirror CLI wrappers and repeated borrowed transports.
+            DebugModule::new(&mut m).halt().unwrap();
+            DebugModule::new(&mut &mut m).resume().unwrap();
+            DebugModule::new(&mut m).reset_halt().unwrap();
+            let selection = ((hart & 0x3ff) << 16) | (((hart >> 10) & 0x3ff) << 6);
+            let controls: Vec<_> = m.writes.iter().filter(|(a, _)| *a == DMCONTROL).collect();
+            assert!(controls.iter().all(|(_, v)| v & 0x03ff_ffc0 == selection));
+            for request in [0x8000_0001, 0x4000_0001, 0x8000_0003, 0x1000_0001, 1] {
+                assert!(controls.iter().any(|(_, v)| *v == request | selection));
+            }
         }
     }
 

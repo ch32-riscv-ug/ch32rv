@@ -67,6 +67,16 @@ impl std::fmt::Display for SessionError {
 }
 
 impl Session {
+    pub fn select_core(&mut self, core: u32) -> Result<(), String> {
+        if core == 0 {
+            return Ok(());
+        }
+        if core != 1 || self.attach.family_byte != 0xc6 {
+            return Err("--core 1 requires an attached CH32H417 target".into());
+        }
+        self.link.select_hart(core).map_err(|e| e.to_string())
+    }
+
     /// en: Open + clear state + attach. `warnings` accumulates non-fatal notes (corrupted
     /// readback recovery, etc.). Retries the open per docs/cli.ja.md §3.7. When `chip` (`--chip`)
     /// is given, it is validated against the detected chip and a conflict fails closed (exit 23).

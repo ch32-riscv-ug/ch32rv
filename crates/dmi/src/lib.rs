@@ -46,6 +46,11 @@ use thiserror::Error;
 /// ja: DTM への最小アクセス。probe backend が実装する。WCH-Link では USB コマンド
 /// `0x08 DmiOp` に対応する。
 pub trait DtmAccess {
+    /// Selected hart for DMCONTROL writes; transports without selection use hart 0.
+    fn selected_hart(&self) -> u32 {
+        0
+    }
+
     /// DMI register read.
     fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError>;
     /// DMI register write.
@@ -111,6 +116,10 @@ pub trait DtmAccess {
 
 /// A borrowed transport is a transport (so an owner such as the gdb target can hold `&mut T`).
 impl<T: DtmAccess + ?Sized> DtmAccess for &mut T {
+    fn selected_hart(&self) -> u32 {
+        (**self).selected_hart()
+    }
+
     fn dmi_read(&mut self, addr: u8) -> Result<u32, DmiError> {
         (**self).dmi_read(addr)
     }

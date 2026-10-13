@@ -50,7 +50,7 @@ fn open_session(
     warnings: &mut Vec<Warning>,
 ) -> Result<Session, ExitCode> {
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    Session::attach(
+    let mut session = Session::attach(
         entry,
         speed,
         timeout,
@@ -59,7 +59,11 @@ fn open_session(
         cli.db.as_deref(),
         warnings,
     )
-    .map_err(|e| crate::cmd_probe::session_error(cli, cmd, e))
+    .map_err(|e| crate::cmd_probe::session_error(cli, cmd, e))?;
+    session
+        .select_core(cli.core)
+        .map_err(|e| fail(cli, cmd, ErrorKind::CapabilityUnsupported, e, None))?;
+    Ok(session)
 }
 
 pub fn regs(cli: &Cli) -> ExitCode {
@@ -271,6 +275,15 @@ fn simple_ok(
 pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     // An OEP probe (`tcp:`, `oep://`, or a serial port no WCH-Link owns) takes the OEP path.
     match crate::oep::addr(cli, "read") {
+        Ok(Some(_)) if cli.core != 0 => {
+            return fail(
+                cli,
+                "read",
+                ErrorKind::CapabilityUnsupported,
+                "--core 1 currently requires a direct WCH-Link connection",
+                None,
+            );
+        }
         Ok(Some(a)) => return crate::oep::read(cli, args, &a),
         Ok(None) => {}
         Err(c) => return c,
@@ -344,20 +357,34 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     let mut off = 0u32;
     while off < len {
         let want = READ_CHUNK.min(len - off);
-        let chunk = match session.link().read_mem(start + off, want) {
+        let chunk = if cli.core == 0 {
+            session
+                .link()
+                .read_mem(start + off, want)
+                .map_err(|e| e.to_string())
+                .or_else(|_| {
+                    session
+                        .dm()
+                        .read_mem(start + off, want)
+                        .map_err(|e| e.to_string())
+                })
+        } else {
+            session
+                .dm()
+                .read_mem(start + off, want)
+                .map_err(|e| e.to_string())
+        };
+        let chunk = match chunk {
             Ok(d) => d,
-            Err(_) => match session.dm().read_mem(start + off, want) {
-                Ok(d) => d,
-                Err(e) => {
-                    return fail(
-                        cli,
-                        CMD,
-                        ErrorKind::TransferFailed,
-                        format!("read failed at {:#010x}: {e}", start + off),
-                        None,
-                    );
-                }
-            },
+            Err(e) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("read failed at {:#010x}: {e}", start + off),
+                    None,
+                );
+            }
         };
         data.extend_from_slice(&chunk);
         off += want;

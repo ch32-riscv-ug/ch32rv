@@ -91,7 +91,7 @@ ch32rv
 | `--probe <selector>` | §3.4 | (一意なら自動) | probe の選択。複数一致は exit 14 |
 | `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed)。**実装済(2026-09-02)**: `Session::attach` が chip_id と `--chip` 名を DB family へ解決し、要求名が DB にあり検出 family と不一致なら `target-ambiguous`(23)。**名前は SKU / family / series の完全一致(大小無視)だけ**(2026-10-01、docs/freeze-decisions.ja.md §1。型番の前方一致はやめた)。family / series は family で、SKU はその SKU の device id で照合する(DB に device id の無い SKU は family で)。**空の `--chip` は usage(exit 2)**。**`--chip auto`(大小無視)は「`--chip` 無し」と同じ**(2026-10-01、ArduinoCore-CH32RV の依頼。常に `--chip {build.ch32rv_chip}` を渡す recipe が、DB に無い板で自動判定を値として頼めるように。`CH32RV_CHIP` と config の `[defaults] chip` でも同じ)。自動判定での失敗: debug の pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。monitor の `chip` 設定も同じ照合(`auto` が既定)。**DB に無い名前は `target-not-in-db`(exit 20)で停止する**(検証できない名前を受理すると、`--chip` を付けたのに刺さっている別チップへ黙って書くことになるため)。未発売の gap series はここに落ちる。省略すれば従来どおり自動検出 |
 | `--db <FILE>` | `CH32RV_DB` | 内蔵 DB のみ | 内蔵 device DB に CSV overlay を重ねる(列は `generated/skus.csv` と同じ)。**同名 SKU / 同一マスク device_id は overlay が勝つ**(in-tree `provisional/skus.csv` は穴埋め専用で逆)。overlay 行は `provisional: true` + `sku-provisional` warning。読めない/有効行なしは usage(2)。出荷テーブルに無い部品を試す逃げ道 |
-| `--core <n>` | 0.. | 0 | dual-core(H41x)の core 選択。**0 以外は未実装で、exit 24 で断る**(2026-10-01) |
+| `--core <n>` | 0.. | 0 | H417 の core 選択。直接 WCH-Link 接続で `--core 1` は `dbg`（`halt --reset` 除く）と `read` に対応。その他の操作・OEP・index 2 以上は exit 24。実測根拠: [H417 コア選択](data-requests/0009-h417-core-selection.ja.md) |
 | `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn(段階の公称値 6000 / 4000 / 400 kHz で判定)。**公称値は線上の速さではない**: WCH-LinkE fw 2.22 + CH32L103 の実測(wch-protocols E163)では high = flash の Program 経路だけ速く(L103 約 2.5 MHz、V203 約 10 MHz)それ以外約 0.89 MHz、medium = 約 0.89 MHz、low = 約 0.47 MHz(V203 も medium / low は同じ)。high と medium の差は flash 書込みの速さだけ(pattern-4k の全体で L103 0.48 s / 0.63 s / 0.87 s、V203 high 0.40 s) |
 | `--connect-under-reset` | | off | NRST を assert して attach。**未実装で、指定すると exit 24 で断る**(2026-10-01。以前は warning を出して通常の attach をしていた) |
 | `--json` | | off | 結果を JSON で stdout へ(§3.5) |
@@ -576,3 +576,11 @@ ch32rv doctor                             # 動かない時の一手目
 - [原設計案 §4・§6](../../note/research/new-programming-tool-design.ja.md)
 - `../../ArduinoCore-CH32RV/platform.txt`(recipe 制約の現物)
 - [Arduino Pluggable Discovery / Monitor specification](https://arduino.github.io/arduino-cli/latest/pluggable-discovery-specification/)
+
+### H417 のコア選択
+
+`ch32rv --probe serial:49808F06CE30 --core 1 dbg reg read csr:0xf14` は core 1 の mhartid を読む。`dbg regs` / `dbg halt` / `dbg resume` / `dbg step` / `dbg reg` / `dbg dmi` と `read` は、同じ attach セッションで選択した hart を扱う。DMCONTROL の halt / resume / reset-ack 書き込みでも選択を保持する。`--core 0` は従来の経路を使う。
+
+core 1 の `read` は、LinkE の bulk read による暗黙のコア切替を避けるため DMI 経由で行う。RAM は `--range` で実アドレスを指定する（H417 の各 RAM bank を単一の `--region ram` で表す対応は別課題）。Flash・option byte の変更、システム reset、GDB・monitor 等の core 1 対応はまだ含まない。raw `dbg dmi write` は expert 操作で、DMCONTROL の直接変更も transport が保持する hartsel に反映する。
+
+WCH-Link の AttachChip / DetachChip は probe firmware 自身の操作を含む。`--core 1` はその副作用や他コアの状態を完全に隔離する保証ではない。選択していないコアを halt / resume しないことを USB 上の host 発行 DMCONTROL で検証する。
