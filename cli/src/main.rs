@@ -1,11 +1,12 @@
 //! en: ch32rv CLI. A thin layer that only composes the library crates (docs/architecture.ja.md §2).
 //! The WCH-LinkE-route surface is implemented (flash/verify/read/write/erase/reset/recover, run,
-//! dbg + gdb, monitor, target/probe/db/capabilities, arduino); the isp/boot/dap routes still
-//! return exit 70 (unimplemented).
+//! dbg + gdb, monitor, target/probe/db/capabilities, arduino), as are `isp` over USB and
+//! `boot hid`; the rest of the boot/dap routes return exit 71 (unimplemented).
 //!
 //! ja: ch32rv CLI。library crate 群を組み合わせるだけの薄い層(docs/architecture.ja.md §2)。
 //! WCH-LinkE 経路の機能は実装済み(flash/verify/read/write/erase/reset/recover、run、dbg+gdb、
-//! monitor、target/probe/db/capabilities、arduino)。isp/boot/dap は exit 70(unimplemented)。
+//! monitor、target/probe/db/capabilities、arduino)。USB の isp と boot hid も実装済み。残りの boot/dap は
+//! exit 71(unimplemented)。
 
 mod args;
 mod broker;
@@ -18,6 +19,7 @@ mod cmd_dbg;
 mod cmd_doctor;
 mod cmd_flash;
 mod cmd_gdb;
+mod cmd_isp;
 mod cmd_monitor;
 mod cmd_probe;
 mod cmd_recover;
@@ -259,6 +261,7 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Boot(BootCmd::Hid(HidBootCmd::Flash { file, usb_id, wait })) => {
             cmd_boot::hid_flash(cli, file, usb_id.as_deref(), *wait)
         }
+        Command::Isp(a) => cmd_isp::isp(cli, a),
         Command::Complete(a) => cmd_complete(a.shell),
         other => unimplemented_cmd(cli, canonical_name(other)),
     }
@@ -361,7 +364,7 @@ pub(crate) fn print_envelope(env: &ResultEnvelope) -> std::process::ExitCode {
 
 /// en: Canonical command name (`cmd` in the JSON envelope; docs/contract/result.schema.json).
 /// ja: command の正規名(JSON の `cmd`。docs/contract/result.schema.json)。
-fn canonical_name(cmd: &Command) -> &'static str {
+pub(crate) fn canonical_name(cmd: &Command) -> &'static str {
     match cmd {
         Command::Flash(_) => "flash",
         Command::Verify(_) => "verify",

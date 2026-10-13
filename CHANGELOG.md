@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- (EN) `isp` (factory ISP over USB) is implemented and shown in `--help`: `list`, `info`, `flash`, `verify`, `erase`, `reset`, and `enter --via probe`. `--entry probe` puts a CH32X033/X035 in its bootloader over the debug wire of an OEP probe (catch the hart at the reset vector, unlock the boot-mode key, set `FLASH_STATR.BOOT_MODE`, reset), so a chip with a broken image still enters. Bench-verified on CH32X035F8U6 (BTVER 2.60, `1a86:55e0`), with the written flash compared over RVSWD; replay fixtures `isp-info-x035` / `isp-flash-x035`. The bootloader resets into the application only after its IspEnd answer is read. Byte-level notes: `docs/protocol/factory-isp.ja.md`. `eeprom`, `config` and the UART transport stay reserved.
+- (JA) `isp`(USB の factory ISP)を実装し、`--help` に出す: `list`・`info`・`flash`・`verify`・`erase`・`reset`・`enter --via probe`。`--entry probe` は OEP の probe の debug 線で CH32X033/X035 を bootloader へ入れる(reset vector で止め、boot mode の鍵を外し、`FLASH_STATR.BOOT_MODE` を立てて reset)ので、壊れた image が入ったチップでも入れる。CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で実機確認し、書いた flash は RVSWD で照合した。replay fixture は `isp-info-x035` / `isp-flash-x035`。bootloader は IspEnd の応答を読まれてはじめて app へ reset する。byte の記録は `docs/protocol/factory-isp.ja.md`。`eeprom`・`config`・UART transport は予約のまま。
+- (EN) `write` works on an OEP probe for RAM, peripheral and core addresses (whole words). RAM is read back to verify; registers are not (`verified` is null), since key registers read as zero. Flash, system and option space still go through `flash` / `erase`.
+- (JA) `write` が OEP の probe で RAM・peripheral・core の番地に使える(word 単位)。RAM は読み戻して検証し、レジスタは検証しない(`verified` は null。鍵レジスタは 0 を返す)。flash・system・option は従来どおり `flash` / `erase` で。
+
 - (EN) `boot hid flash` waits for the bootloader instead of failing at once: `--wait <SECS>` (default 30, `0` for the old behavior). On the first miss it prints on stderr - also under `--progress none`, for the Arduino IDE - how to enter the bootloader: hold RESET, plug in USB, and release RESET right away, since holding it makes the host give up enumerating. A timeout is still exit 10, with the same hint.
 - (JA) `boot hid flash` は bootloader が無いとすぐ失敗せず待つ: `--wait <SECS>`(既定 30、`0` で従来どおり)。最初に見つからなかったとき、入り方(RESET を押したまま USB を接続し、すぐ離す。押し続けると host が列挙をあきらめる)を stderr に出す。Arduino IDE 向けに `--progress none` でも出す。期限切れは従来どおり exit 10 で、同じ入り方を hint に出す。
 

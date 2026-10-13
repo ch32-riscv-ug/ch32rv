@@ -1,0 +1,6 @@
+{"_meta":{"format":1,"unit":"us"}}
+{"_device":{"pid":21984,"ports":[],"product":null,"serial":null,"topology":"3-2.4.3","vid":6790}}
+{"seq":0,"t_us":11564,"ep":"0x02","chan":"cmd","dir":"out","len":21,"ok":true,"data":"a1120000004d4355204953502026205743482e434e"}
+{"seq":1,"t_us":11756,"ep":"0x82","chan":"cmd","dir":"in","len":6,"ok":true,"data":"a10002005e23"}
+{"seq":2,"t_us":11860,"ep":"0x02","chan":"cmd","dir":"out","len":5,"ok":true,"data":"a702001f00"}
+{"seq":3,"t_us":12019,"ep":"0x82","chan":"cmd","dir":"in","len":30,"ok":true,"data":"a7001a001f00a55a1fe0ff00ff00ffffffff00020600cdab16c05cbc3f28"}

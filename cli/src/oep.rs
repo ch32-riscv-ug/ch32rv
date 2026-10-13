@@ -1930,6 +1930,96 @@ pub(crate) fn read(cli: &Cli, args: &crate::args::ReadArgs, a: &OepAddr) -> Exit
     })
 }
 
+/// en: `write` on an OEP probe: whole words to RAM / peripheral / core addresses through the Debug
+/// Module. RAM is read back to verify; a peripheral or core register is not (key registers read
+/// as zero, status bits move), so `verified` is null there. Flash, the system area and the option block need the FLASH
+/// controller's sequences, which on an OEP probe only `flash` / `erase` drive, so they are refused.
+/// ja: OEP の probe での `write`。RAM・peripheral・core の番地へ Debug Module で word 単位に書き、
+/// RAM は読み戻して検証し、peripheral・core は検証しない(key レジスタは 0 を返し、status は動く)。flash・system・option は FLASH controller の手順が要り、OEP では `flash` /
+/// `erase` だけが回すので断る。
+pub(crate) fn write(cli: &Cli, addr: u32, bytes: &[u8], a: &OepAddr) -> ExitCode {
+    const CMD: &str = "write";
+    if addr < 0x2000_0000 {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "0x{addr:08x} is flash / system / option space; an OEP probe writes it only through `flash` or `erase`"
+            ),
+            None,
+        );
+    }
+    if !addr.is_multiple_of(4) || !bytes.len().is_multiple_of(4) {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            "an OEP probe writes whole words: the address and length must be multiples of 4",
+            None,
+        );
+    }
+    let words: Vec<u32> = bytes
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|c| u32::from_le_bytes(*c))
+        .collect();
+    let len = bytes.len();
+    let check = addr < 0x4000_0000;
+    with_attached(cli, CMD, a, true, |x| {
+        let result = x.t.write_words(addr, &words).and_then(|()| {
+            if check {
+                x.t.read_words(addr, words.len())
+            } else {
+                Ok(words.clone())
+            }
+        });
+        resume_after(&mut x.t);
+        match result {
+            Ok(back) if back == words => {}
+            Ok(_) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::VerifyMismatch,
+                    format!("write to 0x{addr:08x} did not verify (readback differs)"),
+                    None,
+                );
+            }
+            Err(e) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("write failed: {e}"),
+                    None,
+                );
+            }
+        }
+        if cli.json {
+            let mut env = ResultEnvelope::success(CMD);
+            env.result = Some(serde_json::json!({
+                "addr": format!("0x{addr:08x}"),
+                "len": len,
+                "region": "memory",
+                "verified": check.then_some(true),
+            }));
+            crate::print_envelope(&env)
+        } else {
+            println!(
+                "wrote {len} byte(s) to 0x{addr:08x} (memory) - {}",
+                if check {
+                    "verified"
+                } else {
+                    "not read back (register)"
+                }
+            );
+            ExitCode::SUCCESS
+        }
+    })
+}
+
 /// `target info` on an OEP probe: what the chip id says, without halting the target.
 pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
     const CMD: &str = "target.info";

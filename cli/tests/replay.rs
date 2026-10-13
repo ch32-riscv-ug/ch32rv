@@ -353,3 +353,62 @@ fn x315_erased_capacity_uses_db_and_retains_raw_response() {
         String::from_utf8_lossy(&out.stdout).contains("192 KiB (DB; probe capacity unavailable)")
     );
 }
+
+/// en: CH32X035F8U6's factory bootloader (BTVER 2.60, `1a86:55e0`), entered over RVSWD on
+/// 2026-10-13: Identify and ReadConfig decode offline to the chip, UID and config bytes.
+/// ja: CH32X035F8U6 の factory bootloader の Identify / ReadConfig を offline で解く。
+#[test]
+fn isp_info_replays() {
+    let out = Command::new(bin())
+        .args([
+            "--json",
+            "--replay",
+            &fixture("isp-info-x035.ndjson"),
+            "isp",
+            "info",
+        ])
+        .output()
+        .expect("run ch32rv");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr: {stderr}");
+    for want in [
+        r#""chip_id":"0x5e""#,
+        r#""device_type":"0x23""#,
+        r#""series":"CH32X03x""#,
+        r#""btver":"2.60""#,
+        r#""uid":"cdab16c05cbc3f28""#,
+        r#""config":"a55a1fe0ff00ff00ffffffff""#,
+        r#""read_protected":false"#,
+        r#""flash_bytes":63488"#,
+    ] {
+        assert!(stdout.contains(want), "missing {want}: {stdout}");
+    }
+    assert!(!stderr.contains("diverged"), "stderr: {stderr}");
+}
+
+/// en: The same bootloader taking `pattern-4k.bin`: key, erase (8 sectors), 74 Program chunks
+/// plus the closing empty one, 74 Verify chunks, and IspEnd with its answer read. Replay checks
+/// every OUT byte against the recording, so the XOR key and framing are pinned.
+/// ja: 同じ bootloader へ pattern-4k.bin を書く往復。replay は OUT を 1 byte ずつ照合する。
+#[test]
+fn isp_flash_replays() {
+    let out = Command::new(bin())
+        .args([
+            "--json",
+            "--replay",
+            &fixture("isp-flash-x035.ndjson"),
+            "isp",
+            "flash",
+            &input("pattern-4k.bin"),
+        ])
+        .output()
+        .expect("run ch32rv");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(stdout.contains(r#""programmer":"isp""#), "stdout: {stdout}");
+    assert!(stdout.contains(r#""verified":true"#), "stdout: {stdout}");
+    assert!(stdout.contains(r#""erased_sectors":8"#), "stdout: {stdout}");
+    assert!(!stderr.contains("diverged"), "stderr: {stderr}");
+}

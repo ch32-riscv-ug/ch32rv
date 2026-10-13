@@ -8,6 +8,11 @@ CH32V205RCT6の識別応答。`replay/target-info-unknown.ndjson`はそのfamily
 `replay/target-info-x315.ndjson`は同日のCH32X315MCU6実測。容量欄が消去済みパターンでも
 UIDとIDを残し、DB容量へフォールバックする試験に使う ([実測文書](../../docs/data-requests/measured/device-id-x315-2026-10-08.md))。
 
+`replay/isp-info-x035.ndjson` / `replay/isp-flash-x035.ndjson` は2026-10-13にWeAct CH32X035 CoreBoard
+(CH32X035F8U6、factory bootloader BTVER 2.60、`1a86:55e0`)で取得した `isp info` と `isp flash pattern-4k.bin`
+の往復。bootloader へは OEP probe の RVSWD で入れた(取得は ISP の USB だけ)。byte の記録は
+[factory-isp.ja.md](../../docs/protocol/factory-isp.ja.md)。
+
 手動テスト([docs/testing.ja.md](../../docs/testing.ja.md))で転送に使う、ツールチェーン不要のバイナリ。
 
 ## flash 経路テスト(全 family 共通)

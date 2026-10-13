@@ -90,6 +90,7 @@
 - 文書の 20 の重複を 1 つにする。21(target-protected)は発行している(HID の読み出し保護、loader の書き込み保護)と書く。24 の説明を今の実装(コマンドごとに出す)に合わせる。
 - `unimplemented` は internal(70)と別の **exit 71** にする。
 - 未実装のコマンド(`isp`、`boot enter` / `dfu` / `uf2` / `uart`、`dap`、`probe vendor`)は `--help` から隠し、名前は予約する(ユーザー)。実行したら exit 71。
+  - `isp` は 2026-10-13 に USB transport を実装して `--help` に出した。`isp eeprom` / `isp config` は引き続き隠して exit 71、`--transport uart` も exit 71。
 - crates.io の `ch32rv-contract` の `ExitCode` を `#[non_exhaustive]` にする(番号を足しても利用者の match が壊れないように)。
 
 ## 9. 受け付けて無視していた global

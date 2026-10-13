@@ -100,7 +100,7 @@ ch32rv capabilities                     # この probe + target の組で何が�
 | `doctor` / `version` / `complete` | 環境診断 · バージョン · shell 補完 |
 | `arduino` | Arduino IDE 統合(`discovery` / `monitor` Pluggable プロトコル) |
 
-`--help` に出る一部の経路 — `dap`・`isp`・`boot` — は後の `0.x` 予定で、まだ検証範囲外。
+`isp`(チップの factory USB bootloader)は CH32X035 だけで実機確認済み。`--entry probe` で OEP の probe の debug 線から bootloader へ入れる。`--help` に出るほかの経路 — `dap`・`boot` の残り — は後の `0.x` 予定で、まだ検証範囲外。
 
 ## ライブラリ crate
 

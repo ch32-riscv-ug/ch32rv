@@ -127,8 +127,7 @@ pub enum Command {
     /// DAP server (reserved, not implemented yet: exit 71)
     #[command(hide = true)]
     Dap(DapArgs),
-    /// Factory ISP route (USB/UART) (reserved, not implemented yet: exit 71)
-    #[command(hide = true)]
+    /// Factory ISP route: the chip's own USB bootloader
     Isp(IspArgs),
     /// Custom bootloader route
     #[command(subcommand)]
@@ -540,9 +539,22 @@ pub struct IspArgs {
     pub port: Option<String>,
     #[arg(long, global = true)]
     pub baud: Option<u32>,
-    /// ISP device selector: usb:<bus>-<ports> | index:<n> (fail-closed by default; ISP devices carry no serial)
+    /// ISP device selector: usb:<bus>-<ports> (fail-closed by default; ISP devices carry no serial)
     #[arg(long, global = true)]
     pub device: Option<String>,
+    /// Seconds to wait for the ISP device to appear, with an entry hint on stderr (0: fail at once)
+    #[arg(long, global = true, value_name = "SECS", default_value_t = 0)]
+    pub wait: u64,
+    /// How to put the chip in its bootloader when no ISP device is present: `probe` = over the
+    /// debug wire of `--probe` (CH32X03x), `none` = it already is (default)
+    #[arg(long, global = true, value_enum, default_value = "none")]
+    pub entry: IspEntry,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum IspEntry {
+    None,
+    Probe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -557,11 +569,13 @@ pub enum IspCmd {
     List,
     /// Chip / BTVER / UID / protection state
     Info,
-    /// Enter ISP with application cooperation
+    /// Put the chip in its bootloader: `--via probe` sets the boot mode over the debug wire
+    /// of `--probe` and resets (CH32X03x)
     Enter {
-        #[arg(long)]
-        via: Option<String>,
+        #[arg(long, value_enum, default_value = "probe")]
+        via: IspVia,
     },
+    /// Program code flash (bin / hex / elf), verify, and start the application
     Flash {
         file: PathBuf,
         #[arg(long, value_enum, default_value = "auto")]
@@ -571,17 +585,23 @@ pub enum IspCmd {
         #[arg(long, value_enum, default_value = "run")]
         reset: IspReset,
     },
-    Verify {
-        file: PathBuf,
-    },
+    /// Compare code flash against an image (the bootloader compares)
+    Verify { file: PathBuf },
+    /// Erase all of code flash
     Erase,
-    /// Dataflash (EEPROM)
-    #[command(subcommand)]
+    /// Dataflash (EEPROM) (reserved, not implemented yet: exit 71)
+    #[command(subcommand, hide = true)]
     Eeprom(EepromCmd),
-    /// Config bytes (incl. debug enable/disable, unprotect)
-    #[command(subcommand)]
+    /// Config bytes (reserved, not implemented yet: exit 71)
+    #[command(subcommand, hide = true)]
     Config(IspConfigCmd),
+    /// Leave the bootloader and start the application
     Reset,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum IspVia {
+    Probe,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

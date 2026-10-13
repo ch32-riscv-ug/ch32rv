@@ -421,20 +421,25 @@ ch32rv dap [--port <n>|--stdio]                     P2
 ### 4.7 isp(factory ISP 経路)
 
 ```text
-ch32rv isp [--transport usb|uart] [--port <serial-port>] [--baud <n>] [--device <usb:sel|index:n>]
-ch32rv isp list                                     ISP mode device の列挙。LinkE IAP(同 VID:PID)は区別して表示
-ch32rv isp info                                     chip/BTVER/UID/保護状態
-ch32rv isp enter [--via touch1200 --port <p>]       app 協調での ISP 突入(X03x/X315/H417)。他は BOOT 手順を提示
+ch32rv isp [--transport usb|uart] [--device usb:<bus>-<ports>] [--wait <SECS>] [--entry none|probe]
+ch32rv isp list                                     ISP mode device の列挙。Identify に答えない device(LinkE IAP 等)は区別して表示
+ch32rv isp info                                     chip/BTVER/UID/保護状態/config 12 B
+ch32rv isp enter [--via probe]                      --probe の debug 線で boot mode を立てて reset(CH32X03x)
 ch32rv isp flash <FILE> [--erase auto|none] [--verify on|none] [--reset run|none]
-ch32rv isp verify <FILE>
-ch32rv isp erase
-ch32rv isp eeprom read|write|erase [<FILE>]         dataflash
-ch32rv isp config get|set <key>=<v>|reset           config bytes(debug 有効/無効、保護解除を含む)
-ch32rv isp reset
+ch32rv isp verify <FILE>                            bootloader が照合(不一致 exit 30)
+ch32rv isp erase                                    code flash 全消去(確認あり、--yes で省略)
+ch32rv isp reset                                    bootloader を抜けて app を起動
+ch32rv isp eeprom read|write|erase [<FILE>]         予約(exit 71)
+ch32rv isp config get|set <key>=<v>|reset           予約(exit 71)
 ```
 
-- ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed。複数台は `usb:<bus>-<ports>` で選ぶ。
-- protocol は自前実装(wchisp は GPL-2.0 のため取り込まない)。wchisp/minichlink に無い 0xa6 VERIFY・DATA 系・UART transport も protocol.md に記録した上で実装する。
+- **USB transport は実装済み(2026-10-13)**。CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で info / flash / verify / erase / reset を実機確認し、書いた内容は RVSWD の読み出しで照合した。byte の記録は [protocol/factory-isp.ja.md](protocol/factory-isp.ja.md)、replay fixture は `tests/fixtures/replay/isp-*-x035.ndjson`。UART transport は予約(exit 71)。
+- ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed(2 台以上は exit 14 で位置の候補を出す)。複数台は `--device usb:<bus>-<ports>` で選ぶ。
+- `--wait <SECS>`(既定 0): device が無ければその秒数だけ待つ。最初に、入り方(Boot キーを押したまま USB を接続、または `--entry probe`)を stderr に 1 回出す。期限切れは exit 10。
+- `--entry probe`: ISP device が無ければ、`--probe` の debug 線で hart を reset vector で止め、`FLASH_KEYR` と `FLASH_BOOT_MODEKEYR` を外し、`FLASH_STATR.BOOT_MODE` を立てて reset してから、最大 5 s 待つ。flash の中身を先に走らせないので、壊れた image が入っていても入れる。今は OEP の probe と CH32X033 / X035 だけ(WCH-Link と他 family は exit 24)。`isp enter` は `--entry probe` で開いて Identify / ReadConfig までして終わる。
+- `isp flash` は ELF / HEX / bin を code flash 先頭からの 1 塊にし(隙間は `0xff`)、`--erase auto` は image の長さ分の 1 KiB sector(最小 8)を消す。書いた後の `IspEnd` は応答を読んでから終える(読まないと bootloader に残る。protocol ノート §5)。
+- bootloader は最後の通信から約 60 s で app へ抜ける。
+- protocol は自前実装(wchisp は GPL-2.0 のため取り込まない)。WriteConfig・DATA 系・UART transport は protocol ノートに記録した上で実装する。
 
 ### 4.8 boot(custom bootloader 経路)
 
