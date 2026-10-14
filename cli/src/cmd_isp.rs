@@ -581,6 +581,25 @@ const FLASH_STATR: u32 = 0x4002_200c;
 const FLASH_BOOT_MODEKEYR: u32 = 0x4002_2028;
 const FLASH_KEY1: u32 = 0x4567_0123;
 const FLASH_KEY2: u32 = 0xcdef_89ab;
+const FLASH_OBR: u32 = 0x4002_201c;
+/// `FLASH_OBR.RDPRT`: read protection is in force.
+const OBR_RDPRT: u32 = 1 << 1;
+/// en: Why `--entry probe` refuses a read-protected chip: measured on CH32X035 (2026-10-14), once
+/// a debugger has attached since power-up a protected chip fetches nothing from flash - neither
+/// the application nor the BOOT-area bootloader runs (the hart sits at PC 0), so no ISP device
+/// would come. ja: 保護中は、電源投入後に debugger が付くと app も bootloader も走らない(X035 実測)。
+fn protected(cli: &Cli, cmd: &str) -> ExitCode {
+    fail(
+        cli,
+        cmd,
+        ErrorKind::TargetProtected,
+        "the chip is read-protected: with a debugger attached since power-up it runs nothing from flash, so its bootloader would not come up",
+        Some(
+            "`ch32rv recover --method unprotect` over the probe (erases code flash), or power-cycle the chip and enter the bootloader without the debugger (BOOT key / --entry dfu-detach / touch1200)",
+        ),
+    )
+}
+
 /// `FLASH_STATR.BOOT_MODE`: boot from the BOOT area after the next system reset.
 const STATR_BOOT_MODE: u32 = 1 << 14;
 
@@ -644,6 +663,13 @@ fn enter_via_probe(cli: &Cli, cmd: &str) -> Result<(), ExitCode> {
                 Some(ENTRY_HINT),
             );
         }
+        match x.t.read_words(FLASH_OBR, 1) {
+            Ok(v) if v[0] & OBR_RDPRT != 0 => {
+                outcome = Err(());
+                return protected(cli, cmd);
+            }
+            _ => {}
+        }
         if let Err(e) = set_boot_mode(&mut x.t) {
             outcome = Err(());
             return fail(
@@ -697,6 +723,9 @@ fn enter_via_wchlink(cli: &Cli, cmd: &str) -> Result<(), ExitCode> {
     };
     {
         let mut dm = session.dm();
+        if dm.read_mem32(FLASH_OBR).is_ok_and(|v| v & OBR_RDPRT != 0) {
+            return Err(protected(cli, cmd));
+        }
         step(dm.reset_halt())?;
         for (addr, key) in [
             (FLASH_KEYR, FLASH_KEY1),

@@ -67,6 +67,14 @@ UID(ReadConfig の最後の 8 B)は ESIG の `0x1FFFF7E8` から読んだ 8 B �
 - 現れてから **一度も** 話しかけられないと、約 9.3〜9.7 s で app へ抜ける(ArduinoCore-CH32RV が DFU_DETACH / 1200 bps touch の後に sysfs で 13 回以上観測、2026-10-14)。
 - bootloader 実行中に debug 線で hart を halt したままにすると、USB の OUT がすべて timeout する(USB は CPU が処理しているため)。
 
+## 5a. 読み出し保護(RDPR)
+
+- `isp config set read-protect=on` は WriteConfig で RDPR/nRDPR = `00 ff` を書く。option bytes にはすぐ反映され、reset 後に `FLASH_OBR` の bit1(RDPRT)が立つ(`0x03ffff7e`)。RVSWD の flash 読み出しは fault(`0x03`)になる。
+- **保護中に、電源投入後一度でも debugger(RVSWD)が付いていると、チップは flash から何も実行しない**: app も BOOT 領域の bootloader も走らず、PC は `0x0` に居る(`ra` = `0x684` 付近)。debug 線で `BOOT_MODE` を立てて reset しても(`STATR` は `0xF000` になる)ISP device は現れない。STM32 の「debug 接続中の RDP」と同じ振る舞いで、解けるのは電源投入 reset だけと見られる。
+- この板(WeAct X035)は OEP probe から給電されていて、USB hub の port 電源(uhubctl、PPPS)を切っても電源投入 reset にならなかった。
+- 復旧: `ch32rv recover --method unprotect`(debug 線で RDPR を `a5` に戻す。code flash は全消去)→ ISP で image を書き戻し。
+- ISP 経由の `read-protect=off`(チップが全消去する)は、debugger 無しで電源を入れて入る経路でしか試せず、未確認。
+
 ## 6. 未確認
 
 - Boot キー(PC17 を電源投入時に High)での入り方と、キーを離す時機。
