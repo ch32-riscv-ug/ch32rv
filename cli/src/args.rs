@@ -779,7 +779,7 @@ pub enum ArduinoCmd {
     /// Pluggable Monitor protocol (stdio JSON)
     Monitor {
         /// The `protocol` DESCRIBE reports (the platform's `pluggable_monitor.pattern.<protocol>`)
-        #[arg(long, default_value = "serial", value_parser = ["serial", "wchlink", "oep"])]
+        #[arg(long, default_value = "serial", value_parser = ["serial", "wchlink", "oep", "ch32rv-app", "ch32rv-isp"])]
         protocol: String,
     },
 }

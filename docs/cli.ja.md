@@ -447,6 +447,12 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
   - `--app-device`: `port:<path>`(IDE が渡す serial port。裏の USB device を引く。Linux では上流の hub も同じ tty を持つので、他の一致の下に居ないものを本体とする)、`usb:<bus>-<ports>`、`VID:PID[:SERIAL]`。ちょうど 1 台でなければ exit 10 / 14。
   - アプリ経由で入れたとき、`--device` が無ければ **アプリと同じ USB の位置に現れた ISP device だけ** を使う(X035 で一致を確認)。
   - 実機確認(2026-10-14、CH32X035F8U6、ArduinoCore-CH32RV の CH32RVUsbDevice で CDC + DFU run-time interface + HID のスケッチ): `dfu-detach`(`--app-device` 無し / VID:PID / `port:` / `usb:`)、`touch1200`、`auto`、アプリ指定無しの `auto` + `--probe` のどれも、書込・照合・アプリ再起動まで通った。DFU_DETACH はほぼ毎回 stall で返った。
+- **discovery(2026-10-14、ArduinoCore-CH32RV と合意)**: アプリの VID:PID はスケッチ次第(既定は pid.codes のテスト用 PID)で serial も自由なので、外から CH32RV のアプリだと分かる印は **DFU run-time interface の iInterface `CH32RV`**(ArduinoCore-CH32RV の `CH32RV_USB_DFU_RUNTIME_NAME` の既定)だけ。名前を変えたスケッチは discovery に出ない(`--app-device` で名指せば DFU_DETACH は動く)。
+  - `ch32rv-app://<bus>-<ports>`: 名前 `CH32RV` の DFU run-time を持つ device。CDC があっても出す(serial port だけでは CH32RV と分からないので、書込はこちらを選ぶ)。label は `<product 文字列> (CH32RV, USB)`、properties は `vid` / `pid` / `serialNumber` / `topology`、hardwareId は serial(無ければ位置)。monitor はその device の CDC port を開く(CDC の無いアプリは「monitor する CDC が無い」で断る)。
+  - `ch32rv-isp://<bus>-<ports>`: `1a86:55e0`(Boot キーなどで入った bootloader。約 10 s で app へ戻るので一時的)。`4348:55e0` は WCH-Link の IAP と同じなので出さない。monitor は無い(断る)。
+  - `--app-device` は `port:ch32rv-app://…`(その位置の device)と `port:ch32rv-isp://…`(頼まずにその位置の ISP へ書く)も受ける。upload recipe は `--entry auto --app-device "port:{upload.port.address}"` のまま、tty / ch32rv-app / ch32rv-isp のどれを選んでも動く。
+  - `--entry dfu-detach` で `--app-device` が無いときも、名前 `CH32RV` の DFU run-time を持つ device だけを候補にする(他社の本物の DFU 機器を再起動させないため)。
+  - 実機確認(CH32X035F8U6、CDC の無い DFU run-time のみのスケッチ): discovery の LIST に `ch32rv-app://3-2.4.3` が出て、その port から書込・照合・起動まで通った。ISP に入れた後は `ch32rv-isp://3-2.4.3` が出て、その port からも書けた。CDC のあるアプリでの monitor は未確認。
 - `isp flash` は ELF / HEX / bin を code flash 先頭からの 1 塊にし(隙間は `0xff`)、`--erase auto` は image の長さ分の 1 KiB sector(最小 8)を消す。書いた後の `IspEnd` は応答を読んでから終える(読まないと bootloader に残る。protocol ノート §5)。
 - `isp config set` のキー: `data0=<n>` `data1=<n>` `iwdg=sw|hw` `stop-reset=on|off` `standby-reset=on|off` `reset-pin=off|12ms|1ms|128us`(CH32X03x の USER bits[4:3])`write-protect=<u32>`(WRPR0–3、立った bit の sector は書込可)`read-protect=on|off`。補数 byte は計算し直し、知らない USER の bit は読んだ値のまま。書いた後に ReadConfig で読み直し、違えば exit 30。`read-protect` を変えるときは確認する(`--non-interactive` では `--yes` が要る。off にするとチップが code flash を全消去する)。CH32X035F8U6 で全キーを書いて戻し、option bytes(`0x1FFFF800`)を RVSWD で照合した。`read-protect=on` は `00 ff` を書き、reset 後は RVSWD の flash 読み出しが fault になる。**保護中は factory bootloader が走らない**(X035 BTVER 2.60 の実測。debug 線から入れても、debugger 無しの電源投入後にアプリから DFU_DETACH で入れても、PC 0 で止まり ISP device は現れない)。したがって ISP の `read-protect=off` は使えず、解除は debug 線の `recover --method unprotect`(code flash 全消去)だけ。`read-protect=on` の確認文にもそう書く。BOOT キー(電源投入時の PC17)で入った場合は未確認。
 - bootloader は最後の通信から約 60 s で app へ抜ける。一度も話しかけられなければ約 9.3〜9.7 s で抜ける(ArduinoCore-CH32RV の観測)ので、ch32rv は現れ次第 Identify を送る。
@@ -510,10 +516,13 @@ ch32rv complete <bash|zsh|fish|powershell>          補完スクリプトを std
 ```text
 ch32rv arduino discovery       Pluggable Discovery protocol(stdio JSON)。WCH-Link を wchlink://<serial>、
                                OEP の probe のスロットを oep://<probe>/<slot>、
-                               rv003usb / UIAPduino の HID bootloader を hid://<bus>-<ports> で出す
+                               rv003usb / UIAPduino の HID bootloader を hid://<bus>-<ports>、
+                               CH32RV のアプリを ch32rv-app://<bus>-<ports>、
+                               factory ISP bootloader(1a86:55e0)を ch32rv-isp://<bus>-<ports> で出す
 ch32rv arduino monitor [--protocol <p>]
-                               Pluggable Monitor protocol(stdio JSON)。--protocol は serial / wchlink / oep
-                               だけ。serial port・wchlink://・oep:// の port を受け、source を双方向に wrap する
+                               Pluggable Monitor protocol(stdio JSON)。--protocol は serial / wchlink / oep /
+                               ch32rv-app / ch32rv-isp。serial port・wchlink://・oep://・ch32rv-app:// の port を受け、
+                               source を双方向に wrap する
 ```
 
 Arduino 専用の書き込みロジックは持たない。recipe は §5 の通常 command を呼ぶ。

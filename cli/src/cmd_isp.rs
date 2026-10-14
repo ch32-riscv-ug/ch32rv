@@ -77,6 +77,15 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
             }
         },
     };
+    // The IDE's port may name the bootloader itself (discovery's `ch32rv-isp://<position>`).
+    if want.is_none() {
+        want = args
+            .app_device
+            .as_deref()
+            .and_then(|s| s.strip_prefix("port:"))
+            .and_then(|a| a.strip_prefix(ISP_SCHEME))
+            .map(str::to_owned);
+    }
     let present = |want: &Option<String>| {
         ch32rv_isp::list().is_ok_and(|v| {
             v.iter()
@@ -803,6 +812,18 @@ struct AppDevice {
 /// it), `usb:<bus>-<ports>`, or `VID:PID[:SERIAL]`. Exactly one device or an error.
 /// ja: `--app-device` を解く。ちょうど 1 台か、エラー。
 fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
+    // The discovery's own address names the device by position.
+    let usb_sel;
+    let sel = match sel
+        .strip_prefix("port:")
+        .and_then(|a| a.strip_prefix(APP_SCHEME))
+    {
+        Some(t) => {
+            usb_sel = format!("usb:{t}");
+            usb_sel.as_str()
+        }
+        None => sel,
+    };
     let all = ch32rv_usb::enumerate()
         .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
     let canon = |p: &str| {
@@ -900,22 +921,31 @@ fn enter_via_app(
     args: &IspArgs,
     entry: IspEntry,
 ) -> Result<Option<String>, ExitCode> {
+    // en: The IDE's port may be the bootloader itself (discovery's `ch32rv-isp://`): nothing to
+    // ask, just use the ISP device there. ja: IDE の port が bootloader そのものなら頼む相手は無い。
+    if let Some(t) = args
+        .app_device
+        .as_deref()
+        .and_then(|s| s.strip_prefix("port:"))
+        .and_then(|a| a.strip_prefix(ISP_SCHEME))
+    {
+        return Ok(Some(t.to_owned()));
+    }
     let app = match args.app_device.as_deref() {
         Some(sel) => Some(app_device(cli, cmd, sel)?),
         None if entry == IspEntry::DfuDetach => {
             let all = ch32rv_usb::enumerate()
                 .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
-            let mut dfu: Vec<UsbDeviceInfo> = all
-                .into_iter()
-                .filter(|d| d.dfu_runtime_interface().is_some())
-                .collect();
+            let mut dfu: Vec<UsbDeviceInfo> = all.into_iter().filter(is_ch32rv_app).collect();
             match dfu.len() {
                 0 => {
                     return Err(fail(
                         cli,
                         cmd,
                         ErrorKind::DeviceNotFound,
-                        "no USB device offers a DFU run-time interface",
+                        format!(
+                            "no USB device offers a DFU run-time interface named `{APP_ENTRY_NAME}`"
+                        ),
                         Some("name the application with --app-device"),
                     ));
                 }
@@ -928,7 +958,9 @@ fn enter_via_app(
                         cli,
                         cmd,
                         ErrorKind::DeviceAmbiguous,
-                        format!("{n} USB devices offer a DFU run-time interface"),
+                        format!(
+                            "{n} USB devices offer a DFU run-time interface named `{APP_ENTRY_NAME}`"
+                        ),
                         Some("name the application with --app-device usb:<bus>-<ports>"),
                         dfu.iter()
                             .map(|d| serde_json::json!(format!("usb:{}", d.topology())))
@@ -1225,4 +1257,25 @@ fn config_set(cli: &Cli, args: &IspArgs, kv: &[String]) -> ExitCode {
         print_options(&v);
         ExitCode::SUCCESS
     }
+}
+
+/// en: The iInterface ArduinoCore-CH32RV gives its DFU run-time interface by default
+/// (`CH32RV_USB_DFU_RUNTIME_NAME`). The application's VID:PID is the sketch's (by default
+/// pid.codes' test PID) and its serial is free too, so this name is what marks a running CH32RV
+/// application that can be sent to its bootloader; a sketch that renames it is not discovered,
+/// and is not picked by `--entry dfu-detach` without `--app-device` (DFU_DETACH still works when
+/// it is named). ja: ArduinoCore-CH32RV が DFU run-time interface に既定で付ける名前。VID:PID も
+/// serial も自由なので、CH32RV のアプリだと分かる印はこれだけ。変えたスケッチは discovery に出ない。
+pub(crate) const APP_ENTRY_NAME: &str = "CH32RV";
+/// Discovery address schemes: a running CH32RV application, and a factory ISP bootloader.
+pub(crate) const APP_SCHEME: &str = "ch32rv-app://";
+pub(crate) const ISP_SCHEME: &str = "ch32rv-isp://";
+
+/// A device with a DFU run-time interface named [`APP_ENTRY_NAME`].
+pub(crate) fn is_ch32rv_app(d: &UsbDeviceInfo) -> bool {
+    d.dfu_runtime_interface().is_some_and(|n| {
+        d.interface_names()
+            .iter()
+            .any(|(i, name)| *i == n && name == APP_ENTRY_NAME)
+    })
 }

@@ -63,6 +63,7 @@ fn list_ports() -> Vec<Value> {
     let mut ports = wchlink_ports();
     ports.extend(oep_ports());
     ports.extend(hid_ports());
+    ports.extend(isp_route_ports());
     ports
 }
 
@@ -282,6 +283,51 @@ fn hid_ports() -> Vec<Value> {
         .collect()
 }
 
+/// en: The factory ISP route's ports. A running CH32RV application (a DFU run-time interface named
+/// `CH32RV`, ArduinoCore-CH32RV's default) as `ch32rv-app://<topology>`, also when it has a CDC
+/// port - a serial port alone does not say the device is a CH32RV, so the application port is
+/// the one to upload through, and its monitor opens that CDC port. A factory ISP bootloader
+/// (`1a86:55e0`) as `ch32rv-isp://<topology>`, while it is up (it returns to the application
+/// after ~10 s unattended). `4348:55e0` is not listed: a WCH-Link in IAP mode shares it. Nothing
+/// is opened. ja: factory ISP 経路の port。CH32RV のアプリ(名前 `CH32RV` の DFU run-time)を
+/// `ch32rv-app://`(CDC があっても。serial port だけでは CH32RV と分からない)、ISP bootloader
+/// (`1a86:55e0`)を `ch32rv-isp://` で出す。`4348:55e0` は LinkE の IAP と同じなので出さない。
+fn isp_route_ports() -> Vec<Value> {
+    let devs = ch32rv_usb::enumerate().unwrap_or_default();
+    let props = |d: &ch32rv_usb::UsbDeviceInfo| {
+        json!({
+            "vid": format!("0x{:04x}", d.vid()),
+            "pid": format!("0x{:04x}", d.pid()),
+            "serialNumber": d.serial().unwrap_or(""),
+            "topology": d.topology(),
+        })
+    };
+    let mut ports = Vec::new();
+    for d in &devs {
+        let topology = d.topology();
+        if crate::cmd_isp::is_ch32rv_app(d) {
+            ports.push(json!({
+                "address": format!("{}{topology}", crate::cmd_isp::APP_SCHEME),
+                "label": format!("{} (CH32RV, USB)", d.product().unwrap_or("CH32RV application")),
+                "protocol": "ch32rv-app",
+                "protocolLabel": "CH32RV application (USB)",
+                "hardwareId": d.serial().filter(|s| !s.is_empty()).map_or_else(|| topology.clone(), str::to_owned),
+                "properties": props(d),
+            }));
+        } else if (d.vid(), d.pid()) == (0x1a86, 0x55e0) {
+            ports.push(json!({
+                "address": format!("{}{topology}", crate::cmd_isp::ISP_SCHEME),
+                "label": "CH32RV ISP bootloader (USB)",
+                "protocol": "ch32rv-isp",
+                "protocolLabel": "WCH factory ISP bootloader (USB)",
+                "hardwareId": topology,
+                "properties": props(d),
+            }));
+        }
+    }
+    ports
+}
+
 fn emit(out: &mut impl Write, v: &Value) {
     // One compact JSON object per line; flush so the IDE sees it immediately.
     let _ = writeln!(out, "{v}");
@@ -383,7 +429,7 @@ impl Settings {
         let sources: &'static [MonitorSource] = match protocol {
             "wchlink" => &WCHLINK_SOURCES,
             "oep" => &OEP_SOURCES,
-            // `--protocol` takes serial / wchlink / oep only (clap refuses the rest).
+            // serial / ch32rv-app (its CDC) / ch32rv-isp: the UART source only.
             _ => &SERIAL_SOURCES,
         };
         // Line settings default to the builtin serial-monitor's.
@@ -674,6 +720,25 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
             port: None,
             oep: Some(a),
         });
+    }
+    // A CH32RV application: its CDC port, if it has one. The bootloader has no console.
+    if let Some(t) = address.strip_prefix(crate::cmd_isp::APP_SCHEME) {
+        let dev = ch32rv_usb::enumerate()
+            .map_err(|e| format!("USB enumeration: {e}"))?
+            .into_iter()
+            .find(|d| d.topology() == t)
+            .ok_or_else(|| format!("no USB device at {t}"))?;
+        let port = dev.serial_ports().into_iter().next().ok_or_else(|| {
+            "this CH32RV application has no serial (CDC) port to monitor".to_owned()
+        })?;
+        return Ok(Resolved {
+            entry: None,
+            port: Some(port),
+            oep: None,
+        });
+    }
+    if address.starts_with(crate::cmd_isp::ISP_SCHEME) {
+        return Err("the ISP bootloader has no console to monitor".to_owned());
     }
     if address.starts_with("oep://") {
         let a = crate::oep::resolve_oep_url(address)?;
