@@ -70,12 +70,14 @@ UID(ReadConfig の最後の 8 B)は ESIG の `0x1FFFF7E8` から読んだ 8 B �
 ## 5a. 読み出し保護(RDPR)
 
 - `isp config set read-protect=on` は WriteConfig で RDPR/nRDPR = `00 ff` を書く。option bytes にはすぐ反映され、reset 後に `FLASH_OBR` の bit1(RDPRT)が立つ(`0x03ffff7e`)。RVSWD の flash 読み出しは fault(`0x03`)になる。
-- **保護中に、電源投入後一度でも debugger(RVSWD)が付いていると、チップは flash から何も実行しない**: app も BOOT 領域の bootloader も走らず、PC は `0x0` に居る(`ra` = `0x684` 付近)。debug 線で `BOOT_MODE` を立てて reset しても(`STATR` は `0xF000` になる)ISP device は現れない。STM32 の「debug 接続中の RDP」と同じ振る舞いで、解けるのは電源投入 reset だけと見られる。
-- この板(WeAct X035)は OEP probe から給電されていて、USB hub の port 電源(uhubctl、PPPS)を切っても電源投入 reset にならなかった。
-- 復旧: `ch32rv recover --method unprotect`(debug 線で RDPR を `a5` に戻す。code flash は全消去)→ ISP で image を書き戻し。
-- ISP 経由の `read-protect=off`(チップが全消去する)は、debugger 無しで電源を入れて入る経路でしか試せず、未確認。
+- **保護中は factory bootloader が走らない**(2026-10-14、2 通りで確認):
+  - debug 線で `BOOT_MODE` を立てて reset: `STATR` は `0xF000` になるが PC は `0x0`(`ra` = `0x684`)で止まり、ISP device は現れない。
+  - debugger を電源ごと外し(OEP probe の hub port を off)、X035 の USB port だけ電源を入れ直してからアプリに DFU_DETACH: アプリは `BOOT_MODE` を立てて reset する(`STATR` `0xF000`)が、bootloader は同じく PC `0x0` で止まり、一度も列挙されなかった。
+  - よって ISP 経由の `read-protect=off` は使えない。解除は debug 線の `ch32rv recover --method unprotect`(code flash 全消去)→ ISP で image を書き戻す。BOOT キー(電源投入時の PC17 = High)で入った場合は未確認。
+- 保護中のアプリ: debugger 無しの電源投入後は起動するが、約 4〜5 s で USB を切って止まった(原因は未調査)。debugger(OEP probe)が起動して約 1 s で止まる例もあった(probe が起動時に線を触ると見られる)。保護を外すと同じ image は止まらない。
+- この板(WeAct X035)は OEP probe からも給電されていて、X035 の USB port だけ電源を切っても電源投入 reset にならない。OEP の port も切ると reset される(uhubctl、hub `1a86:8094` は PPPS)。
 
 ## 6. 未確認
 
 - Boot キー(PC17 を電源投入時に High)での入り方と、キーを離す時機。
-- WriteConfig での RDPR(読み出し保護)の変更、data flash、UART 経路。
+- BOOT キーで入った bootloader が保護中に動くか。data flash、UART 経路。

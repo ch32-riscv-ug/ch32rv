@@ -584,18 +584,19 @@ const FLASH_KEY2: u32 = 0xcdef_89ab;
 const FLASH_OBR: u32 = 0x4002_201c;
 /// `FLASH_OBR.RDPRT`: read protection is in force.
 const OBR_RDPRT: u32 = 1 << 1;
-/// en: Why `--entry probe` refuses a read-protected chip: measured on CH32X035 (2026-10-14), once
-/// a debugger has attached since power-up a protected chip fetches nothing from flash - neither
-/// the application nor the BOOT-area bootloader runs (the hart sits at PC 0), so no ISP device
-/// would come. ja: 保護中は、電源投入後に debugger が付くと app も bootloader も走らない(X035 実測)。
+/// en: Why `--entry probe` refuses a read-protected chip: measured on CH32X035F8U6 (BTVER 2.60,
+/// 2026-10-14), the factory bootloader does not run while read protection is on - entered over the
+/// debug wire, or from the application after a debugger-free power-up, it stops at PC 0 and never
+/// enumerates. ja: 保護中は factory bootloader が走らない(debug 線から入れても、debugger 無しの電源
+/// 投入後に app から入れても、PC 0 で止まり列挙されない。X035 実測)。
 fn protected(cli: &Cli, cmd: &str) -> ExitCode {
     fail(
         cli,
         cmd,
         ErrorKind::TargetProtected,
-        "the chip is read-protected: with a debugger attached since power-up it runs nothing from flash, so its bootloader would not come up",
+        "the chip is read-protected, and its factory bootloader does not run while it is",
         Some(
-            "`ch32rv recover --method unprotect` over the probe (erases code flash), or power-cycle the chip and enter the bootloader without the debugger (BOOT key / --entry dfu-detach / touch1200)",
+            "clear the protection over the debug wire: `ch32rv recover --method unprotect` (erases code flash)",
         ),
     )
 }
@@ -1183,7 +1184,7 @@ fn config_set(cli: &Cli, args: &IspArgs, kv: &[String]) -> ExitCode {
         let what = if want.rdpr == ch32rv_isp::RDPR_OFF {
             "turn read protection off? the chip erases all of code flash"
         } else {
-            "turn read protection on? the debug port can no longer read flash, and turning it off again erases code flash"
+            "turn read protection on? the debug port can no longer read flash, the factory bootloader stops working (measured on CH32X035), and only `recover --method unprotect` over a debug probe turns it off again, erasing code flash"
         };
         if let Err(m) = crate::cmd_probe::confirm_destructive(cli, what) {
             return fail(cli, CMD, ErrorKind::Usage, m, None);
