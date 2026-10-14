@@ -412,3 +412,30 @@ fn isp_flash_replays() {
     assert!(stdout.contains(r#""erased_sectors":8"#), "stdout: {stdout}");
     assert!(!stderr.contains("diverged"), "stderr: {stderr}");
 }
+
+/// en: `isp config set data0=0x5a data1=7` on the same bootloader: WriteConfig carries the 12
+/// bytes with the complements recomputed (`5a a5 07 f8`), and the read-back matches.
+/// ja: WriteConfig は補数を計算し直した 12 byte を送り、読み直しが一致する。
+#[test]
+fn isp_config_set_replays() {
+    let out = Command::new(bin())
+        .args([
+            "--json",
+            "--replay",
+            &fixture("isp-config-set-x035.ndjson"),
+            "isp",
+            "config",
+            "set",
+            "data0=0x5a",
+            "data1=7",
+        ])
+        .output()
+        .expect("run ch32rv");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "stderr: {stderr}");
+    assert!(stdout.contains(r#""data0":90"#), "stdout: {stdout}");
+    assert!(stdout.contains(r#""data1":7"#), "stdout: {stdout}");
+    assert!(stdout.contains(r#""changed":true"#), "stdout: {stdout}");
+    assert!(!stderr.contains("diverged"), "stderr: {stderr}");
+}

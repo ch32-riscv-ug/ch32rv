@@ -10,7 +10,8 @@ UIDとIDを残し、DB容量へフォールバックする試験に使う ([実�
 
 `replay/isp-info-x035.ndjson` / `replay/isp-flash-x035.ndjson` は2026-10-13にWeAct CH32X035 CoreBoard
 (CH32X035F8U6、factory bootloader BTVER 2.60、`1a86:55e0`)で取得した `isp info` と `isp flash pattern-4k.bin`
-の往復。bootloader へは OEP probe の RVSWD で入れた(取得は ISP の USB だけ)。byte の記録は
+の往復。bootloader へは OEP probe の RVSWD で入れた(取得は ISP の USB だけ)。
+`replay/isp-config-set-x035.ndjson` は2026-10-14に同じ板で取った `isp config set data0=0x5a data1=7`(取得後に元へ戻した)。byte の記録は
 [factory-isp.ja.md](../../docs/protocol/factory-isp.ja.md)。
 
 手動テスト([docs/testing.ja.md](../../docs/testing.ja.md))で転送に使う、ツールチェーン不要のバイナリ。

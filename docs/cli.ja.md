@@ -431,7 +431,8 @@ ch32rv isp verify <FILE>                            bootloader が照合(不一�
 ch32rv isp erase                                    code flash 全消去(確認あり、--yes で省略)
 ch32rv isp reset                                    bootloader を抜けて app を起動
 ch32rv isp eeprom read|write|erase [<FILE>]         予約(exit 71)
-ch32rv isp config get|set <key>=<v>|reset           予約(exit 71)
+ch32rv isp config get                               option bytes を解いて表示
+ch32rv isp config set <key>=<v>...                  option bytes を変更して読み直しで照合(reset は予約)
 ```
 
 - **USB transport は実装済み(2026-10-13)**。CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で info / flash / verify / erase / reset を実機確認し、書いた内容は RVSWD の読み出しで照合した。byte の記録は [protocol/factory-isp.ja.md](protocol/factory-isp.ja.md)、replay fixture は `tests/fixtures/replay/isp-*-x035.ndjson`。UART transport は予約(exit 71)。
@@ -447,6 +448,7 @@ ch32rv isp config get|set <key>=<v>|reset           予約(exit 71)
   - アプリ経由で入れたとき、`--device` が無ければ **アプリと同じ USB の位置に現れた ISP device だけ** を使う(X035 で一致を確認)。
   - 実機確認(2026-10-14、CH32X035F8U6、ArduinoCore-CH32RV の CH32RVUsbDevice で CDC + DFU run-time interface + HID のスケッチ): `dfu-detach`(`--app-device` 無し / VID:PID / `port:` / `usb:`)、`touch1200`、`auto`、アプリ指定無しの `auto` + `--probe` のどれも、書込・照合・アプリ再起動まで通った。DFU_DETACH はほぼ毎回 stall で返った。
 - `isp flash` は ELF / HEX / bin を code flash 先頭からの 1 塊にし(隙間は `0xff`)、`--erase auto` は image の長さ分の 1 KiB sector(最小 8)を消す。書いた後の `IspEnd` は応答を読んでから終える(読まないと bootloader に残る。protocol ノート §5)。
+- `isp config set` のキー: `data0=<n>` `data1=<n>` `iwdg=sw|hw` `stop-reset=on|off` `standby-reset=on|off` `reset-pin=off|12ms|1ms|128us`(CH32X03x の USER bits[4:3])`write-protect=<u32>`(WRPR0–3、立った bit の sector は書込可)`read-protect=on|off`。補数 byte は計算し直し、知らない USER の bit は読んだ値のまま。書いた後に ReadConfig で読み直し、違えば exit 30。`read-protect` を変えるときは確認する(`--non-interactive` では `--yes` が要る。off にするとチップが code flash を全消去する)。CH32X035F8U6 で `read-protect` 以外の全キーを書いて戻し、option bytes(`0x1FFFF800`)を RVSWD で照合した。`read-protect` の実機確認はまだ。
 - bootloader は最後の通信から約 60 s で app へ抜ける。一度も話しかけられなければ約 9.3〜9.7 s で抜ける(ArduinoCore-CH32RV の観測)ので、ch32rv は現れ次第 Identify を送る。
 - protocol は自前実装(wchisp は GPL-2.0 のため取り込まない)。WriteConfig・DATA 系・UART transport は protocol ノートに記録した上で実装する。
 

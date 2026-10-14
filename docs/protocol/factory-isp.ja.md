@@ -42,6 +42,7 @@ EVT の `SystemReset_StartMode(Start_Mode_BOOT)`(`ch32x035_flash.c`)は同じレ
 | `0xA4` Erase | `a4 04 00` + sector 数(4 B LE) | `a4 00 02 00 00 00` | 8 sector(8 KiB)で約 25 ms。全 62 sector も受理 |
 | `0xA5` Program | `a5 3d 00` + offset(4 B LE、flash 先頭から)+ `00` + 56 B(key で XOR) | `a5 00 02 00 00 00` | image は 256 B 境界まで `0xff` で埋める。**最後に data 0 B の Program**(offset = 末尾)を送り、これも `00` で受理される |
 | `0xA6` Verify | Program と同形 | 一致 `00`、不一致は非 0 | 消去後の flash、別内容の image とも非 0 を返すことを確認(値は記録していない) |
+| `0xA8` WriteConfig | `a8 0e 00 07 00` + config 12 B(ReadConfig と同じ並び、補数は host が計算) | `a8 00 02 00 00 00` | 約 1 ms で応答し、直後の ReadConfig と RVSWD の `0x1FFFF800` に反映済み(reset 不要)。DATA0/1、USER(IWDG / STOP / STANDBY / RST_MODE)、WRPR0 を書いて戻した。RDPR は未試験 |
 | `0xA2` IspEnd | `a2 01 00 01` | `a2 00 02 00 00 00` | **応答を読まないと reset しない**(下記) |
 
 ### config 12 B と option bytes の対応
@@ -69,4 +70,4 @@ UID(ReadConfig の最後の 8 B)は ESIG の `0x1FFFF7E8` から読んだ 8 B �
 ## 6. 未確認
 
 - Boot キー(PC17 を電源投入時に High)での入り方と、キーを離す時機。
-- WriteConfig(`0xA8`)、data flash、UART 経路。
+- WriteConfig での RDPR(読み出し保護)の変更、data flash、UART 経路。

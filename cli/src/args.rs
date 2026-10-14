@@ -602,8 +602,8 @@ pub enum IspCmd {
     /// Dataflash (EEPROM) (reserved, not implemented yet: exit 71)
     #[command(subcommand, hide = true)]
     Eeprom(EepromCmd),
-    /// Config bytes (reserved, not implemented yet: exit 71)
-    #[command(subcommand, hide = true)]
+    /// Option bytes: read protection, write protection, USER flags, DATA0/1
+    #[command(subcommand)]
     Config(IspConfigCmd),
     /// Leave the bootloader and start the application
     Reset,
@@ -641,11 +641,16 @@ pub enum EepromCmd {
 
 #[derive(Subcommand)]
 pub enum IspConfigCmd {
+    /// Show the option bytes, decoded
     Get,
+    /// Change option bytes: data0=<n> data1=<n> iwdg=sw|hw stop-reset=on|off
+    /// standby-reset=on|off reset-pin=off|12ms|1ms|128us write-protect=<u32> read-protect=on|off
     Set {
         #[arg(required = true)]
         kv: Vec<String>,
     },
+    /// Reserved, not implemented yet (exit 71)
+    #[command(hide = true)]
     Reset,
 }
 

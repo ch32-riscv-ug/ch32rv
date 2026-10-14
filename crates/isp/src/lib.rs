@@ -32,6 +32,7 @@ const CMD_ERASE: u8 = 0xa4;
 const CMD_PROGRAM: u8 = 0xa5;
 const CMD_VERIFY: u8 = 0xa6;
 const CMD_READ_CONFIG: u8 = 0xa7;
+const CMD_WRITE_CONFIG: u8 = 0xa8;
 
 /// en: Data bytes per Program / Verify request (the request is 64 bytes on the wire with its
 /// headers: `cmd len(2) addr(4) pad(1)` + 56).
@@ -87,6 +88,53 @@ pub struct IspConfig {
     /// Bootloader version, `[_, major, minor_hi, minor_lo]` (shown as `major.minor_hi minor_lo`).
     pub btver: [u8; 4],
     pub uid: [u8; 8],
+}
+
+/// en: The config bytes as fields (ReadConfig's layout, verified against the option bytes on
+/// CH32X035): RDPR, USER, DATA0, DATA1 with complements in between, then WRPR0-3.
+/// ja: config 12 byte の各欄(X035 の option bytes と照合済みの並び)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptionFields {
+    pub rdpr: u8,
+    pub user: u8,
+    pub data0: u8,
+    pub data1: u8,
+    /// WRPR0..3 as one little-endian word: a set bit leaves its sectors writable.
+    pub wrpr: u32,
+}
+
+/// RDPR value that leaves read protection off.
+pub const RDPR_OFF: u8 = 0xa5;
+
+impl OptionFields {
+    pub fn from_config(c: &[u8; 12]) -> Self {
+        Self {
+            rdpr: c[0],
+            user: c[2],
+            data0: c[4],
+            data1: c[6],
+            wrpr: u32::from_le_bytes([c[8], c[9], c[10], c[11]]),
+        }
+    }
+
+    /// The 12 bytes with every complement recomputed.
+    pub fn to_config(self) -> [u8; 12] {
+        let w = self.wrpr.to_le_bytes();
+        [
+            self.rdpr,
+            !self.rdpr,
+            self.user,
+            !self.user,
+            self.data0,
+            !self.data0,
+            self.data1,
+            !self.data1,
+            w[0],
+            w[1],
+            w[2],
+            w[3],
+        ]
+    }
 }
 
 impl IspConfig {
@@ -275,6 +323,16 @@ impl IspDevice {
         Ok(())
     }
 
+    /// en: WriteConfig (`0xa8`, mask `0x07`): the 12 config bytes in ReadConfig's layout (value /
+    /// complement pairs for RDPR, USER, DATA0, DATA1, then WRPR0-3 without complements). The
+    /// bootloader rewrites the option bytes; read the config back to see what took.
+    /// ja: WriteConfig。ReadConfig と同じ並びの 12 byte。読み直して反映を確かめること。
+    pub fn write_config(&mut self, config: &[u8; 12]) -> Result<(), IspError> {
+        let mut p = vec![0x07, 0x00];
+        p.extend_from_slice(config);
+        self.status(CMD_WRITE_CONFIG, &p)
+    }
+
     /// Erase `sectors` 1 KiB sectors from the start of code flash (at least the minimum).
     pub fn erase(&mut self, sectors: u32) -> Result<(), IspError> {
         let n = sectors.max(MIN_ERASE_SECTORS);
@@ -384,6 +442,19 @@ mod tests {
         assert_eq!(pad(&[1; 256]).len(), 256);
         assert_eq!(pad(&[1; 257]).len(), 512);
         assert_eq!(pad(&[1; 10])[10], 0xff);
+    }
+
+    #[test]
+    fn option_fields_round_trip() {
+        // ReadConfig of CH32X035F8U6 (BTVER 2.60), 2026-10-13.
+        let c = [0xa5, 0x5a, 0x1f, 0xe0, 0xff, 0x00, 0xff, 0x00, 0xff, 0xff, 0xff, 0xff];
+        let f = OptionFields::from_config(&c);
+        assert_eq!(f.rdpr, RDPR_OFF);
+        assert_eq!(f.user, 0x1f);
+        assert_eq!(f.wrpr, 0xffff_ffff);
+        assert_eq!(f.to_config(), c);
+        let g = OptionFields { data0: 0x5a, ..f }.to_config();
+        assert_eq!(g[4..6], [0x5a, 0xa5]);
     }
 
     #[test]

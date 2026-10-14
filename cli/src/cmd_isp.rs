@@ -7,13 +7,14 @@ use std::time::{Duration, Instant};
 
 use ch32rv_contract::policy::ImageFormat;
 use ch32rv_contract::{ErrorKind, ResultEnvelope};
-use ch32rv_isp::{Identity, IspConfig, IspDevice, IspError};
+use ch32rv_isp::{Identity, IspConfig, IspDevice, IspError, OptionFields};
 use ch32rv_usb::UsbDeviceInfo;
 
 use ch32rv_dmi::{DmiError, ResetMode, TargetAccess};
 
 use crate::args::{
-    Cli, IspArgs, IspCmd, IspEntry, IspErase, IspReset, IspTransport, IspVerify, IspVia,
+    Cli, IspArgs, IspCmd, IspConfigCmd, IspEntry, IspErase, IspReset, IspTransport, IspVerify,
+    IspVia,
 };
 use crate::cmd_probe::fail;
 
@@ -37,6 +38,8 @@ pub fn isp(cli: &Cli, args: &IspArgs) -> ExitCode {
         IspCmd::Erase => erase_only(cli, args),
         IspCmd::Reset => reset(cli, args),
         IspCmd::Enter { via: IspVia::Probe } => enter(cli, args),
+        IspCmd::Config(IspConfigCmd::Get) => config_get(cli, args),
+        IspCmd::Config(IspConfigCmd::Set { kv }) => config_set(cli, args, kv),
         _ => crate::unimplemented_cmd(cli, cmd),
     }
 }
@@ -986,4 +989,210 @@ fn touch1200(port: &str) -> Result<(), serialport::Error> {
     let _ = p.write_data_terminal_ready(false);
     drop(p);
     Ok(())
+}
+
+/// en: The option bytes as JSON / text, decoded. USER's reset-pin field is CH32X03x's (bits 4:3).
+/// ja: option bytes を解いたもの。USER の reset-pin 欄は CH32X03x のもの。
+fn decode_options(id: Identity, f: OptionFields) -> serde_json::Value {
+    let x03x = id.device_type == 0x23;
+    serde_json::json!({
+        "read_protect": f.rdpr != ch32rv_isp::RDPR_OFF,
+        "rdpr": format!("0x{:02x}", f.rdpr),
+        "user": format!("0x{:02x}", f.user),
+        "iwdg": if f.user & 0x01 != 0 { "sw" } else { "hw" },
+        "stop_reset": f.user & 0x02 == 0,
+        "standby_reset": f.user & 0x04 == 0,
+        "reset_pin": x03x.then_some(match (f.user >> 3) & 0x03 {
+            0b11 => "off",
+            0b10 => "12ms",
+            0b01 => "1ms",
+            _ => "128us",
+        }),
+        "data0": f.data0,
+        "data1": f.data1,
+        "write_protect": format!("0x{:08x}", f.wrpr),
+    })
+}
+
+fn print_options(v: &serde_json::Value) {
+    let on = |k: &str| {
+        if v[k].as_bool() == Some(true) {
+            "on"
+        } else {
+            "off"
+        }
+    };
+    println!(
+        "read-protect:  {} (rdpr {})",
+        on("read_protect"),
+        v["rdpr"].as_str().unwrap_or("-")
+    );
+    println!("user:          {}", v["user"].as_str().unwrap_or("-"));
+    println!("  iwdg:          {}", v["iwdg"].as_str().unwrap_or("-"));
+    println!("  stop-reset:    {}", on("stop_reset"));
+    println!("  standby-reset: {}", on("standby_reset"));
+    if let Some(r) = v["reset_pin"].as_str() {
+        println!("  reset-pin:     {r}");
+    }
+    println!("data0:         {}", v["data0"]);
+    println!("data1:         {}", v["data1"]);
+    println!(
+        "write-protect: {} (a set bit leaves its sectors writable)",
+        v["write_protect"].as_str().unwrap_or("-")
+    );
+}
+
+fn config_get(cli: &Cli, args: &IspArgs) -> ExitCode {
+    const CMD: &str = "isp.config.get";
+    let o = match open(cli, CMD, args) {
+        Ok(o) => o,
+        Err(c) => return c,
+    };
+    let v = decode_options(o.id, OptionFields::from_config(&o.cfg.config));
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({ "options": v, "config": hex(&o.cfg.config) }));
+        crate::print_envelope(&env)
+    } else {
+        print_options(&v);
+        ExitCode::SUCCESS
+    }
+}
+
+/// en: Apply `key=value` changes to the option fields. Returns whether read protection changes
+/// (the destructive one: turning it off erases code flash). ja: `key=value` を当てる。
+fn apply_options(id: Identity, f: &mut OptionFields, kv: &[String]) -> Result<bool, String> {
+    let mut rdp_changed = false;
+    let onoff = |k: &str, v: &str| match v {
+        "on" => Ok(true),
+        "off" => Ok(false),
+        _ => Err(format!("{k}: expected on|off, got `{v}`")),
+    };
+    let num = |k: &str, v: &str| -> Result<u32, String> {
+        let r = match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
+            Some(h) => u32::from_str_radix(h, 16),
+            None => v.parse(),
+        };
+        r.map_err(|_| format!("{k}: `{v}` is not a number"))
+    };
+    let byte = |k: &str, v: &str| -> Result<u8, String> {
+        u8::try_from(num(k, v)?).map_err(|_| format!("{k}: `{v}` is out of 0..=255"))
+    };
+    let bit = |user: &mut u8, mask: u8, set: bool| {
+        if set {
+            *user |= mask;
+        } else {
+            *user &= !mask;
+        }
+    };
+    for item in kv {
+        let (k, v) = item
+            .split_once('=')
+            .ok_or_else(|| format!("`{item}`: expected key=value"))?;
+        match k {
+            "data0" => f.data0 = byte(k, v)?,
+            "data1" => f.data1 = byte(k, v)?,
+            "iwdg" => match v {
+                "sw" => bit(&mut f.user, 0x01, true),
+                "hw" => bit(&mut f.user, 0x01, false),
+                _ => return Err(format!("iwdg: expected sw|hw, got `{v}`")),
+            },
+            // A cleared bit means "reset on entering the mode".
+            "stop-reset" => bit(&mut f.user, 0x02, !onoff(k, v)?),
+            "standby-reset" => bit(&mut f.user, 0x04, !onoff(k, v)?),
+            "reset-pin" => {
+                if id.device_type != 0x23 {
+                    return Err("reset-pin: only CH32X03x's USER layout is known".to_owned());
+                }
+                let mode = match v {
+                    "off" => 0b11,
+                    "12ms" => 0b10,
+                    "1ms" => 0b01,
+                    "128us" => 0b00,
+                    _ => return Err(format!("reset-pin: expected off|12ms|1ms|128us, got `{v}`")),
+                };
+                f.user = (f.user & !0x18) | (mode << 3);
+            }
+            "write-protect" => f.wrpr = num(k, v)?,
+            "read-protect" => {
+                let want = onoff(k, v)?;
+                let now = f.rdpr != ch32rv_isp::RDPR_OFF;
+                if want != now {
+                    rdp_changed = true;
+                    f.rdpr = if want { 0x00 } else { ch32rv_isp::RDPR_OFF };
+                }
+            }
+            _ => return Err(format!("unknown key `{k}`")),
+        }
+    }
+    Ok(rdp_changed)
+}
+
+fn config_set(cli: &Cli, args: &IspArgs, kv: &[String]) -> ExitCode {
+    const CMD: &str = "isp.config.set";
+    let mut o = match open(cli, CMD, args) {
+        Ok(o) => o,
+        Err(c) => return c,
+    };
+    let before = OptionFields::from_config(&o.cfg.config);
+    let mut want = before;
+    let rdp_changed = match apply_options(o.id, &mut want, kv) {
+        Ok(r) => r,
+        Err(m) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                m,
+                Some(
+                    "keys: data0 data1 iwdg stop-reset standby-reset reset-pin write-protect read-protect",
+                ),
+            );
+        }
+    };
+    if rdp_changed {
+        let what = if want.rdpr == ch32rv_isp::RDPR_OFF {
+            "turn read protection off? the chip erases all of code flash"
+        } else {
+            "turn read protection on? the debug port can no longer read flash, and turning it off again erases code flash"
+        };
+        if let Err(m) = crate::cmd_probe::confirm_destructive(cli, what) {
+            return fail(cli, CMD, ErrorKind::Usage, m, None);
+        }
+    }
+    if want != before
+        && let Err(e) = o.dev.write_config(&want.to_config())
+    {
+        return isp_fail(cli, CMD, e);
+    }
+    // Read back what the bootloader now reports.
+    let after = match o.dev.read_config() {
+        Ok(c) => OptionFields::from_config(&c.config),
+        Err(e) => return isp_fail(cli, CMD, e),
+    };
+    if after != want {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::VerifyMismatch,
+            format!(
+                "the option bytes read back as {} after writing {}",
+                hex(&after.to_config()),
+                hex(&want.to_config())
+            ),
+            Some("some option changes take effect only after a reset; check with `isp config get`"),
+        );
+    }
+    let v = decode_options(o.id, after);
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({ "options": v, "changed": want != before }));
+        crate::print_envelope(&env)
+    } else {
+        if want == before {
+            println!("no change");
+        }
+        print_options(&v);
+        ExitCode::SUCCESS
+    }
 }
