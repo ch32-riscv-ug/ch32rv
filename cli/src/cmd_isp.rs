@@ -812,14 +812,15 @@ struct AppDevice {
 /// it), `usb:<bus>-<ports>`, or `VID:PID[:SERIAL]`. Exactly one device or an error.
 /// ja: `--app-device` を解く。ちょうど 1 台か、エラー。
 fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
-    // The discovery's own address names the device by position.
+    // The discovery's own address (`ch32rv-app://<id>`): found again by its id, then by position.
     let usb_sel;
     let sel = match sel
         .strip_prefix("port:")
         .and_then(|a| a.strip_prefix(APP_SCHEME))
     {
-        Some(t) => {
-            usb_sel = format!("usb:{t}");
+        Some(id) => {
+            let dev = find_app(id).map_err(|(kind, m)| fail(cli, cmd, kind, m, None))?;
+            usb_sel = format!("usb:{}", dev.topology());
             usb_sel.as_str()
         }
         None => sel,
@@ -1270,6 +1271,52 @@ pub(crate) const APP_ENTRY_NAME: &str = "CH32RV";
 /// Discovery address schemes: a running CH32RV application, and a factory ISP bootloader.
 pub(crate) const APP_SCHEME: &str = "ch32rv-app://";
 pub(crate) const ISP_SCHEME: &str = "ch32rv-isp://";
+
+/// en: The id in a `ch32rv-app://<id>` address: the device's USB serial (ArduinoCore-CH32RV's
+/// default is derived from the chip's UID, so it stays the same on another USB port), or
+/// `usb-<bus>-<ports>` when it has none or shares it with another connected application (a
+/// sketch may set any serial). The same rule as `wchlink://`. `apps` = the applications present.
+/// ja: `ch32rv-app://<id>` の id。USB serial(既定はチップの UID 由来で、挿し直しても変わらない)、
+/// 無いか他のアプリと重なるなら `usb-<位置>`。`wchlink://` と同じ規則。
+pub(crate) fn app_id(d: &UsbDeviceInfo, apps: &[UsbDeviceInfo]) -> String {
+    match d.serial().filter(|s| !s.is_empty()) {
+        Some(s) if apps.iter().filter(|o| o.serial() == Some(s)).count() == 1 => s.to_owned(),
+        _ => format!("usb-{}", d.topology()),
+    }
+}
+
+/// en: The CH32RV application a `ch32rv-app://<id>` address names, now. ja: その id のアプリ。
+pub(crate) fn find_app(id: &str) -> Result<UsbDeviceInfo, (ErrorKind, String)> {
+    let apps: Vec<UsbDeviceInfo> = ch32rv_usb::enumerate()
+        .map_err(|e| (ErrorKind::DeviceOpenFailed, e.to_string()))?
+        .into_iter()
+        .filter(is_ch32rv_app)
+        .collect();
+    let mut hits: Vec<&UsbDeviceInfo> = apps
+        .iter()
+        .filter(|d| match id.strip_prefix("usb-") {
+            Some(t) => d.topology() == t,
+            None => d.serial() == Some(id),
+        })
+        .collect();
+    match hits.len() {
+        0 => Err((
+            ErrorKind::DeviceNotFound,
+            format!("no CH32RV application {APP_SCHEME}{id} is connected"),
+        )),
+        1 => {
+            let found = hits.remove(0).topology();
+            apps.into_iter().find(|d| d.topology() == found).ok_or((
+                ErrorKind::DeviceNotFound,
+                format!("{APP_SCHEME}{id} went away"),
+            ))
+        }
+        n => Err((
+            ErrorKind::DeviceAmbiguous,
+            format!("{n} CH32RV applications have the serial {id}; pick the port by position"),
+        )),
+    }
+}
 
 /// A device with a DFU run-time interface named [`APP_ENTRY_NAME`].
 pub(crate) fn is_ch32rv_app(d: &UsbDeviceInfo) -> bool {

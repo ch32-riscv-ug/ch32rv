@@ -302,12 +302,17 @@ fn isp_route_ports() -> Vec<Value> {
             "topology": d.topology(),
         })
     };
+    let apps: Vec<ch32rv_usb::UsbDeviceInfo> = ch32rv_usb::enumerate()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(crate::cmd_isp::is_ch32rv_app)
+        .collect();
     let mut ports = Vec::new();
     for d in &devs {
         let topology = d.topology();
         if crate::cmd_isp::is_ch32rv_app(d) {
             ports.push(json!({
-                "address": format!("{}{topology}", crate::cmd_isp::APP_SCHEME),
+                "address": format!("{}{}", crate::cmd_isp::APP_SCHEME, crate::cmd_isp::app_id(d, &apps)),
                 "label": format!("{} (CH32RV, USB)", d.product().unwrap_or("CH32RV application")),
                 "protocol": "ch32rv-app",
                 "protocolLabel": "CH32RV application (USB)",
@@ -722,12 +727,8 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
         });
     }
     // A CH32RV application: its CDC port, if it has one. The bootloader has no console.
-    if let Some(t) = address.strip_prefix(crate::cmd_isp::APP_SCHEME) {
-        let dev = ch32rv_usb::enumerate()
-            .map_err(|e| format!("USB enumeration: {e}"))?
-            .into_iter()
-            .find(|d| d.topology() == t)
-            .ok_or_else(|| format!("no USB device at {t}"))?;
+    if let Some(id) = address.strip_prefix(crate::cmd_isp::APP_SCHEME) {
+        let dev = crate::cmd_isp::find_app(id).map_err(|(_, m)| m)?;
         let port = dev.serial_ports().into_iter().next().ok_or_else(|| {
             "this CH32RV application has no serial (CDC) port to monitor".to_owned()
         })?;
