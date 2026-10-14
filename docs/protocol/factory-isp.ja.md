@@ -22,6 +22,7 @@
 | debug 線で `FLASH_KEYR` と `FLASH_BOOT_MODEKEYR`(`0x40022028`)にそれぞれ `0x45670123`, `0xCDEF89AB` → `FLASH_STATR` に bit14(`BOOT_MODE`)を足して書く → system reset | **入る**。reset 後 0.5 s 以内に `1a86:55e0` が列挙される。`STATR` は `0xF000`、PC は `0x680` 前後(BOOT 領域) |
 | 同じ手順を、hart が flash の中身を実行している状態で、別々の attach に分けて行う | 中身が正規の app なら入る。**flash に実行できないデータ(`pattern-4k.bin`)が入っていると入れない**: reset のたびにそのデータが命令として走り、鍵を触って FLASH をロックする(`CTLR` の LOCK が外れなくなる) |
 | reset vector で hart を捕まえて(`ResetMode::HaltAtReset`)から上の手順を 1 回の attach で行う | flash の中身によらず入る。`isp enter --via probe` / `--entry probe` の実装 |
+| 同じ手順を WCH-LinkE(fw 2.22)で: DMI の reset-halt → 鍵 → `BOOT_MODE` → LinkE の soft reset(system reset) | 入る(CH32X035C8T6、`STATR` `0xF000`、PC `0x6c0`)。USB 未接続のままだと約 10 s で app へ戻る |
 
 `FLASH_STATR` の上位 4 bit の観測値: app 実行中 `0xB000`、鍵を外した後 `0x3000`、`BOOT_MODE` を書いた後 `0x5000`、bootloader 実行中 `0xF000`。
 
@@ -69,4 +70,3 @@ UID(ReadConfig の最後の 8 B)は ESIG の `0x1FFFF7E8` から読んだ 8 B �
 
 - Boot キー(PC17 を電源投入時に High)での入り方と、キーを離す時機。
 - WriteConfig(`0xA8`)、data flash、UART 経路。
-- WCH-Link を使った debug 線からの入り方(ch32rv は今は OEP の probe だけ)。

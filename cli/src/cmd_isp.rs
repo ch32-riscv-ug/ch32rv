@@ -144,11 +144,22 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
                 cli,
                 cmd,
                 ErrorKind::DeviceNotFound,
-                match &want {
-                    Some(t) => format!("no ISP device at usb:{t}"),
-                    None => "no ISP device (1a86:55e0 / 4348:55e0) was found".to_owned(),
+                match (&want, entered) {
+                    (_, true) => format!(
+                        "the chip was sent to its bootloader, but no ISP device appeared{} within {} s",
+                        want.as_deref()
+                            .map(|t| format!(" at usb:{t}"))
+                            .unwrap_or_default(),
+                        wait.as_secs()
+                    ),
+                    (Some(t), false) => format!("no ISP device at usb:{t}"),
+                    (None, false) => "no ISP device (1a86:55e0 / 4348:55e0) was found".to_owned(),
                 },
-                Some(ENTRY_HINT),
+                Some(if entered {
+                    "is the chip's own USB (D+/D-) connected to this host? the bootloader returns to the application after ~10 s unattended"
+                } else {
+                    ENTRY_HINT
+                }),
             ));
         }
         // en: After an entry over the debug wire the device is simply on its way; otherwise say
@@ -608,15 +619,7 @@ fn set_boot_mode<T: TargetAccess + ?Sized>(t: &mut T) -> Result<(), DmiError> {
 fn enter_via_probe(cli: &Cli, cmd: &str) -> Result<(), ExitCode> {
     let a = match crate::oep::addr(cli, cmd) {
         Ok(Some(a)) => a,
-        Ok(None) => {
-            return Err(fail(
-                cli,
-                cmd,
-                ErrorKind::CapabilityUnsupported,
-                "entering the bootloader over the debug wire needs an OEP probe (--probe); a WCH-Link is not supported yet",
-                Some(ENTRY_HINT),
-            ));
-        }
+        Ok(None) => return enter_via_wchlink(cli, cmd),
         Err(c) => return Err(c),
     };
     let mut outcome = Ok(());
@@ -653,6 +656,75 @@ fn enter_via_probe(cli: &Cli, cmd: &str) -> Result<(), ExitCode> {
     if code != ExitCode::SUCCESS || outcome.is_err() {
         return Err(code);
     }
+    if !cli.json {
+        eprintln!("reset into the bootloader over the debug wire");
+    }
+    Ok(())
+}
+
+/// en: `--entry probe` through a WCH-Link: the same steps as on an OEP probe, with the hart caught
+/// by the DMI reset-halt (`ndmreset` + `haltreq`) and the final reset the probe's own system
+/// reset, which keeps `BOOT_MODE`.
+/// ja: WCH-Link での `--entry probe`。hart は DMI の reset-halt で捕まえ、最後は probe の system
+/// reset(`BOOT_MODE` は残る)。
+fn enter_via_wchlink(cli: &Cli, cmd: &str) -> Result<(), ExitCode> {
+    let mut session = crate::cmd_probe::attach(cli, cmd)?;
+    let family = crate::cmd_target::db_family_of(&mut session);
+    if !boot_mode_family(&family) {
+        return Err(fail(
+            cli,
+            cmd,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "{family} has no software-selected boot mode ch32rv knows; nothing was changed"
+            ),
+            Some(ENTRY_HINT),
+        ));
+    }
+    let step = |r: Result<(), DmiError>| {
+        r.map_err(|e| {
+            fail(
+                cli,
+                cmd,
+                ErrorKind::TransferFailed,
+                format!("entering the bootloader: {e}"),
+                None,
+            )
+        })
+    };
+    {
+        let mut dm = session.dm();
+        step(dm.reset_halt())?;
+        for (addr, key) in [
+            (FLASH_KEYR, FLASH_KEY1),
+            (FLASH_KEYR, FLASH_KEY2),
+            (FLASH_BOOT_MODEKEYR, FLASH_KEY1),
+            (FLASH_BOOT_MODEKEYR, FLASH_KEY2),
+        ] {
+            step(dm.write_mem32(addr, key))?;
+        }
+        let statr = dm.read_mem32(FLASH_STATR);
+        step(statr.and_then(|v| dm.write_mem32(FLASH_STATR, v | STATR_BOOT_MODE)))?;
+        let statr = dm.read_mem32(FLASH_STATR);
+        step(statr.and_then(|v| {
+            if v & STATR_BOOT_MODE == 0 {
+                Err(DmiError::OperationFailed(format!(
+                    "BOOT_MODE did not stick (FLASH_STATR = 0x{v:08x})"
+                )))
+            } else {
+                Ok(())
+            }
+        }))?;
+    }
+    crate::cmd_flash::soft_reset_and_run(&mut session).map_err(|m| {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::TransferFailed,
+            format!("entering the bootloader: {m}"),
+            None,
+        )
+    })?;
     if !cli.json {
         eprintln!("reset into the bootloader over the debug wire");
     }
