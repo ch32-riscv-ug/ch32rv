@@ -489,7 +489,7 @@ ch32rv db info <SKU>            geometry(page/fast/block)、領域、option layo
 
 - **実装状況(2026-09-02)**: `db list` / `db info` を実装(cmd_db.rs、デバイス不要)。生成済み DB(`crates/target/generated/skus.csv` を `include_str!` で埋め込み)を列挙/表示。`db list --family <f>` は family/SKU prefix で絞り込み、`--verified-only` は実機確認済み(実測6台)のみ。`db info <SKU>` は family/device_id/flash/sram/verified を表示。JSON 可(arduino B-3=`db list --json` 対応)。DB は `cargo xtask db-gen` が ch32-device-data(pinned)から生成し commit する(§4.3 target info の chip_id→SKU 解決、§4.3 option get の family-aware USER decode もこの DB を使う)。geometry は flash/sram に加え **page/fast erase・fast program・block erase**(`flash_geometry.csv`、`db info` で表示)。**2026-09-06 追加**: `db info` は **消去済み word の読み出し値**(`erased:` 行。系統 A `0xffffffff` / B `0xe339e339`)と **FLASH controller の書込方式**(`flash prog:` 行。`buffered`/`direct` + commit bit + buffer load 幅 + DB の confidence)も出す。`flash_controller_profile`(§4.2.1 の直接 controller 経路)は手写しをやめて**この DB から導出**する。cli テストは、実機で駆動している 6 family について **DB 側に page 消去粒度・消去後の値・`conflict` でない書込手順が揃っている**ことを検査する(納品でどれかが欠けると `erase --range` / flash breakpoint が黙って無効化されるため)。方式・粒度が実機検証値と一致することは `ch32rv-flash` の単体テストで固定。option layout は register 系 CSV 取り込みで後続。
 
-DB は ch32-device-data / ch32-data からの生成物で手書き YAML を持たない(architecture.ja.md §4)。`--db <path>` overlay で新 SKU を再ビルドなしに試せる。
+DB は ch32-device-data からの生成物で手書き YAML を持たない(architecture.ja.md §4)。device_id は WCH EVT の ChipID 一覧と実測だけから作られ(第三者 DB の ch32-data は 2026-10-14 に外れた)、1 つに決まらない型番(例: EVT が 2 つ書く CH32V203F6P6)は ID 無しで載る。ID 無しの型番を `--chip` で指定すると family だけを照合する(書く前の ID 照合はできない)。`--db <path>` overlay で新 SKU を再ビルドなしに試せる。
 
 ### 4.10 capabilities / doctor / version / complete
 
