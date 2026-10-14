@@ -59,7 +59,7 @@ fn open(cli: &Cli, cmd: &str, args: &IspArgs) -> Result<Opened, ExitCode> {
 }
 
 fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Opened, ExitCode> {
-    let want = match args.device.as_deref() {
+    let mut want = match args.device.as_deref() {
         None => None,
         Some(d) => match d.strip_prefix("usb:") {
             Some(t) => Some(t.to_owned()),
@@ -82,10 +82,26 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
     };
     let mut wait = Duration::from_secs(args.wait);
     let mut entered = false;
-    if entry == IspEntry::Probe && !ch32rv_usb::replay::active() && !present(&want) {
-        enter_via_probe(cli, cmd)?;
-        entered = true;
-        wait = wait.max(ENTER_WAIT);
+    if entry != IspEntry::None && !ch32rv_usb::replay::active() && !present(&want) {
+        let via = match entry {
+            IspEntry::Probe => Via::Probe,
+            _ => match enter_via_app(cli, cmd, args, entry)? {
+                Some(at) => {
+                    // The bootloader comes up where the application was (same USB port).
+                    want.get_or_insert(at);
+                    Via::App
+                }
+                None if entry == IspEntry::Auto && cli.probe.is_some() => Via::Probe,
+                None => Via::Nothing,
+            },
+        };
+        if via == Via::Probe {
+            enter_via_probe(cli, cmd)?;
+        }
+        if via != Via::Nothing {
+            entered = true;
+            wait = wait.max(ENTER_WAIT);
+        }
     }
     let deadline = Instant::now() + wait;
     let mut told = false;
@@ -663,4 +679,239 @@ fn enter(cli: &Cli, args: &IspArgs) -> ExitCode {
         );
         ExitCode::SUCCESS
     }
+}
+
+#[derive(PartialEq, Eq)]
+enum Via {
+    Probe,
+    App,
+    Nothing,
+}
+
+/// The application's USB device named by `--app-device`, and the serial port it was named by.
+struct AppDevice {
+    dev: UsbDeviceInfo,
+    port: Option<String>,
+}
+
+/// en: Resolve `--app-device`: `port:<path>` (the serial port an IDE passes; the USB device behind
+/// it), `usb:<bus>-<ports>`, or `VID:PID[:SERIAL]`. Exactly one device or an error.
+/// ja: `--app-device` を解く。ちょうど 1 台か、エラー。
+fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
+    let all = ch32rv_usb::enumerate()
+        .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
+    let canon = |p: &str| {
+        std::fs::canonicalize(p)
+            .map(|c| c.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| p.to_owned())
+    };
+    let (mut found, port): (Vec<UsbDeviceInfo>, Option<String>) =
+        if let Some(path) = sel.strip_prefix("port:") {
+            let want = canon(path);
+            let mut found: Vec<UsbDeviceInfo> = all
+                .into_iter()
+                .filter(|d| d.serial_ports().iter().any(|p| canon(p) == want))
+                .collect();
+            // en: On Linux the hubs above the device see its tty in their sysfs subtree too;
+            // the device is the one no other match sits below.
+            // ja: Linux では上流の hub も sysfs の下に tty を持つ。他の一致の下に居ないものが本体。
+            let tops: Vec<String> = found.iter().map(UsbDeviceInfo::topology).collect();
+            found.retain(|d| {
+                let t = d.topology();
+                !tops
+                    .iter()
+                    .any(|o| o.len() > t.len() && o.starts_with(&format!("{t}.")))
+            });
+            (found, Some(path.to_owned()))
+        } else if let Some(t) = sel.strip_prefix("usb:") {
+            (
+                all.into_iter().filter(|d| d.topology() == t).collect(),
+                None,
+            )
+        } else {
+            let mut parts = sel.splitn(3, ':');
+            let num = |s: Option<&str>| {
+                s.and_then(|v| u16::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+            };
+            let (Some(vid), Some(pid)) = (num(parts.next()), num(parts.next())) else {
+                return Err(fail(
+                    cli,
+                    cmd,
+                    ErrorKind::Usage,
+                    format!("invalid --app-device `{sel}`"),
+                    Some("use port:<serial port>, usb:<bus>-<ports> or VID:PID[:SERIAL]"),
+                ));
+            };
+            let serial = parts.next().filter(|s| !s.is_empty());
+            let found = all
+                .into_iter()
+                .filter(|d| {
+                    d.vid() == vid && d.pid() == pid && serial.is_none_or(|s| d.serial() == Some(s))
+                })
+                .collect();
+            (found, None)
+        };
+    match found.len() {
+        0 => Err(fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceNotFound,
+            format!("no USB device matches --app-device `{sel}`"),
+            None,
+        )),
+        1 => {
+            let dev = found.remove(0);
+            let port = port.or_else(|| dev.serial_ports().into_iter().next());
+            Ok(AppDevice { dev, port })
+        }
+        n => Err(crate::cmd_probe::fail_with_candidates(
+            cli,
+            cmd,
+            ErrorKind::DeviceAmbiguous,
+            format!("{n} USB devices match --app-device `{sel}`"),
+            Some("name it by position: --app-device usb:<bus>-<ports>"),
+            found
+                .iter()
+                .map(|d| serde_json::json!(format!("usb:{}", d.topology())))
+                .collect(),
+        )),
+    }
+}
+
+/// en: Ask the running application to reboot into the bootloader: DFU_DETACH to its DFU run-time
+/// interface, or the 1200 bps touch on its serial port (`auto` tries them in that order).
+/// Returns the application's USB position (where the bootloader will appear), or `None` when
+/// `auto` found nothing to ask. A touch goes only to a device named by `--app-device`, so another
+/// board's serial port is never reset; `dfu-detach` alone may pick the one DFU run-time device
+/// present, since that interface is the device's own offer to detach. Only the request is DFU:
+/// nothing is downloaded over DFU, the bootloader that comes up is WCH's factory ISP.
+/// ja: DFU なのは再起動の依頼だけで、DFU では何も書かない。現れるのは WCH の factory ISP。
+/// ja: 走っている app に bootloader への再起動を頼む。DFU run-time への DFU_DETACH か、serial
+/// port への 1200 bps touch(`auto` はこの順)。app の USB の位置(bootloader が現れる所)を返す。
+/// touch は `--app-device` で名指しされた device にだけ送る(他の板の serial を reset しない)。
+fn enter_via_app(
+    cli: &Cli,
+    cmd: &str,
+    args: &IspArgs,
+    entry: IspEntry,
+) -> Result<Option<String>, ExitCode> {
+    let app = match args.app_device.as_deref() {
+        Some(sel) => Some(app_device(cli, cmd, sel)?),
+        None if entry == IspEntry::DfuDetach => {
+            let all = ch32rv_usb::enumerate()
+                .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
+            let mut dfu: Vec<UsbDeviceInfo> = all
+                .into_iter()
+                .filter(|d| d.dfu_runtime_interface().is_some())
+                .collect();
+            match dfu.len() {
+                0 => {
+                    return Err(fail(
+                        cli,
+                        cmd,
+                        ErrorKind::DeviceNotFound,
+                        "no USB device offers a DFU run-time interface",
+                        Some("name the application with --app-device"),
+                    ));
+                }
+                1 => Some(AppDevice {
+                    dev: dfu.remove(0),
+                    port: None,
+                }),
+                n => {
+                    return Err(crate::cmd_probe::fail_with_candidates(
+                        cli,
+                        cmd,
+                        ErrorKind::DeviceAmbiguous,
+                        format!("{n} USB devices offer a DFU run-time interface"),
+                        Some("name the application with --app-device usb:<bus>-<ports>"),
+                        dfu.iter()
+                            .map(|d| serde_json::json!(format!("usb:{}", d.topology())))
+                            .collect(),
+                    ));
+                }
+            }
+        }
+        None if entry == IspEntry::Touch1200 => {
+            return Err(fail(
+                cli,
+                cmd,
+                ErrorKind::Usage,
+                "--entry touch1200 needs the application's serial port",
+                Some("--app-device port:<serial port>"),
+            ));
+        }
+        None => None,
+    };
+    let Some(app) = app else {
+        return Ok(None);
+    };
+    let at = app.dev.topology();
+    let dfu = app.dev.dfu_runtime_interface();
+    let use_dfu = match entry {
+        IspEntry::DfuDetach => true,
+        IspEntry::Auto => dfu.is_some(),
+        _ => false,
+    };
+    if use_dfu {
+        let Some(intf) = dfu else {
+            return Err(fail(
+                cli,
+                cmd,
+                ErrorKind::CapabilityUnsupported,
+                format!("the device at usb:{at} has no DFU run-time interface"),
+                Some("use --entry touch1200 for an application with a serial port"),
+            ));
+        };
+        // en: The application may drop off the bus before the status stage completes (seen as a
+        // stall on Linux); it still detaches, so the error is only reported.
+        // ja: status stage の前に bus から消えることがある(Linux では stall)が、detach はするので報告だけ。
+        if let Err(e) = app.dev.dfu_detach(intf, DETACH_TIMEOUT_MS) {
+            eprintln!("warning[dfu-detach]: {e} (waiting for the bootloader anyway)");
+        }
+        if !cli.json {
+            eprintln!("sent DFU_DETACH to usb:{at} (interface {intf})");
+        }
+        return Ok(Some(at));
+    }
+    let Some(port) = app.port else {
+        return match entry {
+            IspEntry::Auto => Ok(None),
+            _ => Err(fail(
+                cli,
+                cmd,
+                ErrorKind::CapabilityUnsupported,
+                format!("the device at usb:{at} has no serial port to touch"),
+                None,
+            )),
+        };
+    };
+    touch1200(&port).map_err(|e| {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceOpenFailed,
+            format!("1200 bps touch on {port}: {e}"),
+            None,
+        )
+    })?;
+    if !cli.json {
+        eprintln!("1200 bps touch on {port} (usb:{at})");
+    }
+    Ok(Some(at))
+}
+
+/// The `wDetachTimeOut` sent with DFU_DETACH (ms).
+const DETACH_TIMEOUT_MS: u16 = 1000;
+
+/// en: The Arduino convention: open the port at 1200 bps and close it with DTR low; the
+/// application takes that as the request to reboot into its bootloader.
+/// ja: Arduino の約束: 1200 bps で開き、DTR を落として閉じる。
+fn touch1200(port: &str) -> Result<(), serialport::Error> {
+    let mut p = serialport::new(port, 1200)
+        .timeout(Duration::from_millis(100))
+        .open()?;
+    let _ = p.write_data_terminal_ready(false);
+    drop(p);
+    Ok(())
 }

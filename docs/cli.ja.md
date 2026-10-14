@@ -421,7 +421,8 @@ ch32rv dap [--port <n>|--stdio]                     P2
 ### 4.7 isp(factory ISP 経路)
 
 ```text
-ch32rv isp [--transport usb|uart] [--device usb:<bus>-<ports>] [--wait <SECS>] [--entry none|probe]
+ch32rv isp [--transport usb|uart] [--device usb:<bus>-<ports>] [--wait <SECS>]
+           [--entry none|auto|probe|dfu-detach|touch1200] [--app-device port:<p>|usb:<bus>-<ports>|VID:PID[:SN]]
 ch32rv isp list                                     ISP mode device の列挙。Identify に答えない device(LinkE IAP 等)は区別して表示
 ch32rv isp info                                     chip/BTVER/UID/保護状態/config 12 B
 ch32rv isp enter [--via probe]                      --probe の debug 線で boot mode を立てて reset(CH32X03x)
@@ -437,8 +438,16 @@ ch32rv isp config get|set <key>=<v>|reset           予約(exit 71)
 - ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed(2 台以上は exit 14 で位置の候補を出す)。複数台は `--device usb:<bus>-<ports>` で選ぶ。
 - `--wait <SECS>`(既定 0): device が無ければその秒数だけ待つ。最初に、入り方(Boot キーを押したまま USB を接続、または `--entry probe`)を stderr に 1 回出す。期限切れは exit 10。
 - `--entry probe`: ISP device が無ければ、`--probe` の debug 線で hart を reset vector で止め、`FLASH_KEYR` と `FLASH_BOOT_MODEKEYR` を外し、`FLASH_STATR.BOOT_MODE` を立てて reset してから、最大 5 s 待つ。flash の中身を先に走らせないので、壊れた image が入っていても入れる。今は OEP の probe と CH32X033 / X035 だけ(WCH-Link と他 family は exit 24)。`isp enter` は `--entry probe` で開いて Identify / ReadConfig までして終わる。
+- `--entry` は ISP device が居ないときの入り方(既定 `none`)。どれも、入れた後は最大 5 s(`--wait` が長ければそれ)待つ。
+  - **DFU について**: ここで使う DFU は、DFU 1.1 の **run-time interface と DFU_DETACH 要求だけ**(アプリに「bootloader へ再起動して」と頼む標準の合図)。その後に現れるのは WCH の factory ISP(`1a86:55e0`、独自 protocol)で、DFU mode の device ではない。**DFU の download(DNLOAD)は使わず、dfu-util では書けない**。DFU mode で書く本物の DFU bootloader は別の経路(`boot dfu`、予約)。
+  - `dfu-detach`: アプリの DFU 1.1 run-time interface(class `0xfe`/`0x01`/`0x01`)へ DFU_DETACH(`21 00`、`wValue` 1000、`wIndex` = interface)。`--app-device` が無ければ、run-time interface を持つ device がちょうど 1 台のときだけそれを使う(0 台 exit 10、2 台以上 exit 14)。アプリは status stage の前に切れることがあり(Linux では stall)、それでも detach するので、エラーは `warning[dfu-detach]` にとどめて待つ。
+  - `touch1200`: アプリの serial port を 1200 bps で開き、DTR を落として閉じる(Arduino の約束)。**`--app-device` で名指しした device にだけ送る**(無関係な板を reset しないため。無ければ exit 2)。
+  - `auto`: 名指しされたアプリが DFU run-time interface を持てば `dfu-detach`、無くて serial port があれば `touch1200`。アプリの指定が無く `--probe` があれば `probe`。どれも無ければ何もせず、`--wait` の間、入り方を出して待つ。Arduino の upload recipe はこれを使う(`--entry auto --app-device "port:{upload.port.address}"`)。
+  - `--app-device`: `port:<path>`(IDE が渡す serial port。裏の USB device を引く。Linux では上流の hub も同じ tty を持つので、他の一致の下に居ないものを本体とする)、`usb:<bus>-<ports>`、`VID:PID[:SERIAL]`。ちょうど 1 台でなければ exit 10 / 14。
+  - アプリ経由で入れたとき、`--device` が無ければ **アプリと同じ USB の位置に現れた ISP device だけ** を使う(X035 で一致を確認)。
+  - 実機確認(2026-10-14、CH32X035F8U6、ArduinoCore-CH32RV の CH32RVUsbDevice で CDC + DFU run-time interface + HID のスケッチ): `dfu-detach`(`--app-device` 無し / VID:PID / `port:` / `usb:`)、`touch1200`、`auto`、アプリ指定無しの `auto` + `--probe` のどれも、書込・照合・アプリ再起動まで通った。DFU_DETACH はほぼ毎回 stall で返った。
 - `isp flash` は ELF / HEX / bin を code flash 先頭からの 1 塊にし(隙間は `0xff`)、`--erase auto` は image の長さ分の 1 KiB sector(最小 8)を消す。書いた後の `IspEnd` は応答を読んでから終える(読まないと bootloader に残る。protocol ノート §5)。
-- bootloader は最後の通信から約 60 s で app へ抜ける。
+- bootloader は最後の通信から約 60 s で app へ抜ける。一度も話しかけられなければ約 9.3〜9.7 s で抜ける(ArduinoCore-CH32RV の観測)ので、ch32rv は現れ次第 Identify を送る。
 - protocol は自前実装(wchisp は GPL-2.0 のため取り込まない)。WriteConfig・DATA 系・UART transport は protocol ノートに記録した上で実装する。
 
 ### 4.8 boot(custom bootloader 経路)

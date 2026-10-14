@@ -545,16 +545,26 @@ pub struct IspArgs {
     /// Seconds to wait for the ISP device to appear, with an entry hint on stderr (0: fail at once)
     #[arg(long, global = true, value_name = "SECS", default_value_t = 0)]
     pub wait: u64,
-    /// How to put the chip in its bootloader when no ISP device is present: `probe` = over the
-    /// debug wire of `--probe` (CH32X03x), `none` = it already is (default)
+    /// How to put the chip in its bootloader when no ISP device is present: `auto` = what the
+    /// application device offers (DFU_DETACH to its DFU run-time interface, else the 1200 bps
+    /// touch), else `--probe`'s debug wire; `dfu-detach` / `touch1200` / `probe` = that one only;
+    /// `none` = it already is (default). Only the request to reboot is DFU: the image goes through
+    /// WCH's ISP protocol, not DFU download
     #[arg(long, global = true, value_enum, default_value = "none")]
     pub entry: IspEntry,
+    /// The running application's USB device, for `--entry auto|dfu-detach|touch1200`:
+    /// port:<serial port> | usb:<bus>-<ports> | VID:PID[:SERIAL]
+    #[arg(long, global = true, value_name = "SEL")]
+    pub app_device: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum IspEntry {
     None,
+    Auto,
     Probe,
+    DfuDetach,
+    Touch1200,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

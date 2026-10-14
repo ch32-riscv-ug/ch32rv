@@ -247,6 +247,55 @@ impl UsbDeviceInfo {
         }
     }
 
+    /// en: The interface number of a USB DFU 1.1 run-time interface (class `0xfe`, subclass
+    /// `0x01`, protocol `0x01`): a running application that offers to detach into a bootloader.
+    /// Read without opening the device. Only the run-time half of DFU: such a device need not
+    /// support DFU download at all (ch32rv uses it to reach WCH's factory ISP).
+    /// ja: DFU 1.1 の run-time interface の番号(開かずに読む)。DFU のうち run-time 側だけで、DFU の
+    /// download に対応している必要は無い(ch32rv は WCH の factory ISP へ入る合図に使う)。
+    pub fn dfu_runtime_interface(&self) -> Option<u8> {
+        match &self.inner {
+            Inner::Nusb(d) => d
+                .interfaces()
+                .find(|i| i.class() == 0xfe && i.subclass() == 0x01 && i.protocol() == 0x01)
+                .map(|i| i.interface_number()),
+            Inner::Replay(_) => None,
+        }
+    }
+
+    /// en: Send DFU_DETACH (`bmRequestType 0x21`, `bRequest 0`, `wValue` = `timeout_ms`, `wIndex`
+    /// = `interface`, no data) to a DFU run-time interface. The interface is claimed for it where
+    /// it can be (Windows needs that, through WinUSB); on Linux / macOS a device-level control
+    /// transfer is the fallback. A device may detach before it completes the status stage, so the
+    /// caller decides whether an error here matters.
+    /// ja: DFU run-time interface へ DFU_DETACH を送る。claim できればその interface で(Windows は
+    /// WinUSB で必須)、Linux / macOS は device の control 転送に退く。status stage の前に切れる device
+    /// があるので、ここのエラーを気にするかは呼び出し側が決める。
+    pub fn dfu_detach(&self, interface: u8, timeout_ms: u16) -> Result<(), UsbError> {
+        use nusb::transfer::{ControlOut, ControlType, Recipient};
+        let Inner::Nusb(info) = &self.inner else {
+            return Err(UsbError::Open("replay device cannot be detached".into()));
+        };
+        let device = info.open().wait().map_err(classify_open_error)?;
+        let req = ControlOut {
+            control_type: ControlType::Class,
+            recipient: Recipient::Interface,
+            request: 0x00,
+            value: timeout_ms,
+            index: u16::from(interface),
+            data: &[],
+        };
+        let timeout = Duration::from_millis(1000);
+        let r = match device.claim_interface(interface).wait() {
+            Ok(iface) => iface.control_out(req, timeout).wait(),
+            #[cfg(not(windows))]
+            Err(_) => device.control_out(req, timeout).wait(),
+            #[cfg(windows)]
+            Err(e) => return Err(classify_open_error(e)),
+        };
+        r.map_err(|e| UsbError::Transfer(e.to_string()))
+    }
+
     /// en: The serial ports with the name of the USB interface each belongs to (Linux reads it from
     /// sysfs; elsewhere the name is unknown), so the one that carries OEP can be picked.
     /// ja: serial port と、それが属す USB interface の名前(Linux は sysfs、他 OS は不明)。

@@ -25,7 +25,7 @@
 
 `FLASH_STATR` の上位 4 bit の観測値: app 実行中 `0xB000`、鍵を外した後 `0x3000`、`BOOT_MODE` を書いた後 `0x5000`、bootloader 実行中 `0xF000`。
 
-EVT の `SystemReset_StartMode(Start_Mode_BOOT)`(`ch32x035_flash.c`)は同じレジスタ操作で、app からの切り替え(1200bps touch など)にもこの手順が使える見込み(app からは未検証)。
+EVT の `SystemReset_StartMode(Start_Mode_BOOT)`(`ch32x035_flash.c`)は同じレジスタ操作。app からの切り替えも、ArduinoCore-CH32RV の CH32RVUsbDevice(DFU_DETACH / 1200 bps touch を受けて USB を切り、`BOOT_MODE` を立てて software reset)で入ることを確認した(2026-10-14)。DETACH から `55e0` の出現まで 0.36〜0.8 s。
 
 ## 3. 枠
 
@@ -62,11 +62,11 @@ UID(ReadConfig の最後の 8 B)は ESIG の `0x1FFFF7E8` から読んだ 8 B �
 - `IspEnd(01)` を送って応答を読むと、約 200 ms で bootloader は `BOOT_MODE` を解除して app へ reset する(`STATR` が `0xB000` に戻る)。
 - **応答を読まずに終えると、bootloader は応答の送信待ちのまま残る**。その後の session では Identify には答えるが、ReadConfig の OUT が stall する。最後は下の timeout で app へ抜けた。
 - 最後の通信から **約 60 s** 何も来ないと、bootloader は `BOOT_MODE` を解除して app へ抜ける。
+- 現れてから **一度も** 話しかけられないと、約 9.3〜9.7 s で app へ抜ける(ArduinoCore-CH32RV が DFU_DETACH / 1200 bps touch の後に sysfs で 13 回以上観測、2026-10-14)。
 - bootloader 実行中に debug 線で hart を halt したままにすると、USB の OUT がすべて timeout する(USB は CPU が処理しているため)。
 
 ## 6. 未確認
 
 - Boot キー(PC17 を電源投入時に High)での入り方と、キーを離す時機。
-- app のコードからの切り替え(EVT の `SystemReset_StartMode` + `NVIC_SystemReset`)。
 - WriteConfig(`0xA8`)、data flash、UART 経路。
 - WCH-Link を使った debug 線からの入り方(ch32rv は今は OEP の probe だけ)。
