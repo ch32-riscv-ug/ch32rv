@@ -62,6 +62,10 @@ jobs:
         if: inputs.republish_tag == ''
         with:
           tool: cargo-deny
+      # `cargo test --workspace` includes the OEP broker / virtual-probe tests, which start
+      # oep-client-python's virtual bench with `uv run` and fail (never skip) without uv.
+      - uses: astral-sh/setup-uv@v6
+        if: inputs.republish_tag == ''
       # serialport (via the CLI/monitor) links libudev on Linux; the gates compile the whole workspace.
       - name: Install libudev
         if: inputs.republish_tag == ''
