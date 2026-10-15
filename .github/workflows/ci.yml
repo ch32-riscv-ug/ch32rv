@@ -1,0 +1,50 @@
+# CI: the release workflow's verify gates (fmt / clippy / test / deny) on every push and pull
+# request, so a slip shows up at push time instead of when a release is cut.
+#
+# Not here: `xtask db-check` against ch32-device-data. It compares with another repo's HEAD, so an
+# upstream commit alone would turn this repo's pushes red; it stays a release gate (release.yml).
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # serialport (via the CLI/monitor) links libudev on Linux.
+      - name: Install libudev
+        run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
+      - name: clippy
+        run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: test
+        run: cargo test --locked --workspace
+      - name: deny
+        run: cargo deny check
