@@ -247,6 +247,43 @@ binary の扱い:
   - 1 回だけのコマンドがブローカーを通る分の遅れ(起動を含む)。
   - flash の最中も monitor が console を読み続けられること(probe は riscv-dm の要求を実行している間だけ console の poll を止める)。reset の mark から続きを読めること。
 
+### 7.3 WCH-Link ブローカーが答える操作の点検(2026-10-15、ch32rv 0.20.1)
+
+**経緯**: 0.20.0 で、WCH-Link のブローカー(`cli/src/broker_wch.rs`)が console の STREAMS を持たず、`arduino monitor` が target の最初の無出力の 1 秒後に止まった(ArduinoCore-CH32RV の報告、a6495c0 で修正)。monitor が describe を見ずに STREAMS を呼び、ブローカーが UNKNOWN_OPERATION(`0x02`)で断ったのが原因。同じ形の穴 — **ch32rv の client が呼ぶ操作を、ブローカーが答えない** — が他にないかを点検した。**OEP の仕様を変更中のため、コードは直さず現状だけを記録する**。仕様が固まったら、この表を新しい仕様と突き合わせ直す。
+
+**ブローカーが答える操作**(`describe` の ops と一致):
+
+| interface | 答える操作 | 答える場所 |
+|---|---|---|
+| core | CONFIRM / OPEN / END / KEEPALIVE / LOCK_STATE | 汎用ブローカー(`broker.rs` の `local`) |
+| core | LIST / DESCRIBE / CLOCK | `broker_wch.rs` |
+| wire(rvswd / swio) | ATTACH / DETACH | `broker_wch.rs`(ATTACH / DETACH の付け替えは `broker.rs` も見る) |
+| riscv-dm | DMI / HALT / RESUME / RESET / READ_BLOCK / WRITE_BLOCK / RUN | `broker_wch.rs` |
+| console | OPEN / READ / MARKS / WRITE / CLOSE / CLEAR(何もしない)/ MARK(何もしない)/ STREAMS(a6495c0 から) | `broker_wch.rs` |
+| `io.github.ch32-riscv-ug.wchlink` | LEND / RECLAIM | `broker_wch.rs` |
+
+LIST に出す interface は上の 5 つ(rvswd、swio、riscv-dm、console、wchlink)だけ。cfg、fixture UART、link(port speed)、probe restart、probe plan、probe config は持たない。
+
+**client が呼ぶのにブローカーが答えない操作と、その扱い**:
+
+| client の操作 | 呼ぶ所 | WCH-Link のブローカーのとき | 判定 |
+|---|---|---|---|
+| console STREAMS | `stream.rs` `is_open`(monitor が 1 秒黙るたび) | 0.20.0 は UNKNOWN_OPERATION で monitor が止まった | **修正済み**(a6495c0。ブローカーが答え、monitor は UNKNOWN_OPERATION / UNSUPPORTED を「開いている」とみなす) |
+| wire SCAN | `target.rs` `scan_all`(`oep.rs` `place_by_scan`) | describe に ROLE_CHANNELS が無いと呼ばない。ブローカーは出さない | 問題なし |
+| wire CONNECTIONS | `config.rs` `slot_states` | cfg の interface があるときだけ。ブローカーは cfg を出さない | 問題なし |
+| cfg GET / STATE | `config.rs` `items`(`slots` / `labels`。`choose_place`、discovery、NRST の線) | interface が無ければ空の一覧を返す | 問題なし |
+| link PORT_SPEED / SOURCE / SINK | `speed.rs`(`broker.rs` の port speed) | 上流が OEP の probe(`Upstream::Oep`)のときだけ | 問題なし |
+| probe_restart RESTART | `broker.rs`、`session.rs` | ブローカーが横取りするのは上流が OEP のときだけ。interface が LIST に無いので client も送らない | 問題なし |
+| fixture_uart 一式 | `stream.rs`(monitor の source `fixture-uart`) | LinkE の serial port でも `fixture-uart` を source に選べてしまう(`cmd_arduino.rs` の `SERIAL_SOURCES`)。選ぶと OPEN の時点で「interface が無い」で断る | **要整理**: 途中で止まる型ではないが、選べない source を出している |
+| console CLOSE / CLEAR / MARK(Link を貸し出し中) | monitor の終わり、mark | 貸し出し中は READ / MARKS / WRITE / STREAMS 以外を UNAVAILABLE で断る | **要確認**: flash の最中に monitor を閉じたときの見え方 |
+
+**見つけた弱点(仕様が固まったら直す候補)**:
+
+1. **client が describe の ops を見ずに呼ぶ操作がある**。STREAMS がそうだった。ほかの操作は interface の有無か describe の TLV で守られていたが、「ops に無い操作は呼ばない」という規則が client 側に無い。仕様に「任意の操作」と「必須の操作」の区別が入るなら、client は任意の操作の前に describe の ops を見る形にそろえる。
+2. **ブローカーの WCH 側には、ops の一覧と実装の対応を確かめる試験が無い**(describe の ops と match の腕を突き合わせる試験、または仮想の client で各 op を一度ずつ呼ぶ試験)。仕様の op が増えたときに抜けるので、仕様が固まったら足す。
+3. **`fixture-uart` を LinkE の serial port の source に出している**(上の表)。WCH-Link の port では出さないか、選んだときの断り方を決める。
+4. **CLEAR / MARK はブローカーでは何もしない**(mark を持たない)。monitor が mark を使って reset 後の続きを読む作り(§7.2 の確かめること)と合うかは、仕様の mark の定義が固まってから見直す。
+
 ## 8. デバッグの余地(今回は実装しない)
 
 - (a) `OepDtm` が `DtmAccess` と §4.2 の `TargetAccess` を実装するので、`ch32rv-debug` の `Ch32Target<T: DtmAccess>` は、そのまま OEP の上で動く。ブローカーの client として話す `DtmAccess` も同じ形(TCP の上の `OepDtm`)。
