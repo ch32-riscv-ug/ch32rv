@@ -2033,18 +2033,61 @@ pub(crate) fn write(cli: &Cli, addr: u32, bytes: &[u8], a: &OepAddr) -> ExitCode
 }
 
 /// `target info` on an OEP probe: what the chip id says, without halting the target.
+/// en: The chip's 64-bit unique ID from the ESIG (`0x1FFF_F7E8`, two words), in the form the
+/// WCH-Link path prints from ChipInfo: each word read little-endian, then the two in hex
+/// (`cd ab f9 1f 48 bc 0e 88` -> `1ff9abcd880ebc48`, matched on CH32X035C8T6). Read without
+/// halting where the probe can; otherwise halted for the read and resumed if it was running.
+/// `None` when unreadable or erased-looking. A test harness matches DUTs by it, and a WCH-Link
+/// behind its broker answers `target info` through this path (ArduinoCore-CH32RV, 2026-10-15).
+/// ja: ESIG の 64 bit の UID(WCH-Link の ChipInfo と同じ表記)。止めずに読めなければ一瞬止めて読む。
+fn read_uid(x: &mut Attached<'_>) -> Option<String> {
+    const ESIG_UID: u32 = 0x1FFF_F7E8;
+    let words = match x.t.read_words(ESIG_UID, 2) {
+        Ok(w) => w,
+        Err(_) => {
+            let was_running = x.halted_at.is_none();
+            x.t.halt().ok()?;
+            let w = x.t.read_words(ESIG_UID, 2);
+            if was_running {
+                resume_after(&mut x.t);
+            }
+            w.ok()?
+        }
+    };
+    let [w0, w1] = words[..] else {
+        return None;
+    };
+    if (w0 == 0 && w1 == 0) || (w0 == u32::MAX && w1 == u32::MAX) {
+        return None;
+    }
+    Some(format!("{w0:08x}{w1:08x}"))
+}
+
 pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
     const CMD: &str = "target.info";
     with_attached(cli, CMD, a, false, |x| {
         let sku = sku_of(x.chip_id);
+        let uid = read_uid(x);
         if cli.json {
             let mut env = ResultEnvelope::success(CMD);
+            // The same `target` block the WCH-Link path fills, so a caller reads one place.
+            env.target = Some(ch32rv_contract::envelope::TargetReport {
+                sku: sku.as_ref().map(|s| s.sku.clone()),
+                family: x.family.clone(),
+                chip_id: x.chip_id.map(|c| format!("0x{c:08x}")),
+                uid: uid.clone(),
+                verified: sku.as_ref().map(|s| s.verified),
+                provisional: sku.as_ref().map(|s| s.provisional),
+                protected: None,
+                flash_bytes: sku.as_ref().and_then(|s| u32::try_from(s.flash_bytes).ok()),
+            });
             env.result = Some(serde_json::json!({
                 "probe": { "kind": "oep" },
                 "target": {
                     "chip_id": x.chip_id.map(|c| format!("0x{c:08x}")),
                     "family": x.family,
                     "sku": sku.as_ref().map(|s| s.sku.clone()),
+                    "uid": uid,
                     "flash_bytes": sku.as_ref().map(|s| s.flash_bytes),
                     "sram_bytes": sku.as_ref().map(|s| s.sram_bytes),
                 },
@@ -2057,6 +2100,7 @@ pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
                 None => println!("chip_id:  (the probe read none)"),
             }
             println!("family:   {}", x.family.as_deref().unwrap_or("unknown"));
+            println!("uid:      {}", uid.as_deref().unwrap_or("-"));
             if let Some(s) = &sku {
                 println!("sku:      {}", s.sku);
                 println!("flash:    {} KiB", s.flash_bytes / 1024);
