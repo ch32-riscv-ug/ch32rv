@@ -249,7 +249,7 @@ binary の扱い:
 
 ### 7.3 WCH-Link ブローカーが答える操作の点検(2026-10-15、ch32rv 0.20.1)
 
-**経緯**: 0.20.0 で、WCH-Link のブローカー(`cli/src/broker_wch.rs`)が console の STREAMS を持たず、`arduino monitor` が target の最初の無出力の 1 秒後に止まった(ArduinoCore-CH32RV の報告、a6495c0 で修正)。monitor が describe を見ずに STREAMS を呼び、ブローカーが UNKNOWN_OPERATION(`0x02`)で断ったのが原因。同じ形の穴 — **ch32rv の client が呼ぶ操作を、ブローカーが答えない** — が他にないかを点検した。**OEP の仕様を変更中のため、コードは直さず現状だけを記録する**。仕様が固まったら、この表を新しい仕様と突き合わせ直す。
+**経緯**: 0.20.0 で、WCH-Link のブローカー(`cli/src/broker_wch.rs`)が console の STREAMS を持たず、`arduino monitor` が target の最初の無出力の 1 秒後に止まった(ArduinoCore-CH32RV の報告、a6495c0 で修正)。STREAMS は仕様で **console の必須の op**(oep-if-console の表、conformance §3 の「open/read/close/streams」)なので、monitor が describe を見ずに呼ぶのは正しく、**ブローカーが仕様を満たしていなかった**。同じ形の穴 — **ch32rv の client が呼ぶ操作を、ブローカーが答えない** — が他にないかを点検した。**OEP の仕様を変更中のため、コードは直さず現状だけを記録する**。仕様が固まったら、この表を新しい仕様と突き合わせ直す。
 
 **ブローカーが答える操作**(`describe` の ops と一致):
 
@@ -279,10 +279,17 @@ LIST に出す interface は上の 5 つ(rvswd、swio、riscv-dm、console、wch
 
 **見つけた弱点(仕様が固まったら直す候補)**:
 
-1. **client が describe の ops を見ずに呼ぶ操作がある**。STREAMS がそうだった。ほかの操作は interface の有無か describe の TLV で守られていたが、「ops に無い操作は呼ばない」という規則が client 側に無い。仕様に「任意の操作」と「必須の操作」の区別が入るなら、client は任意の操作の前に describe の ops を見る形にそろえる。
+1. **client が任意の op を describe の ops を見ずに呼んでいる**。console の `marks` と `write` は仕様で任意(最小は open / read / close / streams)なのに、`stream.rs` は monitor を開くとき `marks` を(reset の mark から続きを読むため)、入力のたびに `write` を、ops を見ずに呼ぶ。marks を持たない適合 probe では monitor が開けず、write を持たない probe では入力で止まるはず(実機・仮想とも未確認)。fixture UART の marks / write も同じ。任意の op は ops を見てから呼び、無ければ代わりの道(marks 無し: 今の位置から読む。write 無し: 入力を断る)にする。
 2. **ブローカーの WCH 側には、ops の一覧と実装の対応を確かめる試験が無い**(describe の ops と match の腕を突き合わせる試験、または仮想の client で各 op を一度ずつ呼ぶ試験)。仕様の op が増えたときに抜けるので、仕様が固まったら足す。
 3. **`fixture-uart` を LinkE の serial port の source に出している**(上の表)。WCH-Link の port では出さないか、選んだときの断り方を決める。
-4. **CLEAR / MARK はブローカーでは何もしない**(mark を持たない)。monitor が mark を使って reset 後の続きを読む作り(§7.2 の確かめること)と合うかは、仕様の mark の定義が固まってから見直す。
+4. **ブローカーは CLEAR / MARK を ops に立てながら何もしない**(MARKS は常に空)。仕様では mark は任意で「marks も提供」が条件なので、mark を持たないなら CLEAR / MARK を ops から外す方が仕様に沿う(外せば op は unknown_operation になる)。
+5. **仕様の変更中の差**(2026-10-15 の oep-spec 67876b7 と比べて): 仕様の console は stream / connection が u32、`streams` の要素は `stream(u32) connection(u32) mechanism(u8)`(生きている stream だけ、作成順)、閉じた stream への要求は no_resource。ch32rv(client もブローカーも)は u16 の id と `stream(u16) connection(u16) mechanism(u8) users(u8) state(u8)` の 7 byte のまま。仕様が固まったら両側をそろえる。
+
+**仕様と仮想 probe への提案**(ch32rv 側からの依頼の候補。まだ出していない):
+
+- **仕様(conformance §2 host のチェックリスト)**: 「任意の op は describe の ops に立っているときだけ使う」を host の項目に足す。probe 側の規則(ops に無い op は unknown_operation)はあるが、host 側にそれを前提にする規則が無い。弱点 1 はこれに当たる。
+- **仮想 probe(oep-client-python の virtual bench)**: console(と fixture UART)の任意の op を外した**最小構成**で起動できる選択肢を足す。host が任意の op を前提にしていないかを、実機なしで試せる。ch32rv の試験はこれで弱点 1 を検出・回帰試験できる。
+- **適合の検査を ch32rv のブローカーにも当てる**: conformance §4 の「probe は独立した host で list、describe と各 op を検査する」を、ch32rv の WCH-Link のブローカー(OEP の probe として振る舞う)にも適用する。検査道具(oep-client-python の checks)が TCP の口へ向けられるなら、ブローカーの `<runtime>/<key>.oep` の待ち受けに当てれば、STREAMS の抜けのような必須 op の欠落と、ops の宣言と実装の食い違い(弱点 2、4)を見つけられる。
 
 ## 8. デバッグの余地(今回は実装しない)
 
