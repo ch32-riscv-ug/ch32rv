@@ -2079,7 +2079,7 @@ pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
                 verified: sku.as_ref().map(|s| s.verified),
                 provisional: sku.as_ref().map(|s| s.provisional),
                 protected: None,
-                flash_bytes: sku.as_ref().and_then(|s| u32::try_from(s.flash_bytes).ok()),
+                flash_bytes: sku.as_ref().map(|s| s.flash_bytes),
             });
             env.result = Some(serde_json::json!({
                 "probe": { "kind": "oep" },
