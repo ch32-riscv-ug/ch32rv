@@ -22,7 +22,7 @@ version は workspace 一括、リリースごとに`release.sh`がbump、licens
 
 各 library に keywords / categories / README を付与済み。`ch32rv-contract` は `cargo publish --dry-run` 成功済み(他は contract が index に載れば通る)。
 
-**publish しない**(空スタブ、`publish = false`): `ch32rv-monitor` / `ch32rv-isp`。monitor の実体は現状cli側。
+**publish しない**(空スタブ、`publish = false`): `ch32rv-monitor`。monitor の実体は現状cli側。`ch32rv-isp` は 0.20.0 で CLI が依存したので公開する(2026-10-15。最初の 1 回は `scripts/first-publish.sh` で名前を取り、Trusted Publisher を登録してから `republish_tag = v0.20.0` で CLI を出す)。
 
 ### publish のやり方(3段階)
 

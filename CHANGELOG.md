@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Publish `ch32rv-isp` on crates.io: the 0.20.0 CLI depends on it, so `cargo publish -p ch32rv` 0.20.0 failed while the crate was still `publish = false`. It is now in the release order (after `ch32rv-target`) and in `scripts/first-publish.sh`; ch32rv 0.20.0 reaches crates.io once its name is claimed and the release is finished with `republish_tag`.
+- (JA) `ch32rv-isp` を crates.io に出す: 0.20.0 の CLI がこれに依存したため、`publish = false` のままでは `cargo publish -p ch32rv` 0.20.0 が失敗した。リリースの公開順(`ch32rv-target` の後)と `scripts/first-publish.sh` に加えた。名前を取って `republish_tag` でリリースを仕上げると、ch32rv 0.20.0 が crates.io に出る。
+
 ## 0.20.0 - 2026-10-15
 
 - (EN) The Arduino discovery lists the factory ISP route: a running CH32RV application - a device whose DFU run-time interface is named `CH32RV`, ArduinoCore-CH32RV's default, since its VID:PID and serial say nothing - as `ch32rv-app://<serial>` - the USB serial, which ArduinoCore-CH32RV derives from the chip's UID so the name survives a move to another USB port; `usb-<bus>-<ports>` only when it has none or shares it with another connected application (also when it has a CDC port; its monitor opens that port), and a factory ISP bootloader (`1a86:55e0`) as `ch32rv-isp://<bus>-<ports>`. `isp --app-device` takes both addresses, so the upload recipe `--entry auto --app-device "port:{upload.port.address}"` works whichever port is picked. `--entry dfu-detach` without `--app-device` now only considers devices with that name. Bench-verified on CH32X035 with a DFU-only sketch.

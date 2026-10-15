@@ -23,7 +23,7 @@ fi
 
 # Dependency order: contract -> usb-wch-win -> usb/dmi/target -> wchlink/flash -> debug -> CLI.
 # usb-wch-win before usb: ch32rv-usb has a cfg(windows) dependency on it (docs/windows-wch-driver.ja.md).
-CRATES=(contract usb-wch-win usb dmi target wchlink flash debug)
+CRATES=(contract usb-wch-win usb dmi target isp wchlink flash debug)
 
 # ch32rv-boot is new after 0.8.0, but current main is still versioned 0.8.0 and its capture/replay
 # support uses ch32rv-usb APIs that are not present in the already-published ch32rv-usb 0.8.0.
@@ -111,12 +111,14 @@ publish_one "ch32rv"
 cat <<'EOF'
 
 == done. Now register the Trusted Publisher for each crate published above (one time, web UI) ==
-For this release, the only new crate should be ch32rv-oep. Open its crates.io
+For this release (0.20.0), the only new crate should be ch32rv-isp: the CLI started depending on
+it, so `cargo publish -p ch32rv` failed until it is on crates.io. Open its crates.io
 Settings -> Trusted Publishing -> Add, and enter:
   owner    : ch32-riscv-ug
   repo     : ch32rv
   workflow : release.yml
   (environment: leave empty unless you gate releases behind a GitHub Environment)
 
-After that, all future releases run token-free from the Actions "Release" workflow.
+Then finish 0.20.0 from the Actions "Release" workflow with republish_tag = v0.20.0 (it skips
+the crates already at 0.20.0 and publishes ch32rv). After that, all future releases run token-free.
 EOF

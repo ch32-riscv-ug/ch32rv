@@ -151,7 +151,7 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
-          # contract -> usb/dmi/target -> wchlink/flash -> oep/boot -> debug -> cli.
+          # contract -> usb/dmi/target -> isp -> wchlink/flash -> oep/boot -> debug -> cli.
           # oep after flash: its dev-dependency on ch32rv-flash must be on the index too.
           # NOTE: crates.io needs a published dependency in its index before a dependent can build,
           # so `cargo publish` waits for the index by default. If a run fails partway, the crates
@@ -176,7 +176,7 @@ jobs:
             done
             return 1
           }
-          for c in contract usb-wch-win usb dmi target wchlink flash oep boot debug; do
+          for c in contract usb-wch-win usb dmi target isp wchlink flash oep boot debug; do
             publish "ch32rv-$c"
           done
           publish ch32rv
