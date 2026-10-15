@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.20.0 - 2026-10-15
+
 - (EN) The Arduino discovery lists the factory ISP route: a running CH32RV application - a device whose DFU run-time interface is named `CH32RV`, ArduinoCore-CH32RV's default, since its VID:PID and serial say nothing - as `ch32rv-app://<serial>` - the USB serial, which ArduinoCore-CH32RV derives from the chip's UID so the name survives a move to another USB port; `usb-<bus>-<ports>` only when it has none or shares it with another connected application (also when it has a CDC port; its monitor opens that port), and a factory ISP bootloader (`1a86:55e0`) as `ch32rv-isp://<bus>-<ports>`. `isp --app-device` takes both addresses, so the upload recipe `--entry auto --app-device "port:{upload.port.address}"` works whichever port is picked. `--entry dfu-detach` without `--app-device` now only considers devices with that name. Bench-verified on CH32X035 with a DFU-only sketch.
 - (JA) Arduino の discovery が factory ISP 経路を出す: 走っている CH32RV のアプリ(DFU run-time interface の名前が `CH32RV` の device。ArduinoCore-CH32RV の既定。VID:PID も serial も手がかりにならないため)を `ch32rv-app://<serial>`(USB serial。ArduinoCore-CH32RV の既定はチップの UID 由来なので、別の USB port に挿し直しても名前が変わらない。serial が無いか他のアプリと重なるときだけ `usb-<位置>`。CDC があっても出し、monitor はその CDC を開く)、factory ISP bootloader(`1a86:55e0`)を `ch32rv-isp://<位置>`。`isp --app-device` は両方のアドレスを受けるので、upload recipe `--entry auto --app-device "port:{upload.port.address}"` はどの port を選んでも動く。`--app-device` 無しの `--entry dfu-detach` はこの名前の device だけを候補にする。DFU のみのスケッチを入れた CH32X035 で実機確認。
 
