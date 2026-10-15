@@ -40,6 +40,8 @@ pub(crate) const OP_LEND: u8 = 0x01;
 pub(crate) const OP_RECLAIM: u8 = 0x02;
 /// The one connection a Link has.
 const CONN: u16 = 1;
+/// Streams listed per STREAMS answer (7 bytes each).
+const STREAMS_PER_ANSWER: usize = 32;
 /// A console keeps this much output for its readers.
 const CONSOLE_KEEP: usize = 64 * 1024;
 
@@ -189,7 +191,13 @@ impl WchUpstream {
         if self.lent.is_some() {
             let readable = c.func == oep_core::FN
                 || (c.func == FN_CONSOLE
-                    && [console::op::READ, console::op::MARKS, console::op::WRITE].contains(&c.op));
+                    && [
+                        console::op::READ,
+                        console::op::MARKS,
+                        console::op::WRITE,
+                        console::op::STREAMS,
+                    ]
+                    .contains(&c.op));
             if !readable {
                 return rejected(reject_reasons::UNAVAILABLE);
             }
@@ -299,6 +307,7 @@ impl WchUpstream {
                             console::op::CLOSE,
                             console::op::CLEAR,
                             console::op::MARK,
+                            console::op::STREAMS,
                         ]));
                         v
                     }
@@ -724,6 +733,27 @@ impl WchUpstream {
                 ok(Vec::new())
             }
             o if o == console::op::CLEAR || o == console::op::MARK => ok(Vec::new()),
+            // en: The open streams, from index `first` (oep-if-console §1): more(u8) count(u8), then
+            // count x (stream u16, connection u16, mechanism u8, users u8, state u8). A closed
+            // stream leaves `consoles`, so every one listed is open. A client asks this when the
+            // console falls quiet (is it still open?); without it the Arduino monitor stopped
+            // after the first silence (reason 0x02).
+            // ja: 開いているストリームの一覧。閉じたものは consoles から消えるので、並ぶのは全部 open。
+            o if o == console::op::STREAMS => {
+                let first = usize::from(le16(p, 0).unwrap_or(0));
+                let mut ids: Vec<(u16, u8)> =
+                    self.consoles.iter().map(|(&id, x)| (id, x.mech)).collect();
+                ids.sort_unstable();
+                let rest = ids.get(first..).unwrap_or(&[]);
+                let page = &rest[..rest.len().min(STREAMS_PER_ANSWER)];
+                let mut out = vec![u8::from(page.len() < rest.len()), page.len() as u8];
+                for &(id, mech) in page {
+                    out.extend_from_slice(&id.to_le_bytes());
+                    out.extend_from_slice(&CONN.to_le_bytes());
+                    out.extend([mech, 1, console::enums::stream_state::OPEN]);
+                }
+                ok(out)
+            }
             _ => rejected(reject_reasons::UNKNOWN_OPERATION),
         }
     }

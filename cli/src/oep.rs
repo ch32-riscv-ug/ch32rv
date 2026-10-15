@@ -1476,7 +1476,19 @@ impl ConsoleSession {
         let (Backing::Stream(s), Some((place, mech))) = (&mut self.stream, &self.relink) else {
             return Ok(());
         };
-        if s.is_open(&mut self.probe).map_err(|e| e.to_string())? != Some(false) {
+        // en: A broker from before STREAMS (ch32rv 0.20.0's WCH-Link broker) rejects it as
+        // unknown or unsupported: take the stream as still open rather than stopping the monitor.
+        // ja: STREAMS を知らない古いブローカーは断る。止めずに「開いている」とみなす。
+        let open = match s.is_open(&mut self.probe) {
+            Err(OepError::Rejected { reason, .. })
+                if reason == ch32rv_oep::registry::reject_reasons::UNKNOWN_OPERATION
+                    || reason == ch32rv_oep::registry::reject_reasons::UNSUPPORTED =>
+            {
+                None
+            }
+            r => r.map_err(|e| e.to_string())?,
+        };
+        if open != Some(false) {
             return Ok(());
         }
         let Ok(at) = attach(&mut self.probe, place.wire, place.options(false, None)) else {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The WCH-Link broker answers the console's STREAMS (the open streams): the Arduino monitor asks it whenever the target falls quiet for a second, and the broker rejected it as unknown (reason 0x02), so `arduino monitor` on a WCH-Link stopped after the first silence ("console read failed"; `ch32rv monitor` was not affected). The monitor also takes a broker that rejects STREAMS as unknown or unsupported as "still open", so an older broker no longer stops it. Reported by ArduinoCore-CH32RV; reproduced and checked on WCH-LinkE + CH32X035C8T6 with `source=dmseq`.
+- (JA) WCH-Link のブローカーが console の STREAMS(開いているストリームの一覧)に答える: Arduino の monitor は target が 1 秒黙るたびにこれを聞くが、ブローカーが未知の操作(reason 0x02)として断ったため、WCH-Link での `arduino monitor` は最初の無出力で止まっていた(「console read failed」。`ch32rv monitor` は影響なし)。monitor 側も、STREAMS を未知・未対応で断るブローカーを「開いている」とみなし、古いブローカーでも止まらない。ArduinoCore-CH32RV からの報告。WCH-LinkE + CH32X035C8T6、`source=dmseq` で再現と修正を確認。
+
 - (EN) Publish `ch32rv-isp` on crates.io: the 0.20.0 CLI depends on it, so `cargo publish -p ch32rv` 0.20.0 failed while the crate was still `publish = false`. It is now in the release order (after `ch32rv-target`) and in `scripts/first-publish.sh`; ch32rv 0.20.0 reaches crates.io once its name is claimed and the release is finished with `republish_tag`.
 - (JA) `ch32rv-isp` を crates.io に出す: 0.20.0 の CLI がこれに依存したため、`publish = false` のままでは `cargo publish -p ch32rv` 0.20.0 が失敗した。リリースの公開順(`ch32rv-target` の後)と `scripts/first-publish.sh` に加えた。名前を取って `republish_tag` でリリースを仕上げると、ch32rv 0.20.0 が crates.io に出る。
 
