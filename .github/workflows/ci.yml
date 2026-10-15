@@ -46,6 +46,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libudev-dev pkg-config
       - name: clippy
         run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      # The virtual-probe tests keep their Python venv under target/. rust-cache restores target/
+      # only in part, and a venv restored without its oep_client package still passes `uv sync`
+      # (it reads as installed), so the tests failed with "No module named 'oep_client'".
+      # Recreate it each run; it takes seconds.
+      - name: Drop the cached virtual-probe venv
+        run: rm -rf target/oep-client-venv-*
       - name: test
         run: cargo test --locked --workspace
       - name: deny
