@@ -285,11 +285,11 @@ LIST に出す interface は上の 5 つ(rvswd、swio、riscv-dm、console、wch
 4. **ブローカーは CLEAR / MARK を ops に立てながら何もしない**(MARKS は常に空)。仕様では mark は任意で「marks も提供」が条件なので、mark を持たないなら CLEAR / MARK を ops から外す方が仕様に沿う(外せば op は unknown_operation になる)。
 5. **仕様の変更中の差**(2026-10-15 の oep-spec 67876b7 と比べて): 仕様の console は stream / connection が u32、`streams` の要素は `stream(u32) connection(u32) mechanism(u8)`(生きている stream だけ、作成順)、閉じた stream への要求は no_resource。ch32rv(client もブローカーも)は u16 の id と `stream(u16) connection(u16) mechanism(u8) users(u8) state(u8)` の 7 byte のまま。仕様が固まったら両側をそろえる。
 
-**仕様と仮想 probe への提案**(ch32rv 側からの依頼の候補。まだ出していない):
+**仕様と仮想 probe への提案**(2026-10-15 に dev_oep へ出し、3 件とも取り込まれた。下の各項の末尾に反映先):
 
-- **仕様(conformance §2 host のチェックリスト)**: 「任意の op は describe の ops に立っているときだけ使う」を host の項目に足す。probe 側の規則(ops に無い op は unknown_operation)はあるが、host 側にそれを前提にする規則が無い。弱点 1 はこれに当たる。
-- **仮想 probe(oep-client-python の virtual bench)**: console(と fixture UART)の任意の op を外した**最小構成**で起動できる選択肢を足す。host が任意の op を前提にしていないかを、実機なしで試せる。ch32rv の試験はこれで弱点 1 を検出・回帰試験できる。
-- **適合の検査を ch32rv のブローカーにも当てる**: conformance §4 の「probe は独立した host で list、describe と各 op を検査する」を、ch32rv の WCH-Link のブローカー(OEP の probe として振る舞う)にも適用する。検査道具(oep-client-python の checks)が TCP の口へ向けられるなら、ブローカーの `<runtime>/<key>.oep` の待ち受けに当てれば、STREAMS の抜けのような必須 op の欠落と、ops の宣言と実装の食い違い(弱点 2、4)を見つけられる。
+- **仕様(conformance §2 host のチェックリスト)**: 「任意の op は describe の ops に立っているときだけ使う」を host の項目に足す。probe 側の規則(ops に無い op は unknown_operation)はあるが、host 側にそれを前提にする規則が無い。弱点 1 はこれに当たる。→ **oep-spec 0c5cb8c**: conformance §2「任意の op と機能」と host-development-guide §10「任意の op」に明記(marks が無ければ read の from 3 を使わず host が位置を覚える、write が無ければ入力を送らない。features / mechanisms も宣言されたものだけ。必須の op は describe を待たずに使ってよい)。
+- **仮想 probe(oep-client-python の virtual bench)**: console(と fixture UART)の任意の op を外した**最小構成**で起動できる選択肢を足す。host が任意の op を前提にしていないかを、実機なしで試せる。ch32rv の試験はこれで弱点 1 を検出・回帰試験できる。→ **oep-client-python**(作業ツリー。全体試験の後に main へ): `python -m oep_client.virtual_bench_serve --minimal-ops`(console / fixture UART の marks / clear / mark / write を外し、外した op は unknown_operation、console の read の from 3 は unsupported)。コードからは `virtual_bench.minimal_ops(profile())`。ch32rv の `BENCH_REV` をその commit に上げてから使う。
+- **適合の検査を ch32rv のブローカーにも当てる**: conformance §4 の「probe は独立した host で list、describe と各 op を検査する」を、ch32rv の WCH-Link のブローカー(OEP の probe として振る舞う)にも適用する。検査道具(oep-client-python の checks)が TCP の口へ向けられるなら、ブローカーの `<runtime>/<key>.oep` の待ち受けに当てれば、STREAMS の抜けのような必須 op の欠落と、ops の宣言と実装の食い違い(弱点 2、4)を見つけられる。→ **oep-spec dbfa865**: conformance §4 に「OEP の要求に自分で答えるブリッジやブローカーも probe として検査の対象」と明記。道具は TCP に当てられる: `python -m oep_client.conformance --address tcp://HOST:PORT --unit <unit_id> --spec <oep-spec> --out <json> --lock <lock file> --framing tcp`(core の 54 項目)。pytest からは `oep_client.pytest_conformance` の `CORE_CASES` / `assert_interfaces`(環境変数 `OEP_CONFORMANCE_ADDRESS` / `UNIT_ID` / `SPEC` / `OUT` / `FRAMING`、`OEP_HW_LOCK`)。
 
 ## 8. デバッグの余地(今回は実装しない)
 
