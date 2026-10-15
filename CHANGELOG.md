@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.20.2 - 2026-10-15
+
 - (EN) `target info` on an OEP probe - and on a WCH-Link while its broker runs (after an Arduino monitor, for instance) - reports the chip's UID, read from the ESIG and printed the way the WCH-Link path prints ChipInfo's (`1ff9abcd880ebc48` on both paths for the same CH32X035C8T6). The JSON also fills the envelope's `target` block like the WCH-Link path, so a caller reads one place. A test harness that matches its DUT by UID stopped with "DUT UID mismatch" when the previous test's broker was still up (reported by ArduinoCore-CH32RV).
 - (JA) OEP の probe での `target info`、およびブローカーが動いている間の WCH-Link での `target info`(Arduino の monitor の直後など)が、チップの UID を返す。ESIG から読み、WCH-Link の経路が ChipInfo から出すのと同じ表記にした(同じ CH32X035C8T6 で両経路とも `1ff9abcd880ebc48`)。JSON はエンベロープの `target` も WCH-Link の経路と同じく埋めるので、読む場所が 1 つで済む。DUT を UID で照合する試験ハーネスが、前の試験のブローカーが残っている間に「DUT UID mismatch」で止まっていた(ArduinoCore-CH32RV の報告)。
 
