@@ -319,6 +319,17 @@ fn a_ch32l103_rests_low_by_its_target_id_in_attach_and_connections() {
     assert_eq!(c[0].connection, a.connection);
     assert_eq!(c[0].idle_clock, Some(idle_clock::LOW));
     detach(&mut p, WireKind::Rvswd, a.connection).unwrap();
+    // Closed, not lost: the port stays driven at its rest (oep-if-debug §2.2, the hold), so an
+    // L103 keeps its halt until the next host attaches.
+    let held = ch32rv_oep::target::holds(&mut p, func).unwrap();
+    assert_eq!(held.len(), 1);
+    assert_eq!((held[0].swdio, held[0].swclk), (c[0].swdio, c[0].swclk));
+    assert_eq!(held[0].rest, idle_clock::LOW);
+    assert!(
+        ch32rv_oep::target::connections(&mut p, func)
+            .unwrap()
+            .is_empty()
+    );
     p.end().unwrap();
 }
 
