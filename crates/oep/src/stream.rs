@@ -17,7 +17,10 @@ pub enum From {
     LastMark(u8),
 }
 
-/// A console mechanism (oep-if-console §1).
+/// en: A console mechanism (oep-if-console §1). Mechanisms are a named list (core §7.7): on the
+/// wire a mechanism is its place (from 1) in the list the console fn declares in describe
+/// (`mechanism`, one text TLV each), so the code is looked up per probe.
+/// ja: console の mechanism。名前の一覧で、線上では describe が並べた中の位置(1 から)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mechanism {
     Sdi,
@@ -26,39 +29,52 @@ pub enum Mechanism {
 }
 
 impl Mechanism {
-    /// The mechanism of a code (a slot's `mechanism`), if ch32rv knows it.
-    pub fn from_code(code: u8) -> Option<Self> {
-        use console::enums::mechanism as m;
-        match code {
-            c if c == m::SDI => Some(Mechanism::Sdi),
-            c if c == m::DMDATA => Some(Mechanism::Dmdata),
-            c if c == m::DMSEQ => Some(Mechanism::Dmseq),
+    /// The mechanism of a standard name, if ch32rv knows it.
+    pub fn from_name(name: &str) -> Option<Self> {
+        use console::names::mechanism as m;
+        match name {
+            n if n == m::SDI => Some(Mechanism::Sdi),
+            n if n == m::DMDATA => Some(Mechanism::Dmdata),
+            n if n == m::DMSEQ => Some(Mechanism::Dmseq),
             _ => None,
         }
     }
 
-    /// Its name as `--source` spells it.
+    /// Its standard name (also how `--source` spells it).
     pub fn name(self) -> &'static str {
-        match self {
-            Mechanism::Sdi => "sdi",
-            Mechanism::Dmdata => "dmdata",
-            Mechanism::Dmseq => "dmseq",
-        }
-    }
-
-    fn code(self) -> u8 {
-        use console::enums::mechanism as m;
+        use console::names::mechanism as m;
         match self {
             Mechanism::Sdi => m::SDI,
             Mechanism::Dmdata => m::DMDATA,
             Mechanism::Dmseq => m::DMSEQ,
         }
     }
+
+    /// Its wire value on this probe: the place (from 1) of its name in the console fn's
+    /// describe `mechanism` list; an error when the probe does not offer it.
+    fn place(self, p: &mut Probe, func: u16) -> Result<u8, OepError> {
+        let names: Vec<Vec<u8>> = p
+            .describe(func)?
+            .into_iter()
+            .filter(|t| t.tag == console::tlvs::describe::MECHANISM)
+            .map(|t| t.value)
+            .collect();
+        names
+            .iter()
+            .position(|n| n.as_slice() == self.name().as_bytes())
+            .and_then(|i| u8::try_from(i + 1).ok())
+            .ok_or_else(|| {
+                OepError::Malformed(format!(
+                    "the probe's console does not offer {}",
+                    self.name()
+                ))
+            })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    Console { func: u16, stream: u16 },
+    Console { func: u16, stream: u32 },
     Uart { func: u16 },
 }
 
@@ -80,30 +96,30 @@ pub struct PosStream {
 }
 
 impl PosStream {
-    /// `oep.target.console` open on `connection` (the existing stream when it is already open).
-    pub fn open_console(p: &mut Probe, connection: u16, mech: Mechanism) -> Result<Self, OepError> {
+    /// en: `oep.target.console` open on `connection`: a new stream (one per connection; a second
+    /// open on it is refused, oep-if-console §2). conn(u32) mech(u8) -> stream(u32).
+    /// ja: console を開く(接続ごとに 1 つ。2 つ目は断られる)。
+    pub fn open_console(p: &mut Probe, connection: u32, mech: Mechanism) -> Result<Self, OepError> {
         let func = p.interface(console::NAME)?.func;
         let mut pl = connection.to_le_bytes().to_vec();
-        pl.push(mech.code());
+        pl.push(mech.place(p, func)?);
         let a = check(p.call(func, console::op::OPEN, pl)?)?;
-        if a.len() < 3 {
+        if a.len() < 4 {
             return Err(OepError::Malformed("console open answer too short".into()));
         }
         Ok(PosStream {
             kind: Kind::Console {
                 func,
-                stream: u16::from_le_bytes([a[0], a[1]]),
+                stream: u32::from_le_bytes([a[0], a[1], a[2], a[3]]),
             },
             pos: 0,
         })
     }
 
-    /// en: Whether this console stream is still open, by `streams` (lock-free, oep-if-console
-    /// §1): `Some(false)` when it is closed (its connection was lost and closed, mark detail 4) or
-    /// no longer listed, `None` for a stream that is not a console's. A read of a closed stream
-    /// still answers its kept bytes, so this is how a reader learns of it.
-    /// ja: console のストリームがまだ開いているか(streams で見る)。閉じたものも read は答えるので、
-    /// 閉じたことはこれで知る。
+    /// en: Whether this console stream is still open, by `streams` (lock-free, required,
+    /// oep-if-console §1: only live streams are listed): `Some(false)` when it is no longer
+    /// listed, `None` for a stream that is not a console's.
+    /// ja: console のストリームがまだ開いているか(streams は生きているものだけを並べる)。
     pub fn is_open(&self, p: &mut Probe) -> Result<Option<bool>, OepError> {
         let Kind::Console { func, stream } = self.kind else {
             return Ok(None);
@@ -120,13 +136,13 @@ impl PosStream {
             let (Some(&more), Some(&count)) = (a.first(), a.get(1)) else {
                 return Err(OepError::Malformed("streams answer too short".into()));
             };
-            // count x (stream(u16) connection(u16) mechanism(u8) users(u8) state(u8))
+            // count x (stream(u32) connection(u32) mechanism(u8)): 9 bytes, live streams only.
             for k in 0..usize::from(count) {
-                let Some(e) = a.get(2 + 7 * k..2 + 7 * (k + 1)) else {
+                let Some(e) = a.get(2 + 9 * k..2 + 9 * (k + 1)) else {
                     break;
                 };
-                if u16::from_le_bytes([e[0], e[1]]) == stream {
-                    return Ok(Some(e[6] == console::enums::stream_state::OPEN));
+                if u32::from_le_bytes([e[0], e[1], e[2], e[3]]) == stream {
+                    return Ok(Some(true));
                 }
             }
             first = first.saturating_add(u16::from(count));
@@ -137,22 +153,19 @@ impl PosStream {
         Ok(Some(false))
     }
 
-    /// en: Open the console again on `connection` (after a lost line was attached again): the
-    /// probe reopens a closed stream at the same place and mechanism under the same number, so the
-    /// reader keeps its position; under another number it starts at the last reset mark.
-    /// ja: console を開き直す。同じ場所と mechanism なら同じ番号で開き、位置はそのまま。
+    /// en: Open the console again on `connection` (after a lost line was attached again). A new
+    /// open is always a new stream number with a fresh buffer and no marks (numbers are never
+    /// reused within a boot, core §9), so the reader starts at its oldest byte.
+    /// ja: console を開き直す。番号は必ず新しく、バッファも mark も引き継がないので、最も古い所から読む。
     pub fn reopen_console(
         &mut self,
         p: &mut Probe,
-        connection: u16,
+        connection: u32,
         mech: Mechanism,
     ) -> Result<(), OepError> {
-        let old = self.kind;
         let fresh = Self::open_console(p, connection, mech)?;
         self.kind = fresh.kind;
-        if self.kind != old {
-            self.start_at_last_reset(p)?;
-        }
+        self.pos = self.read(p, From::Oldest, 0)?.0;
         Ok(())
     }
 
@@ -161,7 +174,11 @@ impl PosStream {
     /// unavailable), so each is tried in order and the first that takes it is used.
     /// ja: fixture の UART を `baud` にして開く。`oep.fixture.uart` が複数あり、configure を受けるのは
     /// ピンの plan のあるものだけ(ほかは unavailable)なので、順に試して最初に受けたものを使う。
-    pub fn open_uart(p: &mut Probe, baud: u32) -> Result<(Self, u32), OepError> {
+    pub fn open_uart(
+        p: &mut Probe,
+        baud: u32,
+        pins: Option<(u16, u16)>,
+    ) -> Result<(Self, u32), OepError> {
         let uarts: Vec<u16> = p
             .list(fixture_uart::NAME)?
             .into_iter()
@@ -171,8 +188,35 @@ impl PosStream {
         if uarts.is_empty() {
             return Err(OepError::NoInterface(fixture_uart::NAME.to_owned()));
         }
+        let plan = p
+            .interface(crate::registry::probe_plan::NAME)
+            .ok()
+            .map(|i| i.func);
         let mut last = None;
         for func in uarts {
+            // en: The UART takes data once the session plans its pins: exactly one RX (role 1) and
+            // one TX (role 2) on separate channels (oep-if-fixture §2, oep-if-plan §2.1). The
+            // channels are the host's to know (the port's `rx` / `tx` labels).
+            // ja: UART はピンを plan してはじめて動く(RX と TX をちょうど 1 つずつ)。
+            if let (Some((rx, tx)), Some(plan)) = (pins, plan) {
+                use crate::registry::{fixture_uart::enums::role, probe_plan};
+                let mut pl = Vec::new();
+                for (r, ch) in [(role::RX, rx), (role::TX, tx)] {
+                    let mut v = func.to_le_bytes().to_vec();
+                    v.push(r);
+                    v.extend_from_slice(&ch.to_le_bytes());
+                    crate::codec::put_tlv(
+                        &mut pl,
+                        probe_plan::tlvs::plan_apply::ROLE_ASSIGNMENT,
+                        false,
+                        &v,
+                    );
+                }
+                if let Err(e) = check(p.call(plan, probe_plan::op::PLAN_APPLY, pl)?) {
+                    last = Some(e);
+                    continue;
+                }
+            }
             let s = PosStream {
                 kind: Kind::Uart { func },
                 pos: 0,
@@ -252,62 +296,27 @@ impl PosStream {
     }
 
     /// en: Place the reader at the last reset mark (so a monitor opened right after a flash starts
-    /// with the target's first line), or at "now" when there is none.
-    /// ja: 最後の reset の mark に読み手を置く(書き込み直後に開いた monitor が最初の行から読める)。
-    /// mark が無ければ「今」。
+    /// with the target's first line), or at "now" when there is none. Only a console has reset
+    /// marks (kind 0x40, oep-if-console), and only when the probe offers marks (an optional op):
+    /// without them, and on a fixture UART, the reader starts now. `read(from 3)` answers "now"
+    /// when no mark of the kind exists (oep-if-common §1.2).
+    /// ja: 最後の reset の mark に置く。mark は console だけで、marks を持つ probe だけ。無ければ「今」。
     pub fn start_at_last_reset(&mut self, p: &mut Probe) -> Result<(), OepError> {
-        // en: From the marks list, not `read(LastMark)`: a stream with no reset mark answers that
-        // read at its oldest byte (measured on a fixture UART), which would replay old output.
-        // ja: marks の一覧から探す(reset の mark が無いストリームは LastMark の read に一番古い位置
-        // を返し、古い出力をもう一度流してしまう。fixture UART で実測)。
-        let reset = crate::registry::common::enum_::mark_kind::RESET;
-        self.pos = match self.last_mark(p, reset)? {
-            Some(pos) => pos,
-            None => self.read(p, From::Now, 0)?.0,
+        let from = match self.kind {
+            Kind::Console { func, .. } if p.offers(func, console::op::MARKS)? => {
+                From::LastMark(console::enums::mark_kind::RESET)
+            }
+            _ => From::Now,
         };
+        self.pos = self.read(p, from, 0)?.0;
         Ok(())
-    }
-
-    /// The position of the last mark of `kind`, following `more` (lock-free).
-    fn last_mark(&self, p: &mut Probe, kind: u8) -> Result<Option<u64>, OepError> {
-        let (func, head) = self.head();
-        let op = match self.kind {
-            Kind::Console { .. } => console::op::MARKS,
-            Kind::Uart { .. } => fixture_uart::op::MARKS,
-        };
-        let mut from: u32 = 0;
-        let mut found = None;
-        for _ in 0..64 {
-            let mut pl = head.clone();
-            pl.extend_from_slice(&from.to_le_bytes());
-            let a = check(p.call(func, op, pl)?)?;
-            let (Some(&more), Some(&count)) = (a.first(), a.get(1)) else {
-                return Ok(found);
-            };
-            // count x mark; mark = serial u32, position u64, kind u8, time_ns u64, detail u8
-            // (22 bytes, oep-if-common §1.3; no element length, core §2.3).
-            let marks: Vec<&[u8]> = (0..usize::from(count))
-                .map_while(|k| a.get(2 + k * 22..2 + (k + 1) * 22))
-                .collect();
-            for m in marks {
-                let serial = u32::from_le_bytes([m[0], m[1], m[2], m[3]]);
-                let pos = u64::from_le_bytes([m[4], m[5], m[6], m[7], m[8], m[9], m[10], m[11]]);
-                if m[12] == kind {
-                    found = Some(pos);
-                }
-                from = serial.wrapping_add(1);
-            }
-            if more == 0 || count == 0 {
-                break;
-            }
-        }
-        Ok(found)
     }
 
     /// Read what has come since the position (at most `max`), advancing it.
     pub fn poll(&mut self, p: &mut Probe, max: u16) -> Result<Chunk, OepError> {
         // A read changes nothing: one whose answer was lost on the way (a broker answers
-        // result_lost then) is simply asked again on the next poll.
+        // result_lost then) is simply asked again on the next poll. A closed stream answers
+        // no_resource (oep-if-console §1): the caller learns it from the error.
         let (start, mut c) = match self.read(p, From::Position(self.pos), max) {
             Err(OepError::Rejected { reason, .. })
                 if reason == crate::registry::reject_reasons::RESULT_LOST =>
@@ -325,13 +334,24 @@ impl PosStream {
         Ok(c)
     }
 
-    /// Send `data` to the target; returns how many bytes were taken (the rest is sent again later).
+    /// en: Send `data` to the target; returns how many bytes were taken (the rest is sent again
+    /// later). `write` is optional (oep-if-console §1, oep-if-fixture §2): a probe that does not
+    /// offer it takes no input - an error the caller reports. At most what fits max_frame
+    /// (header 10, stream 4, count 2) goes in one request.
+    /// ja: 入力を送る。write は任意の op で、無ければ入力を受けない(エラー)。max_frame に入る分だけ。
     pub fn write(&self, p: &mut Probe, data: &[u8]) -> Result<usize, OepError> {
         let (func, mut pl) = self.head();
         let op = match self.kind {
             Kind::Console { .. } => console::op::WRITE,
             Kind::Uart { .. } => fixture_uart::op::WRITE,
         };
+        if !p.offers(func, op)? {
+            return Err(OepError::Malformed(
+                "the probe takes no input on this stream (no write op)".into(),
+            ));
+        }
+        let room = usize::from(p.limits().max_frame).saturating_sub(10 + pl.len() + 2);
+        let data = &data[..data.len().min(room)];
         pl.extend_from_slice(&(data.len() as u16).to_le_bytes());
         pl.extend_from_slice(data);
         let r = p.call(func, op, pl)?;

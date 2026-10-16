@@ -75,7 +75,7 @@ fn client(ep: &str) -> Probe {
     p
 }
 
-fn halted(p: &mut Probe, conn: u16) -> Result<(), String> {
+fn halted(p: &mut Probe, conn: u32) -> Result<(), String> {
     let mut t = OepDtm::new(p, conn).map_err(|e| e.to_string())?;
     t.halt().map_err(|e| e.to_string())
 }
@@ -118,12 +118,12 @@ fn two_clients_share_one_broker_and_it_ends_with_the_last() {
     let conn = ca.connection;
 
     // A lets go: B's use keeps the connection on the probe.
-    detach(&mut a, WireKind::Rvswd, conn, false).unwrap();
+    detach(&mut a, WireKind::Rvswd, conn).unwrap();
     halted(&mut b, conn).unwrap();
     drop(a);
 
     // B, the last user, detaches: now the probe closes it.
-    detach(&mut b, WireKind::Rvswd, conn, false).unwrap();
+    detach(&mut b, WireKind::Rvswd, conn).unwrap();
     let err = halted(&mut b, conn).unwrap_err();
     assert!(err.contains("0x0a") || err.contains("reason 0x0a"), "{err}");
     drop(b);

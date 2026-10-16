@@ -24,28 +24,44 @@ use crate::parse;
 pub(crate) enum OepAddr {
     /// A serial port no WCH-Link owns (COBS).
     Serial(String),
-    /// `oep://<probe>/<slot>`: a slot of an OEP probe (reached on its serial port `path`).
-    Slot { path: String, slot: String },
+    /// `oep://<probe>[/<port>[/<target>]]` (host guide §5.3): an OEP probe reached on its
+    /// serial port `path`, the port named by its labels' `S`, and the target by its individual
+    /// name (`<family>-<unique id hex>`, checked on the connection before any side effect).
+    Probe {
+        path: String,
+        port: Option<String>,
+        target: Option<String>,
+    },
     /// `tcp:<host:port>`: a probe's TCP transport, or a ch32rv broker.
     Tcp(String),
     /// A probe found by DNS-SD on the local network (`_oep._tcp`, transports §3), named by its
-    /// unit id (`tcp:<unit_id>`, or `oep://<unit_id>/<slot>` when it is not on USB): its endpoint,
-    /// the unit id describe must answer, and the slot when the address names one.
+    /// unit id (`tcp:<unit_id>`, or `oep://<unit_id>[/<port>[/<target>]]` when it is not on USB):
+    /// its endpoint, the unit id describe must answer, and the port / target the address names.
     Net {
         addr: String,
         unit: String,
-        slot: Option<String>,
+        port: Option<String>,
+        target: Option<String>,
     },
     /// A WCH-Link, reached through its broker (which maps OEP onto the Link).
     Wch(crate::broker::BrokerTarget),
 }
 
 impl OepAddr {
-    /// The slot the address names (`oep://<probe>/<slot>`), if it does.
-    pub(crate) fn slot(&self) -> Option<&str> {
+    /// The port the address names (`oep://<probe>/<port>`), if it does (`any`: none named).
+    pub(crate) fn port(&self) -> Option<&str> {
         match self {
-            OepAddr::Slot { slot, .. } => Some(slot),
-            OepAddr::Net { slot, .. } => slot.as_deref(),
+            OepAddr::Probe { port, .. } | OepAddr::Net { port, .. } => {
+                port.as_deref().filter(|p| *p != "any")
+            }
+            _ => None,
+        }
+    }
+
+    /// The target the address names (`oep://<probe>/<port>/<target>`), if it does.
+    pub(crate) fn target(&self) -> Option<&str> {
+        match self {
+            OepAddr::Probe { target, .. } | OepAddr::Net { target, .. } => target.as_deref(),
             _ => None,
         }
     }
@@ -393,16 +409,40 @@ fn connect_ordered(
 
 /// Resolve `oep://<probe>/<slot>` to the probe's serial port.
 pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
+    // oep://<probe>[/<port>[/<target>]] (host guide §5.3): segments of a-z 0-9 - . only; `any`
+    // is a wildcard written explicitly.
     let rest = url.strip_prefix("oep://").unwrap_or(url);
-    let (id, slot) = rest
-        .split_once('/')
-        .filter(|(i, s)| !i.is_empty() && !s.is_empty())
-        .ok_or_else(|| format!("`{url}` is not oep://<probe>/<slot>"))?;
-    let dev = oep_devices()
-        .into_iter()
-        // unit_id against the USB serial, case aside (oep-core §3.3: some OSes and tools show the
-        // serial in capitals; unit_id's characters keep distinct values distinct).
-        .find(|d| probe_id(d).eq_ignore_ascii_case(id));
+    let segs: Vec<&str> = rest.split('/').collect();
+    let ok = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+    };
+    if segs.len() > 3 || !segs.iter().all(|s| ok(s)) {
+        return Err(format!(
+            "`{url}` is not oep://<probe>[/<port>[/<target>]] (a-z 0-9 - . only)"
+        ));
+    }
+    let id = segs[0];
+    let port = segs.get(1).map(|s| (*s).to_owned());
+    let target = segs
+        .get(2)
+        .filter(|t| **t != "any")
+        .map(|s| (*s).to_ascii_lowercase());
+    let devs = oep_devices();
+    let dev = if id == "any" {
+        if devs.len() > 1 {
+            return Err(format!(
+                "oep://any matches {} OEP probes: name one by its unit id",
+                devs.len()
+            ));
+        }
+        devs.into_iter().next()
+    } else {
+        // unit_id against the USB serial, case aside (transports §3).
+        devs.into_iter()
+            .find(|d| probe_id(d).eq_ignore_ascii_case(id))
+    };
     // Not on USB: a probe announcing that unit id on the local network (DNS-SD).
     let Some(dev) = dev else {
         let f = crate::mdns::find_unit(id, BROWSE_WAIT).ok_or_else(|| {
@@ -417,14 +457,12 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
         return Ok(OepAddr::Net {
             addr,
             unit: id.to_owned(),
-            slot: Some(slot.to_owned()),
+            port,
+            target,
         });
     };
     let path = oep_port(&dev).ok_or_else(|| format!("OEP probe {id} has no serial port"))?;
-    Ok(OepAddr::Slot {
-        path,
-        slot: slot.to_owned(),
-    })
+    Ok(OepAddr::Probe { path, port, target })
 }
 
 /// en: A TCP address as written after `tcp:` (a leading `//` of `tcp://` already gone or not):
@@ -447,7 +485,8 @@ pub(crate) fn tcp_addr(name: &str) -> Result<OepAddr, (String, Option<&'static s
         (Some(addr), Some(unit)) => Ok(OepAddr::Net {
             addr,
             unit,
-            slot: None,
+            port: None,
+            target: None,
         }),
         (Some(addr), None) => Ok(OepAddr::Tcp(addr)),
         (None, _) => Err((
@@ -537,7 +576,7 @@ fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
 /// この PC のブローカー自身を指す `tcp:` だけ直接つなぐ。
 fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
     let link = match a {
-        OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => crate::broker::client_link(p)
+        OepAddr::Serial(p) | OepAddr::Probe { path: p, .. } => crate::broker::client_link(p)
             .map_err(|m| {
                 fail(
                     cli,
@@ -646,55 +685,23 @@ fn pick_wire(p: &mut Probe, chip: Option<&str>) -> Result<WireKind, OepError> {
     }
 }
 
-/// The wire kind a wire interface's fn is.
-fn wire_of_fn(p: &mut Probe, func: u16) -> Option<WireKind> {
-    [WireKind::Rvswd, WireKind::Swio]
-        .into_iter()
-        .find(|k| p.interface(k.interface()).is_ok_and(|i| i.func == func))
-}
-
-/// The DB family a WCH chip id resolves to.
-fn family_of_chip_id(id: u32) -> Option<String> {
-    match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
-        ch32rv_target::Resolution::Sku(s) => Some(s.family.clone()),
-        ch32rv_target::Resolution::Family(f, _) => Some(f),
-        ch32rv_target::Resolution::Unknown => None,
-    }
-}
-
-/// en: Where to attach (oep-workflow §3.4): `oep://…/<slot>` names the slot; on a probe with
-/// registered slots otherwise, the one slot whose target is of the board's family (`--chip`).
-/// A connected slot's chip comes from its state; an unconnected one is attached without halting
-/// to read it. None or several matching is an error listing the slots. A probe without slots
-/// attaches where it allows.
-/// ja: どこに attach するか。`oep://…/<slot>` はそのスロット。スロットのある probe では、板の家系
-/// (`--chip`)に合うスロットが 1 つならそこ。接続済みは状態から、未接続は止めない attach で chip を
-/// 読む。0 か 2 つ以上ならスロットの一覧つきで止める。スロットの無い probe は許す所に attach する。
-/// en: Where to attach: the wire, the slot's pins, and the line settings the slot carries (its
-/// speed ceiling and idle clock, which the host passes on attach, oep-spec 5bfe052).
-/// ja: attach する場所。線、スロットのピン、スロットの線の設定(速さの上限と休ませ方。attach で host が渡す)。
-#[derive(Debug, Clone, Copy)]
+/// en: Where to attach: the wire, the port's pins and line settings. The probe keeps no wiring
+/// (host guide §5.3): a port is the `S` of the saved labels `S.swdio` / `S.swclk` / `S.swio` /
+/// `S.nrst`, and its pins are found by those labels. Speed ceiling, idle clock and console
+/// mechanism are the host's to choose (`None`: the probe's defaults, dmseq for a console).
+/// ja: attach する場所。probe は配線を持たず、ポートは保存したラベルの `S`、ピンはラベルで引く。
+#[derive(Debug, Clone)]
 struct Place {
     wire: WireKind,
     pins: Option<(u16, u16)>,
     max_speed: Option<u32>,
     idle_clock: Option<u8>,
-    /// The slot's console mechanism (`oep.target.console`), when it has one.
-    mechanism: Option<u8>,
+    /// The console mechanism the host chose, if any.
+    mechanism: Option<ch32rv_oep::stream::Mechanism>,
 }
 
 impl Place {
-    fn of_slot(wire: WireKind, s: &ch32rv_oep::config::Slot) -> Place {
-        Place {
-            wire,
-            pins: Some((s.swdio, s.swclk)),
-            max_speed: s.max_speed,
-            idle_clock: Some(s.idle_clock),
-            mechanism: (s.mechanism != 0xFF).then_some(s.mechanism),
-        }
-    }
-
-    /// Attach options here: the lower of the slot's ceiling and `max_speed_hz` (the command's).
+    /// Attach options here, at most `max_speed_hz` (the command's).
     fn options(&self, halt: bool, max_speed_hz: Option<u32>) -> AttachOptions {
         let max_speed_hz = match (self.max_speed, max_speed_hz) {
             (Some(a), Some(b)) => Some(a.min(b)),
@@ -710,8 +717,7 @@ impl Place {
     }
 }
 
-/// Why no place was chosen: no target answered anywhere, or the rest (several, a slot not
-/// found, ...), with the exit kind each one is.
+/// Why no place was chosen, with the exit kind it is.
 struct PlaceError {
     kind: ErrorKind,
     msg: String,
@@ -732,164 +738,78 @@ impl From<PlaceError> for String {
     }
 }
 
+/// en: Choose the port without attaching (host guide §5.3: resolving an address narrows probe and
+/// port by names only and stops unless one is left; an attach to search could wake and reset a
+/// target on rvswd). The port the address names; else the only port the labels name; else the
+/// probe's one unnamed port. Several ports and none named: an error listing them. The wire comes
+/// from the port's labels (`S.swio`: one wire, `S.swclk`: two), else from `--chip`.
+/// ja: attach せずにポートを選ぶ。アドレスのポート、無ければラベルが名指す唯一のポート、それも無ければ
+/// 名前の無い 1 つのポート。複数あって名指しが無ければ一覧つきで止める。
 fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place, PlaceError> {
-    let slots = ch32rv_oep::config::slots(p).map_err(|e| e.to_string())?;
-    if let Some(slot) = a.slot() {
-        let s = slots
-            .iter()
-            .find(|s| s.name == *slot)
-            .ok_or_else(|| format!("the probe has no slot `{slot}`"))?;
-        let w = wire_of_fn(p, s.wire_fn)
-            .ok_or_else(|| format!("slot `{slot}` is on an unknown wire (fn {})", s.wire_fn))?;
-        return Ok(Place::of_slot(w, s));
-    }
-    if slots.is_empty() {
-        let wire = pick_wire(p, chip).map_err(|e| e.to_string())?;
-        return place_by_scan(p, wire, chip);
-    }
-    let states = ch32rv_oep::config::slot_states(p).map_err(|e| e.to_string())?;
-    struct Seen {
-        name: String,
-        place: Place,
-        family: Option<String>,
-    }
-    let mut seen: Vec<Seen> = Vec::new();
-    for s in &slots {
-        let Some(w) = wire_of_fn(p, s.wire_fn) else {
-            continue;
-        };
-        let place = Place::of_slot(w, s);
-        let from_state = states
-            .iter()
-            .find(|st| st.slot == s.slot)
-            .and_then(|st| st.wch_chip_id());
-        // Not connected: a non-halting attach reads the chip (the user asked to use the probe).
-        let id = from_state.or_else(|| {
-            let at = attach(p, w, place.options(false, None)).ok()?;
-            let _ = detach(p, w, at.connection, false);
-            at.wch_chip_id
-        });
-        seen.push(Seen {
-            name: s.name.clone(),
-            place,
-            family: id.and_then(family_of_chip_id),
-        });
-    }
-    let db = ch32rv_target::Db::builtin();
-    let wanted = chip.map(|c| db.families_for_chip_name(c));
-    let matches: Vec<&Seen> = seen
-        .iter()
-        .filter(|x| match (&wanted, &x.family) {
-            (Some(ws), Some(f)) => ws.iter().any(|w| w.eq_ignore_ascii_case(f)),
-            (None, Some(_)) => true,
-            _ => false,
-        })
-        .collect();
-    match matches.as_slice() {
-        [one] => Ok(one.place),
-        _ => {
-            let list: Vec<String> = seen
-                .iter()
-                .map(|x| format!("{}: {}", x.name, x.family.as_deref().unwrap_or("no target")))
-                .collect();
-            Err(PlaceError::from(format!(
-                "{} slot(s) match {}: {}",
-                matches.len(),
-                chip.map_or("a target".to_owned(), |c| format!("--chip {c}")),
-                list.join(", ")
-            )))
+    use ch32rv_oep::config::{find_line, firmware_labels, labels, ports_named};
+    let labels = labels(p).map_err(|e| e.to_string())?;
+    let firmware = firmware_labels(p).map_err(|e| e.to_string())?;
+    let ports = ports_named(&labels);
+    let port = match a.port() {
+        Some(name) => {
+            let name = name.to_ascii_lowercase();
+            if !ports.contains(&name) {
+                return Err(PlaceError {
+                    kind: ErrorKind::DeviceNotFound,
+                    msg: if ports.is_empty() {
+                        format!(
+                            "the probe names no ports (no `{name}.swdio`-style labels): use oep://<probe> alone"
+                        )
+                    } else {
+                        format!(
+                            "the probe has no port `{name}` (its ports: {})",
+                            ports.join(", ")
+                        )
+                    },
+                });
+            }
+            Some(name)
         }
-    }
-}
-
-/// en: No slot registered: where on `wire` the target is. A wire whose pins the probe fixes
-/// (channel_group) takes an attach without pins; one whose pins the host picks (role_channels)
-/// refuses that when it allows more than one pair (oep-if-debug §1), so its pairs are scanned and
-/// the one with a target is used - several, told apart by the chip each one reads and `--chip`,
-/// as with slots.
-/// ja: スロットが無いとき、`wire` のどこに target が居るか。ピンを probe が決める線(channel_group)は
-/// pins 無しの attach を受ける。host が選ぶ線(role_channels)は組が 2 つ以上だと断るので、scan して
-/// target の居る組を使う(複数なら、スロットと同じく各組の chip と `--chip` で絞る)。
-fn place_by_scan(p: &mut Probe, wire: WireKind, chip: Option<&str>) -> Result<Place, PlaceError> {
-    let bare = Place {
+        None => match ports.as_slice() {
+            [] => None,
+            [one] => Some(one.clone()),
+            many => {
+                return Err(PlaceError::from(format!(
+                    "the probe has {} ports ({}): name one, oep://<probe>/<port>",
+                    many.len(),
+                    many.join(", ")
+                )));
+            }
+        },
+    };
+    let line = |name: &str| find_line(&labels, &firmware, port.as_deref(), name);
+    let has = |p: &mut Probe, k: WireKind| p.interface(k.interface()).is_ok();
+    let wire = match (line("swio"), line("swclk")) {
+        (Some(_), None) if has(p, WireKind::Swio) => WireKind::Swio,
+        (None, Some(_)) if has(p, WireKind::Rvswd) => WireKind::Rvswd,
+        _ => pick_wire(p, chip).map_err(|e| e.to_string())?,
+    };
+    let pins = match wire {
+        WireKind::Rvswd => line("swdio").zip(line("swclk")),
+        WireKind::Swio => line("swio").or_else(|| line("swdio")).map(|d| (d, 0xFFFF)),
+    };
+    // en: CH32L103's debug module resets while an rvswd line idles high, so its line idles low
+    // (the old slots carried that; now it is the host's, measured by dev_oep 2026-10-16).
+    // ja: L103 は rvswd の線を high で休ませると debug module がリセットされるので low にする。
+    let idle_clock = (wire == WireKind::Rvswd
+        && chip.is_some_and(|c| {
+            ch32rv_target::Db::builtin()
+                .families_for_chip_name(c)
+                .iter()
+                .any(|f| f.eq_ignore_ascii_case("CH32L103"))
+        }))
+    .then_some(ch32rv_oep::registry::wire_rvswd::enums::idle_clock::LOW);
+    Ok(Place {
         wire,
-        pins: None,
+        pins,
         max_speed: None,
-        idle_clock: None,
+        idle_clock,
         mechanism: None,
-    };
-    if !host_picks_pins(p, wire) {
-        return Ok(bare);
-    }
-    let found = ch32rv_oep::target::scan_all(p, wire).map_err(|e| format!("scan: {e}"))?;
-    let places: Vec<Place> = found
-        .iter()
-        .map(|f| Place {
-            pins: Some((f.swdio, f.swclk)),
-            ..bare
-        })
-        .collect();
-    match places.as_slice() {
-        [] => Err(PlaceError {
-            kind: ErrorKind::TargetNoResponse,
-            msg: format!(
-                "no target found on any pin pair of {} (scan)",
-                wire.interface()
-            ),
-        }),
-        [one] => Ok(*one),
-        _ => {
-            let db = ch32rv_target::Db::builtin();
-            let wanted = chip.map(|c| db.families_for_chip_name(c));
-            let mut seen = Vec::new();
-            for pl in &places {
-                let family = attach(p, wire, pl.options(false, None))
-                    .ok()
-                    .and_then(|at| {
-                        let _ = detach(p, wire, at.connection, false);
-                        at.wch_chip_id.and_then(family_of_chip_id)
-                    });
-                seen.push((*pl, family));
-            }
-            let matches: Vec<&(Place, Option<String>)> = seen
-                .iter()
-                .filter(|(_, f)| match (&wanted, f) {
-                    (Some(ws), Some(f)) => ws.iter().any(|w| w.eq_ignore_ascii_case(f)),
-                    (None, Some(_)) => true,
-                    _ => false,
-                })
-                .collect();
-            match matches.as_slice() {
-                [(one, _)] => Ok(*one),
-                _ => {
-                    let list: Vec<String> = seen
-                        .iter()
-                        .map(|(pl, f)| {
-                            let (d, c) = pl.pins.unwrap_or_default();
-                            format!("pins {d}/{c}: {}", f.as_deref().unwrap_or("no target"))
-                        })
-                        .collect();
-                    Err(PlaceError::from(format!(
-                        "{} pin pair(s) match {}: {} (register a slot for the board's pins)",
-                        matches.len(),
-                        chip.map_or("a target".to_owned(), |c| format!("--chip {c}")),
-                        list.join(", ")
-                    )))
-                }
-            }
-        }
-    }
-}
-
-/// Whether the probe lets the host pick `wire`'s pins (describe `role_channels`, not a fixed
-/// channel_group).
-fn host_picks_pins(p: &mut Probe, wire: WireKind) -> bool {
-    let Ok(func) = p.interface(wire.interface()).map(|i| i.func) else {
-        return false;
-    };
-    p.describe(func).is_ok_and(|tlvs| {
-        tlvs.iter()
-            .any(|t| t.tag == ch32rv_oep::registry::describe_common::ROLE_CHANNELS)
     })
 }
 
@@ -1020,7 +940,7 @@ fn flash_in_session(
     };
     // A broker that went away says why in its log (its stderr goes nowhere).
     let log_hint = match a {
-        OepAddr::Serial(path) | OepAddr::Slot { path, .. } => Some(format!(
+        OepAddr::Serial(path) | OepAddr::Probe { path, .. } => Some(format!(
             "the probe's broker keeps a log: {}",
             crate::broker::log_path(&crate::broker::BrokerTarget::Serial(path.clone()).key())
                 .display()
@@ -1028,7 +948,7 @@ fn flash_in_session(
         _ => None,
     };
     let r = flash_attached(cli, args, bytes, p, at.connection, at.wch_chip_id, log_hint);
-    let _ = detach(p, wire, at.connection, false);
+    let _ = detach(p, wire, at.connection);
     r
 }
 
@@ -1037,7 +957,7 @@ fn flash_attached(
     args: &FlashArgs,
     bytes: &[u8],
     p: &mut Probe,
-    connection: u16,
+    connection: u32,
     chip_id: Option<u32>,
     log_hint: Option<String>,
 ) -> ExitCode {
@@ -1296,7 +1216,7 @@ pub(crate) struct ConsoleSession {
     probe: Probe,
     stream: Backing,
     /// The connection to detach at the end (the console's), if any.
-    attached: Option<(WireKind, u16)>,
+    attached: Option<(WireKind, u32)>,
     max_read: u16,
     /// Where a console attached and with which mechanism, to attach again after a lost line.
     relink: Option<(Place, ch32rv_oep::stream::Mechanism)>,
@@ -1315,8 +1235,8 @@ enum Backing {
     Stream(ch32rv_oep::stream::PosStream),
     /// RTT the host runs: the connection, what OepDtm learned, the channels, input not yet taken.
     Rtt {
-        connection: u16,
-        parts: (u16, usize, u32),
+        connection: u32,
+        parts: (u16, usize, u32, ch32rv_oep::target::Offered),
         channels: crate::source::RttChannels,
         input: Vec<u8>,
     },
@@ -1329,7 +1249,7 @@ impl ConsoleSession {
         chip: Option<&str>,
     ) -> Result<Self, String> {
         let link = match a {
-            OepAddr::Serial(p) | OepAddr::Slot { path: p, .. } => crate::broker::client_link(p)?,
+            OepAddr::Serial(p) | OepAddr::Probe { path: p, .. } => crate::broker::client_link(p)?,
             OepAddr::Tcp(_) | OepAddr::Net { .. } => match net_target(a) {
                 Some(t) => crate::broker::client_link_for(&t)?,
                 None => match a {
@@ -1354,12 +1274,13 @@ impl ConsoleSession {
         };
         let (stream, attached) = match wanted {
             StreamWanted::FixtureUart(baud) => {
-                let (s, _) = ch32rv_oep::stream::PosStream::open_uart(&mut probe, baud).map_err(
+                let pins = uart_pins(&mut probe, a);
+                let (s, _) = ch32rv_oep::stream::PosStream::open_uart(&mut probe, baud, pins).map_err(
                     |e| match e {
                         OepError::Rejected { reason, .. }
                             if reason == ch32rv_oep::registry::reject_reasons::UNAVAILABLE =>
                         {
-                            "the probe's fixture UART has no pins assigned (set its plan in the probe's configuration)".to_owned()
+                            "the probe's fixture UART has no pins: label its channels `<port>.rx` and `<port>.tx`".to_owned()
                         }
                         OepError::NoInterface(_) => "this OEP probe has no fixture UART".to_owned(),
                         e => format!("fixture UART: {e}"),
@@ -1408,7 +1329,6 @@ impl ConsoleSession {
                     StreamWanted::Console(m) => m,
                     _ => place
                         .mechanism
-                        .and_then(ch32rv_oep::stream::Mechanism::from_code)
                         .unwrap_or(ch32rv_oep::stream::Mechanism::Dmseq),
                 };
                 source_name = mech.name();
@@ -1441,10 +1361,18 @@ impl ConsoleSession {
     pub(crate) fn poll(&mut self) -> Result<Vec<u8>, String> {
         match &mut self.stream {
             Backing::Stream(s) => {
-                let data = s
-                    .poll(&mut self.probe, self.max_read)
-                    .map(|c| c.data)
-                    .map_err(|e| e.to_string())?;
+                // A closed stream answers no_resource (oep-if-console §1): its connection was
+                // lost and closed - attach again and reopen.
+                let data = match s.poll(&mut self.probe, self.max_read) {
+                    Err(OepError::Rejected { reason, .. })
+                        if reason == ch32rv_oep::registry::reject_reasons::NO_RESOURCE =>
+                    {
+                        self.quiet_since = Instant::now();
+                        self.relink()?;
+                        return Ok(Vec::new());
+                    }
+                    r => r.map(|c| c.data).map_err(|e| e.to_string())?,
+                };
                 if !data.is_empty() {
                     self.quiet_since = Instant::now();
                 } else if self.quiet_since.elapsed() >= RELINK_CHECK {
@@ -1488,11 +1416,21 @@ impl ConsoleSession {
             }
             r => r.map_err(|e| e.to_string())?,
         };
+        let _ = (place, mech);
         if open != Some(false) {
             return Ok(());
         }
+        self.relink()
+    }
+
+    /// en: Attach again and open the console anew (a new connection and a new stream: numbers
+    /// are not reused, core §9), reading from its oldest byte. Not back yet (still in reset,
+    /// unplugged): left for the next quiet check. ja: attach し直して console を新しく開く。
+    fn relink(&mut self) -> Result<(), String> {
+        let (Backing::Stream(s), Some((place, mech))) = (&mut self.stream, &self.relink) else {
+            return Ok(());
+        };
         let Ok(at) = attach(&mut self.probe, place.wire, place.options(false, None)) else {
-            // Not back yet (still in reset, unplugged): try again at the next quiet check.
             return Ok(());
         };
         s.reopen_console(&mut self.probe, at.connection, *mech)
@@ -1539,7 +1477,7 @@ impl ConsoleSession {
 impl Drop for ConsoleSession {
     fn drop(&mut self) {
         if let Some((wire, conn)) = self.attached {
-            let _ = detach(&mut self.probe, wire, conn, false);
+            let _ = detach(&mut self.probe, wire, conn);
         }
         let _ = self.probe.end();
     }
@@ -1573,31 +1511,49 @@ pub(crate) fn with_attached(
     with_attached_reset(cli, cmd, a, halt, false, f)
 }
 
-/// How long the NRST line is held low on an attach under reset (the probe's own retry uses the
-/// same, oep-spec registry `slot_retry_reset_hold_ms`).
+/// en: The fixture UART's (rx, tx) channels from the port's labels `<port>.rx` / `<port>.tx`
+/// (the port as for a target; none named and one port: that one). ja: UART の rx / tx の channel。
+fn uart_pins(p: &mut Probe, a: &OepAddr) -> Option<(u16, u16)> {
+    use ch32rv_oep::config::{find_line, firmware_labels, labels, ports_named};
+    let labels = labels(p).ok()?;
+    let firmware = firmware_labels(p).unwrap_or_default();
+    let ports = ports_named(&labels);
+    let port = match a.port() {
+        Some(port) => Some(port.to_ascii_lowercase()),
+        None if ports.len() <= 1 => ports.first().cloned(),
+        None => return None,
+    };
+    let line = |name| find_line(&labels, &firmware, port.as_deref(), name);
+    line("rx").zip(line("tx"))
+}
+
+/// How long the NRST line is held low on an attach under reset (the host's own value).
 const NRST_HOLD_MS: u16 = 20;
 
-/// en: The slot's NRST line by the host guide's label rule (§8.1): the slot named in the address,
-/// or the probe's only slot. ja: スロットの NRST の線(address のスロット、またはただ 1 つのスロット)。
+/// en: The port's NRST line by the label convention (host guide §5.3): `<port>.nrst`, or a bare
+/// `nrst` on a probe with at most one port, or the firmware's label. ja: ポートの NRST の線。
 fn nrst_line(p: &mut Probe, a: &OepAddr) -> Result<u16, String> {
-    let slots = ch32rv_oep::config::slots(p).map_err(|e| e.to_string())?;
-    let name = match a.slot() {
-        Some(slot) => slot.to_owned(),
-        None if slots.len() == 1 => slots[0].name.clone(),
-        _ => {
+    use ch32rv_oep::config::{find_line, firmware_labels, labels, ports_named};
+    let labels = labels(p).map_err(|e| e.to_string())?;
+    let firmware = firmware_labels(p).map_err(|e| e.to_string())?;
+    let ports = ports_named(&labels);
+    let port = match a.port() {
+        Some(port) => Some(port.to_ascii_lowercase()),
+        None if ports.len() <= 1 => ports.first().cloned(),
+        None => {
             return Err(format!(
-                "name the slot (`oep://<probe>/<slot>`) to find its NRST line ({} slot(s) on this probe)",
-                slots.len()
+                "name the port (`oep://<probe>/<port>`) to find its NRST line (ports: {})",
+                ports.join(", ")
             ));
         }
     };
-    let labels = ch32rv_oep::config::labels(p).map_err(|e| e.to_string())?;
-    ch32rv_oep::config::find_line(&labels, &name, slots.len(), "nrst")?.ok_or_else(|| {
-        format!("no NRST line for slot `{name}`: set a label `{name}.nrst` (or `nrst` on a one-slot probe) on its channel")
+    find_line(&labels, &firmware, port.as_deref(), "nrst").ok_or_else(|| match &port {
+        Some(s) => format!("no NRST line for port `{s}`: set a label `{s}.nrst` on its channel"),
+        None => "no NRST line: set a label `nrst` on its channel".to_owned(),
     })
 }
 
-/// [`with_attached`], optionally holding the slot's NRST line through the attach (`under_reset`).
+/// [`with_attached`], optionally holding the port's NRST line through the attach (`under_reset`).
 pub(crate) fn with_attached_reset(
     cli: &Cli,
     cmd: &str,
@@ -1642,21 +1598,43 @@ pub(crate) fn with_attached_reset(
         let family = match check_family_text(at.wch_chip_id, cli.chip.as_deref()) {
             Ok(f) => f,
             Err(m) => {
-                let _ = detach(&mut p, wire, at.connection, false);
+                let _ = detach(&mut p, wire, at.connection);
                 return fail(cli, cmd, ErrorKind::TargetAmbiguous, m, None);
             }
         };
         let r = match OepDtm::new(&mut p, at.connection) {
-            Ok(t) => f(&mut Attached {
-                t,
-                chip_id: at.wch_chip_id,
-                family,
-                existing: at.existing,
-                halted_at: at.halted,
-            }),
+            Ok(t) => {
+                let mut x = Attached {
+                    t,
+                    chip_id: at.wch_chip_id,
+                    family,
+                    existing: at.existing,
+                    halted_at: at.halted,
+                };
+                // en: A target the address names (`<family>-<unique id hex>`, host guide §5.3) is
+                // checked on this connection before anything else is done to it.
+                // ja: アドレスが名指す target を、何かをする前にこの接続で確かめる。
+                match a.target().map(|want| (want, target_name(&mut x))) {
+                    Some((want, Some(name))) if !name.eq_ignore_ascii_case(want) => fail(
+                        cli,
+                        cmd,
+                        ErrorKind::TargetAmbiguous,
+                        format!("the target here is {name}, not {want}"),
+                        None,
+                    ),
+                    Some((want, None)) => fail(
+                        cli,
+                        cmd,
+                        ErrorKind::TargetNoResponse,
+                        format!("cannot read the target's unique id to check that it is {want}"),
+                        None,
+                    ),
+                    _ => f(&mut x),
+                }
+            }
             Err(e) => oep_fail(cli, cmd, e),
         };
-        let _ = detach(&mut p, wire, at.connection, false);
+        let _ = detach(&mut p, wire, at.connection);
         r
     })();
     let _ = p.end();
@@ -2061,6 +2039,13 @@ fn read_uid(x: &mut Attached<'_>) -> Option<String> {
         return None;
     }
     Some(format!("{w0:08x}{w1:08x}"))
+}
+
+/// en: The target's individual name (host guide §5.3): `<family>-<unique id hex>`, both lowercase
+/// (`ch32x035-1ff9abcd880ebc48`). ja: target の個体名。
+fn target_name(x: &mut Attached<'_>) -> Option<String> {
+    let family = x.family.clone()?.to_ascii_lowercase();
+    Some(format!("{family}-{}", read_uid(x)?))
 }
 
 pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {

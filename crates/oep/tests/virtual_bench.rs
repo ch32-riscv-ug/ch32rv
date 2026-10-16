@@ -246,10 +246,25 @@ fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
     assert_eq!(a.wch_chip_id, Some(0x2031_0500));
     assert!(a.speed_hz <= 1_000_000);
     assert!(!a.existing);
-    // Attaching again gets the same connection back, marked existing.
-    let again = attach(&mut p, WireKind::Rvswd, AttachOptions::default()).unwrap();
-    assert_eq!(again.connection, a.connection);
-    assert!(again.existing);
+    // Attaching again makes no second connection on held pins: unavailable, cause 1 pin_in_use
+    // (oep-if-debug §1; sharing one is a broker's business, not the probe's).
+    match attach(&mut p, WireKind::Rvswd, AttachOptions::default()) {
+        Err(ch32rv_oep::session::OepError::Rejected { reason, payload }) => {
+            assert_eq!(reason, ch32rv_oep::registry::reject_reasons::UNAVAILABLE);
+            let cause = ch32rv_oep::codec::parse_tlvs(&payload)
+                .unwrap()
+                .into_iter()
+                .find(|t| t.tag == ch32rv_oep::registry::core::tlvs::unavailable_payload::CAUSE)
+                .map(|t| t.value);
+            assert_eq!(
+                cause,
+                Some(vec![
+                    ch32rv_oep::registry::core::enums::unavailable_cause::PIN_IN_USE
+                ])
+            );
+        }
+        other => panic!("a second attach on held pins: {other:?}"),
+    }
 
     let mut t = OepDtm::new(&mut p, a.connection).unwrap();
     let max = t.max_block_words();
@@ -280,7 +295,7 @@ fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
 
     let rr = t.reset(ResetMode::HaltAtReset).unwrap();
     assert_eq!(rr.pc, 0);
-    detach(&mut p, WireKind::Rvswd, a.connection, false).unwrap();
+    detach(&mut p, WireKind::Rvswd, a.connection).unwrap();
     p.end().unwrap();
 }
 
@@ -426,19 +441,21 @@ fn the_console_streams_what_the_target_prints() {
     p.end().unwrap();
 }
 
-// ---- slots ----
+// ---- ports (labels) ----
 
 #[test]
-fn slots_and_their_state_are_read_without_the_lock() {
+fn ports_and_lines_are_read_from_the_labels_without_the_lock() {
     let Some(f) = fake(
         "cobs",
         &[
             "--profile",
             "p4-bench",
-            "--slot",
-            "x035",
-            "--slot",
-            "spare",
+            "--label",
+            "2=x035.swdio",
+            "--label",
+            "3=x035.swclk",
+            "--label",
+            "4=spare.swdio",
             "--target-id",
             "0x035e0601",
         ],
@@ -447,11 +464,12 @@ fn slots_and_their_state_are_read_without_the_lock() {
     };
     let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
     // No session opened: all of this is lock-free.
-    let slots = ch32rv_oep::config::slots(&mut p).unwrap();
-    let names: Vec<&str> = slots.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["x035", "spare"], "{slots:?}");
-    assert!(slots.iter().all(|s| s.wire_fn != 0));
-    let states = ch32rv_oep::config::slot_states(&mut p).unwrap();
-    assert_eq!(states.len(), 2, "{states:?}");
-    eprintln!("{slots:?}\n{states:?}");
+    let labels = ch32rv_oep::config::labels(&mut p).unwrap();
+    let ports = ch32rv_oep::config::ports_named(&labels);
+    assert_eq!(ports, ["x035", "spare"], "{labels:?}");
+    let firmware = ch32rv_oep::config::firmware_labels(&mut p).unwrap();
+    let line = |port, name| ch32rv_oep::config::find_line(&labels, &firmware, Some(port), name);
+    assert_eq!(line("x035", "swdio"), Some(2));
+    assert_eq!(line("x035", "swclk"), Some(3));
+    assert_eq!(line("spare", "swclk"), None);
 }

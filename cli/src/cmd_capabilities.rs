@@ -116,29 +116,30 @@ fn oep_capabilities(cli: &Cli, cmd: &str, a: &crate::oep::OepAddr) -> ExitCode {
         .iter()
         .all(|op| dm_ops.contains(op));
         let run = dm_ops.contains(&target_riscv_dm::op::RUN);
-        let mechanisms: Vec<u8> = p
+        // A named list: one text TLV per mechanism (oep-if-console §1, core §7.7).
+        let mechanisms: Vec<String> = p
             .interface(target_console::NAME)
             .and_then(|i| p.describe(i.func))
-            .ok()
-            .and_then(|d| {
-                d.iter()
-                    .find(|t| t.tag == target_console::tlvs::describe::MECHANISMS)
-                    .map(|t| t.value.clone())
+            .map(|d| {
+                d.into_iter()
+                    .filter(|t| t.tag == target_console::tlvs::describe::MECHANISM)
+                    .map(|t| String::from_utf8_lossy(&t.value).into_owned())
+                    .collect()
             })
             .unwrap_or_default();
         let fixture_uart = p
             .interface(ch32rv_oep::registry::fixture_uart::NAME)
             .is_ok();
         let profile = ch32rv_flash::flash_controller_profile_for(&family);
-        let mech = |m: u8, op: &'static str, what: &str| {
-            if mechanisms.contains(&m) {
+        let mech = |m: &str, op: &'static str, what: &str| {
+            if mechanisms.iter().any(|n| n == m) {
                 Cap::yes(op, format!("the probe's console carries {what}"))
             } else {
                 Cap::no(op, format!("the probe's console does not declare {what}"))
             }
         };
         let mut caps = vec![
-            Cap::yes("connect", "attached through the probe (its slot or wire)"),
+            Cap::yes("connect", "attached through the probe (its port or wire)"),
             if blocks && run {
                 Cap::yes(
                     "flash",
@@ -168,16 +169,16 @@ fn oep_capabilities(cli: &Cli, cmd: &str, a: &crate::oep::OepAddr) -> ExitCode {
                 "detected at gdb attach (V4C/V4F have 4 trigger slots; V2/V3/V4B have 0)",
             ),
             mech(
-                target_console::enums::mechanism::DMSEQ,
+                target_console::names::mechanism::DMSEQ,
                 "monitor dmseq",
                 "dmseq",
             ),
             mech(
-                target_console::enums::mechanism::DMDATA,
+                target_console::names::mechanism::DMDATA,
                 "monitor dmdata",
                 "dmdata",
             ),
-            mech(target_console::enums::mechanism::SDI, "monitor sdi", "SDI"),
+            mech(target_console::names::mechanism::SDI, "monitor sdi", "SDI"),
             if blocks {
                 Cap::yes("monitor rtt", "host-side RTT over the probe's block ops")
             } else {

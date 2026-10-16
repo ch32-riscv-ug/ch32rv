@@ -67,8 +67,8 @@ fn list_ports() -> Vec<Value> {
     ports
 }
 
-/// en: OEP probes (`crate::oep::is_oep_device`) as one `oep://<probe>/<slot>` port per registered
-/// slot. The slots are read lock-free - through the probe's broker when one runs (never started
+/// en: OEP probes (`crate::oep::is_oep_device`) as one `oep://<probe>[/<port>]` port per port its
+/// labels name. The labels are read lock-free - through the probe's broker when one runs (never started
 /// here), else on its serial port opened briefly - and when the probe cannot be read (another tool
 /// holds the port), the last listing is shown again. Plain serial ports are never opened.
 /// ja: OEP の probe を、登録スロットごとに `oep://<probe>/<slot>` で出す。スロットは lock 無しで読む
@@ -167,53 +167,48 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
     out
 }
 
-/// The probe's slots as discovery ports `oep://<id>/<slot>`, `props` added to each one's
-/// properties.
+/// en: The probe's ports as discovery ports (host guide §5.3): one `oep://<id>/<port>` per port
+/// its saved labels name (the `S` of `S.swdio`-style labels), or `oep://<id>` alone for a probe
+/// whose one port is unnamed; `props` added to each one's properties. Read lock-free, without
+/// attaching: the target is not known until a tool attaches.
+/// ja: probe のポートを discovery の port として出す。ラベルが名指すポートごとに 1 つ、名前が無ければ
+/// `oep://<id>` だけ。attach しないので target は分からない。
 fn slot_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> Option<Vec<Value>> {
-    let slots = ch32rv_oep::config::slots(p).ok()?;
-    let states = ch32rv_oep::config::slot_states(p).unwrap_or_default();
-    let db = ch32rv_target::Db::builtin();
-    Some(
-        slots
-            .iter()
-            .map(|s| {
-                let st = states.iter().find(|x| x.slot == s.slot);
-                let family =
-                    st.and_then(|x| x.wch_chip_id())
-                        .and_then(|c| match db.resolve_by_chip_id(c) {
-                            ch32rv_target::Resolution::Sku(k) => Some(k.family.clone()),
-                            ch32rv_target::Resolution::Family(f, _) => Some(f),
-                            ch32rv_target::Resolution::Unknown => None,
-                        });
-                let state = match st.map(|x| x.state) {
-                    Some(0) => "connected",
-                    Some(1) => "absent",
-                    _ => "unknown",
-                };
-                let mut properties = json!({
-                    "slot": s.name,
-                    "state": state,
-                    "chip": family,
-                });
-                if let (Some(m), Some(extra)) = (properties.as_object_mut(), props.as_object()) {
-                    for (k, v) in extra {
-                        m.insert(k.clone(), v.clone());
-                    }
-                }
-                json!({
-                    "address": format!("oep://{id}/{}", s.name),
-                    "label": match &family {
-                        Some(f) => format!("{} ({f}) on OEP probe {id}", s.name),
-                        None => format!("{} on OEP probe {id}", s.name),
-                    },
-                    "protocol": "oep",
-                    "protocolLabel": "OEP probe",
-                    "hardwareId": format!("{id}/{}", s.name),
-                    "properties": properties,
-                })
-            })
-            .collect(),
-    )
+    let labels = ch32rv_oep::config::labels(p).ok()?;
+    let ports = ch32rv_oep::config::ports_named(&labels);
+    let entry = |port: Option<&str>| {
+        let mut properties = json!({ "port_name": port });
+        if let (Some(m), Some(extra)) = (properties.as_object_mut(), props.as_object()) {
+            for (k, v) in extra {
+                m.insert(k.clone(), v.clone());
+            }
+        }
+        let (address, label, hw) = match port {
+            Some(s) => (
+                format!("oep://{id}/{s}"),
+                format!("{s} on OEP probe {id}"),
+                format!("{id}/{s}"),
+            ),
+            None => (
+                format!("oep://{id}"),
+                format!("OEP probe {id}"),
+                id.to_owned(),
+            ),
+        };
+        json!({
+            "address": address,
+            "label": label,
+            "protocol": "oep",
+            "protocolLabel": "OEP probe",
+            "hardwareId": hw,
+            "properties": properties,
+        })
+    };
+    Some(if ports.is_empty() {
+        vec![entry(None)]
+    } else {
+        ports.iter().map(|s| entry(Some(s))).collect()
+    })
 }
 
 /// WCH-Links as `wchlink://<serial>`, or `wchlink://usb-<bus>-<ports>` for one without a serial.
@@ -835,7 +830,7 @@ impl Backend {
         });
         if let Some(oep) = wch_via_broker.as_ref().or(r.oep.as_ref())
             && (s.source != MonitorSource::Uart
-                || oep.slot().is_some()
+                || oep.port().is_some()
                 || matches!(
                     oep,
                     crate::oep::OepAddr::Tcp(_) | crate::oep::OepAddr::Net { .. }

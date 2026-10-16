@@ -228,6 +228,35 @@ fn interface(out: &mut String, v: &Value, core: bool) -> Result<(), String> {
                 let _ = writeln!(out, "    }}");
             }
             "event" | "status" | "reject_reasons" => table(out, k, val, "u8", 1)?,
+            // The interface family (core §2.5: several interfaces sharing one number space).
+            "family" => {
+                if let Some(f) = val.as_str() {
+                    let _ = writeln!(out, "    pub const FAMILY: &str = {f:?};");
+                }
+            }
+            // Named lists (core §7.7): the standard names of each list. On the wire a value is
+            // the name's place (from 1) in the list the probe declares in describe, so only the
+            // names are fixed here.
+            "names" => {
+                let lists = val
+                    .as_table()
+                    .ok_or_else(|| format!("`{name}.names` is not a table"))?;
+                let _ = writeln!(out, "    pub mod names {{");
+                for (list, entries) in lists {
+                    let entries = entries
+                        .as_table()
+                        .ok_or_else(|| format!("`{name}.names.{list}` is not a table"))?;
+                    let _ = writeln!(out, "        pub mod {} {{", ident(list));
+                    for (n, what) in entries {
+                        if let Some(w) = what.as_str() {
+                            let _ = writeln!(out, "            /// {w}");
+                        }
+                        let _ = writeln!(out, "            pub const {}: &str = {n:?};", konst(n));
+                    }
+                    let _ = writeln!(out, "        }}");
+                }
+                let _ = writeln!(out, "    }}");
+            }
             // Standard names (label texts): each key is the name itself; the value describes it.
             "line_names" => {
                 let names = val
@@ -243,7 +272,7 @@ fn interface(out: &mut String, v: &Value, core: bool) -> Result<(), String> {
                 let _ = writeln!(out, "    }}");
             }
             // Ranges no value may use: checked by the spec's own generator; nothing to emit.
-            "reserved" => {}
+            "reserved" | "retired" => {}
             other => return Err(format!("interface `{name}` has an unknown key `{other}`")),
         }
     }

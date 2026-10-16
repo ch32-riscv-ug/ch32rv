@@ -434,14 +434,14 @@ pub(crate) fn existing_link(path: &str) -> Option<Link> {
 
 /// The runtime file discovery keeps a probe's last listing in (for when the probe is busy).
 pub(crate) fn listing_cache(path: &str) -> PathBuf {
-    ch32rv_usb::runtime_dir().join(format!("{}.slots.json", key_for(path)))
+    ch32rv_usb::runtime_dir().join(format!("{}.ports.json", key_for(path)))
 }
 
 /// `broker endpoint --probe <sel> [--json]`: where the probe's broker listens, if it runs.
 pub(crate) fn endpoint(cli: &Cli) -> ExitCode {
     const CMD: &str = "broker.endpoint";
     let target = match crate::oep::addr(cli, CMD) {
-        Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => BrokerTarget::Serial(p),
+        Ok(Some(OepAddr::Serial(p) | OepAddr::Probe { path: p, .. })) => BrokerTarget::Serial(p),
         Ok(Some(OepAddr::Wch(t))) => t,
         Ok(Some(a @ (OepAddr::Tcp(_) | OepAddr::Net { .. }))) => match crate::oep::net_target(&a) {
             Some(t) => t,
@@ -496,8 +496,8 @@ enum Ev {
 /// Per-client resources.
 #[derive(Default)]
 struct Ledger {
-    /// connection -> (its wire fn, the clients using it)
-    conns: HashMap<u16, (u16, BTreeSet<u64>)>,
+    /// connection -> (its wire fn, the clients using it, the attach answer to lend it with)
+    conns: HashMap<u32, (u16, BTreeSet<u64>, Vec<u8>)>,
     /// client -> the fns it has plans on
     plans: HashMap<u64, BTreeSet<u16>>,
 }
@@ -513,7 +513,7 @@ pub(crate) fn serve(cli: &Cli) -> ExitCode {
     const CMD: &str = "broker.serve";
     // An OEP probe's serial port, else a WCH-Link (any selector that resolves to one).
     let target = match crate::oep::addr(cli, CMD) {
-        Ok(Some(OepAddr::Serial(p) | OepAddr::Slot { path: p, .. })) => BrokerTarget::Serial(p),
+        Ok(Some(OepAddr::Serial(p) | OepAddr::Probe { path: p, .. })) => BrokerTarget::Serial(p),
         // A broker for this Link already answers: this one leaves (the flock would say so too).
         Ok(Some(OepAddr::Wch(_))) => return ExitCode::SUCCESS,
         Ok(Some(a @ (OepAddr::Tcp(_) | OepAddr::Net { .. }))) => match crate::oep::net_target(&a) {
@@ -1492,17 +1492,18 @@ impl Broker {
                     let mut p = registry::constants::CONFIRM_RESULT_MAGIC
                         .as_bytes()
                         .to_vec();
-                    p.extend_from_slice(&[l.revision, 0]);
+                    // "OEP!" revision max_frame window max_inflight boot_id (core §7.1).
+                    p.push(l.revision);
                     p.extend_from_slice(&l.max_frame.to_le_bytes());
                     p.extend_from_slice(&l.window.to_le_bytes());
                     p.push(l.max_inflight);
                     p.extend_from_slice(&l.boot_id.to_le_bytes());
-                    // A relaying broker's transport index is 0xFF (oep-core §7.1, transports §1).
+                    // The transport index: the broker's one endpoint, entry 0 of its describe.
                     ch32rv_oep::codec::put_tlv(
                         &mut p,
                         oep_core::tlvs::confirm_answer::TRANSPORT,
                         false,
-                        &[0xFF],
+                        &[0],
                     );
                     Some(ok(&p))
                 }
@@ -1533,24 +1534,98 @@ impl Broker {
                 _ => None,
             };
         }
-        // Pushes are not relayed: a subscribe to any interface (0x30 / 0x32 in every interface's op
-        // space, core §11.3) is refused here.
+        // Pushes are not relayed: a subscribe to any interface (0x01 / 0x02 in every interface's op
+        // space, core §10.3) is refused here.
         if req.func != oep_core::FN
             && (req.op == registry::constants::OP_SUBSCRIBE
                 || req.op == registry::constants::OP_UNSUBSCRIBE)
         {
             return Some(refuse(reject_reasons::UNAVAILABLE));
         }
+        // en: The broker shares one connection to the probe among its clients (an attach creates
+        // a new connection on the probe, and a second one on the same pins is refused, oep-if-debug
+        // §1): an attach on a wire where the broker holds one is answered here with that
+        // connection, marked by the named extension SHARED_EXTENSION, with its halted flag and
+        // dpc dropped (a client that wants it halted halts it).
+        // ja: ブローカーは probe への接続を 1 本だけ持ち、client に貸す。既にある wire の attach は
+        // ここでその接続を返す(名前つき拡張で印をつけ、halted は落とす)。
+        if self.wires.contains(&req.func) && req.op == wire_rvswd::op::ATTACH {
+            // en: The probe closes a connection on its own when the line is lost (oep-if-debug
+            // §2): one still in the ledger is lent only while the wire's connections (lock-free,
+            // required) list it; a gone one leaves the ledger and the attach goes to the probe.
+            // ja: 線を失うと probe は接続を自分で閉じる。connections に載っている間だけ貸す。
+            let held = self
+                .ledger
+                .conns
+                .iter()
+                .find(|(_, (func, _, _))| *func == req.func)
+                .map(|(&conn, _)| conn);
+            if let Some(conn) = held
+                && !self.upstream_has(id, req.func, conn)
+            {
+                self.ledger.conns.remove(&conn);
+            }
+            let held = self
+                .ledger
+                .conns
+                .iter_mut()
+                .find(|(_, (func, _, _))| *func == req.func);
+            if let Some((_, (_, users, answer))) = held {
+                users.insert(id);
+                let mut p = answer.clone();
+                let name = ch32rv_oep::target::SHARED_EXTENSION.as_bytes();
+                let mut v = vec![name.len() as u8];
+                v.extend_from_slice(name);
+                ch32rv_oep::codec::put_tlv(
+                    &mut p,
+                    registry::constants::TAG_NAMED_EXTENSION,
+                    false,
+                    &v,
+                );
+                return Some(ok(&p));
+            }
+        }
         // A detach while another client still uses the connection only drops this client's use.
         if self.wires.contains(&req.func) && req.op == wire_rvswd::op::DETACH {
-            let conn = u16::from_le_bytes([*req.payload.first()?, *req.payload.get(1)?]);
-            let (_, users) = self.ledger.conns.get_mut(&conn)?;
+            let b = req.payload.get(..4)?;
+            let conn = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
+            let (_, users, _) = self.ledger.conns.get_mut(&conn)?;
             if users.len() > 1 || !users.contains(&id) {
                 users.remove(&id);
                 return Some(ok(&[]));
             }
         }
         None
+    }
+
+    /// Whether the probe still lists `conn` among the connections of wire `func`.
+    fn upstream_has(&mut self, id: u64, func: u16, conn: u32) -> bool {
+        let call = Call {
+            func,
+            op: wire_rvswd::op::CONNECTIONS,
+            session: None,
+            payload: vec![0],
+        };
+        let Ok(r) = self.up.exchange(vec![(id, call)]) else {
+            return true;
+        };
+        let Some(r) = r.first().filter(|r| r.succeeded()) else {
+            return true;
+        };
+        // more count, count x (connection(u32) swdio swclk speed_hz tid_scheme tid_len tid)
+        let a = &r.payload;
+        let count = usize::from(*a.get(1).unwrap_or(&0));
+        let mut at = 2;
+        for _ in 0..count {
+            let Some(e) = a.get(at..at + 14) else {
+                return true;
+            };
+            if u32::from_le_bytes([e[0], e[1], e[2], e[3]]) == conn {
+                return true;
+            }
+            at += 14 + usize::from(e[13]);
+        }
+        false
     }
 
     /// Record what a forwarded request changed in the ledger.
@@ -1561,26 +1636,45 @@ impl Broker {
         if self.wires.contains(&req.func) {
             match req.op {
                 o if o == wire_rvswd::op::ATTACH => {
-                    if r.payload.len() >= 2 {
-                        let conn = u16::from_le_bytes([r.payload[0], r.payload[1]]);
+                    // connection(u32) id(u32) flags(u8) speed_hz(u32) [TLV]: kept to lend the
+                    // connection to the next client, without the halted flag and its dpc.
+                    if r.payload.len() >= 13 {
+                        let a = &r.payload;
+                        let conn = u32::from_le_bytes([a[0], a[1], a[2], a[3]]);
+                        let mut lent = a[..13].to_vec();
+                        lent[8] &= !wire_rvswd::enums::attach_flags::HALTED;
+                        if let Ok(tlvs) = parse_tlvs(&a[13..]) {
+                            for t in tlvs
+                                .iter()
+                                .filter(|t| t.tag == wire_rvswd::tlvs::attach_answer::TARGET_ID)
+                            {
+                                ch32rv_oep::codec::put_tlv(&mut lent, t.tag, false, &t.value);
+                            }
+                        }
                         self.ledger
                             .conns
                             .entry(conn)
-                            .or_insert((req.func, BTreeSet::new()))
+                            .or_insert((req.func, BTreeSet::new(), lent))
                             .1
                             .insert(id);
                     }
                 }
-                o if o == wire_rvswd::op::DETACH && req.payload.len() >= 2 => {
-                    let conn = u16::from_le_bytes([req.payload[0], req.payload[1]]);
+                o if o == wire_rvswd::op::DETACH && req.payload.len() >= 4 => {
+                    let b = &req.payload;
+                    let conn = u32::from_le_bytes([b[0], b[1], b[2], b[3]]);
                     self.ledger.conns.remove(&conn);
                 }
                 _ => {}
             }
         } else if Some(req.func) == self.plan_fn && req.op == registry::probe_plan::op::PLAN_APPLY {
+            // role_assignment TLVs only (fn(u16) role(u8) channel(u16)); a named extension or
+            // another TLV is not a fn.
             if let Ok(tlvs) = parse_tlvs(&req.payload) {
                 let fns = self.ledger.plans.entry(id).or_default();
-                for t in tlvs.iter().filter(|t| t.value.len() >= 2) {
+                for t in tlvs.iter().filter(|t| {
+                    t.tag & 0x7F == registry::probe_plan::tlvs::plan_apply::ROLE_ASSIGNMENT
+                        && t.value.len() >= 2
+                }) {
                     fns.insert(u16::from_le_bytes([t.value[0], t.value[1]]));
                 }
             }
@@ -1604,7 +1698,7 @@ impl Broker {
     fn release(&mut self, id: u64) -> Result<(), String> {
         let mut calls = Vec::new();
         let mut dead = Vec::new();
-        for (&conn, (func, users)) in self.ledger.conns.iter_mut() {
+        for (&conn, (func, users, _)) in self.ledger.conns.iter_mut() {
             if users.remove(&id) && users.is_empty() {
                 calls.push((
                     id,
@@ -1621,8 +1715,10 @@ impl Broker {
         for c in dead {
             self.ledger.conns.remove(&c);
         }
+        // No plan interface, nothing to release (op 0x11 on fn 0 would be the core's end).
         if let Some(fns) = self.ledger.plans.remove(&id)
             && !fns.is_empty()
+            && let Some(plan_fn) = self.plan_fn
         {
             let mut p = vec![fns.len() as u8];
             for f in fns {
@@ -1631,7 +1727,7 @@ impl Broker {
             calls.push((
                 id,
                 Call {
-                    func: self.plan_fn.unwrap_or(oep_core::FN),
+                    func: plan_fn,
                     op: registry::probe_plan::op::PLAN_RELEASE,
                     session: Some(self.sid),
                     payload: p,

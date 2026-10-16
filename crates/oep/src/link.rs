@@ -300,7 +300,10 @@ impl Link {
         self.limits
     }
 
-    /// Restart corr numbering (the probe drops its resend table on every open, core §5.2).
+    /// en: Restart corr numbering. Only for a new boot (after a restart): an open keeps the order
+    /// state of its session id going from the open's corr (core §4.1, §5.1), so resetting after an
+    /// open makes the next request look old (`result_lost`). ja: 新しい起動の後だけ。open の後に
+    /// 戻すと次の要求が古く見え result_lost になる。
     pub fn reset_corr(&mut self) {
         self.corr = 0;
     }
@@ -341,18 +344,19 @@ impl Link {
                 r.resolution
             )));
         }
-        // "OEP!", revision, flags, max_frame(u16), window(u32), max_inflight, boot_id(u32), [TLV]
-        if p.len() < 17 || &p[..4] != constants::CONFIRM_RESULT_MAGIC.as_bytes() {
+        // "OEP!", revision, max_frame(u16), window(u32), max_inflight, boot_id(u32), [TLV]
+        // (core §7.1: 16 bytes fixed; no flags byte since oep-spec 675288a).
+        if p.len() < 16 || &p[..4] != constants::CONFIRM_RESULT_MAGIC.as_bytes() {
             return Err(LinkError::NotOep(
                 "confirm answer is not \"OEP!\"".to_owned(),
             ));
         }
         let limits = Limits {
             revision: p[4],
-            max_frame: u16::from_le_bytes([p[6], p[7]]),
-            window: u32::from_le_bytes([p[8], p[9], p[10], p[11]]),
-            max_inflight: p[12],
-            boot_id: u32::from_le_bytes([p[13], p[14], p[15], p[16]]),
+            max_frame: u16::from_le_bytes([p[5], p[6]]),
+            window: u32::from_le_bytes([p[7], p[8], p[9], p[10]]),
+            max_inflight: p[11],
+            boot_id: u32::from_le_bytes([p[12], p[13], p[14], p[15]]),
         };
         // The bounds of confirm's values (oep-core §7.1): a transport that breaks them is not used.
         let min_frame = u16::from(constants::MIN_MAX_FRAME);
@@ -365,10 +369,12 @@ impl Link {
                 limits.max_frame, limits.window
             )));
         }
-        if limits.revision < 1 {
+        // A revision outside the range asked for is a protocol error (core §7.1).
+        if limits.revision != registry::PROTOCOL_REVISION {
             return Err(LinkError::NotOep(format!(
-                "revision {} (ch32rv needs 1)",
-                limits.revision
+                "revision {} (ch32rv asked for {})",
+                limits.revision,
+                registry::PROTOCOL_REVISION
             )));
         }
         self.cobs.set_max(usize::from(limits.max_frame));
@@ -391,7 +397,10 @@ impl Link {
     /// ja: 複数の要求を pipeline で送り、同じ順で答えを返す。答えが来なければ、答えの無い後ろを同じ
     /// corr で 1 回だけ送り直す(長さ見出しでは resync の後)。2 回目も失えば timeout。
     pub fn exchange(&mut self, calls: Vec<Call>) -> Result<Vec<Reply>, LinkError> {
-        let max_frame = self.limits.map_or(0xFFFF, |l| l.max_frame);
+        // Before confirm answers, nothing longer than min_max_frame (transports §3).
+        let max_frame = self
+            .limits
+            .map_or(u16::from(constants::MIN_MAX_FRAME), |l| l.max_frame);
         let mut reqs = Vec::with_capacity(calls.len());
         for c in calls {
             self.corr = next_corr(self.corr);
@@ -572,20 +581,39 @@ impl Link {
 
     /// Read until the result for `corr` arrives. Pushes are queued; results for other corrs (a
     /// late answer to an earlier try) are dropped.
-    /// en: core §4.4's wait floor for `req`: its argument time + host_wait_add_ms + the transfer
+    /// en: core §4.4's wait floor for `req`: its processing bound (max_op_ms, plus the argument's
+    /// own time) + host_wait_add_ms + the transfer
     /// time of a serial line, (L + max_frame x (1 + notify_pending_max_frames)) x 10 / baud. No
     /// wait for it - the quick first wait at a raised speed included - is shorter.
     /// ja: core §4.4 の待ちの下限(引数の時間 + host_wait_add_ms + 転送の時間)。どの待ちもこれより短くしない。
     fn floor(&self, req: &Request) -> Duration {
         let p = &req.payload;
-        let arg = match self.arg_time.get(&(req.func, req.op)) {
-            None => 0,
+        // The processing bound: max_op_ms for every request (1000 ms until it is known); fn 0's
+        // quick ops at most core_quick_op_max_ms (core §4.4). An argument's own time is added to
+        // it, never used in its place.
+        let quick = req.func == core::FN
+            && [
+                core::op::CONFIRM,
+                core::op::LIST,
+                core::op::DESCRIBE,
+                core::op::CLOCK,
+                core::op::KEEPALIVE,
+                core::op::LOCK_STATE,
+            ]
+            .contains(&req.op);
+        let max_op = self.max_op_ms.unwrap_or(timing::CORE_QUICK_OP_MAX_MS);
+        let base = if quick {
+            max_op.min(timing::CORE_QUICK_OP_MAX_MS)
+        } else {
+            max_op
+        };
+        let arg = base.saturating_add(match self.arg_time.get(&(req.func, req.op)) {
+            None | Some(ArgTime::MaxOp) => 0,
             Some(ArgTime::Fixed(ms)) => *ms,
             Some(ArgTime::U32At(at)) => p
                 .get(*at..*at + 4)
                 .map_or(0, |b| u32::from_le_bytes([b[0], b[1], b[2], b[3]])),
-            Some(ArgTime::MaxOp) => self.max_op_ms.unwrap_or(10_000),
-        };
+        });
         let transfer = match (self.framing, self.baud) {
             (Framing::Cobs, Some(baud)) if baud > 0 => {
                 let frame = self.limits.map_or(64, |l| usize::from(l.max_frame));
@@ -704,7 +732,7 @@ impl Link {
     pub fn confirm_raw(&mut self, timeout: Duration) -> bool {
         self.corr = next_corr(self.corr);
         let mut payload = constants::CONFIRM_REQUEST_MAGIC.as_bytes().to_vec();
-        payload.extend_from_slice(&[0, 0xFF]);
+        payload.extend_from_slice(&[registry::PROTOCOL_REVISION, registry::PROTOCOL_REVISION]); // the revision in use (core §7.1)
         let req = Request {
             corr: self.corr,
             func: core::FN,
@@ -726,9 +754,9 @@ impl Link {
         (self.timeout, self.resend_on_broken) = saved;
         match got {
             Ok(r) => {
-                if r.succeeded() && r.payload.len() >= 17 {
+                if r.succeeded() && r.payload.len() >= 16 {
                     let p = &r.payload;
-                    self.last_boot_id = Some(u32::from_le_bytes([p[13], p[14], p[15], p[16]]));
+                    self.last_boot_id = Some(u32::from_le_bytes([p[12], p[13], p[14], p[15]]));
                 }
                 true
             }
@@ -853,7 +881,7 @@ impl Link {
             self.inbox.clear();
             self.corr = next_corr(self.corr);
             let mut payload = constants::CONFIRM_REQUEST_MAGIC.as_bytes().to_vec();
-            payload.extend_from_slice(&[0, 0xFF]);
+            payload.extend_from_slice(&[registry::PROTOCOL_REVISION, registry::PROTOCOL_REVISION]); // the revision in use (core §7.1)
             let req = Request {
                 corr: self.corr,
                 func: core::FN,
@@ -1054,6 +1082,8 @@ mod tests {
         l.set_timeout(Duration::from_secs(3));
         l.base_baud = Some(115_200);
         l.baud = Some(500_000);
+        // A probe that declares a short max_op_ms: the floor (core §4.4) stays under the quick wait.
+        l.max_op_ms = Some(1);
         let t = std::time::Instant::now();
         assert!(l.call(call()).unwrap().succeeded());
         assert_eq!((l.resends, l.speed_fallbacks), (1, 0));
@@ -1075,12 +1105,14 @@ mod tests {
         l.base_baud = Some(115_200);
         l.baud = Some(500_000);
         l.arg_time.insert((2, 5), ArgTime::U32At(0));
+        l.max_op_ms = Some(1);
         let mut c = call();
         c.payload = 1000u32.to_le_bytes().to_vec();
         let t = std::time::Instant::now();
         assert!(l.call(c).unwrap().succeeded());
         assert_eq!(l.resends, 1);
-        let floor = Duration::from_millis(1000 + u64::from(timing::HOST_WAIT_ADD_MS));
+        // max_op_ms (1) + the argument's 1000 + host_wait_add_ms.
+        let floor = Duration::from_millis(1 + 1000 + u64::from(timing::HOST_WAIT_ADD_MS));
         assert!(t.elapsed() >= floor, "{:?}", t.elapsed());
     }
 }

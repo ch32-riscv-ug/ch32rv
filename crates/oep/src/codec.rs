@@ -291,6 +291,9 @@ pub fn parse_tlvs(mut b: &[u8]) -> Result<Vec<Tlv>, DecodeError> {
         if b.len() < TLV_HEADER {
             return Err(DecodeError::TruncatedTlv);
         }
+        if b[0] & 0x7F == registry::constants::TAG_RESERVED_ZERO {
+            return Err(DecodeError::ZeroTag);
+        }
         let len = usize::from(u16::from_le_bytes([b[1], b[2]]));
         if b.len() < TLV_HEADER + len {
             return Err(DecodeError::TruncatedTlv);
@@ -376,7 +379,7 @@ pub enum Resolution {
     Rejected(u8),
     /// Done; the byte is the outcome (success / failed / partial).
     Completed(u8),
-    /// A resolution this host does not know (0x02 accepted is reserved in v1): a failure.
+    /// A resolution this host does not know: a failure.
     Unknown(u8, u8),
 }
 
@@ -409,6 +412,9 @@ pub enum DecodeError {
     UnknownRole(u8),
     #[error("truncated TLV")]
     TruncatedTlv,
+    /// A TLV whose number (the low 7 bits) is 0 (core §2.2: 0 is never a tag).
+    #[error("TLV number 0")]
+    ZeroTag,
 }
 
 impl Incoming {
@@ -571,9 +577,10 @@ mod tests {
                 payload: vec![0x10, 0x27, 0, 0]
             }
         );
+        // Role 3 is an event now (core §10); an unallocated role is still an error.
         assert_eq!(
-            Incoming::decode(&[0x03, 0, 0]),
-            Err(DecodeError::UnknownRole(3))
+            Incoming::decode(&[0x07, 0, 0]),
+            Err(DecodeError::UnknownRole(7))
         );
     }
 

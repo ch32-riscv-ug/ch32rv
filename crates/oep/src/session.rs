@@ -175,6 +175,9 @@ impl Probe {
         force: bool,
         owner: Option<&str>,
     ) -> Result<Opened, OepError> {
+        // max_op_ms before any state-changing request: open's own wait is bounded by it
+        // (core §4.4).
+        self.max_op_ms()?;
         let mut p = Vec::with_capacity(5);
         p.extend_from_slice(&lease_ms.to_le_bytes());
         p.push(u8::from(force));
@@ -207,8 +210,7 @@ impl Probe {
         // confirm that differs from it).
         self.link.last_boot_id = Some(opened.boot_id);
         self.session = Some(session_id);
-        // The probe dropped its resend table: numbering may restart.
-        self.link.reset_corr();
+        // corr keeps going: the session's order state continues from this open's corr (core §5.1).
         Ok(opened)
     }
 
@@ -261,16 +263,16 @@ impl Probe {
             let total = usize::from(u16::from_le_bytes([a[0], a[1]]));
             let count = usize::from(a[2]);
             let mut at = 3;
-            // count x entry, each fn(u16) instance(u16) revision(u8) flags(u8) name_len(u8) name
-            // (core §2.3, §7.2: no element length).
+            // count x entry, each fn(u16) instance(u16) revision(u8) name_len(u8) name
+            // (core §2.3, §7.2: no element length). What follows the entries is a TLV tail.
             for _ in 0..count {
                 let e = a
-                    .get(at..at + 7)
+                    .get(at..at + 6)
                     .ok_or_else(|| OepError::Malformed("list entry cut short".into()))?;
                 let name = a
-                    .get(at + 7..at + 7 + usize::from(e[6]))
+                    .get(at + 6..at + 6 + usize::from(e[5]))
                     .ok_or_else(|| OepError::Malformed("list entry name cut short".into()))?;
-                at += 7 + name.len();
+                at += 6 + name.len();
                 let func = u16::from_le_bytes([e[0], e[1]]);
                 let name = String::from_utf8_lossy(name).into_owned();
                 self.note_arg_times(func, &name);
@@ -296,20 +298,13 @@ impl Probe {
     /// ja: 引数の時間で待ちの延びる op を link に教える。
     fn note_arg_times(&mut self, func: u16, name: &str) {
         use crate::link::ArgTime;
-        use crate::registry::{probe_config, target_riscv_dm as dm, wire_rvswd};
+        use crate::registry::target_riscv_dm as dm;
         let t = &mut self.link.arg_time;
         match name {
+            // Every request already waits max_op_ms (link floor); only an argument's own time
+            // is added: run's timeout_ms after connection(u32) pc(u32) (oep-if-debug §4.4).
             n if n == dm::NAME => {
-                // connection(u16) pc(u32) timeout_ms(u32) ... (oep-if-debug §4.4)
-                t.insert((func, dm::op::RUN), ArgTime::U32At(6));
-                t.insert((func, dm::op::RESET), ArgTime::MaxOp);
-            }
-            n if n.starts_with("oep.wire.") => {
-                t.insert((func, wire_rvswd::op::ATTACH), ArgTime::MaxOp);
-                t.insert((func, wire_rvswd::op::SCAN), ArgTime::MaxOp);
-            }
-            n if n == probe_config::NAME => {
-                t.insert((func, probe_config::op::SAVE), ArgTime::MaxOp);
+                t.insert((func, dm::op::RUN), ArgTime::U32At(8));
             }
             _ => {}
         }
@@ -343,11 +338,22 @@ impl Probe {
         if let Some(ms) = self.max_op_ms {
             return Ok(ms);
         }
-        let ms = self
+        // The first copy of a non-repeating tag; a broken first copy is broken, not skipped
+        // (core §2.3).
+        let ms = match self
             .describe(core::FN)?
             .iter()
-            .find(|t| t.tag == core::tlvs::describe::MAX_OP_MS && t.value.len() == 4)
-            .map_or(2000, |t| le32(&t.value, 0));
+            .find(|t| t.tag == core::tlvs::describe::MAX_OP_MS)
+        {
+            Some(t) if t.value.len() == 4 => le32(&t.value, 0),
+            Some(t) => {
+                return Err(OepError::Malformed(format!(
+                    "max_op_ms is {} bytes, not 4",
+                    t.value.len()
+                )));
+            }
+            None => 2000,
+        };
         // 1..=max_op_ms_max (oep-core §7.5, C-47): a probe declaring anything else is not used.
         if !(1..=crate::registry::limits::MAX_OP_MS_MAX).contains(&ms) {
             return Err(OepError::Malformed(format!(
@@ -427,30 +433,33 @@ impl Probe {
         if let Some(o) = self.ops.get(&func) {
             return Ok(o.clone());
         }
+        // The first ops tag only (it does not repeat, core §2.3); a broken one breaks the fn.
         let mut found: Option<Vec<u8>> = None;
-        for t in self.describe(func)? {
-            if t.tag != crate::registry::describe_common::OPS {
-                continue;
-            }
-            let set = decode_ops(&t.value).ok_or_else(|| {
+        if let Some(t) = self
+            .describe(func)?
+            .into_iter()
+            .find(|t| t.tag == crate::registry::describe_common::OPS)
+        {
+            let mut set = decode_ops(&t.value).ok_or_else(|| {
                 OepError::Malformed(format!(
                     "fn {func} declares broken ops (core §7.4: {:02x?})",
                     t.value
                 ))
             })?;
-            found.get_or_insert_with(Vec::new).extend(set);
-        }
-        if let Some(set) = found.as_mut() {
             set.sort_unstable();
             set.dedup();
+            found = Some(set);
         }
         self.ops.insert(func, found.clone());
         Ok(found)
     }
 
-    /// Whether `func` offers `op` by its ops tag (true when it declares no ops: the probe decides).
+    /// en: Whether `func` offers `op` by its ops tag. Ask before every optional op: a host sends
+    /// one only when describe's ops sets it (conformance §2, host guide §10). Every fn carries ops
+    /// (core §7.4), so one without them offers no optional op. Required ops need no asking.
+    /// ja: 任意の op の前に聞く。ops に立っていなければ送らない。ops の無い fn は任意の op を持たない。
     pub fn offers(&mut self, func: u16, op: u8) -> Result<bool, OepError> {
-        Ok(self.ops(func)?.is_none_or(|o| o.contains(&op)))
+        Ok(self.ops(func)?.is_some_and(|o| o.contains(&op)))
     }
 
     /// `describe` of `func`, following `more`.

@@ -149,8 +149,17 @@ fn a_debug_source_streams_the_oep_console_through_the_broker() {
 
 #[test]
 fn fixture_uart_streams_at_the_monitors_baud() {
-    let Some((_fake, pty)) = fake_pty(&["--uart-plan", "--uart-rx", "rx %d\r\n", "--every", "50"])
-    else {
+    let Some((_fake, pty)) = fake_pty(&[
+        "--uart-rx",
+        "rx %d\r\n",
+        "--every",
+        "50",
+        // The UART's pins by the port's labels: ch32rv plans them before configure.
+        "--label",
+        "22=v003.rx",
+        "--label",
+        "21=v003.tx",
+    ]) else {
         return;
     };
     let mut m = Monitor::start();

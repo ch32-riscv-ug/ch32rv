@@ -38,66 +38,182 @@ impl WireKind {
 /// What attach answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Attached {
-    pub connection: u16,
+    /// A new connection, never shared (oep-if-debug §1; resource ids are u32, core §9).
+    pub connection: u32,
     pub dmstatus: u32,
     /// A pending havereset was acknowledged.
     pub acked_havereset: bool,
-    /// The line already had a connection; this is it.
-    pub existing: bool,
     pub speed_hz: u32,
     /// DMI 0x7F of a WCH debug module (target_id scheme 1), when the probe read one.
     pub wch_chip_id: Option<u32>,
-    /// The hart is halted (flags bit3), and its dpc (TLV 0x11).
+    /// The hart is halted (flags bit3), and its dpc (TLV dpc; 0 when the probe gave none).
     pub halted: Option<u32>,
+    /// en: A ch32rv broker lent a connection it already holds (named extension
+    /// [`SHARED_EXTENSION`]); a probe always makes a new one.
+    /// ja: ch32rv のブローカーが既に持つ接続を貸した(名前つき拡張)。probe は常に新しい接続。
+    pub existing: bool,
+}
+
+/// en: The named extension (core §2.2, TLV 0x7F) a ch32rv broker puts in an attach answer when
+/// it lends a connection it already holds to another client (the broker shares one connection to
+/// the probe among its clients). No data. ja: ブローカーが既存の接続を貸したときの名前つき拡張。
+pub const SHARED_EXTENSION: &str = "io.github.ch32-riscv-ug.shared";
+
+/// Whether `tail` carries the named extension `name` (value `name_len(u8) name data`).
+pub fn has_named_extension(tail: &[crate::codec::Tlv], name: &str) -> bool {
+    tail.iter().any(|t| {
+        t.tag & 0x7F == crate::registry::constants::TAG_NAMED_EXTENSION
+            && t.value
+                .first()
+                .is_some_and(|&n| t.value.get(1..1 + usize::from(n)) == Some(name.as_bytes()))
+    })
 }
 
 /// Attach options.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AttachOptions {
-    /// Halt the hart (method 1) instead of leaving it running.
+    /// Halt the hart: attach method 1 where the wire offers it (describe features
+    /// `attach_halt`), else attach running and halt right after (oep-if-debug §3).
     pub halt: bool,
-    /// Never faster than this (sent critical, always: the probe requires one). `None`: the
-    /// wire's declared `max_clock_hz`, else 1 MHz.
+    /// Never faster than this (attach's fixed part, never 0). `None`: the wire's declared
+    /// `max_clock_hz`, else 1 MHz. Raised to the wire's `min_clock_hz` (a lower one is refused).
     pub max_speed_hz: Option<u32>,
-    /// The (swdio, swclk) pair; swclk 0xFFFF on one wire (sent critical).
+    /// The (swdio, swclk) pair; swclk 0xFFFF on one wire. `None`: the one pair the wire's
+    /// describe allows (an error when it allows several: name the port).
     pub pins: Option<(u16, u16)>,
     /// How the line idles (`wire_rvswd::enums::idle_clock`; rvswd only, sent critical). `None`:
-    /// the probe's default (high). A slot's value is the host's to pass (oep-spec 5bfe052).
+    /// the probe's default (high).
     pub idle_clock: Option<u8>,
-    /// Hold the target's reset line (channel, ms) through the attach (TLV reset, critical): with
-    /// `halt`, the hart is stopped as early as the probe can after the release (oep-if-debug §3).
+    /// Hold the target's reset line (channel, ms) through the attach (TLV reset, critical; the
+    /// channel must be one of describe role_channels role 3): with `halt`, the hart is stopped
+    /// as early as the probe can after the release (oep-if-debug §3).
     pub reset: Option<(u16, u16)>,
 }
 
-/// `attach` on `kind`.
+/// en: The (swdio, swclk) pairs a wire's describe allows (core §7.4, oep-if-debug §1): per
+/// channel_group its role 1 / role 2 (a role the group lists is that group's channel, kept when
+/// role_channels lists the role too and has the channel; a role the group does not list comes
+/// from role_channels), else role_channels' role 1 x role 2 without a channel used twice. One
+/// wire: swclk 0xFFFF. ja: wire の describe が許すピンの組。
+pub fn candidate_pairs(p: &mut Probe, kind: WireKind) -> Result<Vec<(u16, u16)>, OepError> {
+    let func = p.interface(kind.interface())?.func;
+    let tlvs = p.describe(func)?;
+    let mut roles: std::collections::BTreeMap<u8, Vec<u16>> = Default::default();
+    let mut groups: std::collections::BTreeMap<u8, Vec<(u8, u16)>> = Default::default();
+    for t in &tlvs {
+        let v = &t.value;
+        if t.tag == describe_common::ROLE_CHANNELS && v.len() >= 3 {
+            // role(u8) base(u16) bitmap: bit i = channel base + i.
+            let base = le16(v, 1);
+            let list = roles.entry(v[0]).or_default();
+            for (byte, b) in v[3..].iter().enumerate() {
+                for bit in 0..8 {
+                    if b & (1 << bit) != 0 {
+                        list.push(base + (byte * 8 + bit) as u16);
+                    }
+                }
+            }
+        } else if t.tag == describe_common::CHANNEL_GROUP && v.len() >= 2 {
+            // group(u8) n(u8) n x (role(u8) channel(u16)).
+            let n = usize::from(v[1]);
+            let pins = (0..n)
+                .filter_map(|k| v.get(2 + 3 * k..5 + 3 * k).map(|e| (e[0], le16(e, 1))))
+                .collect();
+            groups.insert(v[0], pins);
+        }
+    }
+    for list in roles.values_mut() {
+        list.sort_unstable();
+        list.dedup();
+    }
+    let one_wire = kind == WireKind::Swio;
+    let options = |group: &[(u8, u16)], role: u8| -> Vec<u16> {
+        match group.iter().find(|(r, _)| *r == role) {
+            Some(&(_, ch)) => match roles.get(&role) {
+                Some(list) if !list.contains(&ch) => Vec::new(),
+                _ => vec![ch],
+            },
+            None => roles.get(&role).cloned().unwrap_or_default(),
+        }
+    };
+    let group_list: Vec<Vec<(u8, u16)>> = if groups.is_empty() {
+        vec![Vec::new()]
+    } else {
+        groups.into_values().collect()
+    };
+    let mut out = Vec::new();
+    for g in &group_list {
+        let dios = options(g, wire::enums::pin_role::SWDIO);
+        let clks = if one_wire {
+            vec![0xFFFF]
+        } else {
+            options(g, wire::enums::pin_role::SWCLK)
+        };
+        for &d in &dios {
+            for &c in &clks {
+                if (one_wire || d != c) && !out.contains(&(d, c)) {
+                    out.push((d, c));
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The first copy of describe tag `tag` on `func` as a u32 (core §2.3), if it is one.
+fn describe_u32(p: &mut Probe, func: u16, tag: u8) -> Result<Option<u32>, OepError> {
+    Ok(p.describe(func)?
+        .iter()
+        .find(|t| t.tag == tag)
+        .filter(|t| t.value.len() == 4)
+        .map(|t| le32(&t.value, 0)))
+}
+
+/// `attach` on `kind`: a new connection (oep-if-debug §1, §3).
 pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attached, OepError> {
     let func = p.interface(kind.interface())?.func;
-    let method = if o.halt {
+    let pins = match o.pins {
+        Some(pins) => pins,
+        None => {
+            let pairs = candidate_pairs(p, kind)?;
+            match pairs[..] {
+                [one] => one,
+                _ => {
+                    return Err(OepError::Malformed(format!(
+                        "name the pins: {} allows {} pairs",
+                        kind.interface(),
+                        pairs.len()
+                    )));
+                }
+            }
+        }
+    };
+    // Method 1 only where the wire offers it (describe features bit0 attach_halt).
+    let features = p
+        .describe(func)?
+        .iter()
+        .find(|t| t.tag == describe_common::FEATURES)
+        .and_then(|t| t.value.first().copied())
+        .unwrap_or(0);
+    let halt_in_attach = o.halt && features & wire::enums::features::ATTACH_HALT != 0;
+    let method = if halt_in_attach {
         wire::enums::attach_method::HALT
     } else {
         wire::enums::attach_method::RUN
     };
+    let declared_max = describe_u32(p, func, describe_common::MAX_CLOCK_HZ)?;
+    let min_hz = describe_u32(p, func, describe_common::MIN_CLOCK_HZ)?.unwrap_or(1);
+    let hz = o
+        .max_speed_hz
+        .or(declared_max)
+        .unwrap_or(1_000_000)
+        .max(min_hz)
+        .max(1);
+    // method(u8) swdio(u16) swclk(u16) max_speed(u32), then TLVs.
     let mut pl = vec![method];
-    // Required on attach (oep-if-debug §1); without the caller's, the wire's own ceiling.
-    let hz = match o.max_speed_hz {
-        Some(hz) => hz,
-        None => p
-            .describe(func)?
-            .iter()
-            .find(|t| t.tag == describe_common::MAX_CLOCK_HZ && t.value.len() == 4)
-            .map_or(1_000_000, |t| le32(&t.value, 0)),
-    };
-    put_tlv(
-        &mut pl,
-        wire::tlvs::attach::MAX_SPEED,
-        true,
-        &hz.to_le_bytes(),
-    );
-    if let Some((d, c)) = o.pins {
-        let mut v = d.to_le_bytes().to_vec();
-        v.extend_from_slice(&c.to_le_bytes());
-        put_tlv(&mut pl, wire::tlvs::attach::PINS, true, &v);
-    }
+    pl.extend_from_slice(&pins.0.to_le_bytes());
+    pl.extend_from_slice(&pins.1.to_le_bytes());
+    pl.extend_from_slice(&hz.to_le_bytes());
     // Low only: high is the default, so the TLV says something only when it is low.
     if kind == WireKind::Rvswd && o.idle_clock == Some(wire::enums::idle_clock::LOW) {
         put_tlv(
@@ -113,12 +229,13 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
         put_tlv(&mut pl, wire::tlvs::attach::RESET, true, &v);
     }
     let a = check(p.call(func, wire::op::ATTACH, pl)?)?;
-    if a.len() < 11 {
+    // connection(u32) id(u32: DMSTATUS) flags(u8: attach_flags) speed_hz(u32), [TLV]
+    if a.len() < 13 {
         return Err(OepError::Malformed(
-            "attach answer shorter than 11 bytes".into(),
+            "attach answer shorter than 13 bytes".into(),
         ));
     }
-    let tail = parse_tlvs(&a[11..]).map_err(|e| OepError::Malformed(e.to_string()))?;
+    let tail = parse_tlvs(&a[13..]).map_err(|e| OepError::Malformed(e.to_string()))?;
     let wch_chip_id = tail
         .iter()
         .find(|t| t.tag == wire::tlvs::attach_answer::TARGET_ID)
@@ -127,22 +244,60 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
                 && t.value[0] == crate::registry::common::enum_::target_id_scheme::DMI_7F)
                 .then(|| le32(&t.value, 1))
         });
-    // connection(u16), id(u32: DMSTATUS), flags(u8: attach_flags), speed_hz(u32), [TLV]
     use wire::enums::attach_flags as f;
-    let halted = (a[6] & f::HALTED != 0).then(|| {
+    let flags = a[8];
+    let mut halted = (flags & f::HALTED != 0).then(|| {
         tail.iter()
-            .find(|t| t.tag == wire::tlvs::attach_answer::DPC && t.value.len() >= 4)
+            .find(|t| t.tag == wire::tlvs::attach_answer::DPC && t.value.len() == 4)
             .map_or(0, |t| le32(&t.value, 0))
     });
+    let connection = le32(&a, 0);
+    let existing = has_named_extension(&tail, SHARED_EXTENSION);
+    if o.halt && halted.is_none() {
+        // The wire has no halting attach: halt now, the riscv-dm halt op if offered, else
+        // haltreq through dmi in one request (oep-if-debug §4.1).
+        halt_after_attach(p, connection)?;
+        halted = Some(0);
+    }
     Ok(Attached {
-        connection: le16(&a, 0),
-        dmstatus: le32(&a, 2),
-        acked_havereset: a[6] & f::HAVERESET_ACKED != 0,
-        existing: a[6] & f::EXISTING != 0,
-        speed_hz: le32(&a, 7),
+        connection,
+        dmstatus: le32(&a, 4),
+        acked_havereset: flags & f::HAVERESET_ACKED != 0,
+        speed_hz: le32(&a, 9),
         wch_chip_id,
         halted,
+        existing,
     })
+}
+
+/// Halt the hart on `connection` right after a running attach.
+fn halt_after_attach(p: &mut Probe, connection: u32) -> Result<(), OepError> {
+    let func = p.interface(dm::NAME)?.func;
+    let body = connection.to_le_bytes().to_vec();
+    if p.offers(func, dm::op::HALT)? {
+        let a = check(p.call(func, dm::op::HALT, body)?)?;
+        return match a.first() {
+            Some(&s) if s == status::OK => Ok(()),
+            _ => Err(OepError::Malformed("halt after attach failed".into())),
+        };
+    }
+    // haltreq, wait for allhalted (DMSTATUS bit 9), then drop haltreq (dmactive kept).
+    use crate::registry::target_riscv_dm::enums::dmi_step as k;
+    let mut pl = body;
+    pl.extend_from_slice(&3u16.to_le_bytes());
+    pl.extend_from_slice(&[k::WRITE, 0x10]);
+    pl.extend_from_slice(&0x8000_0001u32.to_le_bytes());
+    pl.extend_from_slice(&[k::POLL_READS, 0x11]);
+    pl.extend_from_slice(&0x200u32.to_le_bytes());
+    pl.extend_from_slice(&0x200u32.to_le_bytes());
+    pl.extend_from_slice(&64u16.to_le_bytes());
+    pl.extend_from_slice(&[k::WRITE, 0x10]);
+    pl.extend_from_slice(&1u32.to_le_bytes());
+    let a = check(p.call(func, dm::op::DMI, pl)?)?;
+    match a.get(2) {
+        Some(&s) if s == status::OK => Ok(()),
+        _ => Err(OepError::Malformed("halt after attach (dmi) failed".into())),
+    }
 }
 
 /// One pair a scan found.
@@ -157,20 +312,21 @@ pub struct Found {
     pub status: u32,
 }
 
-/// en: `scan` every pair the probe allows (count 0), going on with `skip` until a scan tries none
-/// (oep-if-debug §1: at most 255 pairs a scan). The pairs found go to attach as they are.
-/// ja: probe が許すすべての組を scan する(count 0)。1 回は 255 組までなので、skip で続け、何も試さ
-/// なくなったら終わり。見つかった組はそのまま attach の pins に渡せる。
+/// en: `scan` the pairs the wire's describe allows (the host builds the list; scan has no
+/// implicit one, oep-if-debug §1): up to 255 pairs a request, the probe answering how many it
+/// tried from the front; the rest go in the next request. A scan of an rvswd line may wake and
+/// reset a target: it is an explicit tool action, never part of resolving an address.
+/// ja: describe が許す組を scan する(1 回 255 組まで、tried だけ進めて残りを次へ)。
 pub fn scan_all(p: &mut Probe, kind: WireKind) -> Result<Vec<Found>, OepError> {
     let func = p.interface(kind.interface())?.func;
+    let mut pairs = candidate_pairs(p, kind)?;
     let mut found = Vec::new();
-    let mut skip: u32 = 0;
-    // A probe offers far fewer pairs than this; the bound only stops a probe that never says 0.
-    for _ in 0..512 {
-        let mut pl = vec![0u8];
-        if skip > 0 {
-            let s = u16::try_from(skip).unwrap_or(u16::MAX);
-            put_tlv(&mut pl, wire::tlvs::scan::SKIP, false, &s.to_le_bytes());
+    while !pairs.is_empty() {
+        let chunk = &pairs[..pairs.len().min(255)];
+        let mut pl = vec![chunk.len() as u8];
+        for (d, c) in chunk {
+            pl.extend_from_slice(&d.to_le_bytes());
+            pl.extend_from_slice(&c.to_le_bytes());
         }
         let a = check(p.call(func, wire::op::SCAN, pl)?)?;
         let (Some(&tried), Some(&count)) = (a.first(), a.get(1)) else {
@@ -191,9 +347,12 @@ pub fn scan_all(p: &mut Probe, kind: WireKind) -> Result<Vec<Found>, OepError> {
             });
         }
         if tried == 0 {
-            break;
+            return Err(OepError::Malformed(format!(
+                "scan tried none of {} pairs",
+                chunk.len()
+            )));
         }
-        skip += u32::from(tried);
+        pairs.drain(..usize::from(tried).min(pairs.len()));
     }
     Ok(found)
 }
@@ -201,16 +360,17 @@ pub fn scan_all(p: &mut Probe, kind: WireKind) -> Result<Vec<Found>, OepError> {
 /// One live connection of a wire (oep-if-debug §2.1 `connections`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Connection {
-    pub connection: u16,
-    /// The slot it belongs to (0xFF: a host's).
-    pub slot: u8,
+    pub connection: u32,
+    pub swdio: u16,
+    pub swclk: u16,
+    pub speed_hz: u32,
     /// The target id read at attach: (scheme, value).
     pub target_id: Option<(u8, Vec<u8>)>,
 }
 
 /// en: `connections` of the wire at `func` (lock-free), following `more`: each entry is
-/// connection(u16) swdio(u16) swclk(u16) speed_hz(u32) users(u8) slot(u8) tid_scheme(u8)
-/// tid_len(u8) tid. ja: wire の connections(ロック不要)。
+/// connection(u32) swdio(u16) swclk(u16) speed_hz(u32) tid_scheme(u8) tid_len(u8) tid.
+/// ja: wire の connections(ロック不要)。
 pub fn connections(p: &mut Probe, func: u16) -> Result<Vec<Connection>, OepError> {
     let mut out = Vec::new();
     for _ in 0..16 {
@@ -235,8 +395,10 @@ pub fn connections(p: &mut Probe, func: u16) -> Result<Vec<Connection>, OepError
                 .ok_or_else(|| OepError::Malformed("connections tid cut short".into()))?
                 .to_vec();
             out.push(Connection {
-                connection: le16(e, 0),
-                slot: e[11],
+                connection: le32(e, 0),
+                swdio: le16(e, 4),
+                swclk: le16(e, 6),
+                speed_hz: le32(e, 8),
                 target_id: (e[12] != 0).then_some((e[12], tid)),
             });
             at += 14 + len;
@@ -248,14 +410,10 @@ pub fn connections(p: &mut Probe, func: u16) -> Result<Vec<Connection>, OepError
     Ok(out)
 }
 
-/// `detach`: drop this session's use of the connection (`force` closes it for everyone).
-pub fn detach(p: &mut Probe, kind: WireKind, connection: u16, force: bool) -> Result<(), OepError> {
+/// `detach`: close the connection and its streams (oep-if-debug §2).
+pub fn detach(p: &mut Probe, kind: WireKind, connection: u32) -> Result<(), OepError> {
     let func = p.interface(kind.interface())?.func;
-    let mut pl = connection.to_le_bytes().to_vec();
-    if force {
-        put_tlv(&mut pl, wire::tlvs::detach::FORCE, true, &[]);
-    }
-    check(p.call(func, wire::op::DETACH, pl)?).map(|_| ())
+    check(p.call(func, wire::op::DETACH, connection.to_le_bytes().to_vec())?).map(|_| ())
 }
 
 /// One DMI step (oep-if-debug §2.1).
@@ -290,28 +448,40 @@ pub struct DmiResult {
 pub struct OepDtm<'a> {
     probe: &'a mut Probe,
     func: u16,
-    connection: u16,
+    connection: u32,
     max_words: usize,
     /// The probe's `max_op_ms`: a run's timeout stays at or under it.
     max_op_ms: u32,
+    /// The optional ops the fn offers (only dmi is required, oep-if-debug §4).
+    offered: Offered,
 }
 
-/// en: The most words one block request may carry: the describe `max_length` (bytes; the probe
-/// declares it so that requests and answers fit its max_frame, oep-if-debug §4.5), not computed
-/// from max_frame. Only a probe that does not declare it (it must) falls back to what fits
-/// max_frame (session header 10, connection + address + count 8) and the reference 256 words.
-/// ja: 1 回の block の語数の上限は describe の max_length(byte 数)。max_frame からは計算しない。宣言の
-/// 無い probe(宣言は必須)だけ、max_frame に入る数と 256 語に落とす。
+/// The riscv-dm ops beyond dmi that the fn declares in describe ops.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Offered {
+    pub halt: bool,
+    pub resume: bool,
+    pub reset: bool,
+    /// read_block and write_block (declared as a pair).
+    pub blocks: bool,
+    pub run: bool,
+}
+
+/// en: The most words one block request may carry (oep-if-debug §4.5): within the describe
+/// `max_length` (bytes) and within max_frame - a write's request carries 20 bytes besides the
+/// words (header 10, connection 4, address 4, count 2), a read's answer 8 - so the write's
+/// bound, the smaller, is used for both. ja: max_length と max_frame の小さい方(write の 20 byte)。
 fn block_words(max_frame: u16, max_length: Option<u16>) -> usize {
+    let by_frame = usize::from(max_frame).saturating_sub(20) / 4;
     match max_length {
-        Some(b) => (usize::from(b) / 4).max(1),
-        None => ((usize::from(max_frame).saturating_sub(18)) / 4).clamp(1, 256),
+        Some(b) => (usize::from(b) / 4).min(by_frame).max(1),
+        None => by_frame.clamp(1, 256),
     }
 }
 
 impl<'a> OepDtm<'a> {
     /// Use `connection` (from [`attach`]) through `probe`.
-    pub fn new(probe: &'a mut Probe, connection: u16) -> Result<Self, OepError> {
+    pub fn new(probe: &'a mut Probe, connection: u32) -> Result<Self, OepError> {
         let func = probe.interface(dm::NAME)?.func;
         let max_length = probe
             .describe(func)?
@@ -320,16 +490,30 @@ impl<'a> OepDtm<'a> {
             .map(|t| le16(&t.value, 0));
         let max_words = block_words(probe.limits().max_frame, max_length);
         let max_op_ms = probe.max_op_ms()?;
+        let ops = probe.ops(func)?.unwrap_or_default();
+        let offered = Offered {
+            halt: ops.contains(&dm::op::HALT),
+            resume: ops.contains(&dm::op::RESUME),
+            reset: ops.contains(&dm::op::RESET),
+            blocks: ops.contains(&dm::op::READ_BLOCK) && ops.contains(&dm::op::WRITE_BLOCK),
+            run: ops.contains(&dm::op::RUN),
+        };
         Ok(OepDtm {
             probe,
             func,
             connection,
             max_words,
             max_op_ms,
+            offered,
         })
     }
 
-    pub fn connection(&self) -> u16 {
+    /// The optional riscv-dm ops this probe offers.
+    pub fn offered(&self) -> Offered {
+        self.offered
+    }
+
+    pub fn connection(&self) -> u32 {
         self.connection
     }
 
@@ -342,14 +526,14 @@ impl<'a> OepDtm<'a> {
     /// an `OepDtm` per poll can skip the describe round trip with [`Self::from_parts`].
     /// ja: [`Self::new`] が調べた値(riscv-dm の fn と block の大きさ)。poll ごとに作る呼び出し側は
     /// [`Self::from_parts`] で describe の往復を省ける。
-    pub fn parts(&self) -> (u16, usize, u32) {
-        (self.func, self.max_words, self.max_op_ms)
+    pub fn parts(&self) -> (u16, usize, u32, Offered) {
+        (self.func, self.max_words, self.max_op_ms, self.offered)
     }
 
     pub fn from_parts(
         probe: &'a mut Probe,
-        connection: u16,
-        (func, max_words, max_op_ms): (u16, usize, u32),
+        connection: u32,
+        (func, max_words, max_op_ms, offered): (u16, usize, u32, Offered),
     ) -> Self {
         OepDtm {
             probe,
@@ -357,6 +541,7 @@ impl<'a> OepDtm<'a> {
             connection,
             max_words,
             max_op_ms,
+            offered,
         }
     }
 
@@ -444,12 +629,14 @@ impl<'a> OepDtm<'a> {
         dpc
     }
 
-    /// A status-only answer (halt / resume): ok, or the status as the error.
+    /// A status-only answer (halt / resume): success and ok, or the status as the error.
     fn status_op(&mut self, op: u8, what: &str) -> Result<(), DmiError> {
         let body = self.body();
-        let a = completed(self.call(op, body)?)?;
+        let r = self.call(op, body)?;
+        let ok = r.succeeded();
+        let a = completed(r)?;
         match a.first() {
-            Some(&s) if s == status::OK => Ok(()),
+            Some(&s) if s == status::OK && ok => Ok(()),
             Some(&s) => Err(failed(what, s)),
             None => Err(short(what)),
         }
@@ -525,55 +712,45 @@ impl DtmAccess for OepDtm<'_> {
     }
 }
 
-/// How often a block op that came back `line` / `fault`, or whose answer was lost, is sent again.
+/// How often a read_block that came back `line` / `fault`, or whose answer was lost, is sent again.
 const BLOCK_TRIES: usize = 4;
 /// The pause before sending it again (a link drop on rvswd takes a few ms to clear).
 const BLOCK_PAUSE: Duration = Duration::from_millis(10);
 
 impl OepDtm<'_> {
-    /// en: A read_block / write_block answer, sent again (as a new request, after a short pause)
-    /// while it is `result_lost` (the answer was lost and not kept, core §5.2) or reports `line` /
-    /// `fault` (the probe saw the link drop and could not confirm the words). Both ops are
-    /// idempotent: reading or writing the same words again changes nothing else. Seen on the L103
-    /// behind the RP2350 (write_block fault, 2 in 60 uploads, 2026-10-06).
-    /// A write_block resumes after the words it reports done (oep-if-debug §4.5).
-    /// ja: block の read / write を、答えが失われたとき・line / fault のときに送り直す。write は
-    /// 書けたと答えた語の後ろから。
+    /// en: A block answer as (succeeded, payload). A read_block is sent again (as a new request,
+    /// after a short pause) while it is `result_lost` or reports `line` / `fault`: reading the
+    /// same words again changes nothing. A write_block is never sent again: a store that may
+    /// have reached the target is not repeated under a new corr (core §5, oep-if-common §3; a
+    /// FLASH key written twice jams the controller) - its failure goes to the caller, who
+    /// checks the connection and starts over.
+    /// ja: read_block は result_lost / line / fault で送り直す。write_block は送り直さない
+    /// (届いたかもしれない書き込みは新しい corr で繰り返さない)。
     fn block_again(
         &mut self,
         mut r: Reply,
-        mut call: (u16, u8, Vec<u8>),
-    ) -> Result<Vec<u8>, DmiError> {
+        call: (u16, u8, Vec<u8>),
+    ) -> Result<(bool, Vec<u8>), DmiError> {
         let lost = Resolution::Rejected(crate::registry::reject_reasons::RESULT_LOST);
-        for _ in 1..BLOCK_TRIES {
-            let again = r.resolution == lost
-                || (matches!(r.resolution, Resolution::Completed(_))
-                    && matches!(r.payload.get(2), Some(&s) if s == status::LINE || s == status::FAULT));
-            if !again {
-                break;
-            }
-            // A write_block that failed with `done` words confirmed written goes on after them:
-            // those are not written twice (a FLASH key written twice jams the controller).
-            if call.1 == dm::op::WRITE_BLOCK && r.resolution != lost {
-                let done = usize::from(le16(&r.payload, 0));
-                let pl = &mut call.2;
-                let count = usize::from(le16(pl, 6));
-                if done > 0 && done < count {
-                    let addr = le32(pl, 2) + 4 * done as u32;
-                    pl[2..6].copy_from_slice(&addr.to_le_bytes());
-                    pl[6..8].copy_from_slice(&((count - done) as u16).to_le_bytes());
-                    pl.drain(8..8 + 4 * done);
+        if call.1 == dm::op::READ_BLOCK {
+            for _ in 1..BLOCK_TRIES {
+                let again = r.resolution == lost
+                    || (matches!(r.resolution, Resolution::Completed(_))
+                        && matches!(r.payload.get(2), Some(&s) if s == status::LINE || s == status::FAULT));
+                if !again {
+                    break;
                 }
+                std::thread::sleep(BLOCK_PAUSE);
+                r = self
+                    .probe
+                    .exchange(vec![call.clone()])
+                    .map_err(transport)?
+                    .pop()
+                    .ok_or_else(|| short("block"))?;
             }
-            std::thread::sleep(BLOCK_PAUSE);
-            r = self
-                .probe
-                .exchange(vec![call.clone()])
-                .map_err(transport)?
-                .pop()
-                .ok_or_else(|| short("block"))?;
         }
-        completed(r)
+        let ok = r.succeeded();
+        Ok((ok, completed(r)?))
     }
 }
 
@@ -583,6 +760,16 @@ impl TargetAccess for OepDtm<'_> {
     }
 
     fn read_words(&mut self, addr: u32, count: usize) -> Result<Vec<u32>, DmiError> {
+        if !self.offered.blocks {
+            // No block ops (optional, oep-if-debug §4.5): word by word through the Debug Module.
+            let bytes = ch32rv_dmi::DebugModule::new(self).read_mem(addr, 4 * count as u32)?;
+            return Ok(bytes
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect());
+        }
         let mut out = Vec::with_capacity(count);
         let mut calls = Vec::new();
         let mut at = 0;
@@ -596,7 +783,7 @@ impl TargetAccess for OepDtm<'_> {
         }
         let replies = self.probe.exchange(calls.clone()).map_err(transport)?;
         for (r, call) in replies.into_iter().zip(calls) {
-            let a = self.block_again(r, call)?;
+            let (ok, a) = self.block_again(r, call)?;
             if a.len() < 3 {
                 return Err(short("read_block"));
             }
@@ -609,7 +796,7 @@ impl TargetAccess for OepDtm<'_> {
                     .take(done)
                     .map(|c| u32::from_le_bytes(*c)),
             );
-            if a[2] != status::OK {
+            if a[2] != status::OK || !ok {
                 return Err(failed("read_block", a[2]));
             }
         }
@@ -617,6 +804,10 @@ impl TargetAccess for OepDtm<'_> {
     }
 
     fn write_words(&mut self, addr: u32, words: &[u32]) -> Result<(), DmiError> {
+        if !self.offered.blocks {
+            let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+            return ch32rv_dmi::DebugModule::new(self).write_mem(addr, &bytes);
+        }
         let calls: Vec<(u16, u8, Vec<u8>)> = words
             .chunks(self.max_words)
             .enumerate()
@@ -632,9 +823,9 @@ impl TargetAccess for OepDtm<'_> {
             .collect();
         let replies = self.probe.exchange(calls.clone()).map_err(transport)?;
         for (r, call) in replies.into_iter().zip(calls) {
-            let a = self.block_again(r, call)?;
+            let (ok, a) = self.block_again(r, call)?;
             match a.get(2) {
-                Some(&s) if s == status::OK => {}
+                Some(&s) if s == status::OK && ok => {}
                 Some(&s) => return Err(failed("write_block", s)),
                 None => return Err(short("write_block")),
             }
@@ -671,6 +862,10 @@ impl TargetAccess for OepDtm<'_> {
             return Err(short("run"));
         }
         let s = a[0];
+        if a[1] == dm::enums::run_stopped::NOT_RUN {
+            // The preparation failed: the code did not run (oep-if-debug §4.4).
+            return Err(failed("run (not run)", s));
+        }
         if a[1] == dm::enums::run_stopped::NOT_HALTED {
             // Could not halt the hart after the timeout: dpc and values mean nothing.
             return Err(failed("run", s));
@@ -691,38 +886,45 @@ impl TargetAccess for OepDtm<'_> {
     }
 
     fn halt(&mut self) -> Result<(), DmiError> {
-        self.status_op(dm::op::HALT, "halt")
+        if self.offered.halt {
+            self.status_op(dm::op::HALT, "halt")
+        } else {
+            ch32rv_dmi::DebugModule::new(self).halt()
+        }
     }
 
     fn resume_once(&mut self) -> Result<(), DmiError> {
-        self.status_op(dm::op::RESUME, "resume")
+        if self.offered.resume {
+            self.status_op(dm::op::RESUME, "resume")
+        } else {
+            ch32rv_dmi::DebugModule::new(self).resume()
+        }
     }
 
     fn reset(&mut self, mode: ResetMode) -> Result<ResetResult, DmiError> {
+        // Mode 0 (run) always checks that the hart runs; mode 1 halts it at the reset vector
+        // (oep-if-debug §4.3: halt_at_reset is 1 since oep-spec 675288a).
         let mut pl = self.body();
         pl.push(match mode {
-            ResetMode::Run => dm::enums::reset_mode::RUN,
-            ResetMode::RunVerified => dm::enums::reset_mode::RUN_VERIFIED,
+            ResetMode::Run | ResetMode::RunVerified => dm::enums::reset_mode::RUN,
             ResetMode::HaltAtReset => dm::enums::reset_mode::HALT_AT_RESET,
         });
         let r = self.call(dm::op::RESET, pl)?;
-        // en: A reset that did not reach the mode is completed failed with the full answer
-        // (oep-if-debug §4.3); only the outcome tells it from success.
-        // ja: mode の状態に達しない reset は、同じ形の completed failed(§4.3)。outcome でだけ分かる。
-        let reached = r.succeeded();
+        // en: A reset that did not reach the mode is completed failed with the same answer and
+        // status timeout; only the outcome and flags bit0 (reached) tell it from success.
+        // ja: mode の状態に達しない reset は、同じ形の completed failed(status timeout)。
+        let succeeded = r.succeeded();
         let a = completed(r)?;
-        if a.len() == 1 {
-            return Err(failed("reset", a[0]));
-        }
         // status(u8) flags(u8) pc(u32) [TLV] (oep-if-debug §4.3).
         if a.len() < 6 {
             return Err(short("reset"));
         }
-        if a[0] != status::OK {
-            return Err(failed("reset", a[0]));
-        }
-        if !reached {
+        let reached = a[1] & dm::enums::reset_flags::REACHED != 0;
+        if !succeeded && a[0] == status::TIMEOUT && !reached {
             return Err(DmiError::NotReached(format!("flags 0x{:02x}", a[1])));
+        }
+        if a[0] != status::OK || !succeeded {
+            return Err(failed("reset", a[0]));
         }
         Ok(ResetResult { pc: le32(&a, 2) })
     }
@@ -771,10 +973,11 @@ mod tests {
     use super::block_words;
 
     #[test]
-    fn block_size_is_the_declared_max_length() {
-        // Declared: taken as it is (oep-if-debug §4.5), whatever max_frame says.
+    fn block_size_fits_max_length_and_max_frame() {
+        // Declared: within it and within max_frame (a write's 20 bytes besides the words).
         assert_eq!(block_words(1024, Some(1000)), 250);
         assert_eq!(block_words(4096, Some(2048)), 512);
+        assert_eq!(block_words(1024, Some(2048)), 251);
         // Not declared (it must be): what fits max_frame, at most 256 words.
         assert_eq!(block_words(1024, None), 251);
         assert_eq!(block_words(4096, None), 256);

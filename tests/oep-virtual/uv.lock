@@ -11,12 +11,12 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "oep-client-python", git = "https://github.com/Open-Embedded-Probe/oep-client-python?rev=068c6bed7571d637a5b3843ab27d58c50efcf589" }]
+requires-dist = [{ name = "oep-client-python", git = "https://github.com/Open-Embedded-Probe/oep-client-python?rev=81f6bd6bc474dcc2dc40cb1c6259e79cb984409e" }]
 
 [[package]]
 name = "oep-client-python"
 version = "0.0.31"
-source = { git = "https://github.com/Open-Embedded-Probe/oep-client-python?rev=068c6bed7571d637a5b3843ab27d58c50efcf589#068c6bed7571d637a5b3843ab27d58c50efcf589" }
+source = { git = "https://github.com/Open-Embedded-Probe/oep-client-python?rev=81f6bd6bc474dcc2dc40cb1c6259e79cb984409e#81f6bd6bc474dcc2dc40cb1c6259e79cb984409e" }
 dependencies = [
     { name = "pyserial" },
     { name = "pyusb" },

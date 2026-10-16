@@ -35,12 +35,15 @@ const FN_CONSOLE: u16 = 4;
 const FN_WCHLINK: u16 = 5;
 /// The name of ch32rv's own interface (reverse DNS, core §12).
 pub(crate) const WCHLINK_IF: &str = "io.github.ch32-riscv-ug.wchlink";
-/// Its ops.
-pub(crate) const OP_LEND: u8 = 0x01;
-pub(crate) const OP_RECLAIM: u8 = 0x02;
-/// The one connection a Link has.
-const CONN: u16 = 1;
-/// Streams listed per STREAMS answer (7 bytes each).
+/// Its ops (0x01-0x0F are the common range of every interface, core §3: subscribe, ...).
+pub(crate) const OP_LEND: u8 = 0x10;
+pub(crate) const OP_RECLAIM: u8 = 0x11;
+/// The one connection a Link has (resource ids are u32, core §9).
+const CONN: u32 = 1;
+/// The Link's two debug lines as channels (fn 0 describe `channels`): SWDIO/DAT and SWCLK.
+const CH_SWDIO: u16 = 0;
+const CH_SWCLK: u16 = 1;
+/// Streams listed per STREAMS answer (9 bytes each).
 const STREAMS_PER_ANSWER: usize = 32;
 /// A console keeps this much output for its readers.
 const CONSOLE_KEEP: usize = 64 * 1024;
@@ -54,8 +57,16 @@ const INTERFACES: [(u16, &str); 5] = [
     (FN_WCHLINK, WCHLINK_IF),
 ];
 
+/// The console mechanisms this broker offers, in describe order: the wire value is the place
+/// (from 1) in this list (a named list, core §7.7).
+const MECHANISMS: [&str; 2] = [
+    console::names::mechanism::DMDATA,
+    console::names::mechanism::DMSEQ,
+];
+
 struct Console {
     src: DmiSource,
+    /// The mechanism's place in [`MECHANISMS`] (1-based).
     mech: u8,
     buf: VecDeque<u8>,
     /// Stream position of `buf[0]`.
@@ -70,8 +81,8 @@ pub(crate) struct WchUpstream {
     /// Something was written (block, dmi write, run) since the attach: the Link's fast read may
     /// then return stale bytes, so reads go through the Debug Module.
     dirty: bool,
-    consoles: HashMap<u16, Console>,
-    next_stream: u16,
+    consoles: HashMap<u32, Console>,
+    next_stream: u32,
     lock_timeout: Duration,
     /// The client the Link is lent to (its session dropped so the client can open the Link
     /// directly), and whether a connection existed to be restored.
@@ -114,6 +125,14 @@ fn rejected(reason: u8) -> Reply {
     Reply {
         resolution: Resolution::Rejected(reason),
         payload: Vec::new(),
+    }
+}
+
+/// `unavailable` with its cause TLV (core §4.3).
+fn unavailable(cause: u8) -> Reply {
+    Reply {
+        resolution: Resolution::Rejected(reject_reasons::UNAVAILABLE),
+        payload: tlv(oep_core::tlvs::unavailable_payload::CAUSE, &[cause]),
     }
 }
 
@@ -230,31 +249,43 @@ impl WchUpstream {
                 let mut out = (hits.len() as u16).to_le_bytes().to_vec();
                 let page = &hits[usize::from(first).min(hits.len())..];
                 out.push(page.len() as u8);
-                // Each entry: fn, instance, revision, flags, name (core §7.2; no element length).
+                // Each entry: fn, instance, revision, name_len, name (core §7.2; no element length).
                 for (func, name) in page {
                     out.extend_from_slice(&func.to_le_bytes());
                     out.extend_from_slice(&0u16.to_le_bytes()); // instance
-                    out.extend_from_slice(&[1, 0, name.len() as u8]);
+                    out.extend_from_slice(&[1, name.len() as u8]);
                     out.extend_from_slice(name.as_bytes());
                 }
                 ok(out)
             }
             o if o == oep_core::op::DESCRIBE => {
-                let Some(func) = le16(p, 0) else {
+                // fn(u16) first(u16): the TLVs from index `first` (core §7.3).
+                let (Some(func), Some(first)) = (le16(p, 0), le16(p, 2)) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
-                let tlvs: Vec<u8> = match func {
+                let tlvs: Vec<Vec<u8>> = match func {
                     f if f == oep_core::FN => {
-                        let mut v = tlv(
+                        let mut v = vec![tlv(
                             oep_core::tlvs::describe::MODEL,
                             format!("{} via ch32rv broker", self.model()).as_bytes(),
-                        );
-                        v.extend(tlv(
+                        )];
+                        // unit_id (required): the Link's serial, a-z 0-9 - only.
+                        v.push(tlv(
+                            oep_core::tlvs::describe::UNIT_ID,
+                            self.unit_id().as_bytes(),
+                        ));
+                        // transport (required): index 0, the broker's local endpoint (kind TCP).
+                        v.push(tlv(
+                            oep_core::tlvs::describe::TRANSPORT,
+                            &[0, oep_core::enums::transport_kind::TCP, 0xFF],
+                        ));
+                        v.push(tlv(oep_core::tlvs::describe::CHANNELS, &2u16.to_le_bytes()));
+                        v.push(tlv(
                             oep_core::tlvs::describe::MAX_OP_MS,
                             &MAX_OP_MS.to_le_bytes(),
                         ));
                         use oep_core::op as o;
-                        v.extend(ops_tlv(&[
+                        v.push(ops_tlv(&[
                             o::CONFIRM,
                             o::LIST,
                             o::DESCRIBE,
@@ -267,20 +298,35 @@ impl WchUpstream {
                         v
                     }
                     FN_RVSWD | FN_SWIO => {
-                        let mut v = tlv(wire::tlvs::describe::MAX_CONNECTIONS, &[1]);
-                        v.extend(tlv(
-                            registry::describe_common::MAX_CLOCK_HZ,
-                            &6_000_000u32.to_le_bytes(),
-                        ));
-                        v.extend(ops_tlv(&[wire::op::ATTACH, wire::op::DETACH]));
-                        v
+                        // The Link's lines are fixed: one channel group (role 1 SWDIO, and role 2
+                        // SWCLK on two wires), and attach may halt (features attach_halt).
+                        let mut group = vec![0u8, 1, wire::enums::pin_role::SWDIO];
+                        group.extend_from_slice(&CH_SWDIO.to_le_bytes());
+                        if func == FN_RVSWD {
+                            group[1] = 2;
+                            group.push(wire::enums::pin_role::SWCLK);
+                            group.extend_from_slice(&CH_SWCLK.to_le_bytes());
+                        }
+                        vec![
+                            tlv(wire::tlvs::describe::MAX_CONNECTIONS, &[1]),
+                            tlv(registry::describe_common::CHANNEL_GROUP, &group),
+                            tlv(
+                                registry::describe_common::FEATURES,
+                                &[wire::enums::features::ATTACH_HALT],
+                            ),
+                            tlv(
+                                registry::describe_common::MAX_CLOCK_HZ,
+                                &6_000_000u32.to_le_bytes(),
+                            ),
+                            ops_tlv(&[wire::op::ATTACH, wire::op::DETACH, wire::op::CONNECTIONS]),
+                        ]
                     }
                     FN_DM => {
-                        let mut v = tlv(
+                        let mut v = vec![tlv(
                             registry::describe_common::MAX_LENGTH,
                             &(BLOCK_MAX_LENGTH as u16).to_le_bytes(),
-                        );
-                        v.extend(ops_tlv(&[
+                        )];
+                        v.push(ops_tlv(&[
                             dm::op::DMI,
                             dm::op::HALT,
                             dm::op::RESUME,
@@ -292,33 +338,32 @@ impl WchUpstream {
                         v
                     }
                     FN_CONSOLE => {
-                        let mut v = tlv(
-                            console::tlvs::describe::MECHANISMS,
-                            &[
-                                console::enums::mechanism::DMDATA,
-                                console::enums::mechanism::DMSEQ,
-                            ],
-                        );
-                        v.extend(ops_tlv(&[
+                        // Mechanisms: a named list, one text TLV each (place 1 dmdata, 2 dmseq).
+                        // No marks: marks / clear / mark are optional and not offered.
+                        let mut v: Vec<Vec<u8>> = MECHANISMS
+                            .iter()
+                            .map(|m| tlv(console::tlvs::describe::MECHANISM, m.as_bytes()))
+                            .collect();
+                        v.push(ops_tlv(&[
                             console::op::OPEN,
                             console::op::READ,
-                            console::op::MARKS,
                             console::op::WRITE,
                             console::op::CLOSE,
-                            console::op::CLEAR,
-                            console::op::MARK,
                             console::op::STREAMS,
                         ]));
                         v
                     }
-                    FN_WCHLINK => ops_tlv(&[OP_LEND, OP_RECLAIM]),
-                    _ => return rejected(reject_reasons::UNAVAILABLE),
+                    FN_WCHLINK => vec![ops_tlv(&[OP_LEND, OP_RECLAIM])],
+                    _ => return rejected(reject_reasons::UNKNOWN_FUNCTION),
                 };
+                // more(u8) then the TLVs from `first`.
                 let mut out = vec![0u8];
-                out.extend(tlvs);
+                for t in tlvs.into_iter().skip(usize::from(first)) {
+                    out.extend(t);
+                }
                 ok(out)
             }
-            _ => rejected(reject_reasons::UNSUPPORTED),
+            _ => rejected(reject_reasons::UNKNOWN_OPERATION),
         }
     }
 
@@ -399,7 +444,9 @@ impl WchUpstream {
         };
         self.dirty = false;
         for x in self.consoles.values_mut() {
-            let source = if x.mech == console::enums::mechanism::DMSEQ {
+            let source = if MECHANISMS.get(usize::from(x.mech).wrapping_sub(1))
+                == Some(&console::names::mechanism::DMSEQ)
+            {
                 MonitorSource::Dmseq
             } else {
                 MonitorSource::Dmdata
@@ -424,20 +471,45 @@ impl WchUpstream {
         "WCH-Link"
     }
 
+    /// The unit id this broker declares: the Link's USB serial, lowercased (a-z 0-9 - only).
+    fn unit_id(&self) -> String {
+        let id: String = self
+            .entry
+            .dev
+            .port_id()
+            .unwrap_or_else(|| "wch-link".to_owned())
+            .to_ascii_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        id.chars().take(32).collect()
+    }
+
     fn wire(&mut self, c: &Call) -> Reply {
         let p = &c.payload;
         match c.op {
             o if o == wire::op::ATTACH => {
-                let Some(&method) = p.first().filter(|&&m| {
-                    m == wire::enums::attach_method::RUN || m == wire::enums::attach_method::HALT
-                }) else {
+                // method(u8) swdio(u16) swclk(u16) max_speed(u32) [TLV] (oep-if-debug §3).
+                let (Some(&method), Some(swdio), Some(swclk), Some(hz)) =
+                    (p.first(), le16(p, 1), le16(p, 3), le32(p, 5))
+                else {
                     return rejected(reject_reasons::MALFORMED);
                 };
-                let tlvs = parse_tlvs(&p[1..]).unwrap_or_default();
-                let max_speed = tlvs
-                    .iter()
-                    .find(|t| t.tag & 0x7F == wire::tlvs::attach::MAX_SPEED)
-                    .and_then(|t| le32(&t.value, 0));
+                if hz == 0 {
+                    return rejected(reject_reasons::MALFORMED);
+                }
+                if method != wire::enums::attach_method::RUN
+                    && method != wire::enums::attach_method::HALT
+                {
+                    return rejected_unsupported_fixed();
+                }
+                // The pins must be the declared group.
+                let want_clk = if c.func == FN_RVSWD { CH_SWCLK } else { 0xFFFF };
+                if swdio != CH_SWDIO || swclk != want_clk {
+                    return rejected_unsupported_fixed();
+                }
+                let _ = parse_tlvs(&p[9..]);
+                let max_speed = Some(hz);
                 let existing = self.session.is_some();
                 if !existing {
                     let speed = match max_speed {
@@ -471,18 +543,16 @@ impl WchUpstream {
                 }
                 let dmstatus = s.dm().dmstatus().unwrap_or(0);
                 let chip_id = s.attach.chip_id;
-                // flags (attach_flags): bit1 existing, bit3 halted with the dpc TLV.
+                // flags (attach_flags): bit3 halted with the dpc TLV.
                 let dpc = if s.dm().is_halted().unwrap_or(false) {
                     s.dm().read_reg(ch32rv_dmi::RegName::Pc).ok()
                 } else {
                     None
                 };
+                // connection(u32) id(u32) flags(u8) speed_hz(u32)
                 let mut out = CONN.to_le_bytes().to_vec();
                 out.extend_from_slice(&dmstatus.to_le_bytes());
                 let mut flags = 0;
-                if existing {
-                    flags |= wire::enums::attach_flags::EXISTING;
-                }
                 if dpc.is_some() {
                     flags |= wire::enums::attach_flags::HALTED;
                 }
@@ -504,24 +574,53 @@ impl WchUpstream {
                 ok(out)
             }
             o if o == wire::op::DETACH => {
-                if le16(p, 0) != Some(CONN) || self.session.is_none() {
-                    return rejected(reject_reasons::NO_CONNECTION);
+                if le32(p, 0) != Some(CONN) || self.session.is_none() {
+                    return rejected(reject_reasons::NO_RESOURCE);
                 }
                 self.consoles.clear();
                 self.session = None; // Session's drop detaches the core and frees the lock
                 ok(Vec::new())
+            }
+            // first(u8) -> more count entries (oep-if-debug §2.1, lock-free): the one connection.
+            o if o == wire::op::CONNECTIONS => {
+                let Some(&first) = p.first() else {
+                    return rejected(reject_reasons::MALFORMED);
+                };
+                let mut out = vec![0u8];
+                match self.session.as_ref().filter(|_| first == 0) {
+                    Some(s) => {
+                        out.push(1);
+                        out.extend_from_slice(&CONN.to_le_bytes());
+                        out.extend_from_slice(&CH_SWDIO.to_le_bytes());
+                        let clk = if c.func == FN_RVSWD { CH_SWCLK } else { 0xFFFF };
+                        out.extend_from_slice(&clk.to_le_bytes());
+                        out.extend_from_slice(&6_000_000u32.to_le_bytes());
+                        let id = s.attach.chip_id;
+                        if id != 0 && id != u32::MAX {
+                            out.extend_from_slice(&[
+                                registry::common::enum_::target_id_scheme::DMI_7F,
+                                4,
+                            ]);
+                            out.extend_from_slice(&id.to_le_bytes());
+                        } else {
+                            out.extend_from_slice(&[0, 0]);
+                        }
+                    }
+                    None => out.push(0),
+                }
+                ok(out)
             }
             _ => rejected(reject_reasons::UNKNOWN_OPERATION),
         }
     }
 
     fn session_for(&mut self, p: &[u8]) -> Result<&mut Session, Reply> {
-        if le16(p, 0) != Some(CONN) {
-            return Err(rejected(reject_reasons::NO_CONNECTION));
+        if le32(p, 0) != Some(CONN) {
+            return Err(rejected(reject_reasons::NO_RESOURCE));
         }
         self.session
             .as_mut()
-            .ok_or_else(|| rejected(reject_reasons::NO_CONNECTION))
+            .ok_or_else(|| rejected(reject_reasons::NO_RESOURCE))
     }
 
     fn riscv_dm(&mut self, c: &Call) -> Reply {
@@ -539,39 +638,49 @@ impl WchUpstream {
             Err(_) => failed(vec![bad]),
         };
         match c.op {
-            o if o == dm::op::DMI => dmi_steps(s, &p[2..]),
+            o if o == dm::op::DMI => dmi_steps(s, &p[4..]),
             o if o == dm::op::HALT => st(s.dm().halt(), status::TIMEOUT),
             o if o == dm::op::RESUME => st(s.dm().resume(), status::STATE),
             o if o == dm::op::RESET => {
-                let mode = match p.get(2) {
+                // Mode 0 run (checked running), 1 halt at reset; anything else unsupported
+                // (oep-if-debug §4.3).
+                let mode = match p.get(4) {
                     Some(&m) if m == dm::enums::reset_mode::HALT_AT_RESET => ResetMode::HaltAtReset,
-                    Some(&m) if m == dm::enums::reset_mode::RUN_VERIFIED => ResetMode::RunVerified,
-                    Some(_) => ResetMode::Run,
+                    Some(&m) if m == dm::enums::reset_mode::RUN => ResetMode::RunVerified,
+                    Some(_) => return rejected_unsupported_fixed(),
                     None => return rejected(reject_reasons::MALFORMED),
                 };
                 match DmTarget::new(s.link()).reset(mode) {
                     Ok(r) => {
-                        // en: flags bit0 = reached the mode, bit1 = checked it runs (mode 1 only,
-                        // and success needs it; oep-if-debug §4.3).
-                        // ja: bit0 = mode の状態に達した、bit1 = 走っているのを確かめた(mode 1 だけ)。
-                        let (reached, flags) = if mode == ResetMode::RunVerified {
-                            let running = s.dm().is_running().unwrap_or(false);
-                            (running, if running { 0b11 } else { 0 })
+                        // flags bit0 = reached: mode 0 running seen, mode 1 halted with dpc read.
+                        let reached = if mode == ResetMode::RunVerified {
+                            s.dm().is_running().unwrap_or(false)
                         } else {
-                            (true, 0b01)
+                            true
                         };
-                        // status(u8) flags(u8) pc(u32)
-                        let mut out = vec![status::OK, flags];
-                        out.extend_from_slice(&r.pc.to_le_bytes());
+                        // status(u8) flags(u8) pc(u32): pc is the dpc for mode 1 only.
+                        let pc = if mode == ResetMode::HaltAtReset {
+                            r.pc
+                        } else {
+                            0
+                        };
+                        let mut out = vec![
+                            if reached { status::OK } else { status::TIMEOUT },
+                            u8::from(reached),
+                        ];
+                        out.extend_from_slice(&pc.to_le_bytes());
                         if reached { ok(out) } else { failed(out) }
                     }
                     Err(_) => failed(vec![status::FAULT, 0, 0, 0, 0, 0]),
                 }
             }
             o if o == dm::op::READ_BLOCK => {
-                let (Some(addr), Some(count)) = (le32(&p, 2), le16(&p, 6)) else {
+                let (Some(addr), Some(count)) = (le32(&p, 4), le16(&p, 8)) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
+                if addr % 4 != 0 {
+                    return rejected(reject_reasons::MALFORMED);
+                }
                 if usize::from(count) * 4 > BLOCK_MAX_LENGTH {
                     return rejected_unsupported_fixed();
                 }
@@ -607,14 +716,17 @@ impl WchUpstream {
                 }
             }
             o if o == dm::op::WRITE_BLOCK => {
-                let (Some(addr), Some(count)) = (le32(&p, 2), le16(&p, 6)) else {
+                let (Some(addr), Some(count)) = (le32(&p, 4), le16(&p, 8)) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
+                if addr % 4 != 0 {
+                    return rejected(reject_reasons::MALFORMED);
+                }
                 if usize::from(count) * 4 > BLOCK_MAX_LENGTH {
                     return rejected_unsupported_fixed();
                 }
                 let words: Vec<u32> = (0..usize::from(count))
-                    .filter_map(|i| le32(&p, 8 + 4 * i))
+                    .filter_map(|i| le32(&p, 10 + 4 * i))
                     .collect();
                 if words.len() != usize::from(count) {
                     return rejected(reject_reasons::MALFORMED);
@@ -631,7 +743,7 @@ impl WchUpstream {
                 out.push(status::OK);
                 ok(out)
             }
-            o if o == dm::op::RUN => run(s, &p[2..]),
+            o if o == dm::op::RUN => run(s, &p[4..]),
             _ => rejected(reject_reasons::UNKNOWN_OPERATION),
         }
     }
@@ -639,20 +751,25 @@ impl WchUpstream {
     fn console(&mut self, c: &Call) -> Reply {
         let p = &c.payload;
         match c.op {
+            // conn(u32) mech(u8: the place in MECHANISMS) -> stream(u32) (oep-if-console §1).
             o if o == console::op::OPEN => {
-                let Some(&mech) = p.get(2) else {
+                let Some(&mech) = p.get(4) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
+                // The broker shares one connection among its clients: a stream already open for
+                // this mechanism is lent to the next client too (its readers keep their own
+                // positions; reads never consume).
                 if let Some((&id, _)) = self.consoles.iter().find(|(_, x)| x.mech == mech) {
-                    let mut out = id.to_le_bytes().to_vec();
-                    out.push(1);
-                    return ok(out);
+                    return ok(id.to_le_bytes().to_vec());
                 }
-                let source = match mech {
-                    m if m == console::enums::mechanism::DMDATA => MonitorSource::Dmdata,
-                    m if m == console::enums::mechanism::DMSEQ => MonitorSource::Dmseq,
-                    _ => return rejected(reject_reasons::UNSUPPORTED),
+                let source = match MECHANISMS.get(usize::from(mech).wrapping_sub(1)) {
+                    Some(&m) if m == console::names::mechanism::DMDATA => MonitorSource::Dmdata,
+                    Some(&m) if m == console::names::mechanism::DMSEQ => MonitorSource::Dmseq,
+                    _ => return rejected_unsupported_fixed(),
                 };
+                if self.next_stream == u32::MAX {
+                    return unavailable(oep_core::enums::unavailable_cause::LIMIT);
+                }
                 let s = match self.session_for(p) {
                     Ok(s) => s,
                     Err(r) => return r,
@@ -663,8 +780,9 @@ impl WchUpstream {
                 };
                 // The mailboxes only move while the core runs.
                 let _ = s.dm().resume();
+                // Numbers are never reused within a boot (core §9).
                 let id = self.next_stream;
-                self.next_stream = self.next_stream.wrapping_add(1).max(CONN + 1);
+                self.next_stream += 1;
                 self.consoles.insert(
                     id,
                     Console {
@@ -675,34 +793,36 @@ impl WchUpstream {
                         input: Vec::new(),
                     },
                 );
-                let mut out = id.to_le_bytes().to_vec();
-                out.push(0);
-                ok(out)
+                ok(id.to_le_bytes().to_vec())
             }
+            // stream(u32) from(u8) arg(u64) max(u16) (oep-if-common §1.2).
             o if o == console::op::READ => {
                 let (Some(id), Some(&from), Some(arg), Some(max)) = (
-                    le16(p, 0),
-                    p.get(2),
-                    p.get(3..11)
+                    le32(p, 0),
+                    p.get(4),
+                    p.get(5..13)
                         .map(|b| u64::from_le_bytes(b.try_into().unwrap_or([0; 8]))),
-                    le16(p, 11),
+                    le16(p, 13),
                 ) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
+                use registry::common::enum_::read_from as f;
+                // No marks are offered: from 3 (last mark) is unsupported, like any other.
+                if from != f::POSITION && from != f::OLDEST && from != f::NOW {
+                    return rejected_unsupported_fixed();
+                }
                 let Some(x) = self.consoles.get(&id) else {
-                    return rejected(reject_reasons::UNAVAILABLE);
+                    return rejected(reject_reasons::NO_RESOURCE);
                 };
                 let end = x.base + x.buf.len() as u64;
-                use registry::common::enum_::read_from as f;
                 let want = match from {
                     f::POSITION => arg,
                     f::OLDEST => x.base,
-                    // No marks are kept here: "the last mark" with none is now (oep-if-common §1.2).
                     _ => end,
                 };
                 let start = want.clamp(x.base, end);
                 let skip = (start - x.base) as usize;
-                let n = usize::from(max).min(x.buf.len() - skip);
+                let n = usize::from(max).min(x.buf.len() - skip).min(4096 - 16);
                 let mut out = start.to_le_bytes().to_vec();
                 let more = skip + n < x.buf.len();
                 let gap = want < x.base;
@@ -711,46 +831,60 @@ impl WchUpstream {
                 out.extend(x.buf.iter().skip(skip).take(n));
                 ok(out)
             }
-            o if o == console::op::MARKS => ok(vec![0, 0]),
+            // stream(u32) count(u16) data (oep-if-common §1.4).
             o if o == console::op::WRITE => {
-                let (Some(id), Some(n)) = (le16(p, 0), le16(p, 2)) else {
+                let (Some(id), Some(n)) = (le32(p, 0), le16(p, 4)) else {
+                    return rejected(reject_reasons::MALFORMED);
+                };
+                let Some(data) = p.get(6..6 + usize::from(n)) else {
                     return rejected(reject_reasons::MALFORMED);
                 };
                 let Some(x) = self.consoles.get_mut(&id) else {
-                    return rejected(reject_reasons::UNAVAILABLE);
+                    return rejected(reject_reasons::NO_RESOURCE);
                 };
-                // accepted = min(count, free room in the send queue) (oep-if-console §2).
-                let data = p.get(4..4 + usize::from(n)).unwrap_or(&[]);
+                // accepted = min(count, free room in the send queue): all taken success, some
+                // partial, none (with something to take) failed.
                 let room = SEND_QUEUE.saturating_sub(x.input.len());
                 let taken = &data[..data.len().min(room)];
                 x.input.extend_from_slice(taken);
-                ok((taken.len() as u16).to_le_bytes().to_vec())
+                let out = (taken.len() as u16).to_le_bytes().to_vec();
+                if taken.len() == data.len() {
+                    ok(out)
+                } else if taken.is_empty() {
+                    failed(out)
+                } else {
+                    Reply {
+                        resolution: Resolution::Completed(outcomes::PARTIAL),
+                        payload: out,
+                    }
+                }
             }
             o if o == console::op::CLOSE => {
-                if let Some(id) = le16(p, 0) {
-                    self.consoles.remove(&id);
+                let Some(id) = le32(p, 0) else {
+                    return rejected(reject_reasons::MALFORMED);
+                };
+                match self.consoles.remove(&id) {
+                    Some(_) => ok(Vec::new()),
+                    None => rejected(reject_reasons::NO_RESOURCE),
                 }
-                ok(Vec::new())
             }
-            o if o == console::op::CLEAR || o == console::op::MARK => ok(Vec::new()),
-            // en: The open streams, from index `first` (oep-if-console §1): more(u8) count(u8), then
-            // count x (stream u16, connection u16, mechanism u8, users u8, state u8). A closed
-            // stream leaves `consoles`, so every one listed is open. A client asks this when the
-            // console falls quiet (is it still open?); without it the Arduino monitor stopped
-            // after the first silence (reason 0x02).
-            // ja: 開いているストリームの一覧。閉じたものは consoles から消えるので、並ぶのは全部 open。
+            // en: The live streams from index `first` (oep-if-console §1, required): more(u8)
+            // count(u8), then count x (stream u32, connection u32, mechanism u8). A closed stream
+            // leaves `consoles`. ja: 生きているストリームの一覧。
             o if o == console::op::STREAMS => {
-                let first = usize::from(le16(p, 0).unwrap_or(0));
-                let mut ids: Vec<(u16, u8)> =
+                let Some(first) = le16(p, 0) else {
+                    return rejected(reject_reasons::MALFORMED);
+                };
+                let mut ids: Vec<(u32, u8)> =
                     self.consoles.iter().map(|(&id, x)| (id, x.mech)).collect();
                 ids.sort_unstable();
-                let rest = ids.get(first..).unwrap_or(&[]);
+                let rest = ids.get(usize::from(first)..).unwrap_or(&[]);
                 let page = &rest[..rest.len().min(STREAMS_PER_ANSWER)];
                 let mut out = vec![u8::from(page.len() < rest.len()), page.len() as u8];
                 for &(id, mech) in page {
                     out.extend_from_slice(&id.to_le_bytes());
                     out.extend_from_slice(&CONN.to_le_bytes());
-                    out.extend([mech, 1, console::enums::stream_state::OPEN]);
+                    out.push(mech);
                 }
                 ok(out)
             }

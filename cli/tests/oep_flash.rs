@@ -129,8 +129,9 @@ fn flash_raw(probe: &str, chip: Option<&str>) -> (bool, serde_json::Value) {
 }
 
 #[test]
-fn the_slot_of_the_boards_family_is_chosen() {
-    // Two slots; the second has no target. The board's family picks the first.
+fn the_one_named_port_is_used() {
+    // The probe keeps no wiring (host guide §5.3): one port named by saved labels (`bench-a.swdio`
+    // / `.swclk` on the first pin group) is chosen without naming it, and its pins come from them.
     let Some(f) = fake(&[
         "--tcp",
         "0",
@@ -138,12 +139,10 @@ fn the_slot_of_the_boards_family_is_chosen() {
         "length",
         "--profile",
         "p4-bench",
-        "--slot",
-        "bench-a",
-        "--slot",
-        "bench-b",
-        "--absent",
-        "1",
+        "--label",
+        "2=bench-a.swdio",
+        "--label",
+        "3=bench-a.swclk",
         "--target-id",
         V203,
     ]) else {
@@ -156,7 +155,8 @@ fn the_slot_of_the_boards_family_is_chosen() {
 }
 
 #[test]
-fn two_slots_of_the_family_stop_with_the_list() {
+fn several_ports_unnamed_stop_with_the_list() {
+    // Two ports and the address names neither: stop (no attach to search, host guide §5.3).
     let Some(f) = fake(&[
         "--tcp",
         "0",
@@ -164,10 +164,14 @@ fn two_slots_of_the_family_stop_with_the_list() {
         "length",
         "--profile",
         "p4-bench",
-        "--slot",
-        "bench-a",
-        "--slot",
-        "bench-b",
+        "--label",
+        "2=bench-a.swdio",
+        "--label",
+        "3=bench-a.swclk",
+        "--label",
+        "4=bench-b.swdio",
+        "--label",
+        "5=bench-b.swclk",
         "--target-id",
         V203,
     ]) else {
@@ -178,7 +182,7 @@ fn two_slots_of_the_family_stop_with_the_list() {
     assert!(!ok);
     let msg = v["error"]["msg"].as_str().unwrap_or_default();
     assert!(
-        msg.contains("2 slot(s)") && msg.contains("bench-a") && msg.contains("bench-b"),
+        msg.contains("2 ports") && msg.contains("bench-a") && msg.contains("bench-b"),
         "{v}"
     );
 }
@@ -255,15 +259,16 @@ fn a_raw_upload_to_a_probe_not_on_usb_is_not_sent_to_its_slots() {
 }
 
 #[test]
-fn flash_where_the_host_picks_the_pins() {
-    // A probe whose wire takes its pins from the host (role_channels) and has no slot: ch32rv
-    // scans for the pair with a target (the fake's is the first, GP0 / GP1) and attaches there.
+fn a_wire_the_host_picks_pins_for_without_labels_asks_for_them() {
+    // A probe whose wire takes its pins from the host (role_channels: hundreds of pairs) and that
+    // keeps no labels (no oep.probe.config): resolving the address must not scan (an rvswd scan
+    // may reset a target, host guide §5.3), so ch32rv stops and asks for the pins.
     let Some(f) = fake(&["--pty", "--profile", "rp2350-pins", "--target-id", V203]) else {
         return;
     };
     let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
-    let v = flash(&probe);
-    let fl = &v["result"]["flash"];
-    assert_eq!(fl["family"], "CH32V20x");
-    assert_eq!(fl["bytes"], 852);
+    let (ok, v) = flash_raw(&probe, None);
+    assert!(!ok);
+    let msg = v["error"]["msg"].as_str().unwrap_or_default();
+    assert!(msg.contains("name the pins"), "{v}");
 }
