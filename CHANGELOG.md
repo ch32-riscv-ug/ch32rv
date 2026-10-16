@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.21.2 - 2026-10-16
+
 - (EN) Follow oep-spec bc52327 (the wire hold, debug §2): a probe keeps a port's lines driven at their rest after a connection closes (not after line loss), so a CH32L103 keeps its halt across processes - `dbg halt` then `dbg resume` no longer finds it running (cmderr 4). The new required op `holds` is read by `ch32rv_oep::target::holds`; the WCH-Link broker declares it and answers no hold. Registry regenerated.
 - (JA) oep-spec bc52327(線の保持、debug §2)に追従。線切れ以外で接続が閉じても probe は口の線を休みの状態で駆動し続けるので、CH32L103 はプロセスをまたいで halt を保つ(`dbg halt` の後の `dbg resume` が、走っている hart に当たって cmderr 4 になっていた)。新しい必須の op `holds` は `ch32rv_oep::target::holds` で読む。WCH-Link のブローカーはこれを宣言し、保持なしと答える。レジストリを再生成。
 
