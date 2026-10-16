@@ -246,6 +246,9 @@ fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
     assert_eq!(a.wch_chip_id, Some(0x2031_0500));
     assert!(a.speed_hz <= 1_000_000);
     assert!(!a.existing);
+    // No idle_clock asked: the probe rests a V203 high and says so (oep-if-debug §3.1).
+    use ch32rv_oep::registry::wire_rvswd::enums::idle_clock;
+    assert_eq!(a.idle_clock, Some(idle_clock::HIGH));
     // Attaching again makes no second connection on held pins: unavailable, cause 1 pin_in_use
     // (oep-if-debug §1; sharing one is a broker's business, not the probe's).
     match attach(&mut p, WireKind::Rvswd, AttachOptions::default()) {
@@ -295,6 +298,26 @@ fn attach_reports_the_wch_chip_id_and_blocks_round_trip() {
 
     let rr = t.reset(ResetMode::HaltAtReset).unwrap();
     assert_eq!(rr.pc, 0);
+    detach(&mut p, WireKind::Rvswd, a.connection).unwrap();
+    p.end().unwrap();
+}
+
+#[test]
+fn a_ch32l103_rests_low_by_its_target_id_in_attach_and_connections() {
+    use ch32rv_oep::registry::wire_rvswd::enums::idle_clock;
+    let Some(f) = fake("cobs", &["--target-id", "0x10310710"]) else {
+        return;
+    };
+    let mut p = probe(&f, Framing::Cobs, Duration::from_secs(2));
+    p.open(random_session_id(), 3000, false, Some("ch32rv test"))
+        .unwrap();
+    let a = attach(&mut p, WireKind::Rvswd, AttachOptions::default()).unwrap();
+    assert_eq!(a.idle_clock, Some(idle_clock::LOW));
+    let func = p.interface(WireKind::Rvswd.interface()).unwrap().func;
+    let c = ch32rv_oep::target::connections(&mut p, func).unwrap();
+    assert_eq!(c.len(), 1);
+    assert_eq!(c[0].connection, a.connection);
+    assert_eq!(c[0].idle_clock, Some(idle_clock::LOW));
     detach(&mut p, WireKind::Rvswd, a.connection).unwrap();
     p.end().unwrap();
 }
