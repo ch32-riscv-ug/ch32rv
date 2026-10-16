@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 /// oep-client-python on oep-spec f8bb2de and after: the virtual bench, with `lose`, `reboot` and
 /// `--announce` (DNS-SD).
-const BENCH_REV: &str = "ac88413c9669cd5c45c8bf95aad594eb206cf607";
+const BENCH_REV: &str = "36d508b9b2e1960fd2ebedd50e2d7343709abed1";
 
 fn target_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();
