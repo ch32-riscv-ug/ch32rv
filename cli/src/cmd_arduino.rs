@@ -71,7 +71,7 @@ fn list_ports() -> Vec<Value> {
 /// labels name. The labels are read lock-free - through the probe's broker when one runs (never started
 /// here), else on its serial port opened briefly - and when the probe cannot be read (another tool
 /// holds the port), the last listing is shown again. Plain serial ports are never opened.
-/// ja: OEP の probe を、登録スロットごとに `oep://<probe>/<slot>` で出す。スロットは lock 無しで読む
+/// ja: OEP の probe を、ラベルが名指すポートごとに `oep://<probe>[/<port>]` で出す。ラベルは lock 無しで読む
 /// (ブローカーが動いていればそこ経由、ここでは起動しない。無ければ serial port を短く開く)。読めなければ
 /// 前回の一覧。普通の serial port は開かない。
 fn oep_ports() -> Vec<Value> {
@@ -118,13 +118,13 @@ fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<V
         "pid": format!("0x{:04x}", dev.pid()),
         "port": path,
     });
-    slot_entries(&mut p, &crate::oep::probe_id(dev), &props)
+    port_entries(&mut p, &crate::oep::probe_id(dev), &props)
 }
 
 /// en: OEP probes on the local network that are not on USB (DNS-SD `_oep._tcp`, oep-spec
-/// transports §3), listed like the USB ones: one `oep://<unit_id>/<slot>` per slot, read over TCP
+/// transports §3), listed like the USB ones: one `oep://<unit_id>[/<port>]` per port, read over TCP
 /// (lock-free) after describe confirmed the unit id; the last listing when it cannot be read.
-/// ja: USB に無い、ネットワークの OEP の probe(DNS-SD)。USB のものと同じくスロットごとに出す。
+/// ja: USB に無い、ネットワークの OEP の probe(DNS-SD)。USB のものと同じくポートごとに出す。
 fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
     let mut out = Vec::new();
     for f in crate::mdns::browse(std::time::Duration::from_millis(600)) {
@@ -147,7 +147,7 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
         };
         let read = opened.ok().and_then(|mut p| {
             p.link().set_timeout(std::time::Duration::from_millis(500));
-            slot_entries(&mut p, &unit, &json!({"tcp": addr, "instance": f.instance}))
+            port_entries(&mut p, &unit, &json!({"tcp": addr, "instance": f.instance}))
         });
         match read {
             Some(ports) => {
@@ -173,7 +173,7 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
 /// attaching: the target is not known until a tool attaches.
 /// ja: probe のポートを discovery の port として出す。ラベルが名指すポートごとに 1 つ、名前が無ければ
 /// `oep://<id>` だけ。attach しないので target は分からない。
-fn slot_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> Option<Vec<Value>> {
+fn port_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> Option<Vec<Value>> {
     let labels = ch32rv_oep::config::labels(p).ok()?;
     let ports = ch32rv_oep::config::ports_named(&labels);
     let entry = |port: Option<&str>| {
@@ -365,9 +365,9 @@ const SERIAL_SOURCES: [MonitorSource; 6] = [
     MonitorSource::FixtureUart,
 ];
 
-/// en: The sources an `oep://<probe>/<slot>` port offers: the slot's console (dmseq, the default,
+/// en: The sources an `oep://<probe>[/<port>]` port offers: the target's console (dmseq, the default,
 /// dmdata, sdi), the probe's fixture UART, and RTT (run by ch32rv over the probe's riscv-dm).
-/// ja: `oep://` の port の source。スロットの console(dmseq 既定 / dmdata / sdi)、fixture の UART、RTT
+/// ja: `oep://` の port の source。target の console(dmseq 既定 / dmdata / sdi)、fixture の UART、RTT
 /// (ch32rv が probe の riscv-dm の上で行う)。
 const OEP_SOURCES: [MonitorSource; 5] = [
     MonitorSource::Dmseq,

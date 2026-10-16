@@ -482,8 +482,7 @@ pub enum DmiCmd {
 pub struct MonitorArgs {
     #[command(subcommand)]
     pub cmd: Option<MonitorCmd>,
-    /// Default: `uart` on a WCH-Link; on an OEP probe the console by its slot's mechanism (else
-    /// dmseq)
+    /// Default: `uart` on a WCH-Link; on an OEP probe the target's console by dmseq
     #[arg(long, value_enum)]
     pub source: Option<MonitorSource>,
     /// The serial port's path (default: the CDC of the probe --probe selects)

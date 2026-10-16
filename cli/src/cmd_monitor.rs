@@ -58,8 +58,7 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
                 ErrorKind::CapabilityUnsupported,
                 "an OEP probe has no uart source here",
                 Some(
-                    "leave --source out for the target's console (the slot's mechanism, else \
-                     dmseq), or name one: dmseq / dmdata / sdi, rtt, or fixture-uart (the fixture's \
+                    "leave --source out for the target's console (dmseq), or name one: dmseq / dmdata / sdi, rtt, or fixture-uart (the fixture's \
                      UART)",
                 ),
             );
@@ -574,7 +573,7 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
     use ch32rv_oep::stream::Mechanism;
     const CMD: &str = "monitor";
     let wanted = match args.source {
-        // No --source: the target's console, by the slot's mechanism (else dmseq).
+        // No --source: the target's console, by dmseq.
         None => StreamWanted::ConsoleDefault,
         Some(MonitorSource::Dmdata) => StreamWanted::Console(Mechanism::Dmdata),
         Some(MonitorSource::Dmseq) => StreamWanted::Console(Mechanism::Dmseq),

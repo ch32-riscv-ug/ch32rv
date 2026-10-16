@@ -1702,7 +1702,7 @@ pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
     }
 }
 
-/// en: `recover --method nrst` through an OEP probe: hold the slot's NRST line (its label,
+/// en: `recover --method nrst` through an OEP probe: hold the port's NRST line (its label,
 /// oep-spec host guide §8.1) through a halting attach, so the hart stops before the firmware runs
 /// (that firmware may have turned the debug pins into GPIOs), then clear what keeps a normal flash
 /// out: read protection (writing it off mass-erases), or else the whole code flash by page erases.

@@ -206,7 +206,7 @@ pub(crate) fn oep_port(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<String> {
 }
 
 /// en: The probe opened on some port is also on USB as an OEP device that discovery lists (its
-/// slots are the IDE's ports): its describe unit_id is the serial number of one of
+/// ports are the IDE's ports): its describe unit_id is the serial number of one of
 /// [`oep_devices`] (oep-core §3.3 / §7.5, compared case aside). `discoverable` cannot tell this
 /// until the project's VID:PID exists (oep-spec 2108125).
 /// ja: どこかの口で開いた probe が、discovery の一覧に出る USB の OEP の device でもあるか(describe の
@@ -407,7 +407,7 @@ fn connect_ordered(
         .map_err(|e| e.to_string())
 }
 
-/// Resolve `oep://<probe>/<slot>` to the probe's serial port.
+/// Resolve `oep://<probe>[/<port>[/<target>]]` to the probe's serial port.
 pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
     // oep://<probe>[/<port>[/<target>]] (host guide §5.3): segments of a-z 0-9 - . only; `any`
     // is a wildcard written explicitly.
@@ -496,7 +496,7 @@ pub(crate) fn tcp_addr(name: &str) -> Result<OepAddr, (String, Option<&'static s
     }
 }
 
-/// en: Whether `--probe` names an OEP probe: `tcp:`, `port:oep://<probe>/<slot>`, or
+/// en: Whether `--probe` names an OEP probe: `tcp:`, `port:oep://<probe>[/<port>]`, or
 /// `port:<path>` for a serial port that no WCH-Link owns. `None` leaves the command on the
 /// WCH-Link path.
 /// ja: `--probe` が OEP の probe を指すか(`tcp:`、`port:oep://…`、WCH-Link のものでない serial port)。
@@ -796,13 +796,20 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
     // en: CH32L103's debug module resets while an rvswd line idles high, so its line idles low
     // (the old slots carried that; now it is the host's, measured by dev_oep 2026-10-16).
     // ja: L103 は rvswd の線を high で休ませると debug module がリセットされるので low にする。
+    // The family comes from --chip, else from the target the address names (`<family>-<uid>`);
+    // neither: [`attach_at`] learns it from the chip id and attaches again.
+    let named = a
+        .target()
+        .and_then(|t| t.split_once('-'))
+        .is_some_and(|(f, _)| idles_low(f));
     let idle_clock = (wire == WireKind::Rvswd
-        && chip.is_some_and(|c| {
-            ch32rv_target::Db::builtin()
-                .families_for_chip_name(c)
-                .iter()
-                .any(|f| f.eq_ignore_ascii_case("CH32L103"))
-        }))
+        && (named
+            || chip.is_some_and(|c| {
+                ch32rv_target::Db::builtin()
+                    .families_for_chip_name(c)
+                    .iter()
+                    .any(|f| idles_low(f))
+            })))
     .then_some(ch32rv_oep::registry::wire_rvswd::enums::idle_clock::LOW);
     Ok(Place {
         wire,
@@ -811,6 +818,43 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
         idle_clock,
         mechanism: None,
     })
+}
+
+/// Whether a family's rvswd line must idle low (CH32L103: its debug module resets otherwise).
+fn idles_low(family: &str) -> bool {
+    family.eq_ignore_ascii_case("CH32L103")
+}
+
+/// en: Attach; when the target that answers turns out to need its rvswd line idling low
+/// ([`idles_low`]) and the place did not know it (no `--chip`, no family in the address),
+/// detach and attach again with idle_clock low - the first attach was short enough to read the
+/// chip id before the debug module reset. A connection that already existed is left as it is.
+/// ja: attach し、答えた target が low で休ませる必要のある族なのに場所が知らなかったら(--chip も
+/// アドレスの族も無い)、detach して idle_clock low で attach し直す。既にあった接続はそのまま。
+fn attach_at(
+    p: &mut Probe,
+    wire: WireKind,
+    mut options: AttachOptions,
+) -> Result<ch32rv_oep::target::Attached, ch32rv_oep::session::OepError> {
+    let at = attach(p, wire, options)?;
+    let family =
+        at.wch_chip_id.and_then(
+            |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
+                ch32rv_target::Resolution::Sku(s) => Some(s.family.clone()),
+                ch32rv_target::Resolution::Family(f, _) => Some(f),
+                ch32rv_target::Resolution::Unknown => None,
+            },
+        );
+    if wire != WireKind::Rvswd
+        || options.idle_clock.is_some()
+        || at.existing
+        || !family.is_some_and(|f| idles_low(&f))
+    {
+        return Ok(at);
+    }
+    detach(p, wire, at.connection)?;
+    options.idle_clock = Some(ch32rv_oep::registry::wire_rvswd::enums::idle_clock::LOW);
+    attach(p, wire, options)
 }
 
 /// The DB family of the attached target, checked against `--chip` (fail-closed).
@@ -870,8 +914,8 @@ fn family(cli: &Cli, cmd: &str, chip_id: Option<u32>) -> Result<String, ExitCode
 /// `flash` on an OEP probe.
 pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> ExitCode {
     const CMD: &str = "flash";
-    // A probe that announces itself on USB is flashed by slot, never through its raw serial port
-    // (oep-workflow §3.4): the IDE lists its slots as oep:// ports.
+    // A probe that announces itself on USB is flashed by its oep:// address, never through its raw
+    // serial port (oep-workflow §3.4): the IDE lists its ports as oep:// ports.
     if let OepAddr::Serial(p) = a
         && port_of_oep_device(p)
     {
@@ -879,8 +923,8 @@ pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> E
             cli,
             CMD,
             ErrorKind::Usage,
-            format!("{p} is an OEP probe's serial port; flash one of its slots instead"),
-            Some("pick its oep://<probe>/<slot> port (`ch32rv arduino discovery` lists them)"),
+            format!("{p} is an OEP probe's serial port; flash it by its oep:// address instead"),
+            Some("use port:oep://<probe>[/<port>] (`ch32rv arduino discovery` lists them)"),
         );
     }
     let mut p = match connect(cli, CMD, a) {
@@ -888,14 +932,14 @@ pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> E
         Err(c) => return c,
     };
     // The same probe reached on another serial port (its USB-Serial/JTAG, a UART bridge) is also
-    // on USB as an OEP device, whose slots are the IDE's ports: its unit_id is that serial.
+    // on USB as an OEP device, whose ports are the IDE's: its unit_id is that serial.
     if matches!(a, OepAddr::Serial(_)) && listed_on_usb(&mut p) {
         return fail(
             cli,
             CMD,
             ErrorKind::Usage,
-            "this serial port belongs to an OEP probe that is also on USB as an OEP device; flash one of its slots instead",
-            Some("pick its oep://<probe>/<slot> port (`ch32rv arduino discovery` lists them)"),
+            "this serial port belongs to an OEP probe that is also on USB as an OEP device; flash it by its oep:// address instead",
+            Some("use port:oep://<probe>[/<port>] (`ch32rv arduino discovery` lists them)"),
         );
     }
     let serial = matches!(a, OepAddr::Serial(_)) && single_serial(&mut p);
@@ -919,9 +963,8 @@ fn flash_in_session(
     let place = match choose_place(p, a, cli.chip.as_deref()) {
         Ok(v) => v,
         Err(e) => {
-            let hint = (e.kind == ErrorKind::TargetAmbiguous).then_some(
-                "name the slot with oep://<probe>/<slot>, or the board's family with --chip",
-            );
+            let hint = (e.kind == ErrorKind::TargetAmbiguous)
+                .then_some("name the port with oep://<probe>/<port>");
             return fail(cli, CMD, e.kind, e.msg, hint);
         }
     };
@@ -934,7 +977,7 @@ fn flash_in_session(
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
     let wire = place.wire;
-    let at = match attach(p, wire, place.options(true, max_speed_hz)) {
+    let at = match attach_at(p, wire, place.options(true, max_speed_hz)) {
         Ok(a) => a,
         Err(e) => return oep_fail(cli, CMD, e),
     };
@@ -1115,7 +1158,7 @@ fn check_family_text(chip_id: Option<u32>, chip: Option<&str>) -> Result<Option<
 pub(crate) enum StreamWanted {
     /// The target's console, by mechanism (needs a connection).
     Console(ch32rv_oep::stream::Mechanism),
-    /// The target's console by the slot's mechanism, else dmseq (`monitor` without --source).
+    /// The target's console by dmseq (`monitor` without --source), the host's default.
     ConsoleDefault,
     /// The fixture's UART at this baud (no connection needed).
     FixtureUart(u32),
@@ -1205,8 +1248,8 @@ impl crate::source::RttTarget for OepDtm<'_> {
 }
 
 /// en: A stream on an OEP probe, through the probe's broker, for the Arduino monitor: the target
-/// console (attached without halting - a running target is watched, not stopped - at the slot the
-/// address or the board's family picks, read from the last reset mark) or the fixture UART (its
+/// console (attached without halting - a running target is watched, not stopped - at the port the
+/// address names, read from the last reset mark) or the fixture UART (its
 /// speed set by `oep.fixture.uart` configure). Dropping it detaches and ends the session (the
 /// broker would release both anyway when this client leaves).
 /// ja: OEP の probe のストリーム(ブローカー経由、Arduino monitor 用)。target の console(止めずに
@@ -1295,7 +1338,7 @@ impl ConsoleSession {
             StreamWanted::Rtt => {
                 let place = choose_place(&mut probe, a, chip)?;
                 let wire = place.wire;
-                let at = attach(&mut probe, wire, place.options(false, None))
+                let at = attach_at(&mut probe, wire, place.options(false, None))
                     .map_err(|e| e.to_string())?;
                 check_family_text(at.wch_chip_id, chip)?;
                 let mut t = OepDtm::new(&mut probe, at.connection).map_err(|e| e.to_string())?;
@@ -1333,7 +1376,7 @@ impl ConsoleSession {
                 };
                 source_name = mech.name();
                 let wire = place.wire;
-                let at = attach(&mut probe, wire, place.options(false, None))
+                let at = attach_at(&mut probe, wire, place.options(false, None))
                     .map_err(|e| e.to_string())?;
                 check_family_text(at.wch_chip_id, chip)?;
                 let mut s =
@@ -1396,10 +1439,9 @@ impl ConsoleSession {
     /// en: A console that went quiet: if its stream was closed - the probe gave up on a lost line
     /// and closed the connection (oep-if-debug §2, P1: it no longer wakes a live line on its own,
     /// so a board reset or sleep can end it) - attach again (a host-requested attach may wake the
-    /// line) and reopen the console, which continues under the same number and position. A slot's
-    /// connection is attached again by the probe itself; the attach then just joins it.
+    /// line) and reopen the console, which comes back under a new stream number from the oldest byte kept.
     /// ja: 黙った console のストリームが閉じていたら(probe が線を失って接続を閉じた)、attach し直して
-    /// console を開き直す(同じ番号と位置で続く)。
+    /// console を開き直す(新しい番号で、残っている最古から)。
     fn relink_if_closed(&mut self) -> Result<(), String> {
         let (Backing::Stream(s), Some((place, mech))) = (&mut self.stream, &self.relink) else {
             return Ok(());
@@ -1430,7 +1472,7 @@ impl ConsoleSession {
         let (Backing::Stream(s), Some((place, mech))) = (&mut self.stream, &self.relink) else {
             return Ok(());
         };
-        let Ok(at) = attach(&mut self.probe, place.wire, place.options(false, None)) else {
+        let Ok(at) = attach_at(&mut self.probe, place.wire, place.options(false, None)) else {
             return Ok(());
         };
         s.reopen_console(&mut self.probe, at.connection, *mech)
@@ -1591,7 +1633,7 @@ pub(crate) fn with_attached_reset(
                 }
             }
         }
-        let at = match attach(&mut p, wire, options) {
+        let at = match attach_at(&mut p, wire, options) {
             Ok(a) => a,
             Err(e) => return oep_fail(cli, cmd, e),
         };
