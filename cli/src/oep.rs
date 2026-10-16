@@ -31,6 +31,8 @@ pub(crate) enum OepAddr {
         path: String,
         port: Option<String>,
         target: Option<String>,
+        /// Written as `oep://<probe>` alone: the probe itself, no port (§5.3).
+        whole: bool,
     },
     /// `tcp:<host:port>`: a probe's TCP transport, or a ch32rv broker.
     Tcp(String),
@@ -42,6 +44,8 @@ pub(crate) enum OepAddr {
         unit: String,
         port: Option<String>,
         target: Option<String>,
+        /// Written as `oep://<unit_id>` alone (not `tcp:`): the probe itself, no port.
+        whole: bool,
     },
     /// A WCH-Link, reached through its broker (which maps OEP onto the Link).
     Wch(crate::broker::BrokerTarget),
@@ -56,6 +60,17 @@ impl OepAddr {
             }
             _ => None,
         }
+    }
+
+    /// en: The address is `oep://<probe>` alone, which names the probe itself (host guide §5.3:
+    /// a segment left out is not "unspecified"), so no port is chosen for it - not even the only
+    /// one: a port is named, or searched with `any` written. ja: `oep://<probe>` だけは probe
+    /// 自身。ポートは選ばない(名指すか `any` と書く)。
+    pub(crate) fn whole_probe(&self) -> bool {
+        matches!(
+            self,
+            OepAddr::Probe { whole: true, .. } | OepAddr::Net { whole: true, .. }
+        )
     }
 
     /// The target the address names (`oep://<probe>/<port>/<target>`), if it does.
@@ -424,6 +439,7 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
         ));
     }
     let id = segs[0];
+    let whole = segs.len() == 1;
     let port = segs.get(1).map(|s| (*s).to_owned());
     let target = segs
         .get(2)
@@ -459,10 +475,16 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
             unit: id.to_owned(),
             port,
             target,
+            whole,
         });
     };
     let path = oep_port(&dev).ok_or_else(|| format!("OEP probe {id} has no serial port"))?;
-    Ok(OepAddr::Probe { path, port, target })
+    Ok(OepAddr::Probe {
+        path,
+        port,
+        target,
+        whole,
+    })
 }
 
 /// en: A TCP address as written after `tcp:` (a leading `//` of `tcp://` already gone or not):
@@ -487,6 +509,7 @@ pub(crate) fn tcp_addr(name: &str) -> Result<OepAddr, (String, Option<&'static s
             unit,
             port: None,
             target: None,
+            whole: false,
         }),
         (Some(addr), None) => Ok(OepAddr::Tcp(addr)),
         (None, _) => Err((
@@ -750,6 +773,12 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
     let labels = labels(p).map_err(|e| e.to_string())?;
     let firmware = firmware_labels(p).map_err(|e| e.to_string())?;
     let ports = ports_named(&labels);
+    if a.whole_probe() {
+        return Err(PlaceError {
+            kind: ErrorKind::Usage,
+            msg: whole_probe_msg(&ports),
+        });
+    }
     let port = match a.port() {
         Some(name) => {
             let name = name.to_ascii_lowercase();
@@ -860,6 +889,21 @@ fn attach_at(
     detach(p, wire, at.connection)?;
     options.idle_clock = Some(low);
     attach(p, wire, options)
+}
+
+/// Why `oep://<probe>` alone picks no port, with the addresses that would.
+fn whole_probe_msg(ports: &[String]) -> String {
+    if ports.is_empty() {
+        "oep://<probe> names the probe itself, not a port: its one unnamed port is \
+         oep://<probe>/any"
+            .to_owned()
+    } else {
+        format!(
+            "oep://<probe> names the probe itself, not a port: name one, oep://<probe>/<port> \
+             (its ports: {}), or write oep://<probe>/any",
+            ports.join(", ")
+        )
+    }
 }
 
 /// The DB family of the attached target, checked against `--chip` (fail-closed).
@@ -1308,6 +1352,10 @@ impl ConsoleSession {
             OepAddr::Wch(t) => crate::broker::client_link_for(t)?,
         };
         let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
+        if a.whole_probe() {
+            let labels = ch32rv_oep::config::labels(&mut probe).unwrap_or_default();
+            return Err(whole_probe_msg(&ch32rv_oep::config::ports_named(&labels)));
+        }
         let owner = format!("ch32rv monitor pid {}", std::process::id());
         // A probe on TCP may still be held by another host's session - a broker on its other
         // transport lingering after its last client, ending it seconds later: wait out its

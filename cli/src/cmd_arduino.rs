@@ -168,11 +168,11 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
 }
 
 /// en: The probe's ports as discovery ports (host guide §5.3): one `oep://<id>/<port>` per port
-/// its saved labels name (the `S` of `S.swdio`-style labels), or `oep://<id>` alone for a probe
+/// its saved labels name (the `S` of `S.swdio`-style labels), or `oep://<id>/any` for a probe
 /// whose one port is unnamed; `props` added to each one's properties. Read lock-free, without
 /// attaching: the target is not known until a tool attaches.
 /// ja: probe のポートを discovery の port として出す。ラベルが名指すポートごとに 1 つ、名前が無ければ
-/// `oep://<id>` だけ。attach しないので target は分からない。
+/// `oep://<id>/any`(名前の無い 1 つの口)。attach しないので target は分からない。
 fn port_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> Option<Vec<Value>> {
     let labels = ch32rv_oep::config::labels(p).ok()?;
     let ports = ch32rv_oep::config::ports_named(&labels);
@@ -189,8 +189,10 @@ fn port_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> 
                 format!("{s} on OEP probe {id}"),
                 format!("{id}/{s}"),
             ),
+            // The one unnamed port: `any` selects it (host guide §5.3; `oep://<probe>` alone
+            // is the probe itself).
             None => (
-                format!("oep://{id}"),
+                format!("oep://{id}/any"),
                 format!("OEP probe {id}"),
                 id.to_owned(),
             ),

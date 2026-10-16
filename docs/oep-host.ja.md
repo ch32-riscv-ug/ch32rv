@@ -165,9 +165,9 @@ binary の扱い:
 
 ### 5.2 手順(参照 client の `ch32_flash.program` + 直す所)
 
-1. open(lease 3 秒)→ attach(halt、max_speed は critical、pins は serial port を選んだときのスロットから。§6)。
+1. open(lease 3 秒)→ attach(halt、max_speed は固定部、pins は口の label から。§6)。
 2. target の識別と `--chip` の照合(§4.3)。RDPR を読み、読み出し保護なら断る(host guide §4.5)。
-3. **reset(mode 2 = halt_at_reset)**。走っている IWDG を止めたまま書くため。
+3. **reset(mode 1 = halt_at_reset)**。走っている IWDG を止めたまま書くため。
 4. FLASH の unlock(KEYR、MODEKEYR)と、その確認。
 5. loader を置き、読み戻して照合する(最大 3 回)。壊れた loader でも ebreak まで着いてしまい、全 page を壊すため(L103 の事例)。
 6. page ごとに write_words(buffer)→ run_until_halt(a0..a4、mstatus = 0、timeout 200 ms、outs = a0)。
@@ -176,7 +176,7 @@ binary の扱い:
    - dpc が loader の先頭のまま = 走らなかった。その page はやり直す(loader は page 単位で冪等)。
 7. **verify**: 全体を read_words で読み戻す。消去値は DB の `erased_word`(V20x / V30x は 0xe339e339)。
 8. 違った page と失敗した page を書き直す(最大 2 周。周ごとに loader を置き直す)。
-9. `--reset run`: reset(mode 1 = run+確認)を最大 3 回。`--confirm-run` は既存の規則。
+9. `--reset run`: reset(mode 0 = run。probe が走ったことを確かめる)を最大 3 回。`--confirm-run` は既存の規則。
 10. detach → end。JSON は WCH-Link と同じ形。`flash.programmer = "oep-loader"` と `rewritten` / `retries` を足す。
 
 **`--erase`**:
@@ -184,16 +184,18 @@ binary の扱い:
 - `chip` は全 page の消去を loader で回す(OEP には mass erase の部品が無い。loader に mass erase の flag を足すかは実測の速さで決める)。
 - `auto` は、書く範囲が flash の半分を超えたら chip、それ以外は sector。
 
-## 6. serial port を選んだときのスロット(依頼 14、monitor と共通)
+## 6. 口の選び方(monitor と共通。2026-10-16、oep-spec host ガイド §5.3)
+
+スロットは廃止した(oep-spec 675288a)。probe は配線を持たず、口は probe に保存した label `S.N` の `S` で名付ける。
+ch32rv は attach せずに分かること(unit_id、口の名前)だけで口を 1 つに絞り、残りが 1 つでなければ止める。家系で口を選ばない
+(attach して探すと、rvswd では wake が target をリセットしうる)。アドレスごとの動きと exit は [cli](cli.ja.md) §4.12 の「口の選び方」。
 
 - serial port の path が WCH-Link のものでなければ、その port を開いて confirm を送る(利用者がその port を選んだので、開いてよい)。
   - `OEP!` が返らなければ「OEP の probe ではない」として exit 10。
-  - OEP の probe(§3.3 の `is_oep_device`。iProduct の名前)の port なら、upload は常に断る(`oep://` を選ぶよう案内する)。
-- **スロットの選び方**(WF §3.4):
-  - 板の家系(`--chip`、monitor では `chip` の設定)に合うスロットが 1 つなら、そこを使う。
-  - 接続済みのスロットの chip は、describe のスロットの状態から読む。未接続のスロットは、止めない attach で読む。
-  - 0 個か 2 個以上なら止めて、スロットの一覧と理由を出す(exit 14 / 23)。
-- **スロットは spec にまだ無い**(§10 の 5)。spec に入るまでは、今の spec にあるものに落とす: 各 wire interface(rvswd / swio)の「許されたピンの組」を 1 スロットとみなし、`scan` で chip を読む。
+  - USB にも OEP の device として出る probe の port なら、upload は常に断る(`port:oep://<probe>[/<port>]` を案内する)。
+- `oep://<probe>` だけは probe 自身を指すので、口を選ばない(exit 2)。名前の無い口は `oep://<probe>/any` で選ぶ。discovery もそう出す。
+- wire は口の label(`S.swio` / `S.swclk`)で、決まらなければ `--chip` の家系で決める。ピン・NRST・fixture UART の線も、その口の label から引く。
+- rvswd の休ませ方は、§10 の 3b32b12 の項。
 
 ## 7. monitor とブローカー(依頼 11、12)
 
@@ -202,7 +204,7 @@ binary の扱い:
 - `arduino monitor` の address が OEP の probe(serial port か `oep://`)で source が sdi / dmdata / dmseq なら、ブローカーの client として `oep.target.console` を開く(実装済み)。止めずに attach する。`rtt` は OEP の console に無いので断る。
 - source `uart` は、OEP の probe の port でも素通しのまま。どの device か分からない port に OEP の confirm を送らないため(実装済み)。
 - **source `fixture-uart`**(2026-09-29 の決定、実装済み): ブローカー経由の session で `oep.fixture.uart` を開き、monitor の `baudrate` を configure で送る(OPEN のときと、開いたまま変わったとき)。ストリームを読み、入力は書き戻す。「IDE の baud は ch32rv が fixture.uart の configure で届ける」(spec で line coding の写しを消した代わり)はこの source で満たす。fixture の UART にピンの plan が無ければ、OPEN が理由つきの error。
-- **`oep://<probe>/<slot>` の port**(protocol `oep`): source は dmseq(既定)/ dmdata / sdi / fixture-uart。console はそのスロットのピンの組で attach する(実装済み)。
+- **`oep://<probe>/<port>` の port**(protocol `oep`): source は dmseq(既定)/ dmdata / sdi / fixture-uart。console はその口の label のピンで attach する(§6)。
 - rev 1 は push が無いので、read を poll する。読み出しは lock-free。
 - 読み始める位置は、最後の reset mark から(書き込みの直後に開いたとき、最初の行を落とさない)。
 - IDE の入力は console write で送る(dmseq は 1 回に 2 byte まで。残りは送り直す)。
@@ -269,9 +271,9 @@ LIST に出す interface は上の 5 つ(rvswd、swio、riscv-dm、console、wch
 | client の操作 | 呼ぶ所 | WCH-Link のブローカーのとき | 判定 |
 |---|---|---|---|
 | console STREAMS | `stream.rs` `is_open`(monitor が 1 秒黙るたび) | 0.20.0 は UNKNOWN_OPERATION で monitor が止まった | **修正済み**(a6495c0。ブローカーが答え、monitor は UNKNOWN_OPERATION / UNSUPPORTED を「開いている」とみなす) |
-| wire SCAN | `target.rs` `scan_all`(`oep.rs` `place_by_scan`) | describe に ROLE_CHANNELS が無いと呼ばない。ブローカーは出さない | 問題なし |
-| wire CONNECTIONS | `config.rs` `slot_states` | cfg の interface があるときだけ。ブローカーは cfg を出さない | 問題なし |
-| cfg GET / STATE | `config.rs` `items`(`slots` / `labels`。`choose_place`、discovery、NRST の線) | interface が無ければ空の一覧を返す | 問題なし |
+| wire SCAN | `target.rs` `scan_all`(ch32rv の口の選び方では呼ばない。§6) | ブローカーは scan を宣言しない | 問題なし |
+| wire CONNECTIONS | `target.rs` `connections`(ブローカーが貸す接続がまだ生きているか) | ブローカーが答える(rvswd は休ませ方の TLV つき) | 問題なし |
+| cfg GET | `config.rs` `items`(`labels`。`choose_place`、discovery、NRST / UART の線) | interface が無ければ空の一覧を返す | 問題なし |
 | link PORT_SPEED / SOURCE / SINK | `speed.rs`(`broker.rs` の port speed) | 上流が OEP の probe(`Upstream::Oep`)のときだけ | 問題なし |
 | probe_restart RESTART | `broker.rs`、`session.rs` | ブローカーが横取りするのは上流が OEP のときだけ。interface が LIST に無いので client も送らない | 問題なし |
 | fixture_uart 一式 | `stream.rs`(monitor の source `fixture-uart`) | LinkE の serial port でも `fixture-uart` を source に選べてしまう(`cmd_arduino.rs` の `SERIAL_SOURCES`)。選ぶと OPEN の時点で「interface が無い」で断る | **要整理**: 途中で止まる型ではないが、選べない source を出している |
@@ -324,6 +326,8 @@ LIST に出す interface は上の 5 つ(rvswd、swio、riscv-dm、console、wch
 - **ゼロベース見直しへの追従(2026-10-01、oep-spec 37278b6、fake = oep-client-python 7b56c15)**: TLV の長い形(`tag 0xFF len(u16)`)、confirm の boot_id、read の応答の len(console / fixture UART)、マークの time_ns(22 byte)、dmi の nvals(u16)、run の nvals(u8)と stopped 2、attach の一本化(method 0 / 1、max_speed は必須なので ch32rv は常に送る(呼び出し側の値、無ければ線の describe の max_clock_hz、無ければ 1 MHz)、応答の flags は `attach_flags`、bit3 で TLV 0x11 dpc)、scan の skip は TLV 0x02、probe.config のスロットは retry_ms(u32)と max_speed_hz(固定部 19 byte)、スロットの状態は `state` op(0x06)、`discoverable`(0x4A)、資源番号は 1 つの空間(WCH のブローカーは connection 1、ストリームは 2 から)。probe は op の外に target の状態を持ち越さないので、ch32rv の OEP の resume は dpc を読むたびに DATA0 / DATA1 を戻す。
 - **簡素化への追従(2026-10-06、oep-spec 3c96daf、fake = oep-client-python 305852a、probe = oep-probe-arduino 0.0.29 以降)**: 要求の見出しは常に 10 byte で session_id を持つ(0 = session なし。role 0x81 は無い)。TLV は `tag len(u16) value` の 1 つの形。並び(list、scan、marks、probe.config の state)は要素の長さを持たない(要素の形は revision で決まる)。スロットの固定部は boot_reset を足して 20 byte、slot_state は reset_at_ns を足す。再開は無い: end・lease 切れ・force で session の資源はすべて外れ、その id は no_session(ブローカーは `no_session` で新しい session を開く。`expired` は無い)。任意の op は各 fn の describe の `ops`(base + bitmap)で知る(features では知らない)。port_speed と線の試験は `oep.link`(source は len(u16) data、最大 max_frame − 26 byte、sink は count(u16) data)。fn 0 の `restart`(op 0x14、任意)と `restart_max_ms`(describe 0x4F): ブローカーは client の restart を自分の session で中継し、答えを返してから起動時の速さで confirm を restart_max_ms まで繰り返し、新しい session を開く(client の session は終わる)。旧 wire との互換は持たない(凍結前の方針、2026-10-06 のユーザーの判断。USB の probe は 1209:4F45 で見分ける)。
 - **構成の見直しへの追従(2026-10-06、oep-spec 498ae95、fake = oep-client-python 6326df9、probe = 0.0.29-dev+3c0cd99 以降)**: core は名前の無い fn 0 で、list に出ない(版は confirm の revision だけ)。plan は `oep.probe.plan`、restart は `oep.probe.restart`(op 0x01、describe 0x40 restart_max_ms)、`oep.link` は `oep.probe.link`。ブローカーは plan と restart を名前で探した fn で見分ける。購読は通知を送るインターフェースの 0x30 / 0x32(どのインターフェースの op の空間でも予約)で、ブローカーはどの fn でも断る(通知を中継しない)。heartbeat は無い。fn 0 の `clock`(op 0x04、ロックも session も要らない、答えは boot_id と uptime_ns)はブローカーが中継する(ブローカーが自分で答えるのは confirm / open / end / keepalive / lock_state の 5 つ)。describe の ops は core §7.4 の唯一の符号だけを受ける(`session::decode_ops`、試験は spec の ops_encoding.json)。**restart の中継**: ブローカーは client の restart を自分の session で送り、答えを返したら probe への経路を閉じて終わる(transports §1)。client は restart_max_ms まで待ってやり直す(新しいブローカーが起動する)。上の項の「その場で立て直す」は、ブローカーが中継しなかった再起動(電源、watchdog、他の host)のときだけ。
+- **作り直された仕様への追従(2026-10-16、oep-spec 675288a、virtual bench = oep-client-python 81f6bd6、probe = oep-probe-arduino 0.0.32 以降)**: confirm と list の flags の 1 byte が消えた、corr は open をまたいで続く、どの要求も max_op_ms を待つ、TLV 番号 0 は壊れたもの、任意の op は describe の ops だけで知る。接続とストリームの番号は u32、attach は毎回新しい接続を作り(同じピンの 2 つ目は unavailable cause 1)、ブローカーが 1 本を client に貸す(名前つき拡張 `io.github.ch32-riscv-ug.shared`)。reset の mode は 0 run / 1 halt_at_reset、write_block は送り直さない。console の mechanism は名前の一覧、開き直しは新しいストリーム。スロットは廃止(§6)。
+- **rvswd の休ませ方(2026-10-16、oep-spec 3b32b12、virtual bench = oep-client-python v0.0.33、probe = 0.0.32+77a8002 以降)**: idle_clock の無い attach では probe が決める(SWCLK の channel の設定 `rvswd-rest`、無ければ target_id の系統で `idle_low_family` = CH32L103 は low)。使った休ませ方は attach の応答 TLV 0x03 と connections の TLV 0x02 で返る。ch32rv は `--chip` / アドレスの target が L103 なら low を明示し、それ以外は応答を読む。L103 なのに low でない接続は low を明示して attach し直す。ブローカーは同じ休ませ方を求める attach にだけ接続を貸し、WCH-Link のブローカーは chip id から規則どおりの値を答える。
 
 ## 11. 決まったこと
 
@@ -339,4 +343,4 @@ LIST に出す interface は上の 5 つ(rvswd、swio、riscv-dm、console、wch
 3. RV32EC の loader + `flash` / `verify` / `reset`。
 4. `arduino monitor` の OEP の console。
 5. ブローカー + `broker endpoint`。他のコマンドがブローカーを通るようにする。
-6. vendor bulk / HID、`oep://` の discovery、スロットの選び方(spec が追いつき次第)。
+6. vendor bulk / HID、`oep://` の discovery、口の選び方(§6)。

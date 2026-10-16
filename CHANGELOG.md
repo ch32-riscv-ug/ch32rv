@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `oep://<probe>` alone names the probe itself (oep-spec host guide §5.3), so it no longer picks the probe's only port: a command that attaches stops (exit 2) and points at `oep://<probe>/<port>` or `oep://<probe>/any` - `any` searches only where it is written. Discovery lists a probe with no named port as `oep://<probe>/any` (it was `oep://<probe>`). A raw `port:<serial port>` or `tcp:` still uses the probe's one port. `docs/cli.ja.md` and `docs/oep-host.ja.md` describe the port model instead of the slots (reported by ArduinoCore-CH32RV).
+- (JA) `oep://<probe>` だけのアドレスは probe 自身を指す(oep-spec ホストガイド §5.3)ので、probe の唯一の口を選ばなくなった: attach するコマンドは止まり(exit 2)、`oep://<probe>/<port>` か `oep://<probe>/any` を案内する(`any` は書いたときだけ探す)。discovery は名前つきの口の無い probe を `oep://<probe>/any` で出す(以前は `oep://<probe>`)。アドレスでない `port:<serial port>` / `tcp:` は、これまでどおり probe の口が 1 つならそれを使う。`docs/cli.ja.md` と `docs/oep-host.ja.md` をスロットから口の説明に直した(ArduinoCore-CH32RV の指摘)。
+
 ## 0.21.0 - 2026-10-16
 
 - (EN) Follow oep-spec 3b32b12 (rvswd's rest, debug §3.1): an attach without idle_clock lets the probe choose the rest - its `rvswd-rest` setting for that SWCLK channel, else low for a family in the registry's `idle_low_family` (CH32L103), else high - and the answer and connections now say which. ch32rv reads it: a CH32L103 is attached again with an explicit low rest only when the connection does not already rest low (a probe whose setting turned its choice off, or an older one that answers none). The broker lends its connection only to an attach asking the same rest (another one: unavailable, pin in use, as the probe answers), and the WCH-Link broker answers the rest the rule gives for the chip id and refuses an idle_clock its link cannot make. Bench-checked on the Pico 2 probe and on a WCH-Link, both with a CH32L103.

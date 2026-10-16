@@ -328,8 +328,8 @@ fn the_monitor_attaches_again_after_the_probe_loses_the_line() {
 
 #[test]
 fn plain_monitor_on_an_oep_probe_reads_the_targets_console() {
-    // `ch32rv monitor` with no --source on an OEP probe: the target's console by the slot's
-    // mechanism, else dmseq (on a WCH-Link the default stays uart).
+    // `ch32rv monitor` with no --source on an OEP probe: the target's console by dmseq (on a
+    // WCH-Link the default stays uart).
     let Some((_fake, pty)) = fake_pty(&[
         "--target-id",
         "0x20310500",
