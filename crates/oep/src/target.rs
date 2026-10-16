@@ -52,6 +52,26 @@ pub struct Attached {
     /// [`SHARED_EXTENSION`]); a probe always makes a new one.
     /// ja: ch32rv のブローカーが既に持つ接続を貸した(名前つき拡張)。probe は常に新しい接続。
     pub existing: bool,
+    /// en: The rvswd rest the connection uses (TLV idle_clock: 0 high, 1 low; oep-if-debug §3.1),
+    /// the probe's own choice when the attach named none. None: not rvswd, or an older probe.
+    /// ja: その接続の rvswd の休ませ方(attach が名指さなければ probe が決めたもの)。
+    pub idle_clock: Option<u8>,
+}
+
+/// en: The rvswd rest a probe chooses on its own for a target id (oep-if-debug §3.1): low for a
+/// family (DMI 0x7F >> `target_id_family::SHIFT`) in the registry's `idle_low_family`, else high.
+/// ja: probe が自分で決める rvswd の休ませ方。registry の idle_low_family の系統なら low。
+pub fn auto_rest(chip_id: u32) -> u8 {
+    use wire::enums::{idle_clock, idle_low_family, target_id_family};
+    let family = chip_id >> target_id_family::SHIFT;
+    if [idle_low_family::CH32L103]
+        .iter()
+        .any(|&f| u32::from(f) == family)
+    {
+        idle_clock::LOW
+    } else {
+        idle_clock::HIGH
+    }
 }
 
 /// en: The named extension (core §2.2, TLV 0x7F) a ch32rv broker puts in an attach answer when
@@ -253,6 +273,10 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
     });
     let connection = le32(&a, 0);
     let existing = has_named_extension(&tail, SHARED_EXTENSION);
+    let idle_clock = tail
+        .iter()
+        .find(|t| t.tag == wire::tlvs::attach_answer::IDLE_CLOCK && t.value.len() == 1)
+        .map(|t| t.value[0]);
     if o.halt && halted.is_none() {
         // The wire has no halting attach: halt now, the riscv-dm halt op if offered, else
         // haltreq through dmi in one request (oep-if-debug §4.1).
@@ -267,6 +291,7 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
         wch_chip_id,
         halted,
         existing,
+        idle_clock,
     })
 }
 
@@ -366,10 +391,13 @@ pub struct Connection {
     pub speed_hz: u32,
     /// The target id read at attach: (scheme, value).
     pub target_id: Option<(u8, Vec<u8>)>,
+    /// The rvswd rest in use (answer TLV idle_clock `entry_index idle_clock`), when given.
+    pub idle_clock: Option<u8>,
 }
 
 /// en: `connections` of the wire at `func` (lock-free), following `more`: each entry is
-/// connection(u32) swdio(u16) swclk(u16) speed_hz(u32) tid_scheme(u8) tid_len(u8) tid.
+/// connection(u32) swdio(u16) swclk(u16) speed_hz(u32) tid_scheme(u8) tid_len(u8) tid, and the
+/// TLV tail's idle_clock `entry_index(u8) idle_clock(u8)` per rvswd entry (index within the page).
 /// ja: wire の connections(ロック不要)。
 pub fn connections(p: &mut Probe, func: u16) -> Result<Vec<Connection>, OepError> {
     let mut out = Vec::new();
@@ -385,6 +413,7 @@ pub fn connections(p: &mut Probe, func: u16) -> Result<Vec<Connection>, OepError
             return Err(OepError::Malformed("connections answer too short".into()));
         };
         let mut at = 2;
+        let page = out.len();
         for _ in 0..count {
             let e = a
                 .get(at..at + 14)
@@ -400,8 +429,19 @@ pub fn connections(p: &mut Probe, func: u16) -> Result<Vec<Connection>, OepError
                 swclk: le16(e, 6),
                 speed_hz: le32(e, 8),
                 target_id: (e[12] != 0).then_some((e[12], tid)),
+                idle_clock: None,
             });
             at += 14 + len;
+        }
+        let tail =
+            parse_tlvs(&a[at.min(a.len())..]).map_err(|e| OepError::Malformed(e.to_string()))?;
+        for t in tail
+            .iter()
+            .filter(|t| t.tag == wire::tlvs::connections_answer::IDLE_CLOCK && t.value.len() == 2)
+        {
+            if let Some(c) = out.get_mut(page + usize::from(t.value[0])) {
+                c.idle_clock.get_or_insert(t.value[1]);
+            }
         }
         if more == 0 || count == 0 {
             break;
@@ -970,7 +1010,16 @@ fn le32(b: &[u8], at: usize) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::block_words;
+    use super::{auto_rest, block_words};
+    use crate::registry::wire_rvswd::enums::idle_clock;
+
+    #[test]
+    fn a_ch32l103_rests_low_and_others_high() {
+        // Chip ids read on the bench: CH32L103C8T6, CH32X035F8U6, CH32V203C8T6.
+        assert_eq!(auto_rest(0x1031_0710), idle_clock::LOW);
+        assert_eq!(auto_rest(0x0356_0601), idle_clock::HIGH);
+        assert_eq!(auto_rest(0x2031_0500), idle_clock::HIGH);
+    }
 
     #[test]
     fn block_size_fits_max_length_and_max_frame() {

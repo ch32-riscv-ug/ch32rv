@@ -1571,6 +1571,37 @@ impl Broker {
                 .iter_mut()
                 .find(|(_, (func, _, _))| *func == req.func);
             if let Some((_, (_, users, answer))) = held {
+                // One rest per connection (oep-if-debug §3.1): an attach naming another rest than
+                // the held connection's is refused as the probe refuses one on live pins.
+                let rest = |tlvs: &[ch32rv_oep::codec::Tlv], tag: u8| {
+                    tlvs.iter()
+                        .find(|t| t.tag & 0x7F == tag && t.value.len() == 1)
+                        .map(|t| t.value[0])
+                };
+                let asked = req
+                    .payload
+                    .get(9..)
+                    .and_then(|b| parse_tlvs(b).ok())
+                    .and_then(|t| rest(&t, wire_rvswd::tlvs::attach::IDLE_CLOCK));
+                let held_rest = answer
+                    .get(13..)
+                    .and_then(|b| parse_tlvs(b).ok())
+                    .and_then(|t| rest(&t, wire_rvswd::tlvs::attach_answer::IDLE_CLOCK));
+                if asked.is_some() && asked != held_rest {
+                    let cause = ch32rv_oep::registry::core::enums::unavailable_cause::PIN_IN_USE;
+                    let mut v = Vec::new();
+                    ch32rv_oep::codec::put_tlv(
+                        &mut v,
+                        ch32rv_oep::registry::core::tlvs::unavailable_payload::CAUSE,
+                        false,
+                        &[cause],
+                    );
+                    return Some(encode_result(
+                        req.corr,
+                        Resolution::Rejected(reject_reasons::UNAVAILABLE),
+                        &v,
+                    ));
+                }
                 users.insert(id);
                 let mut p = answer.clone();
                 let name = ch32rv_oep::target::SHARED_EXTENSION.as_bytes();
@@ -1637,17 +1668,18 @@ impl Broker {
             match req.op {
                 o if o == wire_rvswd::op::ATTACH => {
                     // connection(u32) id(u32) flags(u8) speed_hz(u32) [TLV]: kept to lend the
-                    // connection to the next client, without the halted flag and its dpc.
+                    // connection to the next client, without the halted flag and its dpc (its
+                    // target_id and rest kept).
                     if r.payload.len() >= 13 {
                         let a = &r.payload;
                         let conn = u32::from_le_bytes([a[0], a[1], a[2], a[3]]);
                         let mut lent = a[..13].to_vec();
                         lent[8] &= !wire_rvswd::enums::attach_flags::HALTED;
                         if let Ok(tlvs) = parse_tlvs(&a[13..]) {
-                            for t in tlvs
-                                .iter()
-                                .filter(|t| t.tag == wire_rvswd::tlvs::attach_answer::TARGET_ID)
-                            {
+                            for t in tlvs.iter().filter(|t| {
+                                t.tag == wire_rvswd::tlvs::attach_answer::TARGET_ID
+                                    || t.tag == wire_rvswd::tlvs::attach_answer::IDLE_CLOCK
+                            }) {
                                 ch32rv_oep::codec::put_tlv(&mut lent, t.tag, false, &t.value);
                             }
                         }

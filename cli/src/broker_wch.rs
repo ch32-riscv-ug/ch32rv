@@ -107,6 +107,14 @@ fn rejected_unsupported_fixed() -> Reply {
     }
 }
 
+/// Unsupported, naming the TLV whose value cannot be done (core §2.4: the number received).
+fn unsupported_tlv(tag: u8) -> Reply {
+    Reply {
+        resolution: Resolution::Rejected(reject_reasons::UNSUPPORTED),
+        payload: vec![tag],
+    }
+}
+
 fn ok(payload: Vec<u8>) -> Reply {
     Reply {
         resolution: Resolution::Completed(outcomes::SUCCESS),
@@ -508,7 +516,20 @@ impl WchUpstream {
                 if swdio != CH_SWDIO || swclk != want_clk {
                     return rejected_unsupported_fixed();
                 }
-                let _ = parse_tlvs(&p[9..]);
+                // en: The WCH-Link rests the line as its firmware does for the chip; the rest
+                // answered is the one oep-if-debug §3.1 gives for the chip id. An attach naming
+                // another rest is one this probe cannot make (unsupported, the TLV's number).
+                // ja: 休ませ方は WCH-Link のファームが決める。答えは §3.1 の規則で chip id から。
+                let asked = parse_tlvs(&p[9..]).ok().and_then(|t| {
+                    t.iter()
+                        .find(|t| t.tag & 0x7F == wire::tlvs::attach::IDLE_CLOCK)
+                        .map(|t| t.value.clone())
+                });
+                let asked = match asked.as_deref() {
+                    None => None,
+                    Some(&[v]) if c.func == FN_RVSWD && v <= 1 => Some(v),
+                    Some(_) => return unsupported_tlv(wire::tlvs::attach::IDLE_CLOCK),
+                };
                 let max_speed = Some(hz);
                 let existing = self.session.is_some();
                 if !existing {
@@ -535,6 +556,16 @@ impl WchUpstream {
                         Err(_) => return failed(vec![status::LINE]),
                     }
                 }
+                let Some(chip_id) = self.session.as_ref().map(|s| s.attach.chip_id) else {
+                    return failed(vec![status::LINE]);
+                };
+                let rest = ch32rv_oep::target::auto_rest(chip_id);
+                if asked.is_some_and(|a| a != rest) {
+                    if !existing {
+                        self.session = None;
+                    }
+                    return unsupported_tlv(wire::tlvs::attach::IDLE_CLOCK);
+                }
                 let Some(s) = self.session.as_mut() else {
                     return failed(vec![status::LINE]);
                 };
@@ -542,7 +573,6 @@ impl WchUpstream {
                     return failed(vec![status::TIMEOUT]);
                 }
                 let dmstatus = s.dm().dmstatus().unwrap_or(0);
-                let chip_id = s.attach.chip_id;
                 // flags (attach_flags): bit3 halted with the dpc TLV.
                 let dpc = if s.dm().is_halted().unwrap_or(false) {
                     s.dm().read_reg(ch32rv_dmi::RegName::Pc).ok()
@@ -570,6 +600,9 @@ impl WchUpstream {
                 }
                 if let Some(pc) = dpc {
                     out.extend(tlv(wire::tlvs::attach_answer::DPC, &pc.to_le_bytes()));
+                }
+                if c.func == FN_RVSWD {
+                    out.extend(tlv(wire::tlvs::attach_answer::IDLE_CLOCK, &[rest]));
                 }
                 ok(out)
             }
@@ -604,6 +637,10 @@ impl WchUpstream {
                             out.extend_from_slice(&id.to_le_bytes());
                         } else {
                             out.extend_from_slice(&[0, 0]);
+                        }
+                        if c.func == FN_RVSWD {
+                            let rest = ch32rv_oep::target::auto_rest(id);
+                            out.extend(tlv(wire::tlvs::connections_answer::IDLE_CLOCK, &[0, rest]));
                         }
                     }
                     None => out.push(0),

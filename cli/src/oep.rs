@@ -825,12 +825,15 @@ fn idles_low(family: &str) -> bool {
     family.eq_ignore_ascii_case("CH32L103")
 }
 
-/// en: Attach; when the target that answers turns out to need its rvswd line idling low
-/// ([`idles_low`]) and the place did not know it (no `--chip`, no family in the address),
-/// detach and attach again with idle_clock low - the first attach was short enough to read the
-/// chip id before the debug module reset. A connection that already existed is left as it is.
-/// ja: attach し、答えた target が low で休ませる必要のある族なのに場所が知らなかったら(--chip も
-/// アドレスの族も無い)、detach して idle_clock low で attach し直す。既にあった接続はそのまま。
+/// en: Attach; when the target that answers needs its rvswd line idling low ([`idles_low`]), the
+/// place did not know it (no `--chip`, no family in the address), and the connection does not
+/// rest low - the probe's setting `rvswd-rest` turned its own choice off, or an older probe
+/// answers no rest (oep-if-debug §3.1) - detach and attach again with idle_clock low: the first
+/// attach was short enough to read the chip id before the debug module reset. A connection that
+/// already existed is left as it is.
+/// ja: attach し、答えた target が low で休ませる必要のある族なのに場所が知らず、接続の休ませ方も
+/// low でなければ(probe の設定 rvswd-rest が自動を切った、または休ませ方を答えない古い probe)、
+/// detach して idle_clock low で attach し直す。既にあった接続はそのまま。
 fn attach_at(
     p: &mut Probe,
     wire: WireKind,
@@ -845,15 +848,17 @@ fn attach_at(
                 ch32rv_target::Resolution::Unknown => None,
             },
         );
+    let low = ch32rv_oep::registry::wire_rvswd::enums::idle_clock::LOW;
     if wire != WireKind::Rvswd
         || options.idle_clock.is_some()
         || at.existing
+        || at.idle_clock == Some(low)
         || !family.is_some_and(|f| idles_low(&f))
     {
         return Ok(at);
     }
     detach(p, wire, at.connection)?;
-    options.idle_clock = Some(ch32rv_oep::registry::wire_rvswd::enums::idle_clock::LOW);
+    options.idle_clock = Some(low);
     attach(p, wire, options)
 }
 
