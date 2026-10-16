@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Follow oep-spec bc52327 (the wire hold, debug §2): a probe keeps a port's lines driven at their rest after a connection closes (not after line loss), so a CH32L103 keeps its halt across processes - `dbg halt` then `dbg resume` no longer finds it running (cmderr 4). The new required op `holds` is read by `ch32rv_oep::target::holds`; the WCH-Link broker declares it and answers no hold. Registry regenerated.
+- (JA) oep-spec bc52327(線の保持、debug §2)に追従。線切れ以外で接続が閉じても probe は口の線を休みの状態で駆動し続けるので、CH32L103 はプロセスをまたいで halt を保つ(`dbg halt` の後の `dbg resume` が、走っている hart に当たって cmderr 4 になっていた)。新しい必須の op `holds` は `ch32rv_oep::target::holds` で読む。WCH-Link のブローカーはこれを宣言し、保持なしと答える。レジストリを再生成。
+
 ## 0.21.1 - 2026-10-16
 
 - (EN) `oep://<probe>` alone names the probe itself (oep-spec host guide §5.3), so it no longer picks the probe's only port: a command that attaches stops (exit 2) and points at `oep://<probe>/<port>` or `oep://<probe>/any` - `any` searches only where it is written. Discovery lists a probe with no named port as `oep://<probe>/any` (it was `oep://<probe>`). A raw `port:<serial port>` or `tcp:` still uses the probe's one port. `docs/cli.ja.md` and `docs/oep-host.ja.md` describe the port model instead of the slots (reported by ArduinoCore-CH32RV).

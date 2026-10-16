@@ -326,7 +326,12 @@ impl WchUpstream {
                                 registry::describe_common::MAX_CLOCK_HZ,
                                 &6_000_000u32.to_le_bytes(),
                             ),
-                            ops_tlv(&[wire::op::ATTACH, wire::op::DETACH, wire::op::CONNECTIONS]),
+                            ops_tlv(&[
+                                wire::op::ATTACH,
+                                wire::op::DETACH,
+                                wire::op::CONNECTIONS,
+                                wire::op::HOLDS,
+                            ]),
                         ]
                     }
                     FN_DM => {
@@ -646,6 +651,14 @@ impl WchUpstream {
                     None => out.push(0),
                 }
                 ok(out)
+            }
+            // first(u8) -> more count entries (oep-if-debug §2.2, lock-free). The WCH-Link rests
+            // its lines as its firmware does and says nothing of it: no hold is known here.
+            o if o == wire::op::HOLDS => {
+                if p.is_empty() {
+                    return rejected(reject_reasons::MALFORMED);
+                }
+                ok(vec![0, 0])
             }
             _ => rejected(reject_reasons::UNKNOWN_OPERATION),
         }

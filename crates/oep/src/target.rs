@@ -450,6 +450,49 @@ pub fn connections(p: &mut Probe, func: u16) -> Result<Vec<Connection>, OepError
     Ok(out)
 }
 
+/// en: A port a wire still drives at its rest after its connection closed (oep-if-debug §2.2,
+/// the hold): a CH32L103 keeps its halt across processes only while the probe drives its lines.
+/// ja: 接続が閉じた後も wire が休みの状態で駆動している口(保持)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Held {
+    pub swdio: u16,
+    /// 0xFFFF on swio.
+    pub swclk: u16,
+    /// rvswd: the idle_clock value (0 high, 1 low); 0 on other wires.
+    pub rest: u8,
+}
+
+/// `holds` of the wire at `func` (lock-free), following `more`: swdio(u16) swclk(u16) rest(u8).
+pub fn holds(p: &mut Probe, func: u16) -> Result<Vec<Held>, OepError> {
+    let mut out = Vec::new();
+    for _ in 0..16 {
+        let first = u8::try_from(out.len()).unwrap_or(u8::MAX);
+        let a = check(p.link().call(crate::link::Call {
+            func,
+            op: wire::op::HOLDS,
+            session: None,
+            payload: vec![first],
+        })?)?;
+        let (Some(&more), Some(&count)) = (a.first(), a.get(1)) else {
+            return Err(OepError::Malformed("holds answer too short".into()));
+        };
+        for i in 0..usize::from(count) {
+            let e = a
+                .get(2 + i * 5..2 + i * 5 + 5)
+                .ok_or_else(|| OepError::Malformed("holds entry cut short".into()))?;
+            out.push(Held {
+                swdio: le16(e, 0),
+                swclk: le16(e, 2),
+                rest: e[4],
+            });
+        }
+        if more == 0 || count == 0 {
+            break;
+        }
+    }
+    Ok(out)
+}
+
 /// `detach`: close the connection and its streams (oep-if-debug §2).
 pub fn detach(p: &mut Probe, kind: WireKind, connection: u32) -> Result<(), OepError> {
     let func = p.interface(kind.interface())?.func;
