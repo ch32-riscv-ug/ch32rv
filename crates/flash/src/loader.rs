@@ -122,9 +122,11 @@ pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
     let mode = if family.eq_ignore_ascii_case("CH32V103") {
         LoaderMode::V103
     } else {
-        match method.mode.as_str() {
-            "buffered" => LoaderMode::Buffered,
-            "direct" => LoaderMode::PgStart,
+        match (method.mode.as_str(), method.buffer_load_bits) {
+            // The loader feeds the page buffer one 32-bit word per BUFLOAD; a wider buffer load
+            // (CH32M030: 64 bit) is not that mechanism and corrupts the page, as on the DMI path.
+            ("buffered", Some(32)) => LoaderMode::Buffered,
+            ("direct", _) => LoaderMode::PgStart,
             _ => return None,
         }
     };
@@ -469,6 +471,8 @@ mod tests {
                 page_by_dbmode: true
             })
         );
+        // CH32M030 loads its buffer 64 bits at a time: not the loader's word-wide BUFLOAD.
+        assert_eq!(plan_for_family("CH32M030"), None);
         assert_eq!(plan_for_family("CH32NOPE"), None);
     }
 

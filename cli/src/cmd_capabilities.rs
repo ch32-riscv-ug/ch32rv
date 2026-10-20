@@ -140,15 +140,20 @@ fn oep_capabilities(cli: &Cli, cmd: &str, a: &crate::oep::OepAddr) -> ExitCode {
         };
         let mut caps = vec![
             Cap::yes("connect", "attached through the probe (its port or wire)"),
-            if blocks && run {
-                Cap::yes(
-                    "flash",
-                    "ch32rv's RAM loader through the probe's block and run ops",
-                )
-            } else {
+            if !blocks || !run {
                 Cap::no(
                     "flash",
                     "the probe declares no read_block / write_block / run",
+                )
+            } else if ch32rv_flash::loader::plan_for_family(&family).is_none() {
+                Cap::no(
+                    "flash",
+                    format!("ch32rv's RAM loader has no programming plan for {family}"),
+                )
+            } else {
+                Cap::yes(
+                    "flash",
+                    "ch32rv's RAM loader through the probe's block and run ops",
                 )
             },
             match profile {
