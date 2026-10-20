@@ -614,12 +614,16 @@ fn protected(cli: &Cli, cmd: &str) -> ExitCode {
 const STATR_BOOT_MODE: u32 = 1 << 14;
 
 /// en: Families whose boot area is chosen in software (`FLASH_STATR.BOOT_MODE`) and holds the
-/// factory ISP bootloader; ch32rv has entered it this way on CH32X035 (2026-10-13).
-/// ja: BOOT 領域をソフトウェアで選べ、そこに factory ISP がある系列。
+/// factory ISP bootloader; ch32rv has entered it this way on CH32X035 (2026-10-13). CH32H417's
+/// reference manual (46.4) gives the same registers and key (BOOT_MODEKEYR 0x40022028,
+/// FLASH_STATR bit 14); its ROM opens USB download on USBFS (PA11 / PA12) only while the USER
+/// option bit USBFSDLEN is set.
+/// ja: BOOT 領域をソフトウェアで選べ、そこに factory ISP がある系列。H417 も RM 46.4 で同じ(USBFS の
+/// ダウンロードは USER の USBFSDLEN が立っているときだけ)。
 fn boot_mode_family(family: &str) -> bool {
     matches!(
         family.to_ascii_uppercase().as_str(),
-        "CH32X035" | "CH32X033"
+        "CH32X035" | "CH32X033" | "CH32H417"
     )
 }
 

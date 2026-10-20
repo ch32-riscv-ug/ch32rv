@@ -152,6 +152,7 @@ fn db_family(family_byte: u8) -> Option<&'static str> {
         0xCE => "CH32V205",
         0xE6 => "CH32X315",
         0xA6 => "CH32V407", // the X315 mechanism (EVT FLASH_ROM_WRITE / ROM_ERASE)
+        0xC6 => "CH32H417", // the same, on 8 KiB pages (PER follows FLASH_CFGR0.DBMODE)
         _ => return None,
     })
 }
@@ -175,15 +176,27 @@ pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
 /// ja: DB の family 名から引く版(OEP の probe のように chip id で target を知るとき)。対象は
 /// [`db_family`] の family だけ(同じ理由)。
 pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
-    let family = [0x01, 0x05, 0x06, 0x09, 0x0C, 0x0E, 0x4E, 0xCE, 0xE6, 0xA6]
-        .into_iter()
-        .filter_map(db_family)
-        .find(|f| *f == family)?;
+    let family = [
+        0x01, 0x05, 0x06, 0x09, 0x0C, 0x0E, 0x4E, 0xCE, 0xE6, 0xA6, 0xC6,
+    ]
+    .into_iter()
+    .filter_map(db_family)
+    .find(|f| *f == family)?;
     let geometry = ch32rv_target::flash_geometry(family)?;
     let method = ch32rv_target::flash_program_method(family)?;
     // The data repo flags rows whose RM and EVT driver disagree; do not guess on a flash writer.
-    if method.confidence == "conflict" {
+    // H417's `conflict` is its RM's procedure text only (see the loader's plan_for_family).
+    if method.confidence == "conflict" && family != "CH32H417" {
         return None;
+    }
+    if family == "CH32H417" {
+        return Some(FlashCtrlProfile {
+            page_size: 8192,
+            mode: FlashProgMode::PgStartSectorErase8K,
+            gdb_breakpoints: true,
+            attach_corrupts_regs: false,
+            erased_reads_ff: geometry.erased_word == Some(0xFFFF_FFFF),
+        });
     }
     // `erase --range` and flash breakpoints work at the fast-erase page; 0 = block erase only.
     let page_size = if geometry.fast_erase == 0 {
@@ -291,16 +304,24 @@ mod tests {
         }
     }
 
-    /// Families the bench has never run must stay unsupported, even though the DB knows them:
-    /// this path erases and programs flash, so it fails closed.
+    /// Bytes with no DB family behind them resolve to no profile.
     #[test]
-    fn unverified_families_have_no_profile() {
-        for byte in [0x86u8, 0xC6, 0x02, 0x00, 0xFF] {
+    fn unknown_families_have_no_profile() {
+        for byte in [0x86u8, 0x02, 0x00, 0xFF] {
             assert!(
                 flash_controller_profile(byte).is_none(),
                 "family byte 0x{byte:02x} must not resolve to a controller profile"
             );
         }
+    }
+
+    /// CH32H417: 8 KiB pages erased by two PERs (its sector follows FLASH_CFGR0.DBMODE).
+    #[test]
+    fn h417_uses_8k_pages() {
+        let p = flash_controller_profile(0xC6).expect("H417 profile");
+        assert_eq!(p.page_size, 8192);
+        assert_eq!(p.mode, FlashProgMode::PgStartSectorErase8K);
+        assert!(!p.erased_reads_ff);
     }
 
     /// The two silicon erase groups must both be represented, and a group-B family must never be

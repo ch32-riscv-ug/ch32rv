@@ -291,19 +291,21 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
     }
 
     let family = session.attach.family_byte;
+    // en: No WCH stub: ch32rv's RAM loader when it has a plan - several times faster than driving
+    // the FLASH controller word by word over DMI (64 KiB on a CH32H417: 8 s against 61 s) - else
+    // the DMI-driven controller.
+    // ja: WCH の stub が無ければ、plan のある RAM ローダー(DMI で 1 語ずつ書くより数倍速い。H417 の
+    // 64 KiB で 8 秒と 61 秒)、無ければ DMI の FLASH controller。
+    let loader_plan = params_for_family(family).is_none()
+        && ch32rv_flash::loader::plan_for_family(&crate::cmd_target::db_family_of(&mut session))
+            .is_some();
+    if loader_plan {
+        return flash_via_loader(cli, args, &bytes, session, warnings);
+    }
     let programmer = match params_for_family(family) {
         Some(fp) => Programmer::Stub(Box::new(fp)),
         None => match ch32rv_flash::flash_controller_profile(family) {
             Some(profile) => Programmer::Controller(profile),
-            // No stub and no DMI-driven profile, but ch32rv's own RAM loader has a plan (CH32H417):
-            // write with it, as `--programmer loader` would.
-            None if ch32rv_flash::loader::plan_for_family(&crate::cmd_target::db_family_of(
-                &mut session,
-            ))
-            .is_some() =>
-            {
-                return flash_via_loader(cli, args, &bytes, session, warnings);
-            }
             None => {
                 return fail(
                     cli,

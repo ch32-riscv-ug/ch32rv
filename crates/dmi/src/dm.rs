@@ -923,16 +923,27 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
             return Err(DmiError::OperationFailed("flash busy".to_owned()));
         }
         let ctlr = self.read_mem32(FLASH_CTLR)?;
-        let erase_bit = if mode == FlashProgMode::PgStartPageErase {
+        let erase_bit = if matches!(
+            mode,
+            FlashProgMode::PgStartPageErase | FlashProgMode::PgStartSectorErase8K
+        ) {
             1 << 1
         } else {
             FLASH_FTER
         };
+        let sectors: &[u32] = if mode == FlashProgMode::PgStartSectorErase8K {
+            &[0, 4096]
+        } else {
+            &[0]
+        };
         self.write_mem32(FLASH_CTLR, ctlr | erase_bit)?;
-        self.write_mem32(FLASH_ADDR, addr)?;
-        let ctlr = self.read_mem32(FLASH_CTLR)?;
-        self.write_mem32(FLASH_CTLR, ctlr | FLASH_STRT)?;
-        let statr = self.flash_wait(FLASH_BUSY)?;
+        let mut statr = 0;
+        for off in sectors {
+            self.write_mem32(FLASH_ADDR, addr + off)?;
+            let ctlr = self.read_mem32(FLASH_CTLR)?;
+            self.write_mem32(FLASH_CTLR, ctlr | FLASH_STRT)?;
+            statr |= self.flash_wait(FLASH_BUSY)?;
+        }
         // Clear the erase request, then surface a write-protect error.
         let ctlr = self.read_mem32(FLASH_CTLR)?;
         self.write_mem32(FLASH_CTLR, ctlr & !erase_bit)?;
@@ -963,11 +974,19 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         data: &[u8],
         mode: FlashProgMode,
     ) -> Result<(), DmiError> {
-        if mode == FlashProgMode::PgStartPageErase {
-            if data.len() != 4096 || !addr.is_multiple_of(4096) {
-                return Err(DmiError::OperationFailed(
-                    "X315 programming requires one aligned 4 KiB erase page".to_owned(),
-                ));
+        if matches!(
+            mode,
+            FlashProgMode::PgStartPageErase | FlashProgMode::PgStartSectorErase8K
+        ) {
+            let page = if mode == FlashProgMode::PgStartSectorErase8K {
+                8192
+            } else {
+                4096
+            };
+            if data.len() != page || !addr.is_multiple_of(page as u32) {
+                return Err(DmiError::OperationFailed(format!(
+                    "this programming mode requires one aligned {page}-byte erase page"
+                )));
             }
             for (i, chunk) in data.as_chunks::<256>().0.iter().enumerate() {
                 self.flash_program_page(addr + i as u32 * 256, chunk, FlashProgMode::PgStart)?;
@@ -1004,7 +1023,9 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
             return Ok(());
         }
         match mode {
-            FlashProgMode::PgStartPageErase => unreachable!("handled above"),
+            FlashProgMode::PgStartPageErase | FlashProgMode::PgStartSectorErase8K => {
+                unreachable!("handled above")
+            }
             FlashProgMode::V103 => unreachable!("handled above"),
             FlashProgMode::PgStart => {
                 self.write_mem32(FLASH_CTLR, FLASH_FTPG)?;
@@ -1130,6 +1151,12 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
 pub enum FlashProgMode {
     /// X315 standard 4 KiB erase with sixteen 256-byte PG_STRT programming pages.
     PgStartPageErase,
+    /// en: CH32H417: the X315 mechanism on 8 KiB pages. PER erases a 4 KiB sector or, with
+    /// FLASH_CFGR0.DBMODE set, an 8 KiB one; two PERs 4 KiB apart cover 8 KiB either way (the
+    /// second erases the same sector again in double-flash mode).
+    /// ja: H417。8 KiB の page で X315 と同じ手順。PER は DBMODE で 4 / 8 KiB を消すので、4 KiB 離して
+    /// 2 回掛ければどちらでも 8 KiB を消せる。
+    PgStartSectorErase8K,
     /// V20x/V30x: load words, then set PGSTART.
     PgStart,
     /// V003/X035/L103: buffer reset, per-word write + BUFLOAD, then STRT.
