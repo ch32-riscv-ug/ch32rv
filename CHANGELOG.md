@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `read --region ram` on a CH32H417 starts at 0x200A0000: its ITCM, DTCM and shared SRAM run on from there without a gap for the DB's 896 KiB, and it has no RAM at 0x20000000.
+- (JA) CH32H417 の `read --region ram` は 0x200A0000 から読む。ITCM・DTCM・共有 SRAM がそこから DB の 896 KiB ぶん隙間なく続き、0x20000000 には RAM が無い。
+
 - (EN) CH32M030 takes `erase --range` and flash breakpoints over DMI: its own controller mode stores two words, then a 64-bit BUFLOAD, and writes the commit `*(FLASH + 0x34) = *((addr & ~3) ^ 0x100)` after every buffer load, erase and program, as its EVT does (the old refusal of a 64-bit buffer load came from the V103's 128-bit case). `capabilities` names the RAM loader first, as `flash` now uses it. Not yet run on M030 silicon.
 - (JA) CH32M030 で DMI の `erase --range` と flash breakpoint が使えるようになった。専用の方式で、2 語を書いてから 64 bit の BUFLOAD、積み込み・消去・書き込みのたびに `*(FLASH + 0x34) = *((addr & ~3) ^ 0x100)` を書く(EVT のとおり。以前 64 bit の積み込みを断っていたのは V103 の 128 bit からの類推)。`capabilities` は、`flash` が今使う RAM ローダーを先に挙げる。M030 の実機は未確認。
 

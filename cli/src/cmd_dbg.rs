@@ -311,7 +311,9 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
         // `--region option` is family-specific (CH32M030 keeps the block at 0x1FFF_F300), so take
         // the base from the DB rather than the common default.
         let option_base = ch32rv_target::option_bytes_layout(&family).map(|l| l.base);
-        let (start, len) = match resolve_range(args, flash_bytes, sram_bytes, option_base) {
+        let ram_base = parse::ram_base(Some(&family));
+        let (start, len) = match resolve_range(args, flash_bytes, sram_bytes, option_base, ram_base)
+        {
             Ok(v) => v,
             Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
         };
@@ -486,11 +488,18 @@ pub(crate) fn resolve_range(
     flash_bytes: u32,
     sram_bytes: u32,
     option_base: Option<u32>,
+    ram_base: u32,
 ) -> Result<(u32, u32), String> {
     if let Some(r) = &args.range {
         parse::range(r)
     } else if let Some(region) = &args.region {
-        parse::resolve_region(region, flash_bytes, sram_bytes, option_base)
+        let (start, len) = parse::resolve_region(region, flash_bytes, sram_bytes, option_base)?;
+        // `ram` is resolved at the common base; move it to the family's (CH32H417).
+        Ok(if region.split('+').next() == Some("ram") {
+            (start - parse::ram_base(None) + ram_base, len)
+        } else {
+            (start, len)
+        })
     } else {
         Err("read needs --range or --region".to_owned())
     }

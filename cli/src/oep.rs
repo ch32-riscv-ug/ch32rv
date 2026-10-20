@@ -1963,13 +1963,15 @@ pub(crate) fn read(cli: &Cli, args: &crate::args::ReadArgs, a: &OepAddr) -> Exit
             .as_deref()
             .and_then(ch32rv_target::option_bytes_layout)
             .map(|l| l.base);
-        let (start, len) = match crate::cmd_dbg::resolve_range(args, flash, sram, option_base) {
-            Ok(v) => v,
-            Err(m) => {
-                resume_after(&mut x.t);
-                return fail(cli, CMD, ErrorKind::Usage, m, None);
-            }
-        };
+        let ram_base = crate::parse::ram_base(x.family.as_deref());
+        let (start, len) =
+            match crate::cmd_dbg::resolve_range(args, flash, sram, option_base, ram_base) {
+                Ok(v) => v,
+                Err(m) => {
+                    resume_after(&mut x.t);
+                    return fail(cli, CMD, ErrorKind::Usage, m, None);
+                }
+            };
         let lo = start & !3;
         let words = (start + len - lo).div_ceil(4) as usize;
         let data = match x.t.read_words(lo, words) {

@@ -93,6 +93,17 @@ pub fn region_base(name: &str, option_base: Option<u32>) -> Result<u32, String> 
     }
 }
 
+/// en: Where a family's RAM starts: 0x2000_0000 on every CH32 but the CH32H417, whose ITCM
+/// (0x200A_0000), DTCM (0x200C_0000) and shared SRAM (0x2010_0000..0x2018_0000) run on without a
+/// gap - 896 KiB, the DB's SRAM size - and nothing is at 0x2000_0000 (RM table 4-2).
+/// ja: family の RAM の先頭。H417 は ITCM・DTCM・共有 SRAM が 0x200A_0000 から隙間なく続く。
+pub fn ram_base(family: Option<&str>) -> u32 {
+    match family {
+        Some(f) if f.eq_ignore_ascii_case("CH32H417") => 0x200A_0000,
+        _ => 0x2000_0000,
+    }
+}
+
 /// en: Resolve `--region <name>[+off[+len]]` to `(start, len)`. The default length is the whole
 /// region: the probe's `flash_bytes` for `code`, the DB `sram_bytes` for `ram`, 16 for `option`.
 /// ja: `--region <名前>[+off[+len]]` を `(start, len)` に解決。既定長は領域全体(code=probe 報告
@@ -257,6 +268,13 @@ mod tests {
         assert!(resolve_region("system", 0x1000, 0x1000, None).is_err());
         assert!(resolve_region("bogus", 0x1000, 0x1000, None).is_err());
         assert!(resolve_region("code", 0, 0, None).is_err());
+    }
+
+    #[test]
+    fn ram_starts_where_the_family_has_it() {
+        assert_eq!(ram_base(Some("CH32H417")), 0x200A_0000);
+        assert_eq!(ram_base(Some("CH32V20x")), 0x2000_0000);
+        assert_eq!(ram_base(None), 0x2000_0000);
     }
 
     #[test]
