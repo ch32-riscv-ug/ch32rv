@@ -23,13 +23,21 @@ pub const LOADER: &[u8] = include_bytes!("../loader/ch32_loader.bin");
 /// Every run ends at this ebreak.
 pub const DONE_OFFSET: u32 = 4;
 
+/// SRAM on every family but CH32H417, where the loader and its buffer go.
 const SRAM: u32 = 0x2000_0000;
-/// The page buffer, after the loader (which is well under 512 bytes).
-const BUFFER: u32 = SRAM + 0x200;
+/// en: CH32H417 has no RAM at 0x20000000 (RM 4-2: ITCM 0x200A0000, DTCM 0x200C0000, the shared
+/// SRAM from 0x20100000, where the boot copies the first 64 KiB of code). The loader goes in the
+/// shared SRAM's data part, clear of that code copy. ja: H417 は 0x20000000 に RAM が無いので、
+/// 共有 SRAM のデータ側に置く。
+const H417_SRAM: u32 = 0x2012_0000;
+/// The page buffer sits this far after the loader (which is well under 512 bytes).
+const BUFFER_OFFSET: u32 = 0x200;
 const FLASH_BASE: u32 = 0x4002_2000;
 const FLASH_KEYR: u32 = FLASH_BASE + 0x04;
 const FLASH_CTLR: u32 = FLASH_BASE + 0x10;
 const FLASH_MODEKEYR: u32 = FLASH_BASE + 0x24;
+const FLASH_CFGR0: u32 = FLASH_BASE + 0x2C;
+const CFGR0_DBMODE: u32 = 1 << 28;
 const KEY1: u32 = 0x4567_0123;
 const KEY2: u32 = 0xCDEF_89AB;
 const CTLR_LOCK: u32 = 1 << 7;
@@ -64,6 +72,14 @@ pub struct LoaderPlan {
     pub mode: LoaderMode,
     /// The erase page the loader programs; X315 uses sixteen smaller programming pages.
     pub page: u32,
+    /// Where the loader runs; its page buffer follows at [`BUFFER_OFFSET`].
+    pub ram: u32,
+    /// en: The erase page doubles when `FLASH_CFGR0.DBMODE` (bit 28) reads 1 (CH32H417: PER
+    /// erases an 8 KiB sector in double-flash mode, 4 KiB otherwise - RM 46.4; the DB row
+    /// gives the 4 KiB). Read from the target before anything is erased.
+    /// ja: `FLASH_CFGR0.DBMODE` が 1 なら消去単位を 2 倍にする(H417 の PER は double flash で
+    /// 8 KiB)。消す前に target から読む。
+    pub page_by_dbmode: bool,
 }
 
 /// The plan for a DB family (`CH32V20x`, `CH32X035`, ...), from its programming method and
@@ -71,10 +87,18 @@ pub struct LoaderPlan {
 pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
     let geo = ch32rv_target::flash_geometry(family)?;
     let method = ch32rv_target::flash_program_method(family)?;
-    if method.confidence == "conflict" {
+    // en: CH32H417's row is flagged `conflict` only by its RM's procedure text (46.5.6 step 8
+    // "set FTPG to start", and an FTER the CTLR does not have - copied from other parts); the
+    // RM's own CTLR table (FTPG bit 16, PGSTRT bit 21, PER bit 1) and the EVT driver
+    // (FLASH_ROM_WRITE: PAGE_PG, 64 words with WRBSY, PG_STRT; ROM_ERASE: PER + STRT, 4 KiB)
+    // agree bit for bit, and that is the X315 mechanism below.
+    // ja: H417 の conflict は RM の手順の文だけ(他品種からの写し)。CTLR の表と EVT はビット単位で
+    // 一致し、X315 と同じ手順になる。
+    let h417 = family == "CH32H417";
+    if method.confidence == "conflict" && !h417 {
         return None;
     }
-    if family == "CH32X315"
+    if (family == "CH32X315" || h417)
         && geo.page_erase == 4096
         && geo.fast_erase == 0
         && geo.fast_program == 256
@@ -84,7 +108,12 @@ pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
         return Some(LoaderPlan {
             mode: LoaderMode::PgStartPageErase,
             page: geo.page_erase,
+            ram: if h417 { H417_SRAM } else { SRAM },
+            page_by_dbmode: h417,
         });
+    }
+    if method.confidence == "conflict" {
+        return None;
     }
     let page = geo.fast_program;
     if page == 0 || page != geo.fast_erase || page > 256 || !page.is_multiple_of(4) {
@@ -99,7 +128,12 @@ pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
             _ => return None,
         }
     };
-    Some(LoaderPlan { mode, page })
+    Some(LoaderPlan {
+        mode,
+        page,
+        ram: SRAM,
+        page_by_dbmode: false,
+    })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -180,11 +214,11 @@ fn lock<T: TargetAccess + ?Sized>(t: &mut T) -> Result<(), LoaderError> {
 }
 
 /// Write the loader and read it back until it matches (3 tries).
-fn place_loader<T: TargetAccess + ?Sized>(t: &mut T) -> Result<(), LoaderError> {
+fn place_loader<T: TargetAccess + ?Sized>(t: &mut T, ram: u32) -> Result<(), LoaderError> {
     let w = words(LOADER);
     for _ in 0..3 {
-        t.write_words(SRAM, &w)?;
-        if t.read_words(SRAM, w.len())? == w {
+        t.write_words(ram, &w)?;
+        if t.read_words(ram, w.len())? == w {
             return Ok(());
         }
     }
@@ -212,10 +246,11 @@ fn run_batch<T: TargetAccess + ?Sized>(
     count: u32,
     report: &mut LoaderReport,
 ) -> Result<Run, LoaderError> {
-    t.write_words(BUFFER, &words(content))?;
+    let buffer = plan.ram + BUFFER_OFFSET;
+    t.write_words(buffer, &words(content))?;
     let regs = [
         (regno::A0, addr),
-        (regno::A1, BUFFER),
+        (regno::A1, buffer),
         (regno::A2, plan.page),
         (regno::A3, plan.mode as u32),
         (regno::A5, count),
@@ -224,16 +259,16 @@ fn run_batch<T: TargetAccess + ?Sized>(
     // The probe issues a run once and never again: a run that did not start (dpc still at the
     // entry) is safe to issue again, since erase + program of whole pages is idempotent.
     for _ in 0..3 {
-        let r = t.run_until_halt(SRAM, &regs, &[regno::A0], RUN_TIMEOUT)?;
+        let r = t.run_until_halt(plan.ram, &regs, &[regno::A0], RUN_TIMEOUT)?;
         let a0 = r.outs.first().copied().unwrap_or(u32::MAX);
-        if r.stopped && r.dpc == SRAM + DONE_OFFSET {
+        if r.stopped && r.dpc == plan.ram + DONE_OFFSET {
             return Ok(match a0 {
                 0 => Run::Ok,
                 v if v & 0x8000_0000 != 0 => Run::WriteProtected(v & 0x7FFF_FFFF),
                 _ => Run::Retry,
             });
         }
-        if r.dpc == SRAM {
+        if r.dpc == plan.ram {
             report.restarted_runs += 1;
             continue;
         }
@@ -269,6 +304,12 @@ pub fn program<T: TargetAccess + ?Sized>(
     segments: &[Segment],
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<LoaderReport, LoaderError> {
+    let mut plan = plan;
+    if plan.page_by_dbmode
+        && t.read_words(FLASH_CFGR0, 1)?.first().copied().unwrap_or(0) & CFGR0_DBMODE != 0
+    {
+        plan.page *= 2;
+    }
     unlock(t)?;
     let r = program_unlocked(t, plan, segments, progress);
     let relock = lock(t);
@@ -319,7 +360,7 @@ fn program_unlocked<T: TargetAccess + ?Sized>(
         pages: pages.len(),
         ..LoaderReport::default()
     };
-    place_loader(t)?;
+    place_loader(t, plan.ram)?;
     let total = pages.len();
     let per_run = (BATCH_BYTES / page as usize).clamp(1, MAX_BATCH_PAGES);
     let mut todo: Vec<usize> = (0..total).collect();
@@ -327,7 +368,7 @@ fn program_unlocked<T: TargetAccess + ?Sized>(
     for pass in 0..3 {
         if pass > 0 {
             report.rewritten += todo.len();
-            place_loader(t)?;
+            place_loader(t, plan.ram)?;
         }
         let mut again = Vec::new();
         for b in batches(&pages, &todo, page, per_run) {
@@ -380,7 +421,9 @@ mod tests {
             plan_for_family("CH32V20x"),
             Some(LoaderPlan {
                 mode: LoaderMode::PgStart,
-                page: 256
+                page: 256,
+                ram: SRAM,
+                page_by_dbmode: false
             })
         );
         assert_eq!(
@@ -392,21 +435,38 @@ mod tests {
             plan_for_family("CH32V205"),
             Some(LoaderPlan {
                 mode: LoaderMode::Buffered,
-                page: 256
+                page: 256,
+                ram: SRAM,
+                page_by_dbmode: false
             })
         );
         assert_eq!(
             plan_for_family("CH32X315"),
             Some(LoaderPlan {
                 mode: LoaderMode::PgStartPageErase,
-                page: 4096
+                page: 4096,
+                ram: SRAM,
+                page_by_dbmode: false
             })
         );
         assert_eq!(
             plan_for_family("CH32V103"),
             Some(LoaderPlan {
                 mode: LoaderMode::V103,
-                page: 128
+                page: 128,
+                ram: SRAM,
+                page_by_dbmode: false
+            })
+        );
+        // H417: the X315 mechanism, despite the row's `conflict` (RM text only), with the loader
+        // in the shared SRAM (no RAM at 0x20000000).
+        assert_eq!(
+            plan_for_family("CH32H417"),
+            Some(LoaderPlan {
+                mode: LoaderMode::PgStartPageErase,
+                page: 4096,
+                ram: H417_SRAM,
+                page_by_dbmode: true
             })
         );
         assert_eq!(plan_for_family("CH32NOPE"), None);
@@ -537,6 +597,6 @@ mod tests {
     fn the_loader_stops_at_its_done_offset() {
         // j main ; ebreak at +4
         assert_eq!(&LOADER[4..8], &0x0010_0073u32.to_le_bytes());
-        assert!(LOADER.len() < (BUFFER - SRAM) as usize);
+        assert!(LOADER.len() < BUFFER_OFFSET as usize);
     }
 }

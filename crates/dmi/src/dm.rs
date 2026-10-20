@@ -45,8 +45,10 @@ const DMCONTROL: u8 = 0x10;
 const DMSTATUS: u8 = 0x11;
 const DMABSTRACTCS: u8 = 0x16;
 const DMCOMMAND: u8 = 0x17;
+const DMABSTRACTAUTO: u8 = 0x18;
 const DMPROGBUF0: u8 = 0x20;
 const DMPROGBUF1: u8 = 0x21;
+const DMPROGBUF2: u8 = 0x22;
 
 // DMSTATUS bit masks.
 const DMSTATUS_ALLRUNNING: u32 = 1 << 11;
@@ -544,6 +546,71 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.abstract_done(v.get(1).copied())
     }
 
+    /// en: Write consecutive words from `addr`. Four or more, on a DM whose program buffer holds
+    /// three words, go through `abstractauto`: the program buffer stores x7 at x5 and steps x5,
+    /// so each further word is one DATA0 write (each DMI access is a USB round trip on a
+    /// WCH-Link: about 4 ms a word one by one, measured on a CH32H417). Any cmderr (a DATA0
+    /// written while busy, say) shows at the end; the block is then written again word by word.
+    /// The hart must be halted.
+    /// ja: `addr` から連続する語を書く。4 語以上で program buffer が 3 語ある DM では
+    /// `abstractauto` を使い、2 語目からは DATA0 を 1 回書くだけにする(WCH-Link は DMI 1 回が USB
+    /// 1 往復)。cmderr は最後に見て、出ていれば 1 語ずつ書き直す。hart は halt 済みであること。
+    pub fn write_mem32_block(&mut self, addr: u32, data: &[u32]) -> Result<(), DmiError> {
+        let progbuf = (self.read(DMABSTRACTCS)? >> 24) & 0x1f;
+        if data.len() >= 4 && progbuf >= 3 {
+            let fast = self.write_mem32_auto(addr, data);
+            let off = self.write(DMABSTRACTAUTO, 0);
+            if fast.is_ok() {
+                return off;
+            }
+            off?;
+            self.clear_cmderr()?;
+        }
+        for (i, w) in data.iter().enumerate() {
+            self.write_mem32(addr + 4 * i as u32, *w)?;
+        }
+        Ok(())
+    }
+
+    fn write_mem32_auto(&mut self, addr: u32, data: &[u32]) -> Result<(), DmiError> {
+        let v = self.dtm.dmi_sequence(&[
+            DmiOp::Write(DMPROGBUF0, 0x0072_a023), // sw x7, 0(x5)
+            DmiOp::Write(DMPROGBUF1, 0x0042_8293), // addi x5, x5, 4
+            DmiOp::Write(DMPROGBUF2, 0x0010_0073), // ebreak
+            DmiOp::Write(DMABSTRACTCS, ABSTRACTCS_CMDERR_MASK),
+            DmiOp::Write(DMDATA0, addr),
+            DmiOp::Write(DMCOMMAND, 0x0023_1005), // x5 <- data0
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+            DmiOp::Write(DMDATA0, data[0]),
+            DmiOp::Write(DMCOMMAND, 0x0027_1007), // x7 <- data0, then the program buffer
+            DmiOp::PollClear {
+                addr: DMABSTRACTCS,
+                mask: ABSTRACTCS_BUSY,
+                max_reads: 64,
+            },
+            DmiOp::Write(DMABSTRACTAUTO, 1), // a DATA0 write runs the command again
+            DmiOp::Read(DMABSTRACTAUTO),
+        ])?;
+        self.abstract_done(v.first().copied())?;
+        self.abstract_done(v.get(1).copied())?;
+        autoexec_taken(v.get(2).copied())?;
+        let mut ops: Vec<DmiOp> = data[1..]
+            .iter()
+            .map(|w| DmiOp::Write(DMDATA0, *w))
+            .collect();
+        ops.push(DmiOp::PollClear {
+            addr: DMABSTRACTCS,
+            mask: ABSTRACTCS_BUSY,
+            max_reads: 64,
+        });
+        let v = self.dtm.dmi_sequence(&ops)?;
+        self.abstract_done(v.last().copied())
+    }
+
     /// en: Store one 16-bit halfword to target memory via program buffer (`sh x7,0(x5)`). The
     /// hart must be halted. Needed for CH32V103 standard flash programming, which latches the
     /// FLASH controller on each 16-bit store (a 32-bit `sw` does not program it correctly).
@@ -660,6 +727,27 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         let mut out = Vec::with_capacity(len as usize);
         let start = addr & !3;
         let end = addr.saturating_add(len);
+        let count = (end.div_ceil(4) * 4 - start) / 4;
+        if count >= 4 && (self.read(DMABSTRACTCS)? >> 24) & 0x1f >= 3 {
+            let fast = self.read_mem32_auto(start, count as usize);
+            let off = self.write(DMABSTRACTAUTO, 0);
+            match fast {
+                Ok(words) => {
+                    off?;
+                    for w in words {
+                        out.extend_from_slice(&w.to_le_bytes());
+                    }
+                    let head = (addr - start) as usize;
+                    out.drain(0..head);
+                    out.truncate(len as usize);
+                    return Ok(out);
+                }
+                Err(_) => {
+                    off?;
+                    self.clear_cmderr()?;
+                }
+            }
+        }
         let mut a = start;
         while a < end {
             let word = self.read_mem32(a)?;
@@ -672,6 +760,55 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         out.drain(0..head);
         out.truncate(len as usize);
         Ok(out)
+    }
+
+    /// en: `count` (>= 4) words from `addr` through `abstractauto`: the program buffer loads x6 from
+    /// x5 and steps x5, and a DATA0 read returns one word and runs the command again (transfer x6
+    /// to DATA0, then the program buffer) - one DMI access a word instead of about ten. The
+    /// last word is taken with autoexec off, so nothing past the block is read. Any cmderr is
+    /// returned (the caller then reads word by word).
+    /// ja: `abstractauto` で `count` 語を読む(1 語あたり DMI 1 回)。最後の語は autoexec を止めて
+    /// から取るので、範囲の外は読まない。cmderr は返す(呼び出し側が 1 語ずつ読み直す)。
+    fn read_mem32_auto(&mut self, addr: u32, count: usize) -> Result<Vec<u32>, DmiError> {
+        let busy = DmiOp::PollClear {
+            addr: DMABSTRACTCS,
+            mask: ABSTRACTCS_BUSY,
+            max_reads: 64,
+        };
+        let v = self.dtm.dmi_sequence(&[
+            DmiOp::Write(DMPROGBUF0, 0x0002_a303), // lw x6, 0(x5)
+            DmiOp::Write(DMPROGBUF1, 0x0042_8293), // addi x5, x5, 4
+            DmiOp::Write(DMPROGBUF2, 0x0010_0073), // ebreak
+            DmiOp::Write(DMABSTRACTCS, ABSTRACTCS_CMDERR_MASK),
+            DmiOp::Write(DMDATA0, addr),
+            DmiOp::Write(DMCOMMAND, 0x0027_1005), // x5 <- data0, then the program buffer: x6 = w0
+            busy,
+            DmiOp::Write(DMCOMMAND, 0x0026_1006), // data0 <- x6 (w0), then x6 = w1
+            busy,
+            DmiOp::Write(DMABSTRACTAUTO, 1),
+            DmiOp::Read(DMABSTRACTAUTO),
+        ])?;
+        self.abstract_done(v.first().copied())?;
+        self.abstract_done(v.get(1).copied())?;
+        autoexec_taken(v.get(2).copied())?;
+        // Reads 1..count-2 each return w(k-1) and load w(k+1) into x6 (the last load is w(count-1)).
+        let mut ops: Vec<DmiOp> = (0..count - 2).map(|_| DmiOp::Read(DMDATA0)).collect();
+        ops.extend([
+            DmiOp::Write(DMABSTRACTAUTO, 0),
+            busy,
+            DmiOp::Read(DMDATA0),                 // w(count-2)
+            DmiOp::Write(DMCOMMAND, 0x0022_1006), // data0 <- x6 (w(count-1))
+            busy,
+            DmiOp::Read(DMDATA0),
+        ]);
+        let v = self.dtm.dmi_sequence(&ops)?;
+        // v: count-2 words, ABSTRACTCS, w(count-2), ABSTRACTCS, w(count-1).
+        self.abstract_done(v.get(count - 2).copied())?;
+        self.abstract_done(v.get(count).copied())?;
+        let mut words = v[..count - 2].to_vec();
+        words.push(v[count - 1]);
+        words.push(v[count + 1]);
+        Ok(words)
     }
 
     // ---- Direct FLASH-controller programming over DMI (fast page erase / program) ----
@@ -1026,6 +1163,20 @@ const FLASH_PGSTART: u32 = 1 << 21; // start fast page program (PgStart mode)
 const FLASH_BUSY: u32 = 1 << 0;
 const FLASH_WRBUSY: u32 = 1 << 1;
 const FLASH_WPRERR: u32 = 1 << 4;
+
+/// en: `abstractauto.autoexecdata[0]` read back as written (the field is WARL): a DM that does
+/// not implement it ignores the write, and a block access through it would quietly touch only
+/// the first word - seen on a CH32V103 (V3A), whose DM reads it back as 0.
+/// ja: `abstractauto.autoexecdata[0]` が書いたとおり読めるか(WARL)。持たない DM は書き込みを
+/// 無視し、ブロックの読み書きが 1 語目しか届かない(CH32V103 で 0 と読めた)。
+fn autoexec_taken(v: Option<u32>) -> Result<(), DmiError> {
+    match v {
+        Some(v) if v & 1 != 0 => Ok(()),
+        _ => Err(DmiError::OperationFailed(
+            "the debug module has no abstractauto".to_owned(),
+        )),
+    }
+}
 
 #[cfg(test)]
 mod tests {

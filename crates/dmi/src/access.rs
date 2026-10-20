@@ -154,11 +154,7 @@ impl<T: DtmAccess> TargetAccess for DmTarget<'_, T> {
     }
 
     fn write_words(&mut self, addr: u32, words: &[u32]) -> Result<(), DmiError> {
-        let mut dm = self.dm();
-        for (i, w) in words.iter().enumerate() {
-            dm.write_mem32(addr + 4 * i as u32, *w)?;
-        }
-        Ok(())
+        self.dm().write_mem32_block(addr, words)
     }
 
     fn run_until_halt(

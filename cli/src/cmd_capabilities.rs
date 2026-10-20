@@ -221,7 +221,7 @@ fn live_capabilities(cli: &Cli, cmd: &str, entry: &crate::cmd_probe::Entry) -> E
         Err(msg) => return fail(cli, cmd, ErrorKind::Usage, msg, None),
     };
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    let session = match Session::attach(
+    let mut session = match Session::attach(
         entry,
         speed,
         timeout,
@@ -243,10 +243,14 @@ fn live_capabilities(cli: &Cli, cmd: &str, entry: &crate::cmd_probe::Entry) -> E
         _ => (None, None),
     };
     let wiring = series.as_deref().and_then(ch32rv_target::debug_wiring);
+    let loader =
+        ch32rv_flash::loader::plan_for_family(&crate::cmd_target::db_family_of(&mut session))
+            .is_some();
     let caps = build_matrix(
         &session.probe_info.variant,
         session.attach.family_byte,
         wiring.as_ref(),
+        loader,
     );
     report(
         cli,
@@ -291,6 +295,11 @@ fn static_capabilities(
     };
     // A representative SKU (for the series' debug wiring).
     let db = ch32rv_target::Db::builtin();
+    let loader = db
+        .skus()
+        .iter()
+        .find(|s| s.sku.eq_ignore_ascii_case(chip) || s.family.eq_ignore_ascii_case(chip))
+        .is_some_and(|s| ch32rv_flash::loader::plan_for_family(&s.family).is_some());
     let (sku, series) = db
         .skus()
         .iter()
@@ -302,7 +311,7 @@ fn static_capabilities(
         .map(|s| (Some(s.sku.clone()), Some(s.series.clone())))
         .unwrap_or((None, None));
     let wiring = series.as_deref().and_then(ch32rv_target::debug_wiring);
-    let caps = build_matrix(&info.variant, family_byte, wiring.as_ref());
+    let caps = build_matrix(&info.variant, family_byte, wiring.as_ref(), loader);
     let family = ch32rv_wchlink::family_name(family_byte)
         .unwrap_or(chip)
         .to_owned();
@@ -379,6 +388,7 @@ fn build_matrix(
     variant: &Variant,
     family_byte: u8,
     wiring: Option<&ch32rv_target::DebugWiring>,
+    loader: bool,
 ) -> Vec<Cap> {
     let is_linke = matches!(variant, Variant::LinkE);
     let is_linke_or_w = matches!(variant, Variant::LinkE | Variant::LinkW);
@@ -408,6 +418,11 @@ fn build_matrix(
         Cap::yes(
             "flash",
             "no stub for this family - programmed via the direct FLASH controller (slower)",
+        )
+    } else if loader {
+        Cap::yes(
+            "flash",
+            "no stub for this family - programmed with ch32rv's RAM loader",
         )
     } else {
         Cap::no(
@@ -485,19 +500,19 @@ mod tests {
     #[test]
     fn ch549_cannot_drive_1wire_target() {
         // CH32V003 (0x09) is 1-wire; on a CH549 probe, connect must be unsupported.
-        let caps = build_matrix(&Variant::Ch549, 0x09, Some(&wiring("1-wire")));
+        let caps = build_matrix(&Variant::Ch549, 0x09, Some(&wiring("1-wire")), false);
         assert!(!cap(&caps, "connect").supported);
         // ...but a LinkE drives it fine.
-        let caps = build_matrix(&Variant::LinkE, 0x09, Some(&wiring("1-wire")));
+        let caps = build_matrix(&Variant::LinkE, 0x09, Some(&wiring("1-wire")), false);
         assert!(cap(&caps, "connect").supported);
     }
 
     #[test]
     fn sdi_and_poweroff_are_linke_only() {
-        let ch549 = build_matrix(&Variant::Ch549, 0x01, Some(&wiring("2-wire")));
+        let ch549 = build_matrix(&Variant::Ch549, 0x01, Some(&wiring("2-wire")), false);
         assert!(!cap(&ch549, "monitor sdi").supported);
         assert!(!cap(&ch549, "recover power-off").supported);
-        let linke = build_matrix(&Variant::LinkE, 0x01, Some(&wiring("2-wire")));
+        let linke = build_matrix(&Variant::LinkE, 0x01, Some(&wiring("2-wire")), false);
         assert!(cap(&linke, "monitor sdi").supported);
         assert!(cap(&linke, "recover power-off").supported);
     }
@@ -507,14 +522,14 @@ mod tests {
         // L103 (0x0E) has a profile; an unsupported family (0x00) does not.
         assert!(
             cap(
-                &build_matrix(&Variant::LinkE, 0x0E, None),
+                &build_matrix(&Variant::LinkE, 0x0E, None, false),
                 "erase --range / flash-bp"
             )
             .supported
         );
         assert!(
             !cap(
-                &build_matrix(&Variant::LinkE, 0x00, None),
+                &build_matrix(&Variant::LinkE, 0x00, None, false),
                 "erase --range / flash-bp"
             )
             .supported

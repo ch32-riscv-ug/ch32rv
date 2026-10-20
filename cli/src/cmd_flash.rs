@@ -295,6 +295,15 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         Some(fp) => Programmer::Stub(Box::new(fp)),
         None => match ch32rv_flash::flash_controller_profile(family) {
             Some(profile) => Programmer::Controller(profile),
+            // No stub and no DMI-driven profile, but ch32rv's own RAM loader has a plan (CH32H417):
+            // write with it, as `--programmer loader` would.
+            None if ch32rv_flash::loader::plan_for_family(&crate::cmd_target::db_family_of(
+                &mut session,
+            ))
+            .is_some() =>
+            {
+                return flash_via_loader(cli, args, &bytes, session, warnings);
+            }
             None => {
                 return fail(
                     cli,
