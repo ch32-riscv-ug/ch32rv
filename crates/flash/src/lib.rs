@@ -186,11 +186,15 @@ pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
     let geometry = ch32rv_target::flash_geometry(family)?;
     let method = ch32rv_target::flash_program_method(family)?;
     // The data repo flags rows whose RM and EVT driver disagree; do not guess on a flash writer.
-    // H417's `conflict` is its RM's procedure text only (see the loader's plan_for_family).
-    if method.confidence == "conflict" && family != "CH32H417" {
+    if method.confidence == "conflict" {
         return None;
     }
-    if family == "CH32H417" {
+    // A sector that follows a mode bit (CH32H417: 4 KiB, or 8 KiB with FLASH_CFGR0.DBMODE): 8 KiB
+    // pages erased by two PERs 4 KiB apart cover it either way.
+    if geometry.mode_bit.is_some() {
+        if geometry.page_erase != 4096 || geometry.page_erase_dual != 8192 {
+            return None;
+        }
         return Some(FlashCtrlProfile {
             page_size: 8192,
             mode: FlashProgMode::PgStartSectorErase8K,

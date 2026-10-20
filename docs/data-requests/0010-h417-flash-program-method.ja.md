@@ -1,7 +1,7 @@
 # CH32H417 の flash の書き方: conflict の解消と、DBMODE で変わる消去単位
 
 - 依頼先: ch32-device-data
-- 状態: 依頼中 (2026-10-20)
+- 状態: 納品・受け入れ済み (2026-10-21、ch32-device-data@c9ca0dd)
 - 優先度: 中(ch32rv は暫定の例外で書けている)
 - 関連: [0009](0009-h417-core-selection.ja.md)、[CH32H417 識別・データ取得](measured/device-id-h417-2026-10-10.md)
 
@@ -33,3 +33,10 @@ DBMODE ごとの消去単位(と BER の大きさ)を、表で持てる形にし
 - 消去単位は書く前に FLASH_CFGR0 を読み、DBMODE=1 なら 2 倍(8 KiB)にする。
 - ローダーは、H417 では 0x20000000 に RAM が無い(RM 表 4-2)ので、共有 SRAM の 0x20120000 に置く。
 - 1 と 2 が納品されたら、例外と DBMODE の読み取りを、表の値に置き換える。
+
+## 2026-10-21 受け入れ
+
+- 1: H417 の `flash_program_method` の行は confirmed になった(値は `direct` / `PG_STRT` のまま)。RM の CTLR の表を根拠に加え、手順 8 の文は異議として残る。ch32rv の conflict の例外は外した。
+- 2: `flash_geometry` に `flash_mode_bit`(`FLASH_CFGR0.DBMODE[28]`)、`page_erase_bytes_dual`(8192)、`block_erase_bytes_dual`(65536)が加わった。ch32rv の生成器はこの 3 列を取り込み、ローダーは `flash_mode_bit` のビットを target から読んで、1 なら `page_erase_bytes_dual` を消去単位にする。DMI の経路は、`flash_mode_bit` を持つ family を 8 KiB の page(4 KiB 離して PER を 2 回)で扱う。
+- ローダーを置く RAM(H417 は 0x20120000)は DB に無いので、ch32rv 側に残る。
+

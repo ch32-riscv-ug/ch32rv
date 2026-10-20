@@ -124,6 +124,13 @@ pub struct FlashGeometry {
     /// ja: 消去済み word の読み出し値(`0xFFFFFFFF` 系 / `0xe339e339` 系)。RM が書き分けている
     /// シリコン特性なので blank 判定は family 依存。DB に記述が無ければ None。
     pub erased_word: Option<u32>,
+    /// en: The register bit that switches the erase sizes, as the DB writes it
+    /// (`FLASH_CFGR0.DBMODE[28]`), and the sizes while it is set; None / 0 when the family's
+    /// erase sizes do not depend on a mode (every family but CH32H417).
+    /// ja: 消去単位を切り替えるレジスタのビットと、立っているときの大きさ。
+    pub mode_bit: Option<&'static str>,
+    pub page_erase_dual: u32,
+    pub block_erase_dual: u32,
 }
 
 /// en: The flash geometry for a DB `family` string (e.g. `CH32L103`, `CH32V307`). None when the
@@ -134,9 +141,21 @@ pub fn flash_geometry(family: &str) -> Option<FlashGeometry> {
         if line.is_empty() || line.starts_with('#') {
             return None;
         }
-        // family,page_erase,fast_erase,fast_program,block_erase,erased_word
+        // family,page_erase,fast_erase,fast_program,block_erase,erased_word,mode_bit,
+        // page_erase_dual,block_erase_dual
         let f: Vec<&str> = line.split(',').collect();
-        let [fam, page, fast_e, fast_p, block, erased] = f.as_slice() else {
+        let [
+            fam,
+            page,
+            fast_e,
+            fast_p,
+            block,
+            erased,
+            mode,
+            page_dual,
+            block_dual,
+        ] = f.as_slice()
+        else {
             return None;
         };
         if !fam.eq_ignore_ascii_case(family) {
@@ -148,6 +167,9 @@ pub fn flash_geometry(family: &str) -> Option<FlashGeometry> {
             fast_program: fast_p.parse().unwrap_or(0),
             block_erase: block.parse().unwrap_or(0),
             erased_word: parse_generated_hex(erased),
+            mode_bit: (!mode.is_empty()).then_some(*mode),
+            page_erase_dual: page_dual.parse().unwrap_or(0),
+            block_erase_dual: block_dual.parse().unwrap_or(0),
         })
     })
 }

@@ -37,7 +37,6 @@ const FLASH_KEYR: u32 = FLASH_BASE + 0x04;
 const FLASH_CTLR: u32 = FLASH_BASE + 0x10;
 const FLASH_MODEKEYR: u32 = FLASH_BASE + 0x24;
 const FLASH_CFGR0: u32 = FLASH_BASE + 0x2C;
-const CFGR0_DBMODE: u32 = 1 << 28;
 const KEY1: u32 = 0x4567_0123;
 const KEY2: u32 = 0xCDEF_89AB;
 const CTLR_LOCK: u32 = 1 << 7;
@@ -76,12 +75,41 @@ pub struct LoaderPlan {
     pub page: u32,
     /// Where the loader runs; its page buffer follows at [`BUFFER_OFFSET`].
     pub ram: u32,
-    /// en: The erase page doubles when `FLASH_CFGR0.DBMODE` (bit 28) reads 1 (CH32H417: PER
-    /// erases an 8 KiB sector in double-flash mode, 4 KiB otherwise - RM 46.4; the DB row
-    /// gives the 4 KiB). Read from the target before anything is erased.
-    /// ja: `FLASH_CFGR0.DBMODE` が 1 なら消去単位を 2 倍にする(H417 の PER は double flash で
-    /// 8 KiB)。消す前に target から読む。
-    pub page_by_dbmode: bool,
+    /// en: The erase page while a mode bit is set, from the DB's `flash_mode_bit` /
+    /// `page_erase_bytes_dual` (CH32H417: FLASH_CFGR0.DBMODE, 8 KiB): the bit is read from the
+    /// target before anything is erased, and `page` gives way to this one when it reads 1.
+    /// ja: モードのビットが立っているときの消去単位(DB の flash_mode_bit / page_erase_bytes_dual)。
+    /// 消す前に target から読み、1 ならこちらを使う。
+    pub page_dual: Option<PageDual>,
+}
+
+/// The register bit that switches a family's erase page, and the page while it is set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageDual {
+    pub register: u32,
+    pub bit: u32,
+    pub page: u32,
+}
+
+/// en: `PageDual` from the DB: the mode bit as written there (`FLASH_CFGR0.DBMODE[28]`) mapped to
+/// an address ch32rv knows, and the dual erase page. None for a register name ch32rv does not
+/// know: the plan is then refused, since a wrong erase size loses data around the image.
+/// ja: DB の書き方(`FLASH_CFGR0.DBMODE[28]`)を番地とビットにする。知らないレジスタなら None。
+fn page_dual(geo: &ch32rv_target::FlashGeometry) -> Option<Option<PageDual>> {
+    let Some(mode) = geo.mode_bit else {
+        return Some(None);
+    };
+    let (reg, rest) = mode.split_once('.')?;
+    let bit: u32 = rest.split_once('[')?.1.strip_suffix(']')?.parse().ok()?;
+    let register = match reg {
+        "FLASH_CFGR0" => FLASH_CFGR0,
+        _ => return None,
+    };
+    (geo.page_erase_dual != 0 && bit < 32).then_some(Some(PageDual {
+        register,
+        bit,
+        page: geo.page_erase_dual,
+    }))
 }
 
 /// The plan for a DB family (`CH32V20x`, `CH32X035`, ...), from its programming method and
@@ -89,17 +117,10 @@ pub struct LoaderPlan {
 pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
     let geo = ch32rv_target::flash_geometry(family)?;
     let method = ch32rv_target::flash_program_method(family)?;
-    // en: CH32H417's row is flagged `conflict` only by its RM's procedure text (46.5.6 step 8
-    // "set FTPG to start", and an FTER the CTLR does not have - copied from other parts); the
-    // RM's own CTLR table (FTPG bit 16, PGSTRT bit 21, PER bit 1) and the EVT driver
-    // (FLASH_ROM_WRITE: PAGE_PG, 64 words with WRBSY, PG_STRT; ROM_ERASE: PER + STRT, 4 KiB)
-    // agree bit for bit, and that is the X315 mechanism below.
-    // ja: H417 の conflict は RM の手順の文だけ(他品種からの写し)。CTLR の表と EVT はビット単位で
-    // 一致し、X315 と同じ手順になる。
-    let h417 = family == "CH32H417";
-    if method.confidence == "conflict" && !h417 {
+    if method.confidence == "conflict" {
         return None;
     }
+    let dual = page_dual(&geo)?;
     // X315, H417 and V407 (FLASH_ROM_WRITE in their EVT: PAGE_PG, 64 words, PG_STRT; PER a
     // 4 KiB sector), and any family the DB gives this shape.
     if geo.page_erase == 4096
@@ -111,12 +132,14 @@ pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
         return Some(LoaderPlan {
             mode: LoaderMode::PgStartPageErase,
             page: geo.page_erase,
-            ram: if h417 { H417_SRAM } else { SRAM },
-            page_by_dbmode: h417,
+            // CH32H417 has no RAM at 0x20000000 (its RAM layout is not in the DB).
+            ram: if family == "CH32H417" {
+                H417_SRAM
+            } else {
+                SRAM
+            },
+            page_dual: dual,
         });
-    }
-    if method.confidence == "conflict" {
-        return None;
     }
     let page = geo.fast_program;
     if page == 0 || page != geo.fast_erase || page > 256 || !page.is_multiple_of(4) {
@@ -140,7 +163,7 @@ pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
         mode,
         page,
         ram: SRAM,
-        page_by_dbmode: false,
+        page_dual: None,
     })
 }
 
@@ -313,10 +336,10 @@ pub fn program<T: TargetAccess + ?Sized>(
     progress: &mut dyn FnMut(usize, usize),
 ) -> Result<LoaderReport, LoaderError> {
     let mut plan = plan;
-    if plan.page_by_dbmode
-        && t.read_words(FLASH_CFGR0, 1)?.first().copied().unwrap_or(0) & CFGR0_DBMODE != 0
+    if let Some(d) = plan.page_dual
+        && t.read_words(d.register, 1)?.first().copied().unwrap_or(0) & (1 << d.bit) != 0
     {
-        plan.page *= 2;
+        plan.page = d.page;
     }
     unlock(t)?;
     let r = program_unlocked(t, plan, segments, progress);
@@ -431,7 +454,7 @@ mod tests {
                 mode: LoaderMode::PgStart,
                 page: 256,
                 ram: SRAM,
-                page_by_dbmode: false
+                page_dual: None
             })
         );
         assert_eq!(
@@ -445,7 +468,7 @@ mod tests {
                 mode: LoaderMode::Buffered,
                 page: 256,
                 ram: SRAM,
-                page_by_dbmode: false
+                page_dual: None
             })
         );
         assert_eq!(
@@ -454,7 +477,7 @@ mod tests {
                 mode: LoaderMode::PgStartPageErase,
                 page: 4096,
                 ram: SRAM,
-                page_by_dbmode: false
+                page_dual: None
             })
         );
         assert_eq!(
@@ -463,7 +486,7 @@ mod tests {
                 mode: LoaderMode::V103,
                 page: 128,
                 ram: SRAM,
-                page_by_dbmode: false
+                page_dual: None
             })
         );
         // H417: the X315 mechanism, despite the row's `conflict` (RM text only), with the loader
@@ -474,7 +497,11 @@ mod tests {
                 mode: LoaderMode::PgStartPageErase,
                 page: 4096,
                 ram: H417_SRAM,
-                page_by_dbmode: true
+                page_dual: Some(PageDual {
+                    register: FLASH_CFGR0,
+                    bit: 28,
+                    page: 8192
+                })
             })
         );
         // CH32M030 loads its buffer 64 bits at a time: its own mode, 128-byte pages.
@@ -484,7 +511,7 @@ mod tests {
                 mode: LoaderMode::M030,
                 page: 128,
                 ram: SRAM,
-                page_by_dbmode: false
+                page_dual: None
             })
         );
         assert_eq!(
@@ -493,7 +520,7 @@ mod tests {
                 mode: LoaderMode::PgStartPageErase,
                 page: 4096,
                 ram: SRAM,
-                page_by_dbmode: false
+                page_dual: None
             })
         );
         assert_eq!(plan_for_family("CH32NOPE"), None);
