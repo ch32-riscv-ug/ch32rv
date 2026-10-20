@@ -31,8 +31,19 @@ use crate::session::Session;
 
 // ---- RTT control block layout (SEGGER format; ArduinoCore-CH32RV SerialRTT publishes the same) ----
 
-/// All CH32 parts map SRAM at this base.
+/// SRAM starts here on every CH32 but the CH32H417 (see [`rtt_window`]).
 const RTT_RAM_BASE: u32 = 0x2000_0000;
+/// en: CH32H417: no RAM at 0x20000000 (RM table 4-2); the shared SRAM starts at 0x20100000, where
+/// the boot copies the first 64 KiB of code, and data follows.
+/// ja: H417 は 0x20000000 に RAM が無い。共有 SRAM は 0x20100000 から(先頭 64 KiB はコードの写し)。
+const H417_RAM_BASE: u32 = 0x2010_0000;
+
+/// The RAM window an RTT control block is looked for in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RttWindow {
+    pub base: u32,
+    pub len: u32,
+}
 /// The control-block id string the target publishes once its RTT channel is up.
 const RTT_MAGIC: &[u8] = b"SEGGER RTT";
 /// Sanity cap on a ring-buffer size read out of RAM (reject a half-initialized / garbage block).
@@ -169,7 +180,7 @@ pub(crate) enum OpenError {
     NotDmi,
     /// No RTT control block appeared in the scanned RAM window.
     NoControlBlock {
-        scan_len: u32,
+        window: RttWindow,
     },
     Dmi(DmiError),
 }
@@ -178,9 +189,10 @@ impl std::fmt::Display for OpenError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OpenError::NotDmi => f.write_str("not a DMI source"),
-            OpenError::NoControlBlock { scan_len } => write!(
+            OpenError::NoControlBlock { window } => write!(
                 f,
-                "no SEGGER RTT control block in the first {scan_len} bytes of RAM (flash an RTT sketch first)"
+                "no SEGGER RTT control block in {} bytes of RAM from 0x{:08x} (flash an RTT sketch first)",
+                window.len, window.base
             ),
             OpenError::Dmi(e) => write!(f, "{e}"),
         }
@@ -259,13 +271,13 @@ fn read_region(t: &mut impl RttTarget, base: u32, len: u32) -> Vec<u8> {
 /// 止めたまま返す(resume は呼び出し側)。
 pub(crate) fn rtt_find(
     t: &mut impl RttTarget,
-    scan_len: u32,
+    window: RttWindow,
     warnings: &mut Vec<Warning>,
 ) -> Result<RttChannels, OpenError> {
     let mut found = None;
     for _ in 0..10 {
         t.halt()?;
-        let snap = read_region(t, RTT_RAM_BASE, scan_len);
+        let snap = read_region(t, window.base, window.len);
         if let Some(h) = find_control_block(&snap) {
             found = Some(h);
             break;
@@ -274,7 +286,7 @@ pub(crate) fn rtt_find(
         std::thread::sleep(Duration::from_millis(100));
     }
     let Some(h) = found else {
-        return Err(OpenError::NoControlBlock { scan_len });
+        return Err(OpenError::NoControlBlock { window });
     };
     if h.max_up > 1 || h.max_down > 1 {
         warnings.push(Warning {
@@ -285,7 +297,7 @@ pub(crate) fn rtt_find(
             ),
         });
     }
-    let base = RTT_RAM_BASE + h.offset as u32;
+    let base = window.base + h.offset as u32;
     let up = base + RTT_HEADER_LEN;
     let down = (h.max_down >= 1).then_some(up + RTT_DESC_LEN * h.max_up);
     Ok(RttChannels { up, down })
@@ -310,13 +322,33 @@ pub(crate) fn rtt_poll(
     result
 }
 
-/// The RTT scan window for a chip: its SRAM (from the DB) or a default.
-pub(crate) fn rtt_scan_len(chip_id: Option<u32>) -> u32 {
-    let db = ch32rv_target::Db::builtin();
+/// en: The RTT scan window for a chip: its SRAM (from `db`) from 0x20000000, or a default. A
+/// CH32H417's SRAM starts at 0x20100000 with the 64 KiB code copy first, so its window covers
+/// that and the 64 KiB of data after it.
+/// ja: RTT を探す範囲。SRAM(DB)を 0x20000000 から。H417 は 0x20100000 から、コードの写しと
+/// その後の 64 KiB。
+pub(crate) fn rtt_window_in(db: &ch32rv_target::Db, chip_id: Option<u32>) -> RttWindow {
     match chip_id.map(|id| db.resolve_by_chip_id(id)) {
-        Some(ch32rv_target::Resolution::Sku(s)) if s.sram_bytes > 0 => s.sram_bytes.min(64 * 1024),
-        _ => RTT_DEFAULT_SCAN,
+        Some(ch32rv_target::Resolution::Sku(s)) if s.family.eq_ignore_ascii_case("CH32H417") => {
+            RttWindow {
+                base: H417_RAM_BASE,
+                len: 128 * 1024,
+            }
+        }
+        Some(ch32rv_target::Resolution::Sku(s)) if s.sram_bytes > 0 => RttWindow {
+            base: RTT_RAM_BASE,
+            len: s.sram_bytes.min(64 * 1024),
+        },
+        _ => RttWindow {
+            base: RTT_RAM_BASE,
+            len: RTT_DEFAULT_SCAN,
+        },
     }
+}
+
+/// [`rtt_window_in`] with the built-in DB.
+pub(crate) fn rtt_window(chip_id: Option<u32>) -> RttWindow {
+    rtt_window_in(&ch32rv_target::Db::builtin(), chip_id)
 }
 
 impl DmiSource {
@@ -376,11 +408,8 @@ impl DmiSource {
     fn open_rtt(session: &mut Session, warnings: &mut Vec<Warning>) -> Result<Self, OpenError> {
         // How much RAM to scan: the target's SRAM (from the session's DB, which may carry an
         // overlay) or a default.
-        let scan_len = match session.db().resolve_by_chip_id(session.attach.chip_id) {
-            ch32rv_target::Resolution::Sku(s) if s.sram_bytes > 0 => s.sram_bytes.min(64 * 1024),
-            _ => RTT_DEFAULT_SCAN,
-        };
-        Ok(DmiSource::Rtt(rtt_find(session, scan_len, warnings)?))
+        let window = rtt_window_in(session.db(), Some(session.attach.chip_id));
+        Ok(DmiSource::Rtt(rtt_find(session, window, warnings)?))
     }
 
     /// en: Anything the source wants said to the user since the last poll (dmseq: the target's
@@ -789,9 +818,16 @@ mod tests {
             halts: 0,
         };
         let mut w = Vec::new();
-        let ch = rtt_find(&mut t, 0x400, &mut w)
-            .map_err(|e| e.to_string())
-            .unwrap();
+        let ch = rtt_find(
+            &mut t,
+            RttWindow {
+                base: RTT_RAM_BASE,
+                len: 0x400,
+            },
+            &mut w,
+        )
+        .map_err(|e| e.to_string())
+        .unwrap();
         assert!(t.halted, "the scan leaves the hart halted for the caller");
         t.resume().unwrap();
         // The target prints "hi\n": 3 bytes into up[0], write offset 3.
@@ -848,6 +884,15 @@ mod tests {
                 max_down: 1
             })
         );
+    }
+
+    #[test]
+    fn an_h417_is_scanned_in_its_shared_sram() {
+        // CH32H417QEU6 on the bench: chip id 0x4170053d.
+        let w = rtt_window(Some(0x4170_053d));
+        assert_eq!((w.base, w.len), (H417_RAM_BASE, 128 * 1024));
+        // A V203 keeps the 0x20000000 window.
+        assert_eq!(rtt_window(Some(0x2031_0500)).base, RTT_RAM_BASE);
     }
 
     #[test]

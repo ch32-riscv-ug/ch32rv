@@ -650,12 +650,13 @@ pub(crate) fn open_error(cli: &Cli, cmd: &str, e: OpenError) -> ExitCode {
             "this source is a CDC serial one (uart/sdi), not a DMI source",
             Some("use --source dmdata, --source dmseq or --source rtt"),
         ),
-        OpenError::NoControlBlock { scan_len } => fail(
+        OpenError::NoControlBlock { window } => fail(
             cli,
             cmd,
             ErrorKind::CapabilityUnsupported,
             format!(
-                "no SEGGER RTT control block in the first {scan_len} bytes of RAM (from 0x2000_0000)"
+                "no SEGGER RTT control block in {} bytes of RAM from 0x{:08x}",
+                window.len, window.base
             ),
             Some("flash a SerialRTT/RTT sketch first; the block only appears after begin()"),
         ),

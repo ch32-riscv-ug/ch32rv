@@ -182,7 +182,14 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
                     None,
                 );
             };
-            if let Err(e) = session.dm().reset_halt() {
+            // As `flash`: a CH32H417's reset-halt lets the copied code run, so it is halted where
+            // it is.
+            let halted = if db_family.eq_ignore_ascii_case("CH32H417") {
+                session.dm().halt()
+            } else {
+                session.dm().reset_halt()
+            };
+            if let Err(e) = halted {
                 return fail(cli, CMD, ErrorKind::TransferFailed, e.to_string(), None);
             }
             let mut target = ch32rv_dmi::DmTarget::new(session.link());

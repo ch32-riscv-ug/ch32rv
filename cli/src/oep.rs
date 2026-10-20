@@ -1398,7 +1398,7 @@ impl ConsoleSession {
                 let mut warnings = Vec::new();
                 let found = crate::source::rtt_find(
                     &mut t,
-                    crate::source::rtt_scan_len(at.wch_chip_id),
+                    crate::source::rtt_window(at.wch_chip_id),
                     &mut warnings,
                 );
                 // rtt_find leaves the hart halted (found or not): let it run again.

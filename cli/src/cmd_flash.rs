@@ -1609,16 +1609,8 @@ pub fn verify(cli: &Cli, args: &crate::args::VerifyArgs) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
-    let fb = session.attach.family_byte;
-    if params_for_family(fb).is_none() && ch32rv_flash::flash_controller_profile(fb).is_none() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::CapabilityUnsupported,
-            "family not supported for verify",
-            None,
-        );
-    }
+    // Verify only reads the flash back, which needs nothing of the family (it used to be gated
+    // on a write path, which left CH32H417 / CH32M030 out).
     let image = match parse_image(
         &bytes,
         args.format,
