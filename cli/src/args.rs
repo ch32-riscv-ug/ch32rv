@@ -665,8 +665,11 @@ pub enum BootCmd {
         #[arg(long)]
         port: Option<String>,
     },
-    /// Reserved, not implemented yet (exit 71)
-    #[command(subcommand, hide = true)]
+    /// USB DFU 1.1 download into an application that reflashes itself (DFU_DETACH first when it
+    /// runs its DFU run-time interface). Select it with --probe port:<serial port> |
+    /// port:ch32rv-app://<id> | usb:<bus>-<ports> | VID:PID[:SERIAL]; the only DFU device when
+    /// omitted
+    #[command(subcommand)]
     Dfu(DfuCmd),
     /// Reserved, not implemented yet (exit 71)
     #[command(subcommand, hide = true)]
@@ -680,13 +683,16 @@ pub enum BootCmd {
 
 #[derive(Subcommand)]
 pub enum DfuCmd {
+    /// Write an image from the start of code flash (block 0 = the first flash byte)
     Flash {
         file: PathBuf,
+        #[arg(long, value_enum, default_value = "auto")]
+        format: ImageFormat,
+        /// Load address for bin input (default: start of the code region)
         #[arg(long)]
-        alt: Option<u8>,
-        #[arg(long)]
-        address: Option<String>,
+        at: Option<String>,
     },
+    /// Show the DFU device and its state
     Info,
 }
 

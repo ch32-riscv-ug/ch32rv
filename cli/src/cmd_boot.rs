@@ -197,6 +197,253 @@ fn hid_error(cli: &Cli, cmd: &str, error: HidBootError) -> ExitCode {
     fail(cli, cmd, kind, error.to_string(), hint)
 }
 
+// ---- USB DFU 1.1 download ----
+
+/// en: The DFU device `--probe` names (any of `isp --app-device`'s forms), else the only one
+/// present with a DFU run-time or DFU-mode interface.
+/// ja: `--probe` が名指す DFU の device(`isp --app-device` と同じ書き方)。無ければ唯一の DFU device。
+fn dfu_device(cli: &Cli, cmd: &str) -> Result<ch32rv_usb::UsbDeviceInfo, ExitCode> {
+    if let Some(sel) = cli.probe.as_deref() {
+        return crate::cmd_isp::app_device(cli, cmd, sel).map(|a| a.dev);
+    }
+    let all = ch32rv_usb::enumerate()
+        .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
+    let mut dfu: Vec<_> = all
+        .into_iter()
+        .filter(|d| d.dfu_runtime_interface().is_some() || d.dfu_mode_interface().is_some())
+        .collect();
+    match dfu.len() {
+        1 => Ok(dfu.remove(0)),
+        0 => Err(fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceNotFound,
+            "no USB device with a DFU interface is connected".to_owned(),
+            Some("is the application running with its DFU run-time interface?"),
+        )),
+        n => Err(fail(
+            cli,
+            cmd,
+            ErrorKind::TargetAmbiguous,
+            format!(
+                "{n} USB devices have a DFU interface: {}",
+                dfu.iter()
+                    .map(|d| format!("usb:{} ({})", d.topology(), d.usb_id()))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+            Some("name one with --probe usb:<bus>-<ports> or VID:PID:SERIAL"),
+        )),
+    }
+}
+
+/// en: The device in DFU mode: `dev` itself, or - after DFU_DETACH to its run-time interface -
+/// the device that comes back with a DFU-mode interface, matched by serial (else by VID:PID),
+/// opened once the OS lets us (udev grants the new node a moment later).
+/// ja: DFU mode の device。run-time なら DFU_DETACH して、DFU mode で出直した device を serial
+/// (無ければ VID:PID)で探し、OS が開かせてくれるまで待って開く。
+fn enter_dfu_mode(
+    cli: &Cli,
+    cmd: &str,
+    dev: ch32rv_usb::UsbDeviceInfo,
+) -> Result<ch32rv_usb::dfu::DfuMode, ExitCode> {
+    let err = |kind, m: String| fail(cli, cmd, kind, m, None);
+    let dev = if dev.dfu_mode_interface().is_some() {
+        dev
+    } else {
+        let Some(intf) = dev.dfu_runtime_interface() else {
+            return Err(err(
+                ErrorKind::CapabilityUnsupported,
+                format!("usb:{} has no DFU interface", dev.topology()),
+            ));
+        };
+        // The device may leave before the status stage: an error here is not a failure.
+        let _ = dev.dfu_detach(intf, 1000);
+        if !cli.json {
+            eprintln!(
+                "sent DFU_DETACH to usb:{} (interface {intf})",
+                dev.topology()
+            );
+        }
+        let (serial, id) = (dev.serial().map(str::to_owned), (dev.vid(), dev.pid()));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            std::thread::sleep(Duration::from_millis(200));
+            let found = ch32rv_usb::enumerate().ok().and_then(|all| {
+                all.into_iter().find(|d| {
+                    d.dfu_mode_interface().is_some()
+                        && match &serial {
+                            Some(s) => d.serial() == Some(s.as_str()),
+                            None => (d.vid(), d.pid()) == id,
+                        }
+                })
+            });
+            if let Some(d) = found {
+                break d;
+            }
+            if Instant::now() > deadline {
+                return Err(err(
+                    ErrorKind::DeviceNotFound,
+                    "no DFU-mode device came back within 10 s of DFU_DETACH".to_owned(),
+                ));
+            }
+        }
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match ch32rv_usb::dfu::DfuMode::open(&dev) {
+            Ok(m) => return Ok(m),
+            Err(ch32rv_usb::UsbError::AccessDenied(_)) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(250));
+            }
+            Err(e) => return Err(err(ErrorKind::DeviceOpenFailed, e.to_string())),
+        }
+    }
+}
+
+/// `boot dfu flash`: write `file` from the start of code flash through DFU 1.1.
+pub fn dfu_flash(
+    cli: &Cli,
+    file: &std::path::Path,
+    format: ch32rv_contract::policy::ImageFormat,
+    at: Option<&str>,
+) -> ExitCode {
+    const CMD: &str = "boot.dfu.flash";
+    const BASE: u32 = ch32rv_flash::CODE_FLASH_START;
+    let bytes = match std::fs::read(file) {
+        Ok(b) => b,
+        Err(e) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                format!("cannot read {}: {e}", file.display()),
+                None,
+            );
+        }
+    };
+    let at = match at.map(crate::parse::u32_addr).transpose() {
+        Ok(a) => a,
+        Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+    };
+    let image = match crate::cmd_flash::parse_image(&bytes, format, file, at, BASE) {
+        Ok(i) => i,
+        Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
+    };
+    // DFU blocks run from the first flash byte: the image laid flat from there, gaps 0xff.
+    let end = image
+        .segments
+        .iter()
+        .map(|s| s.addr + s.data.len() as u32)
+        .max()
+        .unwrap_or(BASE);
+    if image.segments.iter().any(|s| s.addr < BASE) || end <= BASE {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            "the image does not lie in code flash".to_owned(),
+            None,
+        );
+    }
+    let mut flat = vec![0xffu8; (end - BASE) as usize];
+    for s in &image.segments {
+        let o = (s.addr - BASE) as usize;
+        flat[o..o + s.data.len()].copy_from_slice(&s.data);
+    }
+    if cli.dry_run {
+        println!("would write {} byte(s) through DFU", flat.len());
+        return ExitCode::SUCCESS;
+    }
+    let dev = match dfu_device(cli, CMD) {
+        Ok(d) => d,
+        Err(c) => return c,
+    };
+    let dfu = match enter_dfu_mode(cli, CMD, dev) {
+        Ok(m) => m,
+        Err(c) => return c,
+    };
+    let fail_t = |m: String| fail(cli, CMD, ErrorKind::TransferFailed, m, None);
+    if let Err(e) = dfu.reset_state() {
+        return fail_t(format!("DFU: {e}"));
+    }
+    let started = Instant::now();
+    let size = usize::from(dfu.transfer_size);
+    let mut block: u16 = 0;
+    for chunk in flat.chunks(size) {
+        if let Err(e) = dfu.download(block, chunk) {
+            return fail_t(format!("DFU download at block {block}: {e}"));
+        }
+        block = block.wrapping_add(1);
+    }
+    if let Err(e) = dfu.finish(block) {
+        return fail_t(format!("DFU: {e}"));
+    }
+    let secs = started.elapsed().as_secs_f64();
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "flash": {
+                "bytes": flat.len(),
+                "blocks": block,
+                "transfer_size": dfu.transfer_size,
+                "seconds": secs,
+            }
+        }));
+        crate::print_envelope(&env)
+    } else {
+        println!(
+            "wrote {} bytes through DFU in {secs:.2} s ({block} block(s) of {size}); the device manifests and restarts",
+            flat.len()
+        );
+        ExitCode::SUCCESS
+    }
+}
+
+/// `boot dfu info`: the DFU device, its interfaces and (in DFU mode) its state.
+pub fn dfu_info(cli: &Cli) -> ExitCode {
+    const CMD: &str = "boot.dfu.info";
+    let dev = match dfu_device(cli, CMD) {
+        Ok(d) => d,
+        Err(c) => return c,
+    };
+    let runtime = dev.dfu_runtime_interface();
+    let mode = dev.dfu_mode_interface();
+    let detail = mode
+        .and_then(|_| ch32rv_usb::dfu::DfuMode::open(&dev).ok())
+        .map(|m| (m.transfer_size, m.manifestation_tolerant, m.status().ok()));
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "usb": dev.usb_id(),
+            "topology": dev.topology(),
+            "serial": dev.serial(),
+            "runtime_interface": runtime,
+            "dfu_interface": mode,
+            "transfer_size": detail.map(|d| d.0),
+            "manifestation_tolerant": detail.map(|d| d.1),
+            "state": detail.and_then(|d| d.2).map(|s| s.state),
+        }));
+        return crate::print_envelope(&env);
+    }
+    println!("usb:      {} at usb:{}", dev.usb_id(), dev.topology());
+    println!("serial:   {}", dev.serial().unwrap_or("-"));
+    match (runtime, mode) {
+        (_, Some(i)) => println!("dfu:      DFU mode (interface {i})"),
+        (Some(i), None) => {
+            println!("dfu:      run-time (interface {i}); `boot dfu flash` detaches it first")
+        }
+        (None, None) => println!("dfu:      none"),
+    }
+    if let Some((size, tolerant, status)) = detail {
+        println!("transfer: {size} bytes per block, manifestation tolerant: {tolerant}");
+        if let Some(s) = status {
+            println!("state:    {} (status {})", s.state, s.status);
+        }
+    }
+    ExitCode::SUCCESS
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

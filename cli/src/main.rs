@@ -261,6 +261,10 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Boot(BootCmd::Hid(HidBootCmd::Flash { file, usb_id, wait })) => {
             cmd_boot::hid_flash(cli, file, usb_id.as_deref(), *wait)
         }
+        Command::Boot(BootCmd::Dfu(DfuCmd::Flash { file, format, at })) => {
+            cmd_boot::dfu_flash(cli, file, *format, at.as_deref())
+        }
+        Command::Boot(BootCmd::Dfu(DfuCmd::Info)) => cmd_boot::dfu_info(cli),
         Command::Isp(a) => cmd_isp::isp(cli, a),
         Command::Complete(a) => cmd_complete(a.shell),
         other => unimplemented_cmd(cli, canonical_name(other)),

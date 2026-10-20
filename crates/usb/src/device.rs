@@ -263,6 +263,19 @@ impl UsbDeviceInfo {
         }
     }
 
+    /// en: The interface number of a USB DFU 1.1 DFU-mode interface (class `0xfe`, subclass
+    /// `0x01`, protocol `0x02`): a device that takes DFU_DNLOAD now. Read without opening it.
+    /// ja: DFU 1.1 の DFU mode の interface の番号(DFU_DNLOAD を受ける)。開かずに読む。
+    pub fn dfu_mode_interface(&self) -> Option<u8> {
+        match &self.inner {
+            Inner::Nusb(d) => d
+                .interfaces()
+                .find(|i| i.class() == 0xfe && i.subclass() == 0x01 && i.protocol() == 0x02)
+                .map(|i| i.interface_number()),
+            Inner::Replay(_) => None,
+        }
+    }
+
     /// en: Send DFU_DETACH (`bmRequestType 0x21`, `bRequest 0`, `wValue` = `timeout_ms`, `wIndex`
     /// = `interface`, no data) to a DFU run-time interface. The interface is claimed for it where
     /// it can be (Windows needs that, through WinUSB); on Linux / macOS a device-level control

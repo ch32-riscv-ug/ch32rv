@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `boot dfu flash <image>` and `boot dfu info`: USB DFU 1.1 download into an application that reflashes itself, as ArduinoCore-CH32RV's CH32H417 sketches do (with the board's USB3 port plugged in, neither SWD nor the ROM's ISP is reachable). A run-time interface is sent DFU_DETACH first and the device that comes back in DFU mode (matched by serial) is opened once the OS lets it; the image is laid flat from the first flash byte and sent in wTransferSize blocks, each followed by GETSTATUS at the device's bwPollTimeout; a zero-length DNLOAD starts manifestation. The device is named with `--probe port:<serial port>` / `port:ch32rv-app://<id>` / `usb:<bus>-<ports>` / `VID:PID[:SERIAL]`, or is the only DFU device present - so an Arduino upload recipe can pass the discovery's `ch32rv-app://` address. Not yet run on hardware.
+- (JA) `boot dfu flash <image>` と `boot dfu info`。自分を書き換えるアプリへの USB DFU 1.1 のダウンロード(ArduinoCore-CH32RV の CH32H417 のスケッチ。USB3 の口を挿していると SWD も ROM の ISP も使えない)。run-time の interface なら DFU_DETACH を送り、DFU mode で出直した device を serial で探し、OS が開かせてくれるまで待って開く。イメージは flash の先頭から平らに並べ、wTransferSize ごとに送り、その都度 bwPollTimeout を待って GETSTATUS する。長さ 0 の DNLOAD で manifestation を始める。device は `--probe port:<serial port>` / `port:ch32rv-app://<id>` / `usb:<bus>-<ports>` / `VID:PID[:SERIAL]` で選ぶか、唯一の DFU device を使う。Arduino の書き込み手順は discovery の `ch32rv-app://` のアドレスをそのまま渡せる。実機は未確認。
+
 - (EN) `read --region ram` on a CH32H417 starts at 0x200A0000: its ITCM, DTCM and shared SRAM run on from there without a gap for the DB's 896 KiB, and it has no RAM at 0x20000000.
 - (JA) CH32H417 の `read --region ram` は 0x200A0000 から読む。ITCM・DTCM・共有 SRAM がそこから DB の 896 KiB ぶん隙間なく続き、0x20000000 には RAM が無い。
 

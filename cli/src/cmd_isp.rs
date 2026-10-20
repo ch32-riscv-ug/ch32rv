@@ -807,15 +807,15 @@ enum Via {
 }
 
 /// The application's USB device named by `--app-device`, and the serial port it was named by.
-struct AppDevice {
-    dev: UsbDeviceInfo,
-    port: Option<String>,
+pub(crate) struct AppDevice {
+    pub(crate) dev: UsbDeviceInfo,
+    pub(crate) port: Option<String>,
 }
 
 /// en: Resolve `--app-device`: `port:<path>` (the serial port an IDE passes; the USB device behind
 /// it), `usb:<bus>-<ports>`, or `VID:PID[:SERIAL]`. Exactly one device or an error.
 /// ja: `--app-device` を解く。ちょうど 1 台か、エラー。
-fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
+pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
     // The discovery's own address (`ch32rv-app://<id>`): found again by its id, then by position.
     let usb_sel;
     let sel = match sel

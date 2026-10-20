@@ -15,6 +15,7 @@
 
 pub mod capture;
 pub mod device;
+pub mod dfu;
 pub mod lock;
 pub mod pipe;
 pub mod replay;
