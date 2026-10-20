@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The RAM loader programs a CH32M030: a fifth mode follows its EVT `FLASH_ROM_WRITE` (BUFRST, sixteen times two words and a 64-bit BUF_LOAD, then STRT on the 128-byte page) with the commit write `*(FLASH + 0x34) = *((addr & ~3) ^ 0x100)` after every buffer load, erase and program. The loader is 552 bytes now, so its page buffer starts 0x300 after it (it was 0x200); the smallest part (V003, 2 KiB SRAM) still fits a batch. Not yet run on M030 silicon (none on the bench); the other modes were run again on V003 / V203 / V307 / L103 / V103 / X035 / V006 / X315 / V205 / H417 behind WCH-Links, each written with a pattern and restored.
+- (JA) RAM ローダーが CH32M030 を書けるようになった。5 つ目の方式で、EVT の `FLASH_ROM_WRITE` のとおり(BUFRST、2 語と 64 bit の BUF_LOAD を 16 回、128 バイトの page を STRT)、buffer の積み込み・消去・書き込みのたびに `*(FLASH + 0x34) = *((addr & ~3) ^ 0x100)` を書く。ローダーは 552 バイトになったので、page buffer をローダーの先頭から 0x300 の位置に移した(以前は 0x200)。いちばん小さい V003(SRAM 2 KiB)でも 1 回分が収まる。M030 の実機は未確認(ベンチに無い)。ほかの方式は WCH-Link の V003 / V203 / V307 / L103 / V103 / X035 / V006 / X315 / V205 / H417 で、パターンを書いて元に戻し、確かめ直した。
+
 - (EN) CH32H417 loose ends: `verify` through a WCH-Link works on any family (it only reads back; it was gated on a write path, which left H417 and M030 out); `run` halts an H417 in place before the RAM loader, as `flash` does; RTT looks for its control block in the H417's shared SRAM (0x20100000, 128 KiB: the code copy and the data after it) instead of at 0x20000000, where the H417 has no RAM - on a WCH-Link and on an OEP probe.
 - (JA) CH32H417 の残り: WCH-Link での `verify` は family を問わず使える(読んで比べるだけなのに書き込みの経路で絞っていて、H417 と M030 が外れていた)。`run` は H417 を RAM ローダーの前に `flash` と同じくその場で止める。RTT は control block を 0x20000000(H417 には RAM が無い)ではなく、H417 の共有 SRAM(0x20100000 から 128 KiB。コードの写しとその後のデータ)で探す。WCH-Link でも OEP の probe でも。
 

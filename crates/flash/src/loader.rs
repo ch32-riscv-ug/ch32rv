@@ -31,7 +31,7 @@ const SRAM: u32 = 0x2000_0000;
 /// 共有 SRAM のデータ側に置く。
 const H417_SRAM: u32 = 0x2012_0000;
 /// The page buffer sits this far after the loader (which is well under 512 bytes).
-const BUFFER_OFFSET: u32 = 0x200;
+const BUFFER_OFFSET: u32 = 0x300;
 const FLASH_BASE: u32 = 0x4002_2000;
 const FLASH_KEYR: u32 = FLASH_BASE + 0x04;
 const FLASH_CTLR: u32 = FLASH_BASE + 0x10;
@@ -64,6 +64,8 @@ pub enum LoaderMode {
     V103 = 2,
     /// X315: standard 4 KiB page erase, then sixteen 256-byte PG_STRT commits.
     PgStartPageErase = 3,
+    /// CH32M030: buffered fast page loaded 64 bits per BUFLOAD, with its commit write.
+    M030 = 4,
 }
 
 /// How to program one family.
@@ -122,6 +124,9 @@ pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
     }
     let mode = if family.eq_ignore_ascii_case("CH32V103") {
         LoaderMode::V103
+    } else if family.eq_ignore_ascii_case("CH32M030") && method.buffer_load_bits == Some(64) {
+        // EVT FLASH_ROM_WRITE: BUFRST, 16 x (two words + BUF_LOAD + commit), STRT.
+        LoaderMode::M030
     } else {
         match (method.mode.as_str(), method.buffer_load_bits) {
             // The loader feeds the page buffer one 32-bit word per BUFLOAD; a wider buffer load
@@ -472,8 +477,16 @@ mod tests {
                 page_by_dbmode: true
             })
         );
-        // CH32M030 loads its buffer 64 bits at a time: not the loader's word-wide BUFLOAD.
-        assert_eq!(plan_for_family("CH32M030"), None);
+        // CH32M030 loads its buffer 64 bits at a time: its own mode, 128-byte pages.
+        assert_eq!(
+            plan_for_family("CH32M030"),
+            Some(LoaderPlan {
+                mode: LoaderMode::M030,
+                page: 128,
+                ram: SRAM,
+                page_by_dbmode: false
+            })
+        );
         assert_eq!(
             plan_for_family("CH32V407"),
             Some(LoaderPlan {

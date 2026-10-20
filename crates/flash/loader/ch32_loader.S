@@ -8,6 +8,9 @@
  *   a3 = 1  pgstart  : FTPG, per word store (wait WRBSY), then PGSTART (V20x, V30x)
  *   a3 = 2  v103     : PG, halfword stores, then the V103 commit        (V103)
  *   a3 = 3  x315     : PER erase (4 KiB), sixteen 256-byte PGSTART commits (X315)
+ *   a3 = 4  m030     : BUFRST, two words + BUFLOAD (64 bit), then STRT; after every buffer load,
+ *                      erase and program the commit *(FLASH + 0x34) = *((addr & ~3) ^ 0x100)
+ *                      (EVT ch32m030_flash.c FLASH_ROM_WRITE / FLASH_ErasePage_Fast)
  *
  * In:  a0 = first page address (aligned to a2), a1 = source buffer in RAM (a5 pages back to back),
  *      a2 = page bytes (the fast page size: 64 / 128 / 256 / 4096), a3 = mode, a5 = page count (>= 1).
@@ -33,6 +36,14 @@
 1:  lw      t2, STATR(a4)
     andi    t1, t2, \mask
     bnez    t1, 1b
+    .endm
+
+    /* CH32M030 commit: *(FLASH + 0x34) = *((\reg & ~3) ^ 0x100). Clobbers t0, t1. */
+    .macro COMMIT_M030 reg
+    andi    t0, \reg, -4
+    xori    t0, t0, 0x100
+    lw      t0, 0(t0)
+    sw      t0, MAGIC(a4)
     .endm
 
     /* CH32V103 commit: *(FLASH + 0x34) = *((a0 & ~3) ^ 0x1000). Clobbers t0, t1. */
@@ -72,8 +83,12 @@ page:
     bnez    t1, fail
     sw      t2, STATR(a4)       /* write the flags back to clear them (EOP) */
     li      t0, 2
-    bne     a3, t0, 2f
+    bne     a3, t0, 8f
     COMMIT                      /* V103: the commit follows the erase too */
+8:
+    li      t0, 4
+    bne     a3, t0, 2f
+    COMMIT_M030 a0              /* M030: so does its own */
 2:
     mv      s0, a0              /* destination */
     mv      s1, a1              /* source */
@@ -83,6 +98,8 @@ page:
     beq     a3, t0, pgstart
     li      t0, 3
     beq     a3, t0, pgstart
+    li      t0, 4
+    beq     a3, t0, m030
 
 /* ---- CH32V103: standard halfword programming ---- */
 v103:
@@ -118,6 +135,33 @@ buffered:
     addi    t0, t0, 0x40        /* FTPG | STRT */
     sw      t0, CTLR(a4)
     WAIT    BSY
+    j       finish
+
+/* ---- CH32M030: buffered fast page, 64 bits per BUFLOAD, the commit after each step ---- */
+m030:
+    lui     t0, 0x10            /* FTPG */
+    sw      t0, CTLR(a4)
+    lui     t0, 0x90            /* FTPG | BUFRST */
+    sw      t0, CTLR(a4)
+    WAIT    BSY
+9:  lw      t2, 0(s1)
+    sw      t2, 0(s0)
+    lw      t2, 4(s1)
+    sw      t2, 4(s0)
+    lui     t0, 0x50            /* FTPG | BUFLOAD */
+    sw      t0, CTLR(a4)
+    WAIT    BSY
+    COMMIT_M030 s0
+    addi    s0, s0, 8
+    addi    s1, s1, 8
+    bltu    s1, ra, 9b
+    sw      a0, ADDR(a4)
+    lui     t0, 0x10
+    addi    t0, t0, 0x40        /* FTPG | STRT */
+    sw      t0, CTLR(a4)
+    WAIT    BSY
+    sw      zero, CTLR(a4)
+    COMMIT_M030 a0
     j       finish
 
 /* ---- V20x / V30x: fast page, then PGSTART ---- */
