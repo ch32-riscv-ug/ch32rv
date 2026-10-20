@@ -93,7 +93,7 @@ ch32rv
 | `--db <FILE>` | `CH32RV_DB` | 内蔵 DB のみ | 内蔵 device DB に CSV overlay を重ねる(列は `generated/skus.csv` と同じ)。**同名 SKU / 同一マスク device_id は overlay が勝つ**(in-tree `provisional/skus.csv` は穴埋め専用で逆)。overlay 行は `provisional: true` + `sku-provisional` warning。読めない/有効行なしは usage(2)。出荷テーブルに無い部品を試す逃げ道 |
 | `--core <n>` | 0.. | 0 | H417 の core 選択。直接 WCH-Link 接続で `--core 1` は `dbg`（`halt --reset` 除く）と `read` に対応。その他の操作・OEP・index 2 以上は exit 24。実測根拠: [H417 コア選択](data-requests/0009-h417-core-selection.ja.md) |
 | `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn(段階の公称値 6000 / 4000 / 400 kHz で判定)。**公称値は線上の速さではない**: WCH-LinkE fw 2.22 + CH32L103 の実測(wch-protocols E163)では high = flash の Program 経路だけ速く(L103 約 2.5 MHz、V203 約 10 MHz)それ以外約 0.89 MHz、medium = 約 0.89 MHz、low = 約 0.47 MHz(V203 も medium / low は同じ)。high と medium の差は flash 書込みの速さだけ(pattern-4k の全体で L103 0.48 s / 0.63 s / 0.87 s、V203 high 0.40 s) |
-| `--connect-under-reset` | | off | NRST を assert して attach。**未実装で、指定すると exit 24 で断る**(2026-10-01。以前は warning を出して通常の attach をしていた) |
+| `--connect-under-reset` | | off | NRST を押さえて attach する(2026-10-20)。WCH-Link: LinkE の RstOut で RST の線を low にし、押さえたまま AttachChip して haltreq を立て、離してすぐ AttachChip し直す(reset の後は AttachChip が要る)。起動直後にデバッグのピンを取る firmware が走る前に止めるためのもの。RST を target の NRST に配線していなければ、通常の attach と同じになる。OEP の probe: ポートの NRST の線(label `<port>.nrst`)を attach の reset TLV で押さえる |
 | `--json` | | off | 結果を JSON で stdout へ(§3.5) |
 | `--progress <bar\|ndjson\|none>` | | bar(tty)/none | 進捗の出力形式。ndjson は stderr へ |
 | `--non-interactive` | | off | 対話プロンプトを全て拒否に変える |

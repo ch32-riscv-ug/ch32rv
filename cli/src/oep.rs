@@ -1603,7 +1603,8 @@ pub(crate) fn with_attached(
     halt: bool,
     f: impl FnOnce(&mut Attached<'_>) -> ExitCode,
 ) -> ExitCode {
-    with_attached_reset(cli, cmd, a, halt, false, f)
+    // `--connect-under-reset`: hold the port's NRST line through the attach (its label).
+    with_attached_reset(cli, cmd, a, halt, cli.connect_under_reset, f)
 }
 
 /// en: The fixture UART's (rx, tx) channels from the port's labels `<port>.rx` / `<port>.tx`

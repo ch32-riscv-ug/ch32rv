@@ -1009,7 +1009,18 @@ fn flash_via_loader(
         return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None);
     }
     // Halt before the first instruction, so a running watchdog cannot reset the part mid-write.
-    if let Err(e) = session.dm().reset_halt() {
+    // en: Not on a CH32H417: its reset-halt does not stop at the reset vector (the boot copies
+    // the code to RAM and it runs before the halt lands, measured 2026-10-20), so it only gives
+    // that code a fresh start - and code that turns PB8 / PB9 (SWCLK / SWDIO) into USB cuts the
+    // link mid-write. The hart is halted where it is instead.
+    // ja: H417 では reset-halt しない(リセット直後に止まらず、RAM に写したコードが走ってから止まる。
+    // そのコードが PB8 / PB9 を USB にすると書き込みの途中で線が切れる)。今いる所で止める。
+    let halted = if family.eq_ignore_ascii_case("CH32H417") {
+        session.dm().halt()
+    } else {
+        session.dm().reset_halt()
+    };
+    if let Err(e) = halted {
         return fail(
             cli,
             CMD,

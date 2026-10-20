@@ -761,6 +761,15 @@ impl WchLink {
         Ok(())
     }
 
+    /// en: RstOut (`0x81 0x0d 0x02 0x01 0x13` on / `0x14` off): drive the RST pin (the target's
+    /// NRST, when wired) low, or release it. From WCH's own OpenOCD (`wlinke.c`
+    /// `wlink_rstout`), wch-protocols pc-to-link §4.
+    /// ja: RstOut。RST の線(配線していれば target の NRST)を low に駆動する / 離す。
+    pub fn rst_out(&mut self, asserted: bool) -> Result<(), WchLinkError> {
+        let _ = self.command(CMD_CONTROL, &[0x01, if asserted { 0x13 } else { 0x14 }])?;
+        Ok(())
+    }
+
     /// en: "Clear All Code Flash - By RST pin" (EraseCodeFlash `0x08`). Same idea but toggles
     /// NRST instead of power; requires the RST pin wired.
     /// ja: 「Clear All Code Flash - By RST pin」。電源でなく NRST を使う。RST 配線が要る。

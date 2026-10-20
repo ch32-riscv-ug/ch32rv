@@ -160,15 +160,11 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
                         | args::DbgCmd::Dmi(_)
                 ) | Command::Read(_)
             ));
-    if !core_supported || cli.connect_under_reset {
-        let what = if !core_supported {
-            format!(
-                "--core {}: supported nonzero selection is --core 1 with H417 dbg (without reset) or read",
-                cli.core
-            )
-        } else {
-            "--connect-under-reset is not implemented yet".to_owned()
-        };
+    if !core_supported {
+        let what = format!(
+            "--core {}: supported nonzero selection is --core 1 with H417 dbg (without reset) or read",
+            cli.core
+        );
         return cmd_probe::fail(
             cli,
             canonical_name(&cli.command),
@@ -177,6 +173,10 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             None,
         );
     }
+    session::CONNECT_UNDER_RESET.store(
+        cli.connect_under_reset,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     // An empty `--chip` (or CH32RV_CHIP) names nothing: a usage error, not "every family".
     if cli.chip.as_deref().is_some_and(|c| c.trim().is_empty()) {
         return cmd_probe::fail(

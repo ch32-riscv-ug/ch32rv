@@ -294,9 +294,58 @@ pub(crate) fn check_chip(
     Ok(())
 }
 
+/// en: `--connect-under-reset` for this process (set once by `main`; every WCH-Link session
+/// attaches through [`attach_once`]).
+/// ja: この process の `--connect-under-reset`(main が 1 回立てる)。
+pub(crate) static CONNECT_UNDER_RESET: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+const DMCONTROL: u8 = 0x10;
+const DMSTATUS: u8 = 0x11;
+const DMCONTROL_HALT: u32 = 0x8000_0001; // haltreq | dmactive
+
+/// en: Attach with NRST held (the probe's RST wired to it): hold it through the LinkE's RstOut,
+/// attach and request a halt while it is held, release it, and attach again at once - the
+/// wire needs AttachChip after the reset - with haltreq set, so the hart stops before firmware
+/// that turns the debug pins into something else can run. Measured on a CH32H417 whose firmware
+/// hands PB8 / PB9 to USB a few ms after boot (2026-10-20): the second AttachChip came back in
+/// about 95 ms with the hart halted, and the flash could be erased from there.
+/// ja: NRST を押さえて接続する。押さえたまま attach して haltreq を立て、離してすぐ attach し直す
+/// (reset の後は AttachChip が要る)。起動直後にデバッグのピンを取る firmware が走る前に止める。
+fn attach_under_reset(link: &mut WchLink) -> Result<AttachInfo, SessionError> {
+    link.rst_out(true)
+        .map_err(|e| SessionError::Attach(format!("RstOut failed: {e}")))?;
+    std::thread::sleep(Duration::from_millis(20));
+    let _ = link.attach_chip();
+    let _ = link.dmi_op(DMCONTROL, DMCONTROL_HALT, 2);
+    link.rst_out(false)
+        .map_err(|e| SessionError::Attach(format!("RstOut failed: {e}")))?;
+    let mut last = None;
+    for k in 0..12 {
+        if k > 0 {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        match link.attach_chip() {
+            Ok(a) => {
+                let _ = link.dmi_op(DMCONTROL, DMCONTROL_HALT, 2);
+                let _ = link.dmi_op(DMSTATUS, 0, 1);
+                return Ok(a);
+            }
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(match last {
+        Some(WchLinkError::Protocol { reason: 0x55, .. }) | None => SessionError::NoTarget,
+        Some(e) => SessionError::Attach(format!("attach under reset failed: {e}")),
+    })
+}
+
 fn attach_once(link: &mut WchLink, speed: Speed) -> Result<AttachInfo, SessionError> {
     link.set_speed_default(speed)
         .map_err(|e| SessionError::Attach(format!("SetSpeed failed: {e}")))?;
+    if CONNECT_UNDER_RESET.load(std::sync::atomic::Ordering::Relaxed) {
+        return attach_under_reset(link);
+    }
     link.attach_chip().map_err(|e| match e {
         // No response on the debug pins - a distinct, common case worth its own exit code (20).
         WchLinkError::Protocol { reason: 0x55, .. } | WchLinkError::UnexpectedResponse(_) => {
