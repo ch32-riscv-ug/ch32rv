@@ -151,6 +151,7 @@ fn db_family(family_byte: u8) -> Option<&'static str> {
         0x4E => "CH32V006", // V002/V004/V005/V006/V007/M007 share one controller profile
         0xCE => "CH32V205",
         0xE6 => "CH32X315",
+        0xA6 => "CH32V407", // the X315 mechanism (EVT FLASH_ROM_WRITE / ROM_ERASE)
         _ => return None,
     })
 }
@@ -174,7 +175,7 @@ pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
 /// ja: DB の family 名から引く版(OEP の probe のように chip id で target を知るとき)。対象は
 /// [`db_family`] の family だけ(同じ理由)。
 pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
-    let family = [0x01, 0x05, 0x06, 0x09, 0x0C, 0x0E, 0x4E, 0xCE, 0xE6]
+    let family = [0x01, 0x05, 0x06, 0x09, 0x0C, 0x0E, 0x4E, 0xCE, 0xE6, 0xA6]
         .into_iter()
         .filter_map(db_family)
         .find(|f| *f == family)?;
@@ -185,7 +186,7 @@ pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
         return None;
     }
     // `erase --range` and flash breakpoints work at the fast-erase page; 0 = block erase only.
-    let page_size = if family == "CH32X315" {
+    let page_size = if geometry.fast_erase == 0 {
         geometry.page_erase
     } else {
         geometry.fast_erase
@@ -194,7 +195,7 @@ pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
         return None;
     }
     let mode = match (method.mode.as_str(), method.buffer_load_bits) {
-        ("direct", _) if family == "CH32X315" => {
+        ("direct", _) if geometry.fast_erase == 0 => {
             if page_size != 4096
                 || geometry.fast_erase != 0
                 || geometry.fast_program != 256

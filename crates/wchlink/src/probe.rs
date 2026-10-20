@@ -121,7 +121,11 @@ pub fn family_name(byte: u8) -> Option<&'static str> {
         0x49 => "CH641",
         0x4E => "CH32V00X",
         0x86 => "CH32V317",
+        // WCH-LinkE 2.22 + CH32M030, measured 2026-10-10 (docs/data-requests/measured).
+        0x8E => "CH32M030",
         0x8B => "CH570/572",
+        // WCH-LinkE 2.22 + CH32V407, measured 2026-10-10 (target-info-v407 capture).
+        0xA6 => "CH32V407",
         0xC6 => "CH32H4",
         // WCH-LinkE 2.22 + CH32V205RCT6, measured 2026-10-08 (target.info capture).
         0xCE => "CH32V205",

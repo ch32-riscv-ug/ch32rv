@@ -98,8 +98,9 @@ pub fn plan_for_family(family: &str) -> Option<LoaderPlan> {
     if method.confidence == "conflict" && !h417 {
         return None;
     }
-    if (family == "CH32X315" || h417)
-        && geo.page_erase == 4096
+    // X315, H417 and V407 (FLASH_ROM_WRITE in their EVT: PAGE_PG, 64 words, PG_STRT; PER a
+    // 4 KiB sector), and any family the DB gives this shape.
+    if geo.page_erase == 4096
         && geo.fast_erase == 0
         && geo.fast_program == 256
         && method.mode == "direct"
@@ -473,6 +474,15 @@ mod tests {
         );
         // CH32M030 loads its buffer 64 bits at a time: not the loader's word-wide BUFLOAD.
         assert_eq!(plan_for_family("CH32M030"), None);
+        assert_eq!(
+            plan_for_family("CH32V407"),
+            Some(LoaderPlan {
+                mode: LoaderMode::PgStartPageErase,
+                page: 4096,
+                ram: SRAM,
+                page_by_dbmode: false
+            })
+        );
         assert_eq!(plan_for_family("CH32NOPE"), None);
     }
 

@@ -2271,6 +2271,9 @@ pub(crate) fn family_byte_from_name(name: &str) -> Option<u8> {
         s if s.starts_with("643") || s.starts_with("CH643") => 0x0C,
         s if s.starts_with("641") || s.starts_with("CH641") => 0x49,
         s if s.starts_with("H4") => 0xC6,
+        // Measured 2026-10-10 (docs/data-requests/measured/device-id-{v407,m030}-2026-10-10.md).
+        s if s.starts_with("V40") => 0xA6,
+        s if s.starts_with("M03") => 0x8E,
         _ => return None,
     })
 }
