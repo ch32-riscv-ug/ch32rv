@@ -912,6 +912,12 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.write_mem32(FLASH_MAGIC_V103, v)
     }
 
+    /// CH32M030's commit: the same register, from `(addr & !3) ^ 0x100`.
+    fn flash_m030_commit(&mut self, addr: u32) -> Result<(), DmiError> {
+        let v = self.read_mem32((addr & 0xFFFF_FFFC) ^ 0x0000_0100)?;
+        self.write_mem32(FLASH_MAGIC_V103, v)
+    }
+
     /// en: Fast-page-erase the page at `addr` (page-aligned) with FTER + STRT. `mode` selects the
     /// family quirks: X315 uses PER (4 KiB); V103 adds its mandatory commit side effect. The hart
     /// must be halted.
@@ -950,6 +956,9 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         self.write_mem32(FLASH_STATR, statr)?; // write 1s to clear EOP/WPRERR
         if mode == FlashProgMode::V103 {
             self.flash_v103_commit(addr)?;
+        }
+        if mode == FlashProgMode::M030 {
+            self.flash_m030_commit(addr)?;
         }
         self.flash_lock()?;
         if statr & FLASH_WPRERR != 0 {
@@ -1050,9 +1059,34 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
                 self.write_mem32(FLASH_ADDR, addr)?;
                 self.write_mem32(FLASH_CTLR, FLASH_FTPG | FLASH_STRT)?;
             }
+            FlashProgMode::M030 => {
+                if !data.len().is_multiple_of(8) {
+                    return Err(DmiError::OperationFailed(
+                        "CH32M030 pages load 8 bytes at a time".to_owned(),
+                    ));
+                }
+                self.write_mem32(FLASH_CTLR, FLASH_FTPG)?;
+                self.write_mem32(FLASH_CTLR, FLASH_FTPG | FLASH_BUFRST)?;
+                self.flash_wait(FLASH_BUSY)?;
+                for (i, pair) in data.chunks(8).enumerate() {
+                    let a = addr + i as u32 * 8;
+                    let w0 = u32::from_le_bytes([pair[0], pair[1], pair[2], pair[3]]);
+                    let w1 = u32::from_le_bytes([pair[4], pair[5], pair[6], pair[7]]);
+                    self.write_mem32(a, w0)?;
+                    self.write_mem32(a + 4, w1)?;
+                    self.write_mem32(FLASH_CTLR, FLASH_FTPG | FLASH_BUFLOAD)?;
+                    self.flash_wait(FLASH_BUSY)?;
+                    self.flash_m030_commit(a)?;
+                }
+                self.write_mem32(FLASH_ADDR, addr)?;
+                self.write_mem32(FLASH_CTLR, FLASH_FTPG | FLASH_STRT)?;
+            }
         }
         let statr = self.flash_wait(FLASH_BUSY)?;
         self.write_mem32(FLASH_CTLR, 0)?; // clear FTPG (and any BUF bits)
+        if mode == FlashProgMode::M030 {
+            self.flash_m030_commit(addr)?;
+        }
         self.write_mem32(FLASH_STATR, statr)?;
         self.flash_lock()?;
         if statr & FLASH_WPRERR != 0 {
@@ -1163,6 +1197,11 @@ pub enum FlashProgMode {
     Buffered,
     /// CH32V103: standard 16-bit halfword programming (CR_PG) + the mandatory commit side effect.
     V103,
+    /// en: CH32M030: buffered fast page loaded 64 bits per BUFLOAD (two word stores, then
+    /// BUFLOAD), with its commit write `*(FLASH + 0x34) = *((addr & ~3) ^ 0x100)` after every
+    /// buffer load, erase and program (EVT ch32m030_flash.c).
+    /// ja: CH32M030。2 語を書いてから BUFLOAD(64 bit)。積み込み・消去・書き込みのたびに commit。
+    M030,
 }
 
 // FLASH controller registers (memory-mapped at 0x4002_2000) and bit masks. Transcribed from

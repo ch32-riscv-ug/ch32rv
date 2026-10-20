@@ -153,6 +153,7 @@ fn db_family(family_byte: u8) -> Option<&'static str> {
         0xE6 => "CH32X315",
         0xA6 => "CH32V407", // the X315 mechanism (EVT FLASH_ROM_WRITE / ROM_ERASE)
         0xC6 => "CH32H417", // the same, on 8 KiB pages (PER follows FLASH_CFGR0.DBMODE)
+        0x8E => "CH32M030", // 64-bit buffer loads with a commit write (FlashProgMode::M030)
         _ => return None,
     })
 }
@@ -177,7 +178,7 @@ pub fn flash_controller_profile(family_byte: u8) -> Option<FlashCtrlProfile> {
 /// [`db_family`] の family だけ(同じ理由)。
 pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
     let family = [
-        0x01, 0x05, 0x06, 0x09, 0x0C, 0x0E, 0x4E, 0xCE, 0xE6, 0xA6, 0xC6,
+        0x01, 0x05, 0x06, 0x09, 0x0C, 0x0E, 0x4E, 0xCE, 0xE6, 0xA6, 0xC6, 0x8E,
     ]
     .into_iter()
     .filter_map(db_family)
@@ -227,6 +228,8 @@ pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
         // half-word path implemented here (plus its mandatory commit side effect); anything else
         // fails closed until that path is generalised.
         ("buffered", Some(_)) if family == "CH32V103" => FlashProgMode::V103,
+        // CH32M030: two word stores, then a 64-bit BUFLOAD, with its commit write (EVT).
+        ("buffered", Some(64)) if family == "CH32M030" => FlashProgMode::M030,
         _ => return None,
     };
     Some(FlashCtrlProfile {

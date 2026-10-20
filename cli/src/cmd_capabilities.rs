@@ -419,15 +419,15 @@ fn build_matrix(
     // flash: WCH's loader stub, or - for a family that has none - the FLASH controller over DMI.
     caps.push(if flash_ok {
         Cap::yes("flash", "a flash loader stub is available for this family")
-    } else if ctrl.is_some() {
-        Cap::yes(
-            "flash",
-            "no stub for this family - programmed via the direct FLASH controller (slower)",
-        )
     } else if loader {
         Cap::yes(
             "flash",
             "no stub for this family - programmed with ch32rv's RAM loader",
+        )
+    } else if ctrl.is_some() {
+        Cap::yes(
+            "flash",
+            "no stub for this family - programmed via the direct FLASH controller (slower)",
         )
     } else {
         Cap::no(
