@@ -2115,13 +2115,18 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
             None,
         );
     };
-    if params_for_family(family_byte).is_none_or(|p| !p.supports_special_erase) {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::CapabilityUnsupported,
-            format!("family `{chip}` does not support special (power-off/RST) erase"),
-            None,
+    // en: The special erase is the WCH-Link's own command, keyed by the family byte. It answers
+    // `0x0f` when the erase took and `0x00` when it did not, so every family whose byte is known
+    // may try it. It used to be gated on wlink's stub table, which was never a measurement (the
+    // only one is X035's `0x0f`, wch-protocols E162 / E164; E167 found the "power-off" does not
+    // cut 3V3 at all) and left CH32H417 and the newer parts out. A family not seen confirming is
+    // reported as unconfirmed below.
+    // ja: 特殊消去は WCH-Link 自身の命令(family byte で指定)。効けば `0x0f`、効かなければ `0x00`
+    // を返すので、family byte の分かるすべての family で試せる。以前は wlink の stub 表で絞っていた
+    // が、実測の裏付けは無かった(X035 の `0x0f` だけ。E167 では「電源断」で 3V3 は切れていない)。
+    if !params_for_family(family_byte).is_some_and(|p| p.supports_special_erase) && !cli.json {
+        eprintln!(
+            "warning[special-erase-untried]: the special erase has not been seen working on {chip} here; the probe's answer tells"
         );
     }
 
