@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `boot dfu flash` waits out a busy DFU-mode interface after DFU_DETACH (up to 5 s, as it already did for the node udev has not yet opened to us): something else may open a device that just came back first - fwupd probes DFU devices - and an Arduino upload failed 2 times in 4 with `interface is busy (errno 16)`, the device sitting in DFU mode. nusb's "interface is busy (errno 16)" is now classed as busy everywhere (it was a plain open failure).
+- (JA) `boot dfu flash` は、DFU_DETACH の後で DFU mode の interface が busy なら待ってやり直す(udev の権限付けを待つのと同じく最大 5 秒)。出直したばかりの device を別のものが先に開くことがある(fwupd は DFU の device を調べる)。Arduino からの書き込みが 4 回中 2 回 `interface is busy (errno 16)` で失敗し、device は DFU mode のままだった。nusb の "interface is busy (errno 16)" は、どこでも busy として扱う(以前はただの「開けない」だった)。
+
 ## 0.22.0 - 2026-10-21
 
 - (EN) `recover --method power-off / nrst` refuses a CH32H417 (and points at `--connect-under-reset`): on the bench part the WCH-LinkE's own erase for it left half-erased words in the code flash and rewrote the option bytes - USER 0xff -> 0x3f, which turns off USB / USART download, and DATA / WRP left at the erased 0xe339. Every other family may still try it.

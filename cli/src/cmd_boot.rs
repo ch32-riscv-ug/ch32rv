@@ -289,11 +289,18 @@ fn enter_dfu_mode(
             }
         }
     };
+    // en: A device that just came back is often not ours yet: udev grants the node a moment
+    // later (access denied), and a system service may open it to look at it first (fwupd
+    // probes DFU devices - the interface is busy). Both pass; wait them out.
+    // ja: 出直したばかりの device はすぐには開けない。udev の権限付けが少し遅れ(access denied)、
+    // システムのサービス(fwupd は DFU の device を調べる)が先に開くこともある(busy)。待つ。
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         match ch32rv_usb::dfu::DfuMode::open(&dev) {
             Ok(m) => return Ok(m),
-            Err(ch32rv_usb::UsbError::AccessDenied(_)) if Instant::now() < deadline => {
+            Err(ch32rv_usb::UsbError::AccessDenied(_) | ch32rv_usb::UsbError::Busy(_))
+                if Instant::now() < deadline =>
+            {
                 std::thread::sleep(Duration::from_millis(250));
             }
             Err(e) => return Err(err(ErrorKind::DeviceOpenFailed, e.to_string())),

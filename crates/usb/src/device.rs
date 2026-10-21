@@ -46,6 +46,10 @@ pub(crate) fn classify_open_error(e: impl Into<io::Error>) -> UsbError {
     match e.kind() {
         io::ErrorKind::PermissionDenied => UsbError::AccessDenied(e.to_string()),
         io::ErrorKind::ResourceBusy => UsbError::Busy(e.to_string()),
+        // nusb reports a claimed interface as "interface is busy (errno 16)" without the kind.
+        _ if e.raw_os_error() == Some(16) || e.to_string().contains("errno 16") => {
+            UsbError::Busy(e.to_string())
+        }
         _ => UsbError::Open(e.to_string()),
     }
 }
