@@ -31,6 +31,8 @@ pub struct Session {
     db: ch32rv_target::Db,
     /// Per-probe advisory lock, held for the session's lifetime (released on drop).
     _lock: DeviceLock,
+    /// A reset that runs the target was done (`--release-dm` resets once more on drop).
+    reset_run: bool,
 }
 
 /// What went wrong, so the CLI can pick the right exit code.
@@ -173,6 +175,7 @@ impl Session {
             chip,
             db,
             _lock: lock,
+            reset_run: false,
         })
     }
 
@@ -192,6 +195,11 @@ impl Session {
     /// Capacity from the probe when populated, otherwise from an unambiguous DB SKU.
     pub fn flash_capacity(&self) -> (Option<u32>, &'static str) {
         flash_capacity(self.chip.as_ref(), &self.db, self.attach.chip_id)
+    }
+
+    /// Note that a reset which runs the target was done (for `--release-dm` on drop).
+    pub fn mark_reset_run(&mut self) {
+        self.reset_run = true;
     }
 
     pub fn dm(&mut self) -> DebugModule<'_, WchLink> {
@@ -239,6 +247,20 @@ impl Drop for Session {
         }
         if RELEASE_DM.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = self.link.dmi_write(DMCONTROL, 0);
+            if self.reset_run {
+                // en: Reset once more with the DM off, through NRST (the LinkE's RstOut; nothing
+                // happens where RST is not wired), and send nothing after it: after the LinkE's
+                // soft reset the DM was active again and core 0 was found halted, while DMCONTROL
+                // = 0 and then a system reset left both H417 cores running and core 1 back in its
+                // deep sleep (ArduinoCore-CH32RV, 2026-10-22).
+                // ja: DM を止めたまま NRST でもう一度 reset し、その後は何も送らない(LinkE の
+                // soft reset の後は DM が戻り core 0 が止まっていた)。
+                if self.link.rst_out(true).is_ok() {
+                    std::thread::sleep(Duration::from_millis(20));
+                    let _ = self.link.rst_out(false);
+                }
+                return;
+            }
         }
         // Always release the core, on every path.
         let _ = self.link.detach_chip();

@@ -1082,23 +1082,7 @@ fn flash_via_loader(
 }
 
 pub(crate) fn soft_reset_and_run(session: &mut Session) -> Result<(), String> {
-    if crate::session::RELEASE_DM.load(std::sync::atomic::Ordering::Relaxed) {
-        // en: `--release-dm`: the debug module off first, then the reset, and nothing after it
-        // that would wake the DM again. On an H417 this is what lets core 1 go back to its deep
-        // sleep (CSTAR1 0xC000) and wake on the WAKEIP from core 0; the LinkE's attach left it
-        // in debug mode across resets (ArduinoCore-CH32RV, 2026-10-22).
-        // ja: DM を先に止めてから reset し、その後は DM を起こさない。H417 の core 1 が深い眠りに
-        // 戻り、core 0 の WAKEIP で起きる。
-        use ch32rv_dmi::DtmAccess;
-        session
-            .link()
-            .dmi_write(0x10, 0)
-            .map_err(|e| format!("DMCONTROL clear failed: {e}"))?;
-        return session
-            .link()
-            .soft_reset()
-            .map_err(|e| format!("reset failed: {e}"));
-    }
+    session.mark_reset_run();
     session
         .link()
         .soft_reset()

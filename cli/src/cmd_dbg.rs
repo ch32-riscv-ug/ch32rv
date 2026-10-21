@@ -340,6 +340,10 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
         }
         (start, len)
     };
+    // en: A hart that was running is let go again after the read (H417 core 1: the LinkE's
+    // DetachChip does not resume it, ArduinoCore-CH32RV 2026-10-22).
+    // ja: 走っていた hart は読んだ後に走らせ直す(H417 の core 1 は DetachChip で再開しない)。
+    let was_running = !session.dm().is_halted().unwrap_or(true);
     if let Err(e) = session.dm().halt() {
         return fail(
             cli,
@@ -349,48 +353,22 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
             None,
         );
     }
-    // en: Fast bulk read via the WCH-Link (SetReadMemoryRegion + ReadMemory + data endpoint),
-    // chunked so a large read (e.g. a full-flash backup) stays under the probe's per-transfer limit
-    // and timeout; each chunk falls back to word-by-word DMI reads if the probe rejects it.
-    // ja: WCH-Link の高速バルク read を chunk 単位で行い(全 flash backup 等の大読みが probe の
-    // 1 転送上限・timeout を超えないように)、chunk ごとに弾かれたら DMI word 読みへ fallback。
-    const READ_CHUNK: u32 = 32 * 1024;
-    let mut data = Vec::with_capacity(len as usize);
-    let mut off = 0u32;
-    while off < len {
-        let want = READ_CHUNK.min(len - off);
-        let chunk = if cli.core == 0 {
-            session
-                .link()
-                .read_mem(start + off, want)
-                .map_err(|e| e.to_string())
-                .or_else(|_| {
-                    session
-                        .dm()
-                        .read_mem(start + off, want)
-                        .map_err(|e| e.to_string())
-                })
-        } else {
-            session
-                .dm()
-                .read_mem(start + off, want)
-                .map_err(|e| e.to_string())
-        };
-        let chunk = match chunk {
-            Ok(d) => d,
-            Err(e) => {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::TransferFailed,
-                    format!("read failed at {:#010x}: {e}", start + off),
-                    None,
-                );
-            }
-        };
-        data.extend_from_slice(&chunk);
-        off += want;
+    let data = read_chunks(cli, &mut session, start, len);
+    if was_running {
+        let _ = session.dm().resume();
     }
+    let data = match data {
+        Ok(d) => d,
+        Err((at, e)) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::TransferFailed,
+                format!("read failed at {at:#010x}: {e}"),
+                None,
+            );
+        }
+    };
 
     if args.blank_check {
         let blank = data.iter().all(|&b| b == 0xff);
@@ -419,6 +397,46 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     }
 
     output_data(cli, CMD, args, start, &data, warnings)
+}
+
+/// `len` bytes from `start` on the halted hart, in chunks; on failure, where and why.
+fn read_chunks(
+    cli: &Cli,
+    session: &mut Session,
+    start: u32,
+    len: u32,
+) -> Result<Vec<u8>, (u32, String)> {
+    // en: Fast bulk read via the WCH-Link (SetReadMemoryRegion + ReadMemory + data endpoint),
+    // chunked so a large read (e.g. a full-flash backup) stays under the probe's per-transfer limit
+    // and timeout; each chunk falls back to word-by-word DMI reads if the probe rejects it.
+    // ja: WCH-Link の高速バルク read を chunk 単位で行い(全 flash backup 等の大読みが probe の
+    // 1 転送上限・timeout を超えないように)、chunk ごとに弾かれたら DMI word 読みへ fallback。
+    const READ_CHUNK: u32 = 32 * 1024;
+    let mut data = Vec::with_capacity(len as usize);
+    let mut off = 0u32;
+    while off < len {
+        let want = READ_CHUNK.min(len - off);
+        let chunk = if cli.core == 0 {
+            session
+                .link()
+                .read_mem(start + off, want)
+                .map_err(|e| e.to_string())
+                .or_else(|_| {
+                    session
+                        .dm()
+                        .read_mem(start + off, want)
+                        .map_err(|e| e.to_string())
+                })
+        } else {
+            session
+                .dm()
+                .read_mem(start + off, want)
+                .map_err(|e| e.to_string())
+        };
+        data.extend_from_slice(&chunk.map_err(|e| (start + off, e))?);
+        off += want;
+    }
+    Ok(data)
 }
 
 /// en: The first stretch of `[start, start + len)` that lies outside every memory region the tool
