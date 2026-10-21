@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `--confirm-run pc` accepts a pc anywhere in the part's code flash, through the low alias up to its size (it stopped at 128 KiB, so code running past it on a V307 / X315 / V407 read as not running), and on a CH32H417 in RAM_CODE (0x20100000, where the boot copies the code and it runs). `dbg` memory-map warnings place a CH32H417's RAM at 0x200A0000 (ITCM, DTCM and the shared SRAM) instead of 0x20000000.
+- (JA) `--confirm-run pc` は、pc が code flash のどこにあっても(低い番地の別名もチップの flash の大きさまで)走っているとみなす。以前は 128 KiB で切っていて、V307 / X315 / V407 でその後ろで走るコードを「走っていない」と判定した。CH32H417 では RAM_CODE(0x20100000、boot がコードを写して走らせる場所)も認める。`dbg` のメモリ配置の警告は、CH32H417 の RAM を 0x20000000 ではなく 0x200A0000(ITCM・DTCM・共有 SRAM)に置く。
+
 - (EN) `boot dfu flash` waits out a busy DFU-mode interface after DFU_DETACH (up to 5 s, as it already did for the node udev has not yet opened to us): something else may open a device that just came back first - fwupd probes DFU devices - and an Arduino upload failed 2 times in 4 with `interface is busy (errno 16)`, the device sitting in DFU mode. nusb's "interface is busy (errno 16)" is now classed as busy everywhere (it was a plain open failure).
 - (JA) `boot dfu flash` は、DFU_DETACH の後で DFU mode の interface が busy なら待ってやり直す(udev の権限付けを待つのと同じく最大 5 秒)。出直したばかりの device を別のものが先に開くことがある(fwupd は DFU の device を調べる)。Arduino からの書き込みが 4 回中 2 回 `interface is busy (errno 16)` で失敗し、device は DFU mode のままだった。nusb の "interface is busy (errno 16)" は、どこでも busy として扱う(以前はただの「開けない」だった)。
 

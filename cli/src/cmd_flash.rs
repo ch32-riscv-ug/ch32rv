@@ -1104,6 +1104,12 @@ pub(crate) fn soft_reset_and_run(session: &mut Session) -> Result<(), String> {
 /// running bit; `pc` additionally halts, reads dpc, checks it lies in flash, and resumes.
 /// ja: confirm-run。`status` は running bit を見る。`pc` はさらに halt→dpc→flash 判定→resume。
 fn confirm_run(session: &mut Session, mode: ConfirmRunMode) -> bool {
+    let flash = session
+        .flash_capacity()
+        .0
+        .filter(|&n| n > 0)
+        .unwrap_or(0x10_0000);
+    let h417 = crate::cmd_target::db_family_of(session).eq_ignore_ascii_case("CH32H417");
     let mut dm = session.dm();
     match mode {
         ConfirmRunMode::Status => dm.is_running().unwrap_or(false),
@@ -1113,14 +1119,20 @@ fn confirm_run(session: &mut Session, mode: ConfirmRunMode) -> bool {
             }
             let pc = dm.read_reg(ch32rv_dmi::RegName::Pc).ok();
             let _ = dm.resume();
-            match pc {
-                // Flash executes from the low alias (< 0x0002_0000, i.e. up to 128 KiB) or the
-                // 0x0800_0000 window; SRAM (0x2000_0000) means it never left the reset stub.
-                Some(p) => p < 0x0002_0000 || (0x0800_0000..0x0810_0000).contains(&p),
-                None => false,
-            }
+            pc.is_some_and(|p| pc_runs_the_image(p, flash, h417))
         }
     }
+}
+
+/// en: Whether `pc` lies where a flashed image runs: code flash, through its low alias or the
+/// 0x0800_0000 window (`flash` bytes of it); on a CH32H417 also RAM_CODE (0x2010_0000, where
+/// the boot copies the code and it runs - ch32rv's loader at 0x2012_0000 is not that). SRAM
+/// elsewhere means the program never left a reset stub or loader.
+/// ja: pc がイメージの走る場所か。code flash(別名と 0x0800_0000)、H417 は RAM_CODE も。
+fn pc_runs_the_image(p: u32, flash: u32, h417: bool) -> bool {
+    p < flash
+        || (0x0800_0000..0x0800_0000u32.saturating_add(flash)).contains(&p)
+        || (h417 && (0x2010_0000..0x2012_0000).contains(&p))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2308,6 +2320,18 @@ pub(crate) fn loader_error_kind(e: &ch32rv_flash::loader::LoaderError) -> ErrorK
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pc_runs_the_image_where_the_part_puts_it() {
+        use super::pc_runs_the_image as runs;
+        // Past 128 KiB on a big part (V307: 288 KiB of zero-wait flash).
+        assert!(runs(0x0003_0000, 288 * 1024, false));
+        assert!(runs(0x0803_0000, 288 * 1024, false));
+        // A CH32H417 runs its code from RAM_CODE; elsewhere in SRAM is a stub or the loader.
+        assert!(runs(0x2010_03b0, 960 * 1024, true));
+        assert!(!runs(0x2012_0004, 960 * 1024, true));
+        assert!(!runs(0x2010_03b0, 64 * 1024, false));
+    }
+
     #[test]
     fn v205_names_use_the_measured_family_byte() {
         for name in ["CH32V205", "CH32V205RCT6", "ch32v205cct6", "CH32V203CCT6"] {

@@ -456,7 +456,10 @@ fn unmapped_span(
         (0x0000_0000, flash),               // boot alias of code flash
         (0x0800_0000, 0x0800_0000 + flash), // code flash
         (0x1FFF_0000, 0x2000_0000),         // system / boot, ESIG, option bytes
-        (0x2000_0000, 0x2000_0000 + sram),  // SRAM
+        (
+            u64::from(crate::parse::ram_base(Some(family))),
+            u64::from(crate::parse::ram_base(Some(family))) + sram,
+        ), // SRAM (CH32H417: ITCM, DTCM and the shared SRAM from 0x200A_0000)
         (0x4000_0000, 0x6000_0000),         // peripherals (APB / AHB, USB, ETH)
         (0xE000_0000, 0xE010_0000),         // core-private (PFIC, SysTick, DM data alias)
     ];
@@ -880,6 +883,12 @@ mod tests {
         assert_eq!(l103(0x2000_4F00, 0x200), Some((0x2000_5000, 0x100)));
         // Unknown sizes are not judged.
         assert_eq!(unmapped_span(0x0810_0000, 16, "CH32L103", 0, 0), None);
+        // CH32H417: RAM from 0x200A_0000 (896 KiB), nothing at 0x2000_0000.
+        assert_eq!(
+            unmapped_span(0x2010_0000, 16, "CH32H417", 0, 896 * 1024),
+            None
+        );
+        assert!(unmapped_span(0x2000_0000, 16, "CH32H417", 0, 896 * 1024).is_some());
         // The configurable split on V20x / V30x allows up to 128 KiB of SRAM.
         assert_eq!(
             unmapped_span(0x2001_0000, 16, "CH32V20x", 64 * 1024, 20 * 1024),
