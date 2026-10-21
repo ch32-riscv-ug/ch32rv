@@ -1,6 +1,6 @@
 [package]
 name = "ch32rv-isp"
-description = "WCH factory ISP bootloader (USB) client for the ch32rv tool suite"
+description = "WCH factory ISP bootloader (USB and UART) client for the ch32rv tool suite"
 keywords = ["ch32", "riscv", "wch", "isp", "bootloader"]
 categories = ["embedded", "hardware-support"]
 readme = "README.md"

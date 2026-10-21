@@ -1,6 +1,7 @@
-//! en: `isp` (docs/cli.ja.md §4.7): the chip's factory ISP bootloader over USB. `list` / `info` /
-//! `flash` / `verify` / `erase` / `reset`; the rest of the namespace stays reserved.
-//! ja: `isp`。チップの factory ISP bootloader を USB で使う。
+//! en: `isp` (docs/cli.ja.md §4.7): the chip's factory ISP bootloader over USB or a UART.
+//! `list` / `info` / `flash` / `verify` / `erase` / `reset`; the rest of the namespace stays
+//! reserved.
+//! ja: `isp`。チップの factory ISP bootloader を USB か UART で使う。
 
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -22,9 +23,6 @@ const CODE_FLASH_START: u32 = 0x0800_0000;
 
 pub fn isp(cli: &Cli, args: &IspArgs) -> ExitCode {
     let cmd = crate::canonical_name(&cli.command);
-    if args.transport == IspTransport::Uart {
-        return crate::unimplemented_cmd(cli, "isp --transport uart");
-    }
     match &args.cmd {
         IspCmd::List => list(cli),
         IspCmd::Info => info(cli, args),
@@ -47,8 +45,11 @@ pub fn isp(cli: &Cli, args: &IspArgs) -> ExitCode {
 /// A connected bootloader with what it said about itself.
 struct Opened {
     dev: IspDevice,
-    usb: String,
-    topology: String,
+    /// USB ID and position; `None` over a UART.
+    usb: Option<String>,
+    topology: Option<String>,
+    /// Where it was reached: `usb:<bus>-<ports>` or `uart:<port>`.
+    at: String,
     id: Identity,
     cfg: IspConfig,
 }
@@ -62,6 +63,9 @@ fn open(cli: &Cli, cmd: &str, args: &IspArgs) -> Result<Opened, ExitCode> {
 }
 
 fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Opened, ExitCode> {
+    if args.transport == IspTransport::Uart {
+        return open_uart(cli, cmd, args, entry);
+    }
     let mut want = match args.device.as_deref() {
         None => None,
         Some(d) => match d.strip_prefix("usb:") {
@@ -200,8 +204,74 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
     let cfg = isp.read_config().map_err(|e| isp_fail(cli, cmd, e))?;
     Ok(Opened {
         dev: isp,
-        usb,
-        topology,
+        usb: Some(usb),
+        at: format!("usb:{topology}"),
+        topology: Some(topology),
+        id,
+        cfg,
+    })
+}
+
+/// en: The bootloader on `--port` (`--baud`, default 115200). An entry asked for is made first,
+/// then Identify is retried until `--wait` (at least the entry's settling time) runs out: a UART
+/// has no arrival to watch for.
+/// ja: `--port` の bootloader。entry を指定されたら先に入れ、UART には「現れる」が無いので
+/// `--wait` の間 Identify を繰り返す。
+fn open_uart(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Opened, ExitCode> {
+    let Some(port) = args.port.as_deref() else {
+        return Err(fail(
+            cli,
+            cmd,
+            ErrorKind::Usage,
+            "--transport uart needs --port <serial port>".to_owned(),
+            Some("the serial port wired to the chip's bootloader USART (e.g. /dev/ttyUSB0)"),
+        ));
+    };
+    let baud = args.baud.unwrap_or(ch32rv_isp::UART_BAUD);
+    let mut wait = Duration::from_secs(args.wait);
+    match entry {
+        IspEntry::None => {}
+        IspEntry::Probe => {
+            enter_via_probe(cli, cmd)?;
+            wait = wait.max(ENTER_WAIT);
+        }
+        _ => {
+            let via_app = enter_via_app(cli, cmd, args, entry)?.is_some();
+            if !via_app && entry == IspEntry::Auto && cli.probe.is_some() {
+                enter_via_probe(cli, cmd)?;
+            }
+            wait = wait.max(ENTER_WAIT);
+        }
+    }
+    let deadline = Instant::now() + wait;
+    let mut isp = IspDevice::open_serial(port, baud).map_err(|e| isp_fail(cli, cmd, e))?;
+    isp.set_timeout(Duration::from_millis(500));
+    let id = loop {
+        match isp.identify() {
+            Ok(id) => break id,
+            Err(e @ ch32rv_isp::IspError::NotFactoryIsp(_)) => return Err(isp_fail(cli, cmd, e)),
+            Err(e) if Instant::now() >= deadline => {
+                return Err(fail(
+                    cli,
+                    cmd,
+                    ErrorKind::DeviceNotFound,
+                    format!("no ISP bootloader answered on {port} at {baud} bps ({e})"),
+                    Some(ENTRY_HINT),
+                ));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(200)),
+        }
+    };
+    isp.set_timeout(
+        cli.timeout
+            .map_or(Duration::from_secs(5), Duration::from_secs),
+    );
+    let cfg = isp.read_config().map_err(|e| isp_fail(cli, cmd, e))?;
+    Ok(Opened {
+        dev: isp,
+        usb: None,
+        topology: None,
+        at: format!("uart:{port}"),
         id,
         cfg,
     })
@@ -215,9 +285,12 @@ fn isp_fail(cli: &Cli, cmd: &str, e: IspError) -> ExitCode {
             ErrorKind::DeviceOpenFailed,
             Some("check permissions for the device (udev rule for 1a86:55e0 / 4348:55e0)"),
         ),
-        IspError::Usb(_) | IspError::ShortWrite { .. } | IspError::UnexpectedReply { .. } => {
-            (ErrorKind::TransferFailed, None)
-        }
+        IspError::Serial(_) => (ErrorKind::DeviceOpenFailed, None),
+        IspError::Usb(_)
+        | IspError::ShortWrite { .. }
+        | IspError::UnexpectedReply { .. }
+        | IspError::SerialTimeout
+        | IspError::Checksum { .. } => (ErrorKind::TransferFailed, None),
         IspError::NotFactoryIsp(_) => (
             ErrorKind::CapabilityUnsupported,
             Some("a WCH-Link in IAP mode uses the same USB ID: see `ch32rv probe firmware`"),
@@ -246,6 +319,7 @@ fn describe(o: &Opened) -> serde_json::Value {
     serde_json::json!({
         "usb": o.usb,
         "topology": o.topology,
+        "at": o.at,
         "series": ch32rv_isp::series_name(o.id.device_type),
         "chip_id": format!("0x{:02x}", o.id.chip_id),
         "device_type": format!("0x{:02x}", o.id.device_type),
@@ -325,7 +399,10 @@ fn info(cli: &Cli, args: &IspArgs) -> ExitCode {
         env.result = Some(describe(&o));
         return crate::print_envelope(&env);
     }
-    println!("usb:      {} at usb:{}", o.usb, o.topology);
+    match &o.usb {
+        Some(usb) => println!("usb:      {usb} at {}", o.at),
+        None => println!("port:     {}", o.at),
+    }
     println!(
         "chip:     {} (chip 0x{:02x}, type 0x{:02x})",
         series(o.id),
@@ -485,10 +562,10 @@ fn flash(
         crate::print_envelope(&env)
     } else {
         println!(
-            "flashed {} byte(s) through the ISP bootloader ({} at usb:{}){}{}",
+            "flashed {} byte(s) through the ISP bootloader ({} at {}){}{}",
             image.len(),
             series(o.id),
-            o.topology,
+            o.at,
             if verified { ", verified" } else { "" },
             if running {
                 ", application started"
@@ -789,10 +866,10 @@ fn enter(cli: &Cli, args: &IspArgs) -> ExitCode {
         crate::print_envelope(&env)
     } else {
         println!(
-            "in the bootloader: {} (chip 0x{:02x}) at usb:{}, btver {}",
+            "in the bootloader: {} (chip 0x{:02x}) at {}, btver {}",
             series(o.id),
             o.id.chip_id,
-            o.topology,
+            o.at,
             o.cfg.btver_text()
         );
         ExitCode::SUCCESS

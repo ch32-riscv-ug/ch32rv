@@ -421,7 +421,7 @@ ch32rv dap [--port <n>|--stdio]                     P2
 ### 4.7 isp(factory ISP 経路)
 
 ```text
-ch32rv isp [--transport usb|uart] [--device usb:<bus>-<ports>] [--wait <SECS>]
+ch32rv isp [--transport usb|uart] [--device usb:<bus>-<ports>] [--port <serial port>] [--baud <bps>] [--wait <SECS>]
            [--entry none|auto|probe|dfu-detach|touch1200] [--app-device port:<p>|usb:<bus>-<ports>|VID:PID[:SN]]
 ch32rv isp list                                     ISP mode device の列挙。Identify に答えない device(LinkE IAP 等)は区別して表示
 ch32rv isp info                                     chip/BTVER/UID/保護状態/config 12 B
@@ -435,7 +435,8 @@ ch32rv isp config get                               option bytes を解いて表
 ch32rv isp config set <key>=<v>...                  option bytes を変更して読み直しで照合(reset は予約)
 ```
 
-- **USB transport は実装済み(2026-10-13)**。CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で info / flash / verify / erase / reset を実機確認し、書いた内容は RVSWD の読み出しで照合した。byte の記録は [protocol/factory-isp.ja.md](protocol/factory-isp.ja.md)、replay fixture は `tests/fixtures/replay/isp-*-x035.ndjson`。UART transport は予約(exit 71)。
+- **USB transport は実装済み(2026-10-13)**。CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で info / flash / verify / erase / reset を実機確認し、書いた内容は RVSWD の読み出しで照合した。byte の記録は [protocol/factory-isp.ja.md](protocol/factory-isp.ja.md)、replay fixture は `tests/fixtures/replay/isp-*-x035.ndjson`。
+- **UART transport(2026-10-22 実装、実機未確認)**: `--transport uart --port <serial port>`(`--baud` 既定 115200、8N1)。frame は USB と同じで、request を `57 ab` + frame + byte 和、reply を `55 aa` + frame + byte 和で包む(先行実装からの転記)。reply の前の余計な byte は読み飛ばし、和が合わなければ transfer-failed。UART には「現れる」が無いので、`--wait`(entry をしたなら最低 5 s)の間 Identify を繰り返し、答えなければ exit 10。`--entry` は USB と同じ入り方をしてから port を開く。出力の位置は `uart:<port>`(JSON は `at`、`usb` / `topology` は null)。auto-baud と `0xC5` SetBaud は使わない(`--baud` は port の速さだけ)。疑似 bootloader(pty)で info を通した。
 - ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed(2 台以上は exit 14 で位置の候補を出す)。複数台は `--device usb:<bus>-<ports>` で選ぶ。
 - `--wait <SECS>`(既定 0): device が無ければその秒数だけ待つ。最初に、入り方(Boot キーを押したまま USB を接続、または `--entry probe`)を stderr に 1 回出す。期限切れは exit 10。
 - `--entry probe`: ISP device が無ければ、`--probe` の debug 線で hart を reset vector で止め、`FLASH_KEYR` と `FLASH_BOOT_MODEKEYR` を外し、`FLASH_STATR.BOOT_MODE` を立てて reset してから、最大 5 s 待つ。flash の中身を先に走らせないので、壊れた image が入っていても入れる。OEP の probe と WCH-Link の両方で使える(WCH-Link は DMI の reset-halt で捕まえ、最後は probe の system reset)。family は CH32X033 / X035 だけ(他は exit 24)。WCH-LinkE(fw 2.22)+ CH32X035C8T6 でも、reset 後に `FLASH_STATR` = `0xF000`・PC が BOOT 領域になることを確認した(この板の USB は PC に未接続)。入れたのに ISP device が現れないときは、チップの USB の接続を疑うよう hint を出す。読み出し保護中のチップ(`FLASH_OBR.RDPRT`)には入れず exit 21(bootloader が走らないため。`recover --method unprotect` を hint に出す)。`isp enter` は `--entry probe` で開いて Identify / ReadConfig までして終わる。
@@ -456,7 +457,7 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
 - `isp flash` は ELF / HEX / bin を code flash 先頭からの 1 塊にし(隙間は `0xff`)、`--erase auto` は image の長さ分の 1 KiB sector(最小 8)を消す。書いた後の `IspEnd` は応答を読んでから終える(読まないと bootloader に残る。protocol ノート §5)。
 - `isp config set` のキー: `data0=<n>` `data1=<n>` `iwdg=sw|hw` `stop-reset=on|off` `standby-reset=on|off` `reset-pin=off|12ms|1ms|128us`(CH32X03x の USER bits[4:3])`write-protect=<u32>`(WRPR0–3、立った bit の sector は書込可)`read-protect=on|off`。補数 byte は計算し直し、知らない USER の bit は読んだ値のまま。書いた後に ReadConfig で読み直し、違えば exit 30。`read-protect` を変えるときは確認する(`--non-interactive` では `--yes` が要る。off にするとチップが code flash を全消去する)。CH32X035F8U6 で全キーを書いて戻し、option bytes(`0x1FFFF800`)を RVSWD で照合した。`read-protect=on` は `00 ff` を書き、reset 後は RVSWD の flash 読み出しが fault になる。**保護中は factory bootloader が走らない**(X035 BTVER 2.60 の実測。debug 線から入れても、debugger 無しの電源投入後にアプリから DFU_DETACH で入れても、PC 0 で止まり ISP device は現れない)。したがって ISP の `read-protect=off` は使えず、解除は debug 線の `recover --method unprotect`(code flash 全消去)だけ。`read-protect=on` の確認文にもそう書く。BOOT キー(電源投入時の PC17)で入った場合は未確認。
 - bootloader は最後の通信から約 60 s で app へ抜ける。一度も話しかけられなければ約 9.3〜9.7 s で抜ける(ArduinoCore-CH32RV の観測)ので、ch32rv は現れ次第 Identify を送る。
-- protocol は自前実装(wchisp は GPL-2.0 のため取り込まない)。WriteConfig・DATA 系・UART transport は protocol ノートに記録した上で実装する。
+- protocol は自前実装(wchisp は GPL-2.0 のため取り込まない)。DATA 系は protocol ノートに記録した上で実装する。
 
 ### 4.8 boot(custom bootloader 経路)
 

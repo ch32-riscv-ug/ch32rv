@@ -6,14 +6,20 @@
 //! position or refused. WCH-Link IAP mode shares `4348:55e0`; it does not answer Identify the
 //! factory way, which is how it is told apart.
 //!
-//! A request is `cmd len(2 LE) payload`; the reply is `cmd 00 len(2 LE) payload`.
+//! A request is `cmd len(2 LE) payload`; the reply is `cmd 00 len(2 LE) payload`. Over a UART
+//! (`IspDevice::open_serial`) the same frames travel between a sync and a checksum: the request
+//! as `57 ab` + frame + sum, the reply as `55 aa` + frame + sum (the byte sum of the frame). The
+//! UART framing is taken from the reference implementations and is not yet seen on silicon.
 //!
 //! ja: factory ISP 経路。チップの BOOT 領域にある WCH の bootloader と USB bulk(EP `0x02` /
 //! `0x82`)で話す。protocol は自前実装(wchisp は GPL-2.0 のため取り込まない)。ISP device は
 //! USB serial を持たないので、複数台は USB の位置で選ぶか断る。WCH-Link の IAP は同じ
-//! `4348:55e0` だが、Identify に factory の形で答えないので区別できる。
+//! `4348:55e0` だが、Identify に factory の形で答えないので区別できる。UART では同じ frame を
+//! sync と checksum で包む(request は `57 ab` + frame + 和、reply は `55 aa` + frame + 和)。UART
+//! の framing は先行実装からの転記で、実機ではまだ見ていない。
 
-use std::time::Duration;
+use std::io::Write;
+use std::time::{Duration, Instant};
 
 use ch32rv_usb::device::{UsbDeviceInfo, UsbError, UsbInterface};
 use thiserror::Error;
@@ -51,6 +57,12 @@ const IDENTIFY_MAGIC: &[u8; 16] = b"MCU ISP & WCH.CN";
 pub enum IspError {
     #[error(transparent)]
     Usb(#[from] UsbError),
+    #[error("serial port: {0}")]
+    Serial(String),
+    #[error("serial port: no reply within the timeout")]
+    SerialTimeout,
+    #[error("bad UART frame checksum (computed 0x{ours:02x}, got 0x{theirs:02x})")]
+    Checksum { ours: u8, theirs: u8 },
     #[error("short write: {written} of {expected} byte(s)")]
     ShortWrite { written: usize, expected: usize },
     #[error("unexpected reply to 0x{cmd:02x}: {reply:02x?}")]
@@ -199,9 +211,110 @@ pub fn list() -> Result<Vec<UsbDeviceInfo>, UsbError> {
         .collect())
 }
 
+/// The link the frames travel over.
+enum Link {
+    Usb(UsbInterface),
+    Uart(Box<dyn serialport::SerialPort>),
+}
+
+const UART_SYNC_TX: [u8; 2] = [0x57, 0xab];
+const UART_SYNC_RX: [u8; 2] = [0x55, 0xaa];
+/// The bootloader's UART rate when nothing else is asked for (V003's ROM runs at this rate).
+pub const UART_BAUD: u32 = 115_200;
+
+fn sum(b: &[u8]) -> u8 {
+    b.iter().fold(0u8, |a, &x| a.wrapping_add(x))
+}
+
+/// A request frame as a UART carries it: sync, frame, byte sum of the frame.
+fn uart_frame(frame: &[u8]) -> Vec<u8> {
+    let mut tx = Vec::with_capacity(frame.len() + 3);
+    tx.extend_from_slice(&UART_SYNC_TX);
+    tx.extend_from_slice(frame);
+    tx.push(sum(frame));
+    tx
+}
+
+impl Link {
+    /// Send one frame (`cmd len payload`); a UART wraps it in its sync and checksum.
+    fn send(&mut self, frame: &[u8], timeout: Duration) -> Result<(), IspError> {
+        let (written, expected) = match self {
+            Self::Usb(i) => (i.write(frame, timeout)?, frame.len()),
+            Self::Uart(p) => {
+                let tx = uart_frame(frame);
+                let _ = p.clear(serialport::ClearBuffer::Input);
+                p.write_all(&tx)
+                    .map_err(|e| IspError::Serial(e.to_string()))?;
+                p.flush().map_err(|e| IspError::Serial(e.to_string()))?;
+                (tx.len(), tx.len())
+            }
+        };
+        if written != expected {
+            return Err(IspError::ShortWrite { written, expected });
+        }
+        Ok(())
+    }
+
+    /// Receive one reply frame (`cmd 00 len payload`), its sync and checksum stripped on a UART.
+    fn recv(&mut self, timeout: Duration) -> Result<Vec<u8>, IspError> {
+        match self {
+            Self::Usb(i) => {
+                let mut rx = [0u8; 64];
+                let n = i.read(&mut rx, timeout)?;
+                Ok(rx[..n].to_vec())
+            }
+            Self::Uart(p) => {
+                let deadline = Instant::now() + timeout;
+                // Hunt for the sync: a reset or a baud mismatch can leave stray bytes ahead of it.
+                let mut last = 0u8;
+                loop {
+                    let b = read_exact(p.as_mut(), 1, deadline)?[0];
+                    if [last, b] == UART_SYNC_RX {
+                        break;
+                    }
+                    last = b;
+                }
+                let mut frame = read_exact(p.as_mut(), 4, deadline)?;
+                let len = u16::from_le_bytes([frame[2], frame[3]]) as usize;
+                frame.extend(read_exact(p.as_mut(), len, deadline)?);
+                let theirs = read_exact(p.as_mut(), 1, deadline)?[0];
+                let ours = sum(&frame);
+                if ours != theirs {
+                    return Err(IspError::Checksum { ours, theirs });
+                }
+                Ok(frame)
+            }
+        }
+    }
+}
+
+fn read_exact(
+    p: &mut dyn serialport::SerialPort,
+    n: usize,
+    deadline: Instant,
+) -> Result<Vec<u8>, IspError> {
+    let mut buf = vec![0u8; n];
+    let mut got = 0;
+    while got < n {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(IspError::SerialTimeout);
+        }
+        let _ = p.set_timeout(left);
+        match p.read(&mut buf[got..]) {
+            Ok(0) => {}
+            Ok(k) => got += k,
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(IspError::Serial(e.to_string())),
+        }
+    }
+    Ok(buf)
+}
+
 /// An opened factory ISP bootloader.
 pub struct IspDevice {
-    iface: UsbInterface,
+    link: Link,
     timeout: Duration,
     identity: Option<Identity>,
     key: Option<[u8; 8]>,
@@ -210,12 +323,26 @@ pub struct IspDevice {
 impl IspDevice {
     pub fn open(dev: &UsbDeviceInfo) -> Result<Self, IspError> {
         let iface = dev.open_interface(0, EP_OUT, EP_IN)?;
-        Ok(Self {
-            iface,
+        Ok(Self::with_link(Link::Usb(iface)))
+    }
+
+    /// en: The bootloader on a serial port (8N1, no flow control) at `baud`.
+    /// ja: serial port の bootloader(8N1、flow control 無し)。
+    pub fn open_serial(path: &str, baud: u32) -> Result<Self, IspError> {
+        let port = serialport::new(path, baud)
+            .timeout(DEFAULT_TIMEOUT)
+            .open()
+            .map_err(|e| IspError::Serial(format!("{path}: {e}")))?;
+        Ok(Self::with_link(Link::Uart(port)))
+    }
+
+    fn with_link(link: Link) -> Self {
+        Self {
+            link,
             timeout: DEFAULT_TIMEOUT,
             identity: None,
             key: None,
-        })
+        }
     }
 
     pub fn set_timeout(&mut self, timeout: Duration) {
@@ -228,25 +355,14 @@ impl IspDevice {
         tx.push(cmd);
         tx.extend_from_slice(&(payload.len() as u16).to_le_bytes());
         tx.extend_from_slice(payload);
-        let written = self.iface.write(&tx, self.timeout)?;
-        if written != tx.len() {
-            return Err(IspError::ShortWrite {
-                written,
-                expected: tx.len(),
-            });
-        }
-        let mut rx = [0u8; 64];
-        let n = self.iface.read(&mut rx, self.timeout)?;
-        let rx = &rx[..n];
+        self.link.send(&tx, self.timeout)?;
+        let rx = self.link.recv(self.timeout)?;
         let len = rx
             .get(2..4)
             .map(|l| u16::from_le_bytes([l[0], l[1]]) as usize);
         match len {
             Some(len) if rx[0] == cmd && rx.len() == 4 + len => Ok(rx[4..].to_vec()),
-            _ => Err(IspError::UnexpectedReply {
-                cmd,
-                reply: rx.to_vec(),
-            }),
+            _ => Err(IspError::UnexpectedReply { cmd, reply: rx }),
         }
     }
 
@@ -398,15 +514,8 @@ impl IspDevice {
     /// ReadConfig を stall で断る。応答は reset と競りうるので読むのは best effort。
     pub fn end(mut self, run: bool) -> Result<(), IspError> {
         let tx = [CMD_END, 0x01, 0x00, u8::from(run)];
-        let written = self.iface.write(&tx, self.timeout)?;
-        if written != tx.len() {
-            return Err(IspError::ShortWrite {
-                written,
-                expected: tx.len(),
-            });
-        }
-        let mut rx = [0u8; 64];
-        let _ = self.iface.read(&mut rx, Duration::from_millis(500));
+        self.link.send(&tx, self.timeout)?;
+        let _ = self.link.recv(Duration::from_millis(500));
         Ok(())
     }
 }
@@ -426,6 +535,15 @@ pub fn sectors_for(len: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uart_request_frame() {
+        // ReadConfig `a7 02 00 1f 00` wrapped in the sync and the byte sum (0xa7+2+0x1f = 0xc8).
+        assert_eq!(
+            uart_frame(&[0xa7, 0x02, 0x00, 0x1f, 0x00]),
+            [0x57, 0xab, 0xa7, 0x02, 0x00, 0x1f, 0x00, 0xc8]
+        );
+    }
 
     #[test]
     fn key_from_uid() {

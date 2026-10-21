@@ -80,4 +80,5 @@ UID(ReadConfig の最後の 8 B)は ESIG の `0x1FFFF7E8` から読んだ 8 B �
 ## 6. 未確認
 
 - Boot キー(PC17 を電源投入時に High)での入り方と、キーを離す時機。
-- BOOT キーで入った bootloader が保護中に動くか。data flash、UART 経路。
+- BOOT キーで入った bootloader が保護中に動くか。data flash。
+- UART 経路: ch32rv は `57 ab` + frame + byte 和 / `55 aa` + frame + byte 和で実装した(2026-10-22、先行実装からの転記、実機未確認)。auto-baud と `0xC5` SetBaud の要否、各チップの bootloader USART のピン。
