@@ -2129,6 +2129,25 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
     // ja: 特殊消去は WCH-Link 自身の命令(family byte で指定)。効けば `0x0f`、効かなければ `0x00`
     // を返すので、family byte の分かるすべての family で試せる。以前は wlink の stub 表で絞っていた
     // が、実測の裏付けは無かった(X035 の `0x0f` だけ。E167 では「電源断」で 3V3 は切れていない)。
+    // en: Measured to do harm on a CH32H417 (2026-10-20, WCH-LinkE 2.22): the Link's own erase
+    // routine for it left half-erased words in the code flash and rewrote the option bytes (USER
+    // 0xff -> 0x3f, dropping USB / USART download; DATA and WRP left at the erased 0xe339). An
+    // attach under reset reaches such a chip without it.
+    // ja: H417 では実害を確かめた(LinkE の消去が code flash に消え残りを作り、option byte の USER /
+    // DATA / WRP を崩した)。reset を押さえた attach で代わりに届く。
+    if family_byte == 0xC6 {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "the WCH-Link's special erase damages a {chip}: it leaves half-erased flash and rewrites the option bytes"
+            ),
+            Some(
+                "attach under reset instead (RST wired to NRST) and let ch32rv erase: `--connect-under-reset flash <image>` or `--connect-under-reset erase --range <a>..<b>`",
+            ),
+        );
+    }
     if !params_for_family(family_byte).is_some_and(|p| p.supports_special_erase) && !cli.json {
         eprintln!(
             "warning[special-erase-untried]: the special erase has not been seen working on {chip} here; the probe's answer tells"

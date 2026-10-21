@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `recover --method power-off / nrst` refuses a CH32H417 (and points at `--connect-under-reset`): on the bench part the WCH-LinkE's own erase for it left half-erased words in the code flash and rewrote the option bytes - USER 0xff -> 0x3f, which turns off USB / USART download, and DATA / WRP left at the erased 0xe339. Every other family may still try it.
+- (JA) `recover --method power-off / nrst` は CH32H417 を断る(`--connect-under-reset` を案内する)。ベンチの個体で、WCH-LinkE 自身の H417 向けの消去が code flash に消え残りを作り、option byte を書き換えた(USER が 0xff → 0x3f で USB / USART のダウンロードが無効になり、DATA / WRP は消去済みの 0xe339 のまま)。ほかの family は今までどおり試せる。
+
 - (EN) Accept ch32-device-data@c9ca0dd (request 0010): CH32H417's programming procedure is confirmed (its RM's CTLR table now backs the EVT driver; the procedure text stays as a recorded dissent), and `flash_geometry` gains `flash_mode_bit` / `page_erase_bytes_dual` / `block_erase_bytes_dual` (H417: `FLASH_CFGR0.DBMODE[28]`, 8 KiB, 64 KiB). ch32rv drops its H417 exceptions for them: the RAM loader reads the mode bit the DB names and erases the dual page while it is set, and the DMI path takes any family with a mode bit as 8 KiB pages erased by two PERs. A mode-bit register ch32rv does not know refuses the plan. Only the H417's loader RAM (0x20120000) stays in ch32rv, the DB having no RAM layout.
 - (JA) ch32-device-data@c9ca0dd(依頼 0010)を受け入れ。CH32H417 の書き込み手順が confirmed になり(RM の CTLR の表が EVT の裏付けに加わった。手順の文は異議として残る)、`flash_geometry` に `flash_mode_bit` / `page_erase_bytes_dual` / `block_erase_bytes_dual` が加わった(H417 は `FLASH_CFGR0.DBMODE[28]`、8 KiB、64 KiB)。ch32rv は H417 用の例外をこれに置き換えた。RAM ローダーは DB が名指すモードのビットを読み、立っていれば dual の消去単位で消す。DMI の経路は、モードのビットを持つ family を 8 KiB の page(4 KiB 離して PER を 2 回)で扱う。ch32rv の知らないレジスタ名なら plan を出さない。DB にメモリ配置が無いので、H417 のローダーの RAM(0x20120000)だけは ch32rv に残る。
 
