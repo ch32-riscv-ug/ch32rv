@@ -284,25 +284,22 @@ impl Drop for Session {
     }
 }
 
-/// en: Whether `hart` was running before a debugger stopped it: running now, or halted with no
-/// reset pending (DMSTATUS `allhavereset` clear) at a pc other than 0. The LinkE's AttachChip
-/// stops the H417 hart a command did not select, and DetachChip does not let it go, so without
-/// this `--core 0 read` left core 1 (V5F) halted and `--core 1 dbg resume` left core 0 (V3F)
-/// halted. A hart halted out of a reset must not be resumed: core 1 sits at pc 0, which is V3F's
-/// image, and resuming it ran both cores on core 0's sketch (ArduinoCore-CH32RV, 2026-10-22).
-/// ja: hart が debugger に止められる前に走っていたか。走っている、または reset 待ちが無く
-/// (`allhavereset` が 0)pc が 0 でない所で止まっている。reset から止まっている hart は resume
-/// しない(core 1 は pc 0 = V3F の image にいて、resume すると両コアが同じスケッチを走らせた)。
+/// en: Whether `hart` was running before a debugger stopped it: running now, or halted at a pc
+/// other than 0. The LinkE's AttachChip stops the H417 hart a command did not select, and
+/// DetachChip does not let it go, so without this `--core 0 read` left core 1 (V5F) halted and
+/// `--core 1 dbg resume` left core 0 (V3F) halted. A hart halted out of a reset must not be
+/// resumed: core 1 sits at pc 0, which is V3F's image, and resuming it ran both cores on core 0's
+/// sketch. DMSTATUS `allhavereset` does not tell that case apart: core 1 woken by core 0's WAKEIP
+/// after a reset keeps it set with nobody to acknowledge it (ArduinoCore-CH32RV, 2026-10-22).
+/// The resume acknowledges it.
+/// ja: hart が debugger に止められる前に走っていたか。走っている、または pc が 0 でない所で
+/// 止まっている。reset から止まっている hart(core 1 は pc 0 = V3F の image)は resume しない。
+/// `allhavereset` では見分けられない(reset の後に WAKEIP で起きた core 1 は立てたまま走る)。
 fn hart_ran(link: &mut WchLink, hart: u32) -> Result<bool, ch32rv_dmi::DmiError> {
-    const ALLHAVERESET: u32 = 1 << 19;
     link.select_hart(hart)?;
-    let status = link.dmi_read(DMSTATUS)?;
     let mut dm = DebugModule::new(link);
     if !dm.is_halted()? {
         return Ok(true);
-    }
-    if status & ALLHAVERESET != 0 {
-        return Ok(false);
     }
     Ok(dm.read_reg(ch32rv_dmi::RegName::Pc)? != 0)
 }
