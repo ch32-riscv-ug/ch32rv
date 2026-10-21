@@ -33,6 +33,8 @@ pub struct Session {
     _lock: DeviceLock,
     /// A reset that runs the target was done (`--release-dm` resets once more on drop).
     reset_run: bool,
+    /// H417: which harts were running before this session stopped them (see [`hart_ran`]).
+    ran_before: [bool; 2],
 }
 
 /// What went wrong, so the CLI can pick the right exit code.
@@ -168,6 +170,15 @@ impl Session {
                 ),
             });
         }
+        let mut ran_before = [false; 2];
+        if attach.family_byte == 0xc6
+            && RESUME_OTHER_HARTS.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            for (hart, ran) in ran_before.iter_mut().enumerate() {
+                *ran = hart_ran(&mut link, hart as u32).unwrap_or(false);
+            }
+            let _ = link.select_hart(0);
+        }
         Ok(Self {
             link,
             attach,
@@ -176,6 +187,7 @@ impl Session {
             db,
             _lock: lock,
             reset_run: false,
+            ran_before,
         })
     }
 
@@ -240,9 +252,14 @@ impl Drop for Session {
         if self.attach.family_byte == 0xc6
             && RESUME_OTHER_HARTS.load(std::sync::atomic::Ordering::Relaxed)
         {
+            // Hart 0 under its own selection is the LinkE's to let go (DetachChip does).
             let keep = self.link.selected_hart();
-            for hart in (0..2).filter(|&h| h != keep) {
-                let _ = resume_hart(&mut self.link, hart);
+            for hart in (0..2).filter(|&h| !(h == 0 && keep == 0)) {
+                if self.ran_before[hart as usize]
+                    && matches!(hart_ran(&mut self.link, hart), Ok(true))
+                {
+                    let _ = resume_hart(&mut self.link, hart);
+                }
             }
         }
         if RELEASE_DM.load(std::sync::atomic::Ordering::Relaxed) {
@@ -267,19 +284,33 @@ impl Drop for Session {
     }
 }
 
-/// en: Resume `hart` if it is halted. The LinkE's AttachChip stops the H417 hart a command did
-/// not select, and DetachChip does not let it go: without this, `--core 0 read` leaves core 1
-/// (V5F) halted and `--core 1 dbg resume` leaves core 0 (V3F) halted (ArduinoCore-CH32RV,
-/// 2026-10-22).
-/// ja: halt していれば resume する。LinkE の AttachChip は選ばなかった H417 の hart を止め、
-/// DetachChip でも放さない。
+/// en: Whether `hart` was running before a debugger stopped it: running now, or halted with no
+/// reset pending (DMSTATUS `allhavereset` clear) at a pc other than 0. The LinkE's AttachChip
+/// stops the H417 hart a command did not select, and DetachChip does not let it go, so without
+/// this `--core 0 read` left core 1 (V5F) halted and `--core 1 dbg resume` left core 0 (V3F)
+/// halted. A hart halted out of a reset must not be resumed: core 1 sits at pc 0, which is V3F's
+/// image, and resuming it ran both cores on core 0's sketch (ArduinoCore-CH32RV, 2026-10-22).
+/// ja: hart が debugger に止められる前に走っていたか。走っている、または reset 待ちが無く
+/// (`allhavereset` が 0)pc が 0 でない所で止まっている。reset から止まっている hart は resume
+/// しない(core 1 は pc 0 = V3F の image にいて、resume すると両コアが同じスケッチを走らせた)。
+fn hart_ran(link: &mut WchLink, hart: u32) -> Result<bool, ch32rv_dmi::DmiError> {
+    const ALLHAVERESET: u32 = 1 << 19;
+    link.select_hart(hart)?;
+    let status = link.dmi_read(DMSTATUS)?;
+    let mut dm = DebugModule::new(link);
+    if !dm.is_halted()? {
+        return Ok(true);
+    }
+    if status & ALLHAVERESET != 0 {
+        return Ok(false);
+    }
+    Ok(dm.read_reg(ch32rv_dmi::RegName::Pc)? != 0)
+}
+
+/// Resume `hart` (selected first).
 fn resume_hart(link: &mut WchLink, hart: u32) -> Result<(), ch32rv_dmi::DmiError> {
     link.select_hart(hart)?;
-    let mut dm = DebugModule::new(link);
-    if dm.is_halted()? {
-        dm.resume()?;
-    }
-    Ok(())
+    DebugModule::new(link).resume()
 }
 
 /// en: Check an explicit `--chip` against what AttachChip found: fail-closed on a name the DB
