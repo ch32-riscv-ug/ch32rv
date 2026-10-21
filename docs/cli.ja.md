@@ -94,6 +94,7 @@ ch32rv
 | `--core <n>` | 0.. | 0 | H417 の core 選択。直接 WCH-Link 接続で `--core 1` は `dbg`（`halt --reset` 除く）と `read` に対応。その他の操作・OEP・index 2 以上は exit 24。実測根拠: [H417 コア選択](data-requests/0009-h417-core-selection.ja.md) |
 | `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn(段階の公称値 6000 / 4000 / 400 kHz で判定)。**公称値は線上の速さではない**: WCH-LinkE fw 2.22 + CH32L103 の実測(wch-protocols E163)では high = flash の Program 経路だけ速く(L103 約 2.5 MHz、V203 約 10 MHz)それ以外約 0.89 MHz、medium = 約 0.89 MHz、low = 約 0.47 MHz(V203 も medium / low は同じ)。high と medium の差は flash 書込みの速さだけ(pattern-4k の全体で L103 0.48 s / 0.63 s / 0.87 s、V203 high 0.40 s) |
 | `--connect-under-reset` | | off | NRST を押さえて attach する(2026-10-20)。WCH-Link: LinkE の RstOut で RST の線を low にし、押さえたまま AttachChip して haltreq を立て、離してすぐ AttachChip し直す(reset の後は AttachChip が要る)。起動直後にデバッグのピンを取る firmware が走る前に止めるためのもの。RST を target の NRST に配線していなければ、通常の attach と同じになる。OEP の probe: ポートの NRST の線(label `<port>.nrst`)を attach の reset TLV で押さえる |
+| `--release-dm` | | off | 終わるときに DMCONTROL を 0(dmactive = 0)にしてから detach する。走らせる reset(`reset`、`flash` などの `--reset run`)では、reset の前に 0 にし、reset の後は DM に触らない(DM を起こし直さないため、その後の確認は `--confirm-run` を付けたときだけ)。H417 では、LinkE の attach が残した core 1 のデバッグモード(CSTAR1 bit12)が reset をまたいで残り、core 0 の WAKEIP で起きなくなる。DM を止めてから reset すると、深い眠り(CSTAR1 = 0xC000)に戻る(ArduinoCore-CH32RV の実測、2026-10-22)。WCH-Link のみ |
 | `--json` | | off | 結果を JSON で stdout へ(§3.5) |
 | `--progress <bar\|ndjson\|none>` | | bar(tty)/none | 進捗の出力形式。ndjson は stderr へ |
 | `--non-interactive` | | off | 対話プロンプトを全て拒否に変える |
@@ -348,7 +349,7 @@ WCH-Link の `target info` は未登録チップでも接続成功とDB照合結
 ### 4.4 dbg
 
 ```text
-ch32rv dbg halt [--reset]     ch32rv dbg resume     ch32rv dbg step [N]
+ch32rv dbg halt [--reset]     ch32rv dbg resume [--all]     ch32rv dbg step [N]
 ch32rv dbg regs                                     GPR + pc(dpc)一括
 ch32rv dbg reg read|write <x1..x31|pc|csr:<addr>> [<value>]
 ch32rv dbg dmi read|write <addr> [<value>]          DM レジスタ直接(expert)
@@ -624,3 +625,9 @@ ch32rv doctor                             # 動かない時の一手目
 core 1 の `read` は、LinkE の bulk read による暗黙のコア切替を避けるため DMI 経由で行う。RAM は `--range` で実アドレスを指定する（H417 の各 RAM bank を単一の `--region ram` で表す対応は別課題）。Flash・option byte の変更、システム reset、GDB・monitor 等の core 1 対応はまだ含まない。raw `dbg dmi write` は expert 操作で、DMCONTROL の直接変更も transport が保持する hartsel に反映する。
 
 WCH-Link の AttachChip / DetachChip は probe firmware 自身の操作を含む。`--core 1` はその副作用や他コアの状態を完全に隔離する保証ではない。選択していないコアを halt / resume しないことを USB 上の host 発行 DMCONTROL で検証する。
+
+選ばなかったコアの扱い(2026-10-22、ArduinoCore-CH32RV の報告による): LinkE の AttachChip は、選ばなかった hart も止め、DetachChip では放さない。そのままでは `--core 0 read` の後に core 1(V5F)が、`--core 1 dbg resume` の後に core 0(V3F)が止まったまま残る。
+
+- `dbg` 以外のコマンド(`read`、`flash`、`reset`、`target info` など)は、終わるときに、選ばなかった hart が halt していれば resume する。選んだ hart は従来どおり(`flash --reset none` などはそのまま止めておく)。
+- `dbg` のコマンドは、選ばなかったコアに触らない(上の約束どおり)。両方を走らせるには `dbg resume --all` を使う。選んだ hart を resume し、終わるときに他方も resume する。
+- デバッガの状態を残さずに試すには `--release-dm`(§2 の表)を使う。

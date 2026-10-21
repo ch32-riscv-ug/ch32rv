@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use ch32rv_contract::Warning;
-use ch32rv_dmi::DebugModule;
+use ch32rv_dmi::{DebugModule, DtmAccess};
 use ch32rv_usb::{DeviceLock, LockError};
 use ch32rv_wchlink::{
     AttachInfo, ChipInfo, ChipInfoStatus, ProbeInfo, Speed, WchLink, WchLinkError, family_name,
@@ -229,9 +229,35 @@ fn flash_capacity(
 
 impl Drop for Session {
     fn drop(&mut self) {
+        if self.attach.family_byte == 0xc6
+            && RESUME_OTHER_HARTS.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let keep = self.link.selected_hart();
+            for hart in (0..2).filter(|&h| h != keep) {
+                let _ = resume_hart(&mut self.link, hart);
+            }
+        }
+        if RELEASE_DM.load(std::sync::atomic::Ordering::Relaxed) {
+            let _ = self.link.dmi_write(DMCONTROL, 0);
+        }
         // Always release the core, on every path.
         let _ = self.link.detach_chip();
     }
+}
+
+/// en: Resume `hart` if it is halted. The LinkE's AttachChip stops the H417 hart a command did
+/// not select, and DetachChip does not let it go: without this, `--core 0 read` leaves core 1
+/// (V5F) halted and `--core 1 dbg resume` leaves core 0 (V3F) halted (ArduinoCore-CH32RV,
+/// 2026-10-22).
+/// ja: halt していれば resume する。LinkE の AttachChip は選ばなかった H417 の hart を止め、
+/// DetachChip でも放さない。
+fn resume_hart(link: &mut WchLink, hart: u32) -> Result<(), ch32rv_dmi::DmiError> {
+    link.select_hart(hart)?;
+    let mut dm = DebugModule::new(link);
+    if dm.is_halted()? {
+        dm.resume()?;
+    }
+    Ok(())
 }
 
 /// en: Check an explicit `--chip` against what AttachChip found: fail-closed on a name the DB
@@ -298,6 +324,19 @@ pub(crate) fn check_chip(
 /// attaches through [`attach_once`]).
 /// ja: この process の `--connect-under-reset`(main が 1 回立てる)。
 pub(crate) static CONNECT_UNDER_RESET: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// en: Resume, at the end of a session, the H417 hart the command did not select (set by `main`:
+/// every command but `dbg`, which leaves the other core as it is unless `dbg resume --all`).
+/// ja: session の終わりに、選ばなかった H417 の hart を resume する(`dbg` 以外。`dbg` は
+/// `dbg resume --all` のときだけ)。
+pub(crate) static RESUME_OTHER_HARTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// en: `--release-dm`: leave the debug module inactive (DMCONTROL = 0) at the end of a session,
+/// and before a reset that lets the target run.
+/// ja: `--release-dm`。session の終わりと、走らせる reset の前に DMCONTROL を 0 にする。
+pub(crate) static RELEASE_DM: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 const DMCONTROL: u8 = 0x10;

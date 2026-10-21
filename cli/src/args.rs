@@ -41,6 +41,10 @@ pub struct Cli {
     /// Attach with NRST asserted
     #[arg(long, global = true)]
     pub connect_under_reset: bool,
+    /// Leave the debug module inactive (DMCONTROL = 0) when done, and clear it before a reset
+    /// that runs the target (H417: core 1 back to deep sleep, no debugger state left behind)
+    #[arg(long, global = true)]
+    pub release_dm: bool,
     /// Print the result as JSON on stdout
     #[arg(long, global = true)]
     pub json: bool,
@@ -445,7 +449,11 @@ pub enum DbgCmd {
         #[arg(long)]
         reset: bool,
     },
-    Resume,
+    Resume {
+        /// H417 over a WCH-Link: resume the other core too
+        #[arg(long)]
+        all: bool,
+    },
     Step {
         n: Option<u32>,
     },

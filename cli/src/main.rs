@@ -153,7 +153,7 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
                 &cli.command,
                 Command::Dbg(
                     args::DbgCmd::Halt { reset: false }
-                        | args::DbgCmd::Resume
+                        | args::DbgCmd::Resume { .. }
                         | args::DbgCmd::Step { .. }
                         | args::DbgCmd::Regs
                         | args::DbgCmd::Reg(_)
@@ -175,6 +175,12 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
     }
     session::CONNECT_UNDER_RESET.store(
         cli.connect_under_reset,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    session::RELEASE_DM.store(cli.release_dm, std::sync::atomic::Ordering::Relaxed);
+    session::RESUME_OTHER_HARTS.store(
+        !matches!(cli.command, Command::Dbg(_))
+            || matches!(cli.command, Command::Dbg(DbgCmd::Resume { all: true })),
         std::sync::atomic::Ordering::Relaxed,
     );
     // An empty `--chip` (or CH32RV_CHIP) names nothing: a usage error, not "every family".
@@ -233,7 +239,7 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Target(TargetCmd::Protect { state }) => cmd_target::protect(cli, *state),
         Command::Dbg(DbgCmd::Regs) => cmd_dbg::regs(cli),
         Command::Dbg(DbgCmd::Halt { reset }) => cmd_dbg::halt(cli, *reset),
-        Command::Dbg(DbgCmd::Resume) => cmd_dbg::resume(cli),
+        Command::Dbg(DbgCmd::Resume { .. }) => cmd_dbg::resume(cli),
         Command::Dbg(DbgCmd::Step { n }) => cmd_dbg::step(cli, *n),
         Command::Dbg(DbgCmd::Reg(sub)) => cmd_dbg::reg(cli, sub),
         Command::Dbg(DbgCmd::Dmi(sub)) => cmd_dbg::dmi(cli, sub),
@@ -400,7 +406,7 @@ pub(crate) fn canonical_name(cmd: &Command) -> &'static str {
         },
         Command::Dbg(d) => match d {
             DbgCmd::Halt { .. } => "dbg.halt",
-            DbgCmd::Resume => "dbg.resume",
+            DbgCmd::Resume { .. } => "dbg.resume",
             DbgCmd::Step { .. } => "dbg.step",
             DbgCmd::Regs => "dbg.regs",
             DbgCmd::Reg(_) => "dbg.reg",

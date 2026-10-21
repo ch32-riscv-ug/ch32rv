@@ -358,6 +358,11 @@ impl WchLink {
         Ok(())
     }
 
+    /// The hart the DMI operations address (0 unless [`Self::select_hart`] chose another).
+    pub fn selected_hart(&self) -> u32 {
+        self.selected_hart
+    }
+
     pub fn set_timeout(&mut self, timeout: Duration) {
         self.timeout = timeout;
     }
