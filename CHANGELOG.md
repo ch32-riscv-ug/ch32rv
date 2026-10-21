@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.22.0 - 2026-10-21
+
 - (EN) `recover --method power-off / nrst` refuses a CH32H417 (and points at `--connect-under-reset`): on the bench part the WCH-LinkE's own erase for it left half-erased words in the code flash and rewrote the option bytes - USER 0xff -> 0x3f, which turns off USB / USART download, and DATA / WRP left at the erased 0xe339. Every other family may still try it.
 - (JA) `recover --method power-off / nrst` は CH32H417 を断る(`--connect-under-reset` を案内する)。ベンチの個体で、WCH-LinkE 自身の H417 向けの消去が code flash に消え残りを作り、option byte を書き換えた(USER が 0xff → 0x3f で USB / USART のダウンロードが無効になり、DATA / WRP は消去済みの 0xe339 のまま)。ほかの family は今までどおり試せる。
 
