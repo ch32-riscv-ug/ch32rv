@@ -482,8 +482,10 @@ fn ports_and_lines_are_read_from_the_labels_without_the_lock() {
     let Some(f) = fake(
         "cobs",
         &[
+            // Pins the host picks: a probe with fixed labels on its wire pins takes no user label
+            // there (core §13.4).
             "--profile",
-            "p4-bench",
+            "rp2350-pins",
             "--label",
             "2=x035.swdio",
             "--label",

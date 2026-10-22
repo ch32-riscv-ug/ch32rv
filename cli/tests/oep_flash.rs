@@ -130,26 +130,24 @@ fn flash_raw(probe: &str, chip: Option<&str>) -> (bool, serde_json::Value) {
 
 #[test]
 fn the_one_named_port_is_used() {
-    // The probe keeps no wiring (host guide §5.3): one port named by saved labels (`bench-a.swdio`
-    // / `.swclk` on the first pin group) is chosen without naming it, and its pins come from them.
+    // The probe keeps no wiring (host guide §5.3): one port named by labels (`bench-a.swdio` /
+    // `.swclk` on two pins the host picks, core item `channel.{}.label`; the virtual target answers
+    // on GP0 / GP1) is chosen without naming it, and its pins come from them.
     let Some(f) = fake(&[
-        "--tcp",
-        "0",
-        "--framing",
-        "length",
+        "--pty",
         "--profile",
-        "p4-bench",
+        "rp2350-pins",
         "--label",
-        "2=bench-a.swdio",
+        "0=bench-a.swdio",
         "--label",
-        "3=bench-a.swclk",
+        "1=bench-a.swclk",
         "--target-id",
         V203,
     ]) else {
         return;
     };
-    let port = f.at.strip_prefix("PORT ").unwrap();
-    let (ok, v) = flash_raw(&format!("tcp:127.0.0.1:{port}"), Some("CH32V203C8T6"));
+    let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
+    let (ok, v) = flash_raw(&probe, Some("CH32V203C8T6"));
     assert!(ok, "{v}");
     assert_eq!(v["result"]["flash"]["family"], "CH32V20x");
 }
@@ -158,27 +156,24 @@ fn the_one_named_port_is_used() {
 fn several_ports_unnamed_stop_with_the_list() {
     // Two ports and the address names neither: stop (no attach to search, host guide §5.3).
     let Some(f) = fake(&[
-        "--tcp",
-        "0",
-        "--framing",
-        "length",
+        "--pty",
         "--profile",
-        "p4-bench",
+        "rp2350-pins",
         "--label",
-        "2=bench-a.swdio",
+        "0=bench-a.swdio",
         "--label",
-        "3=bench-a.swclk",
+        "1=bench-a.swclk",
         "--label",
-        "4=bench-b.swdio",
+        "2=bench-b.swdio",
         "--label",
-        "5=bench-b.swclk",
+        "3=bench-b.swclk",
         "--target-id",
         V203,
     ]) else {
         return;
     };
-    let port = f.at.strip_prefix("PORT ").unwrap();
-    let (ok, v) = flash_raw(&format!("tcp:127.0.0.1:{port}"), Some("CH32V20x"));
+    let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
+    let (ok, v) = flash_raw(&probe, Some("CH32V20x"));
     assert!(!ok);
     let msg = v["error"]["msg"].as_str().unwrap_or_default();
     assert!(
@@ -261,7 +256,7 @@ fn a_raw_upload_to_a_probe_not_on_usb_is_not_sent_to_its_oep_address() {
 #[test]
 fn a_wire_the_host_picks_pins_for_without_labels_asks_for_them() {
     // A probe whose wire takes its pins from the host (role_channels: hundreds of pairs) and that
-    // keeps no labels (no oep.probe.config): resolving the address must not scan (an rvswd scan
+    // keeps no labels: resolving the address must not scan (an rvswd scan
     // may reset a target, host guide §5.3), so ch32rv stops and asks for the pins.
     let Some(f) = fake(&["--pty", "--profile", "rp2350-pins", "--target-id", V203]) else {
         return;
