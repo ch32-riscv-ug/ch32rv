@@ -177,7 +177,7 @@ impl PosStream {
     pub fn open_uart(
         p: &mut Probe,
         baud: u32,
-        pins: Option<(u16, u16)>,
+        pins: Option<(u16, Option<u16>)>,
     ) -> Result<(Self, u32), OepError> {
         let uarts: Vec<u16> = p
             .list(fixture_uart::NAME)?
@@ -194,14 +194,15 @@ impl PosStream {
             .map(|i| i.func);
         let mut last = None;
         for func in uarts {
-            // en: The UART takes data once the session plans its pins: exactly one RX (role 1) and
-            // one TX (role 2) on separate channels (oep-if-fixture §2, oep-if-plan §2.1). The
+            // en: The UART takes data once the session plans its pins: an RX (role 1) and, where
+            // the target's RX is wired, a TX (role 2) on another channel (oep-if-fixture §2: a
+            // plan without TX receives only, a write is then unavailable; oep-if-plan §2.1). The
             // channels are the host's to know (the port's `rx` / `tx` labels).
-            // ja: UART はピンを plan してはじめて動く(RX と TX をちょうど 1 つずつ)。
+            // ja: UART はピンを plan してはじめて動く。RX と(配線があれば)TX。TX の無い plan は受信だけ。
             if let (Some((rx, tx)), Some(plan)) = (pins, plan) {
                 use crate::registry::{fixture_uart::enums::role, probe_plan};
                 let mut pl = Vec::new();
-                for (r, ch) in [(role::RX, rx), (role::TX, tx)] {
+                for (r, ch) in std::iter::once((role::RX, rx)).chain(tx.map(|t| (role::TX, t))) {
                     let mut v = func.to_le_bytes().to_vec();
                     v.push(r);
                     v.extend_from_slice(&ch.to_le_bytes());

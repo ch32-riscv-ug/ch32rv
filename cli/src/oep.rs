@@ -1376,7 +1376,7 @@ impl ConsoleSession {
                         OepError::Rejected { reason, .. }
                             if reason == ch32rv_oep::registry::reject_reasons::UNAVAILABLE =>
                         {
-                            "the probe's fixture UART has no pins: label its channels `<port>.rx` and `<port>.tx`".to_owned()
+                            "the probe's fixture UART has no pins: label its channels `<port>.rx` (and `<port>.tx` where the target's RX is wired)".to_owned()
                         }
                         OepError::NoInterface(_) => "this OEP probe has no fixture UART".to_owned(),
                         e => format!("fixture UART: {e}"),
@@ -1608,8 +1608,9 @@ pub(crate) fn with_attached(
 }
 
 /// en: The fixture UART's (rx, tx) channels from the port's labels `<port>.rx` / `<port>.tx`
-/// (the port as for a target; none named and one port: that one). ja: UART の rx / tx の channel。
-fn uart_pins(p: &mut Probe, a: &OepAddr) -> Option<(u16, u16)> {
+/// (the port as for a target; none named and one port: that one). A port with `rx` alone is
+/// received only (the target's RX not wired). ja: UART の rx / tx の channel。rx だけなら受信だけ。
+fn uart_pins(p: &mut Probe, a: &OepAddr) -> Option<(u16, Option<u16>)> {
     use ch32rv_oep::config::{find_line, firmware_labels, labels, ports_named};
     let labels = labels(p).ok()?;
     let firmware = firmware_labels(p).unwrap_or_default();
@@ -1620,7 +1621,7 @@ fn uart_pins(p: &mut Probe, a: &OepAddr) -> Option<(u16, u16)> {
         None => return None,
     };
     let line = |name| find_line(&labels, &firmware, port.as_deref(), name);
-    line("rx").zip(line("tx"))
+    line("rx").map(|rx| (rx, line("tx")))
 }
 
 /// How long the NRST line is held low on an attach under reset (the host's own value).
