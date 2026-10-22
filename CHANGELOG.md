@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.22.2 - 2026-10-22
+
 ## 0.22.1 - 2026-10-22
 
 - (EN) `--confirm-run pc` accepts a pc anywhere in the part's code flash, through the low alias up to its size (it stopped at 128 KiB, so code running past it on a V307 / X315 / V407 read as not running), and on a CH32H417 in RAM_CODE (0x20100000, where the boot copies the code and it runs). `dbg` memory-map warnings place a CH32H417's RAM at 0x200A0000 (ITCM, DTCM and the shared SRAM) instead of 0x20000000.
