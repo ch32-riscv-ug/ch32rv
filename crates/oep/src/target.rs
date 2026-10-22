@@ -801,6 +801,20 @@ const BLOCK_TRIES: usize = 4;
 const BLOCK_PAUSE: Duration = Duration::from_millis(10);
 
 impl OepDtm<'_> {
+    /// en: Lower DMCONTROL.haltreq if it is set. A probe's halt and run can leave it set after the
+    /// hart stopped (oep-probe-arduino 0.0.36: 0x80000001), and a debug module that ignores
+    /// resumereq while haltreq is set (CH32V407 / CH32M030; the RISC-V Debug spec allows it) then
+    /// runs nothing: a run answers stopped at its entry, a resume leaves the hart halted.
+    /// ja: haltreq が立っていれば下ろす。probe の halt と run は立てたままにすることがあり、
+    /// haltreq の間の resumereq を無視する DM(V407 / M030)では run も resume も効かない。
+    fn lower_haltreq(&mut self) -> Result<(), DmiError> {
+        let control = self.dmi_read(0x10)?;
+        if control & 0x8000_0000 != 0 {
+            self.dmi_write(0x10, control & !0x8000_0000)?;
+        }
+        Ok(())
+    }
+
     /// en: A block answer as (succeeded, payload). A read_block is sent again (as a new request,
     /// after a short pause) while it is `result_lost` or reports `line` / `fault`: reading the
     /// same words again changes nothing. A write_block is never sent again: a store that may
@@ -923,6 +937,7 @@ impl TargetAccess for OepDtm<'_> {
         outs: &[u16],
         timeout: Duration,
     ) -> Result<RunResult, DmiError> {
+        self.lower_haltreq()?;
         let mut pl = self.body();
         pl.extend_from_slice(&pc.to_le_bytes());
         // 1..=max_op_ms (core §7.5): 0 is malformed and more is unsupported.
@@ -977,6 +992,7 @@ impl TargetAccess for OepDtm<'_> {
     }
 
     fn resume_once(&mut self) -> Result<(), DmiError> {
+        self.lower_haltreq()?;
         if self.offered.resume {
             self.status_op(dm::op::RESUME, "resume")
         } else {
