@@ -1099,13 +1099,28 @@ fn flash_attached(
         );
     }
     let started = Instant::now();
-    let report = match ch32rv_flash::loader::program(&mut t, plan, &image.segments, &mut |_, _| {})
-    {
-        Ok(r) => r,
-        Err(e) => {
-            let kind = crate::cmd_flash::loader_error_kind(&e);
-            let hint = log_hint.filter(|_| kind != ErrorKind::VerifyMismatch);
-            return fail(cli, CMD, kind, e.to_string(), hint.as_deref());
+    // `--preverify`: a target that already holds the image is not written (no erase, no wear);
+    // the reset below still runs as asked. ja: 既に同じ中身なら書かない(reset は指定どおり)。
+    let skipped = args.preverify
+        && image.segments.iter().all(|seg| {
+            let lo = seg.addr & !3;
+            let words = (seg.addr + seg.data.len() as u32 - lo).div_ceil(4) as usize;
+            t.read_words(lo, words).is_ok_and(|w| {
+                let b: Vec<u8> = w.iter().flat_map(|w| w.to_le_bytes()).collect();
+                let at = (seg.addr - lo) as usize;
+                b[at..at + seg.data.len()] == seg.data[..]
+            })
+        });
+    let report = if skipped {
+        ch32rv_flash::loader::LoaderReport::default()
+    } else {
+        match ch32rv_flash::loader::program(&mut t, plan, &image.segments, &mut |_, _| {}) {
+            Ok(r) => r,
+            Err(e) => {
+                let kind = crate::cmd_flash::loader_error_kind(&e);
+                let hint = log_hint.filter(|_| kind != ErrorKind::VerifyMismatch);
+                return fail(cli, CMD, kind, e.to_string(), hint.as_deref());
+            }
         }
     };
     let secs = started.elapsed().as_secs_f64();
@@ -1156,13 +1171,16 @@ fn flash_attached(
                 "restarted_runs": report.restarted_runs,
                 // Every page is read back after it is written: verified, or the run failed.
                 "verified": true,
-                "skipped": false,
-                "scope": "pages",
+                "skipped": skipped,
+                "scope": if skipped { "none" } else { "pages" },
                 "running": running,
                 "seconds": secs,
             }
         }));
         crate::print_envelope(&env)
+    } else if skipped {
+        println!("preverify: target already matches - skipped");
+        ExitCode::SUCCESS
     } else {
         println!(
             "flashed {total} bytes to {family} over OEP in {secs:.2} s: {} page(s), {} rewritten, {} run(s) re-issued, verified",
