@@ -856,12 +856,12 @@ fn idles_low(family: &str) -> bool {
 
 /// en: Attach; when the target that answers needs its rvswd line idling low ([`idles_low`]), the
 /// place did not know it (no `--chip`, no family in the address), and the connection does not
-/// rest low - the probe's setting `rvswd-rest` turned its own choice off, or an older probe
+/// rest low - the probe's setting `rest.{}` (oep.wire.rvswd) turned its own choice off, or an older probe
 /// answers no rest (oep-if-debug §3.1) - detach and attach again with idle_clock low: the first
 /// attach was short enough to read the chip id before the debug module reset. A connection that
 /// already existed is left as it is.
 /// ja: attach し、答えた target が low で休ませる必要のある族なのに場所が知らず、接続の休ませ方も
-/// low でなければ(probe の設定 rvswd-rest が自動を切った、または休ませ方を答えない古い probe)、
+/// low でなければ(probe の設定 `rest.{}`(oep.wire.rvswd)が自動を切った、または休ませ方を答えない古い probe)、
 /// detach して idle_clock low で attach し直す。既にあった接続はそのまま。
 fn attach_at(
     p: &mut Probe,

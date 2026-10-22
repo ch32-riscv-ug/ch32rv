@@ -271,6 +271,22 @@ fn interface(out: &mut String, v: &Value, core: bool) -> Result<(), String> {
                 }
                 let _ = writeln!(out, "    }}");
             }
+            // Settings items the unit owns (core §13): each key is the item's name (`{}` = the
+            // key), the value its form and meaning. Items are found by name in describe.
+            "settings" => {
+                let items = val
+                    .as_table()
+                    .ok_or_else(|| format!("`{name}.settings` is not a table"))?;
+                let _ = writeln!(out, "    pub mod settings {{");
+                for (n, what) in items {
+                    if let Some(w) = what.as_str() {
+                        let _ = writeln!(out, "        /// {w}");
+                    }
+                    let c = konst(&n.replace("{}", "").replace("..", "."));
+                    let _ = writeln!(out, "        pub const {c}: &str = {n:?};");
+                }
+                let _ = writeln!(out, "    }}");
+            }
             // Ranges no value may use: checked by the spec's own generator; nothing to emit.
             "reserved" | "retired" => {}
             other => return Err(format!("interface `{name}` has an unknown key `{other}`")),
