@@ -115,7 +115,7 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "ch32rv"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-boot",
  "ch32rv-contract",
@@ -141,7 +141,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-boot"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-usb",
@@ -151,7 +151,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-contract"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "clap",
  "serde",
@@ -160,7 +160,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-debug"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
@@ -172,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-dmi"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-contract",
  "thiserror",
@@ -180,7 +180,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-flash"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-isp"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-usb",
@@ -202,7 +202,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-monitor"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
@@ -213,7 +213,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-oep"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-dmi",
  "ch32rv-flash",
@@ -224,7 +224,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-target"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-contract",
  "serde",
@@ -233,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-usb"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-usb-wch-win",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-usb-wch-win"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "thiserror",
  "windows-sys 0.61.2",
@@ -254,7 +254,7 @@ dependencies = [
 
 [[package]]
 name = "ch32rv-wchlink"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
@@ -1135,7 +1135,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.22.0"
+version = "0.22.1"
 dependencies = [
  "sha2",
  "toml",
