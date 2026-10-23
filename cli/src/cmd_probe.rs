@@ -270,7 +270,7 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
     let mut all_warnings = Vec::new();
     for entry in &entries {
         let (report, warnings, error) = report_for(entry);
-        lines.push(format_row(&report, error.as_deref()));
+        lines.push(row(&report, error.as_deref()));
         let mut v = match serde_json::to_value(&report) {
             Ok(v) => v,
             Err(e) => {
@@ -362,15 +362,15 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         if let (Some(t), Some(m)) = (tcp, v.as_object_mut()) {
             m.insert("tcp".into(), t.into());
         }
-        lines.push(format!(
-            "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} -",
-            "oep",
+        lines.push(vec![
+            "oep".to_owned(),
             dev.usb_id(),
-            dev.serial().unwrap_or("-"),
+            dev.serial().unwrap_or("-").to_owned(),
             dev.topology(),
-            dev.product().unwrap_or("OEP probe"),
-            dev.serial_ports().join(",")
-        ));
+            dev.product().unwrap_or("OEP probe").to_owned(),
+            dev.serial_ports().join(","),
+            "-".to_owned(),
+        ]);
         probes_json.push(v);
     }
     let mut network = Vec::new();
@@ -378,15 +378,15 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         let (Some(unit), Some(addr)) = (f.unit_id.clone(), f.endpoint()) else {
             continue;
         };
-        lines.push(format!(
-            "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} -",
-            "oep",
-            "tcp",
-            unit,
-            "-",
-            f.instance.trim_end_matches("._oep._tcp.local"),
-            addr
-        ));
+        lines.push(vec![
+            "oep".to_owned(),
+            "tcp".to_owned(),
+            unit.clone(),
+            "-".to_owned(),
+            f.instance.trim_end_matches("._oep._tcp.local").to_owned(),
+            addr.clone(),
+            "-".to_owned(),
+        ]);
         network.push(serde_json::json!({
             "kind": "oep",
             "unit_id": unit,
@@ -406,13 +406,10 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
                 "no WCH-Link / ISP / OEP devices found (run `ch32rv doctor` for diagnostics)"
             );
         } else {
-            println!(
-                "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} FIRMWARE",
-                "MODE", "USB", "SERIAL", "TOPOLOGY", "MODEL", "PORTS"
-            );
-            for l in &lines {
-                println!("{l}");
-            }
+            let head = [
+                "MODE", "USB", "SERIAL", "TOPOLOGY", "MODEL", "PORTS", "FIRMWARE",
+            ];
+            print!("{}", crate::parse::table(&head, &lines));
         }
         for w in &all_warnings {
             eprintln!("warning[{}]: {}", w.code, w.msg);
@@ -421,7 +418,7 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
     }
 }
 
-fn format_row(r: &ProbeReport, error: Option<&str>) -> String {
+fn row(r: &ProbeReport, error: Option<&str>) -> Vec<String> {
     let fw = match (&r.firmware, error) {
         (Some(f), _) => {
             let bad = if f.known_bad == Some(true) {
@@ -434,23 +431,30 @@ fn format_row(r: &ProbeReport, error: Option<&str>) -> String {
         (None, Some(e)) => format!("error: {e}"),
         (None, None) => "-".to_owned(),
     };
-    format!(
-        "{:<6} {:<10} {:<14} {:<9} {:<18} {:<13} {}",
-        r.mode.map(mode_str).unwrap_or("?"),
-        r.usb.as_deref().unwrap_or("-"),
-        r.serial.as_deref().unwrap_or("-"),
-        r.topology.as_deref().unwrap_or("-"),
-        r.model,
+    vec![
+        r.mode.map(mode_str).unwrap_or("?").to_owned(),
+        r.usb.clone().unwrap_or_else(|| "-".to_owned()),
+        r.serial.clone().unwrap_or_else(|| "-".to_owned()),
+        r.topology.clone().unwrap_or_else(|| "-".to_owned()),
+        r.model.clone(),
         if r.ports.is_empty() {
             "-".to_owned()
         } else {
             r.ports.join(",")
         },
-        fw
-    )
+        fw,
+    ]
 }
 
 pub fn info(cli: &Cli) -> ExitCode {
+    // An OEP probe (`oep://`, `tcp:`, or a serial port no WCH-Link owns) answers from its describe.
+    match crate::oep::addr(cli, "probe.info") {
+        Ok(Some(a)) if !matches!(a, crate::oep::OepAddr::Wch(_)) => {
+            return crate::oep::probe_info(cli, &a);
+        }
+        Ok(_) => {}
+        Err(c) => return c,
+    }
     let entry = match select_entry(cli, "probe.info") {
         Ok(e) => e,
         Err(code) => return code,

@@ -296,8 +296,11 @@ ch32rv recover --method power-off|nrst|unprotect|unbrick
 ```text
 ch32rv probe list [--watch]                       --json に selector 全 key、Windows は interface ごとの bound driver 名。
                                                   各行に kind(wchlink / oep)。OEP の USB の probe は USB の記述子だけから出し、開かない
-                                                  (serial = unit id)。USB の同一性の無い UART bridge の OEP の probe は出さない(2026-10-01)
-ch32rv probe info [--probe <sel>]                 型番/HW/FW 版(raw・正規・WCH 表記)/mode/serial/interface 構成/使用中
+                                                  (serial = unit id)。USB の同一性の無い UART bridge の OEP の probe は出さない(2026-10-01)。
+                                                  表の列は中身の幅に合わせる(2026-10-23。長い serial で崩れていた)
+ch32rv probe info [--probe <sel>]                 型番/HW/FW 版(raw・正規・WCH 表記)/mode/serial/interface 構成/使用中。
+                                                  OEP の probe(`oep://<probe>`、`tcp:`、OEP の serial port)は、lock 無しで fn 0 の describe
+                                                  (firmware、model、unit id、chip、max_op_ms)、interface の一覧、ラベルの口を出す(2026-10-23)
 ch32rv probe power <3v3|5v> <on|off>
 ch32rv probe power cycle [--off-ms 300]
 ch32rv probe mode get
@@ -320,6 +323,10 @@ ch32rv probe vendor <hex...>                      隠し。backend 固有 comman
 ### 4.3 target
 
 ```text
+ch32rv target list [--identify [oep|all]]         target に届く場所の一覧(Arduino discovery の LIST と同じ: WCH-Link、OEP の口、
+                                                  CH32RV のアプリ、ISP / HID の bootloader)。何も attach しない。`--identify` は
+                                                  OEP の口に止めずに attach して chip を読む(子 process の `target info`)。
+                                                  `--identify all` は WCH-Link も attach する(target を止め、clock を変える)
 ch32rv target info                                chip ID/family/SKU 候補(根拠付き)/UID/flash size/保護状態/option 要約/verified
 
 ch32rv target option get

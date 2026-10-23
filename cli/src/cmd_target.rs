@@ -1049,6 +1049,160 @@ pub fn protect(cli: &Cli, state: SwitchState) -> ExitCode {
     program_option(cli, CMD, &ob)
 }
 
+/// en: `target list`: every place a target can be reached, from Arduino discovery's listing (USB
+/// descriptors, OEP probe labels read lock-free, DNS-SD) - nothing is attached. With `identify`,
+/// each debug place (a WCH-Link, an OEP port) is asked for its chip through `target info` in a
+/// child process, one at a time (its broker and lock rules as for any command; a WCH-Link's attach
+/// halts the target and sets its clock, as `target info` does).
+/// ja: `target list`。discovery の一覧から、ターゲットに届く場所を出す(何も attach しない)。
+/// `identify` なら、debug の場所ごとに子 process の `target info` でチップを読む(既定は OEP
+/// の口だけ。WCH-Link は attach が target を止めて clock を変えるので `all` のときだけ)。
+pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode {
+    const CMD: &str = "target.list";
+    let ports = crate::cmd_arduino::list_ports();
+    let exe = std::env::current_exe().ok();
+    let mut rows = Vec::new();
+    let mut out = Vec::new();
+    for p in ports {
+        let protocol = p["protocol"].as_str().unwrap_or("-").to_owned();
+        let address = p["address"].as_str().unwrap_or("-").to_owned();
+        let label = p["label"].as_str().unwrap_or("-").to_owned();
+        let selector = match protocol.as_str() {
+            "wchlink" => address
+                .strip_prefix("wchlink://")
+                .map(|s| match s.strip_prefix("usb-") {
+                    Some(t) => format!("usb:{t}"),
+                    None => format!("serial:{s}"),
+                }),
+            "oep" => Some(format!("port:{address}")),
+            _ => None,
+        };
+        let mut target = serde_json::Value::Null;
+        let mut shown = match protocol.as_str() {
+            "ch32rv-app" => "application".to_owned(),
+            "ch32rv-isp" => "ISP bootloader".to_owned(),
+            "hid" => "HID bootloader".to_owned(),
+            _ => "-".to_owned(),
+        };
+        let wanted = match identify {
+            Some(crate::args::IdentifyScope::All) => true,
+            Some(crate::args::IdentifyScope::Oep) => protocol == "oep",
+            None => false,
+        };
+        if identify == Some(crate::args::IdentifyScope::Oep) && protocol == "wchlink" {
+            shown = "(--identify all)".to_owned();
+        }
+        if wanted && let (Some(sel), Some(exe)) = (&selector, &exe) {
+            match identify_at(exe, sel) {
+                Ok((t, text)) => {
+                    target = t;
+                    shown = text;
+                }
+                Err(e) => {
+                    target = serde_json::json!({ "error": e });
+                    shown = format!("({e})");
+                }
+            }
+        }
+        rows.push(vec![
+            protocol.clone(),
+            address.clone(),
+            shown,
+            label.clone(),
+        ]);
+        out.push(serde_json::json!({
+            "protocol": protocol,
+            "address": address,
+            "probe": selector,
+            "label": label,
+            "properties": p["properties"],
+            "target": target,
+        }));
+    }
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({ "places": out }));
+        crate::print_envelope(&env)
+    } else {
+        if rows.is_empty() {
+            eprintln!(
+                "no probe, application or bootloader found (run `ch32rv doctor` for diagnostics)"
+            );
+        } else {
+            print!(
+                "{}",
+                crate::parse::table(&["PROTOCOL", "ADDRESS", "TARGET", "LABEL"], &rows)
+            );
+            if identify.is_none() {
+                eprintln!(
+                    "(`--identify` reads the chip at each OEP port without halting it; `--identify all` also attaches through each WCH-Link, which halts its target and sets its clock. Use an address with `--probe port:<address>`, a WCH-Link with `--probe serial:<serial>`)"
+                );
+            }
+        }
+        ExitCode::SUCCESS
+    }
+}
+
+/// The chip at `selector`, by `target info --json` in a child process (bounded to 60 s): the
+/// target block and a one-line text.
+fn identify_at(
+    exe: &std::path::Path,
+    selector: &str,
+) -> Result<(serde_json::Value, String), String> {
+    use std::io::Read;
+    let mut child = std::process::Command::new(exe)
+        .args([
+            "--json",
+            "--non-interactive",
+            "--probe",
+            selector,
+            "target",
+            "info",
+        ])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| e.to_string())?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("no answer within 60 s".to_owned());
+            }
+        }
+    }
+    let mut text = String::new();
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut text);
+    }
+    let v: serde_json::Value = serde_json::from_str(&text).map_err(|_| "no answer".to_owned())?;
+    if v["ok"] != serde_json::Value::Bool(true) {
+        return Err(v["error"]["msg"].as_str().unwrap_or("failed").to_owned());
+    }
+    let t = if v["target"].is_object() {
+        v["target"].clone()
+    } else {
+        v["result"]["target"].clone()
+    };
+    let name = t["sku"]
+        .as_str()
+        .or(t["family"].as_str())
+        .unwrap_or("unknown")
+        .to_owned();
+    let id = t["chip_id"]
+        .as_str()
+        .map(|c| format!(" ({c})"))
+        .unwrap_or_default();
+    Ok((t, format!("{name}{id}")))
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]

@@ -199,11 +199,10 @@ pub fn attach(p: &mut Probe, kind: WireKind, o: AttachOptions) -> Result<Attache
             match pairs[..] {
                 [one] => one,
                 _ => {
-                    return Err(OepError::Malformed(format!(
-                        "name the pins: {} allows {} pairs",
-                        kind.interface(),
-                        pairs.len()
-                    )));
+                    return Err(OepError::PinsNeeded {
+                        wire: kind.interface().to_owned(),
+                        pairs: pairs.len(),
+                    });
                 }
             }
         }

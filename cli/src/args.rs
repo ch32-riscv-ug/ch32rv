@@ -413,6 +413,15 @@ pub enum FirmwareCmd {
 
 #[derive(Subcommand)]
 pub enum TargetCmd {
+    /// Every place a target can be reached (WCH-Links, OEP probe ports, CH32RV applications, ISP
+    /// and HID bootloaders), as Arduino discovery lists them, nothing attached
+    List {
+        /// Read each place's chip: `oep` (the default) attaches to the OEP probe ports without
+        /// halting; `all` also attaches through each WCH-Link, which halts its target and sets its
+        /// clock
+        #[arg(long, value_enum, num_args = 0..=1, default_missing_value = "oep", value_name = "SCOPE")]
+        identify: Option<IdentifyScope>,
+    },
     /// Chip ID / SKU candidates / UID / sizes / protection / option summary / verified
     Info,
     /// Structured option bytes
@@ -423,6 +432,12 @@ pub enum TargetCmd {
         #[arg(value_enum)]
         state: SwitchState,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum IdentifyScope {
+    Oep,
+    All,
 }
 
 #[derive(Subcommand)]

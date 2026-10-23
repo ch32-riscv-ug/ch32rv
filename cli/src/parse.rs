@@ -177,9 +177,50 @@ pub fn range(s: &str) -> Result<(u32, u32), String> {
     }
 }
 
+/// en: A plain-text table: each column as wide as its widest cell, two spaces apart, the last
+/// column not padded. ja: 列の幅を中身に合わせた表(列の間は 2 文字、最後の列は詰めない)。
+pub(crate) fn table(head: &[&str], rows: &[Vec<String>]) -> String {
+    let cols = head.len();
+    let mut width: Vec<usize> = head.iter().map(|h| h.chars().count()).collect();
+    for r in rows {
+        for (w, c) in width.iter_mut().zip(r) {
+            *w = (*w).max(c.chars().count());
+        }
+    }
+    let line = |cells: Vec<&str>| {
+        let mut s = String::new();
+        for (k, c) in cells.iter().enumerate() {
+            if k + 1 == cols {
+                s.push_str(c);
+            } else {
+                s.push_str(c);
+                s.push_str(&" ".repeat(width[k] - c.chars().count() + 2));
+            }
+        }
+        s.trim_end().to_owned() + "\n"
+    };
+    let mut out = line(head.to_vec());
+    for r in rows {
+        out.push_str(&line(r.iter().map(String::as_str).collect()));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_table_is_as_wide_as_its_widest_cell() {
+        let rows = vec![
+            vec!["oep".to_owned(), "9489dd2ae0953650".to_owned(), "x".to_owned()],
+            vec!["riscv".to_owned(), "-".to_owned(), "".to_owned()],
+        ];
+        assert_eq!(
+            table(&["MODE", "SERIAL", "LAST"], &rows),
+            "MODE   SERIAL            LAST\noep    9489dd2ae0953650  x\nriscv  -\n"
+        );
+    }
 
     #[test]
     fn speed_named_and_rounded() {

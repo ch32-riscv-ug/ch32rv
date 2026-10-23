@@ -102,7 +102,7 @@ fn borrow_link(cli: &Cli) -> Option<broker::Lend> {
     use ch32rv_contract::policy::MonitorSource;
     let direct = match &cli.command {
         Command::Probe(p) => !matches!(p, ProbeCmd::List { .. }),
-        Command::Target(t) => !matches!(t, TargetCmd::Info),
+        Command::Target(t) => !matches!(t, TargetCmd::Info | TargetCmd::List { .. }),
         Command::Dbg(_)
         | Command::Erase(_)
         | Command::Recover(_)
@@ -229,6 +229,7 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Probe(ProbeCmd::Firmware(FirmwareCmd::Update { image })) => {
             cmd_probe::firmware_update(cli, image)
         }
+        Command::Target(TargetCmd::List { identify }) => cmd_target::list(cli, *identify),
         Command::Target(TargetCmd::Info) => cmd_target::info(cli),
         Command::Target(TargetCmd::Opt(OptionCmd::Get)) => cmd_target::option_get(cli),
         Command::Target(TargetCmd::Opt(OptionCmd::WriteRaw { hex })) => {
@@ -397,6 +398,7 @@ pub(crate) fn canonical_name(cmd: &Command) -> &'static str {
             ProbeCmd::Vendor { .. } => "probe.vendor",
         },
         Command::Target(t) => match t {
+            TargetCmd::List { .. } => "target.list",
             TargetCmd::Info => "target.info",
             TargetCmd::Opt(OptionCmd::Get) => "target.option.get",
             TargetCmd::Opt(OptionCmd::Set { .. }) => "target.option.set",

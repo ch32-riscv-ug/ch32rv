@@ -587,6 +587,7 @@ fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
         ),
         OepError::Link(_) => (ErrorKind::TransferFailed, None),
         OepError::NoInterface(_) => (ErrorKind::CapabilityUnsupported, None),
+        OepError::PinsNeeded { .. } => (ErrorKind::Usage, None),
         _ => (ErrorKind::TransferFailed, None),
     };
     fail(cli, cmd, kind, e.to_string(), hint)
@@ -2211,6 +2212,85 @@ pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
             ExitCode::SUCCESS
         }
     })
+}
+
+/// en: `probe info` on an OEP probe, lock-free: what fn 0's describe says (firmware, model, unit
+/// id, chip, max_op_ms), the interfaces it lists, and the ports its labels name.
+/// ja: OEP の probe の `probe info`(lock 無し): fn 0 の describe、interface の一覧、ラベルの口。
+pub(crate) fn probe_info(cli: &Cli, a: &OepAddr) -> ExitCode {
+    const CMD: &str = "probe.info";
+    let mut p = match connect(cli, CMD, a) {
+        Ok(p) => p,
+        Err(c) => return c,
+    };
+    let describe = match p.describe(oep_core::FN) {
+        Ok(d) => d,
+        Err(e) => return oep_fail(cli, CMD, e),
+    };
+    let text = |tag: u8| {
+        describe
+            .iter()
+            .find(|t| t.tag == tag)
+            .map(|t| String::from_utf8_lossy(&t.value).into_owned())
+    };
+    use oep_core::tlvs::describe as d;
+    let firmware = text(d::FIRMWARE);
+    let model = text(d::MODEL);
+    let unit_id = text(d::UNIT_ID);
+    let chip = text(d::CHIP);
+    let max_op_ms = describe
+        .iter()
+        .find(|t| t.tag == d::MAX_OP_MS && t.value.len() == 4)
+        .map(|t| u32::from_le_bytes([t.value[0], t.value[1], t.value[2], t.value[3]]));
+    let interfaces = p.list("").unwrap_or_default();
+    let labels = ch32rv_oep::config::labels(&mut p).unwrap_or_default();
+    let ports = ch32rv_oep::config::ports_named(&labels);
+    if cli.json {
+        let mut env = ResultEnvelope::success(CMD);
+        env.result = Some(serde_json::json!({
+            "probe": {
+                "kind": "oep",
+                "firmware": firmware,
+                "model": model,
+                "unit_id": unit_id,
+                "chip": chip,
+                "max_op_ms": max_op_ms,
+                "interfaces": interfaces.iter().map(|i| serde_json::json!({
+                    "fn": i.func, "name": i.name, "instance": i.instance, "revision": i.revision,
+                })).collect::<Vec<_>>(),
+                "ports": ports,
+                "labels": labels.iter().map(|(c, l)| serde_json::json!({ "channel": c, "label": l }))
+                    .collect::<Vec<_>>(),
+            }
+        }));
+        crate::print_envelope(&env)
+    } else {
+        let or = |v: &Option<String>| v.clone().unwrap_or_else(|| "-".to_owned());
+        println!("probe:      OEP");
+        println!("model:      {}", or(&model));
+        println!("unit id:    {}", or(&unit_id));
+        println!("chip:       {}", or(&chip));
+        println!("firmware:   {}", or(&firmware));
+        if let Some(ms) = max_op_ms {
+            println!("max_op_ms:  {ms}");
+        }
+        println!(
+            "ports:      {}",
+            if ports.is_empty() {
+                "(none named: `any`)".to_owned()
+            } else {
+                ports.join(", ")
+            }
+        );
+        println!("interfaces:");
+        for i in &interfaces {
+            println!(
+                "  fn {:<3} {}/{} (revision {})",
+                i.func, i.name, i.instance, i.revision
+            );
+        }
+        ExitCode::SUCCESS
+    }
 }
 
 #[cfg(test)]

@@ -34,6 +34,12 @@ pub enum OepError {
     Malformed(String),
     #[error("the probe has no interface `{0}`")]
     NoInterface(String),
+    /// en: The wire takes its pins from the host and no labels name them (host guide §5.3).
+    /// ja: wire のピンは host が選び、ラベルが名指していない。
+    #[error(
+        "name the pins: {wire} allows {pairs} pairs and no labels name them (label the port's lines `<port>.swdio` / `<port>.swclk`, or `<port>.swio`)"
+    )]
+    PinsNeeded { wire: String, pairs: usize },
 }
 
 /// One `list` entry.

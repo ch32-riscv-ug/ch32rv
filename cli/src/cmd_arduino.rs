@@ -59,7 +59,7 @@ pub fn discovery(_cli: &Cli) -> ExitCode {
 
 /// Enumerate WCH probes as Pluggable-Discovery ports (from USB descriptors only - no AttachChip,
 /// so it never disturbs an in-flight upload/monitor on the same probe).
-fn list_ports() -> Vec<Value> {
+pub(crate) fn list_ports() -> Vec<Value> {
     let mut ports = wchlink_ports();
     ports.extend(oep_ports());
     ports.extend(hid_ports());
