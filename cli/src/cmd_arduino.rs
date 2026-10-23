@@ -158,7 +158,14 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
                     .ok()
                     .and_then(|t| serde_json::from_str(&t).ok())
                 {
-                    out.extend(ports);
+                    // Only entries in today's form: one an older ch32rv kept (`oep://…/any`)
+                    // names no port an address can use.
+                    let prefix = format!("oep-net://{unit}/");
+                    out.extend(ports.into_iter().filter(|p| {
+                        p["address"].as_str().is_some_and(|a| {
+                            a.starts_with(&prefix) && !a[prefix.len()..].eq_ignore_ascii_case("any")
+                        })
+                    }));
                 }
             }
         }
