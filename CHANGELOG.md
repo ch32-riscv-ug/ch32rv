@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.23.1 - 2026-10-23
+
 - (EN) Fix: the Arduino monitor's `dmseq` / `dmdata` and `gdb` through a WCH-Link failed to open in 0.23.0 with "the probe names no ports". The Link's broker has no settings, and 0.23.0 asked it for `<port>.swdio` labels; a Link is now attached on its own debug lines as before.
 - (JA) 修正: 0.23.0 で、WCH-Link を通る Arduino の monitor(`dmseq` / `dmdata`)と `gdb` が "the probe names no ports" で開けなかった。Link のブローカーには設定が無いのに、0.23.0 は `<port>.swdio` のラベルを求めていた。Link は以前どおり自分の debug の線で接続する。
 
