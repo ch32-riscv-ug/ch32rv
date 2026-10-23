@@ -941,6 +941,18 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
     if PINS.get().is_some() {
         return place_from_pins(p, chip);
     }
+    // en: A WCH-Link behind its broker has one place, its own debug lines, and no settings to
+    // name it: the wire from the chip, the Link's lines as they are.
+    // ja: ブローカーの裏の WCH-Link の場所は自分の debug の線だけで、名前を付ける設定も無い。
+    if matches!(a, OepAddr::Wch(_)) {
+        return Ok(Place {
+            wire: pick_wire(p, chip).map_err(|e| e.to_string())?,
+            pins: None,
+            max_speed: None,
+            idle_clock: None,
+            mechanism: None,
+        });
+    }
     let labels = labels(p).map_err(|e| e.to_string())?;
     let ports = ports_named(&labels);
     if a.whole_probe() {
