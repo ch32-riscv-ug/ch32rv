@@ -531,13 +531,7 @@ pub(crate) fn parse_selector(cli: &Cli, cmd: &str) -> Result<Option<Selector>, E
                  or name the probe with `--probe serial:<sn>` (`ch32rv probe list` lists them)",
             ),
         ),
-        e => fail(
-            cli,
-            cmd,
-            ErrorKind::Usage,
-            format!("invalid --probe selector: {e}"),
-            None,
-        ),
+        e => fail(cli, cmd, ErrorKind::Usage, format!("--probe: {e}"), None),
     })?;
     let sel = match sel {
         Selector::Name(name) => match crate::config::probe_alias(&name) {

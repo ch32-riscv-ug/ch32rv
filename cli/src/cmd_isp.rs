@@ -86,7 +86,7 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
         want = args
             .app_device
             .as_deref()
-            .and_then(|s| s.strip_prefix("port:"))
+            .and_then(ide_address)
             .and_then(|a| a.strip_prefix(ISP_SCHEME))
             .map(str::to_owned);
     }
@@ -889,16 +889,30 @@ pub(crate) struct AppDevice {
     pub(crate) port: Option<String>,
 }
 
+/// en: An IDE port address in `--app-device`, told apart by its shape (a URL such as
+/// `ch32rv-app://...`, or a serial port's path such as `/dev/ttyACM0` / `COM3`), as it is or
+/// behind `port:` (the form ArduinoCore-CH32RV's recipes have sent, to be dropped).
+/// ja: `--app-device` の IDE の port の住所(形で見分ける)。`port:` 付きも受ける(廃止予定)。
+fn ide_address(s: &str) -> Option<&str> {
+    if let Some(a) = s.strip_prefix("port:") {
+        return Some(a);
+    }
+    let com = s.len() > 3
+        && s[..3].eq_ignore_ascii_case("com")
+        && s[3..].chars().all(|c| c.is_ascii_digit());
+    let url = ch32rv_usb::selector::ADDRESS_SCHEMES
+        .iter()
+        .any(|scheme| s.starts_with(scheme));
+    (url || s.starts_with('/') || s.starts_with("\\\\.\\") || com).then_some(s)
+}
+
 /// en: Resolve `--app-device`: `port:<path>` (the serial port an IDE passes; the USB device behind
 /// it), `usb:<bus>-<ports>`, or `VID:PID[:SERIAL]`. Exactly one device or an error.
 /// ja: `--app-device` を解く。ちょうど 1 台か、エラー。
 pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
     // The discovery's own address (`ch32rv-app://<id>`): found again by its id, then by position.
     let usb_sel;
-    let sel = match sel
-        .strip_prefix("port:")
-        .and_then(|a| a.strip_prefix(APP_SCHEME))
-    {
+    let sel = match ide_address(sel).and_then(|a| a.strip_prefix(APP_SCHEME)) {
         Some(id) => {
             let dev = find_app(id).map_err(|(kind, m)| fail(cli, cmd, kind, m, None))?;
             usb_sel = format!("usb:{}", dev.topology());
@@ -914,7 +928,7 @@ pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
             .unwrap_or_else(|_| p.to_owned())
     };
     let (mut found, port): (Vec<UsbDeviceInfo>, Option<String>) =
-        if let Some(path) = sel.strip_prefix("port:") {
+        if let Some(path) = ide_address(sel) {
             let want = canon(path);
             let mut found: Vec<UsbDeviceInfo> = all
                 .into_iter()
@@ -1008,7 +1022,7 @@ fn enter_via_app(
     if let Some(t) = args
         .app_device
         .as_deref()
-        .and_then(|s| s.strip_prefix("port:"))
+        .and_then(ide_address)
         .and_then(|a| a.strip_prefix(ISP_SCHEME))
     {
         return Ok(Some(t.to_owned()));

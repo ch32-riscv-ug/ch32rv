@@ -26,7 +26,7 @@ pub struct Cli {
 
     // en: Global options (docs/cli.ja.md §3.1).
     // ja: グローバルオプション(docs/cli.ja.md §3.1)。
-    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | usb:<bus>-<ports> | port:<address> | index:<n>
+    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | usb:<bus>-<ports> | index:<n> | an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>/<port>, hid://<bus>-<ports>, ch32rv-app://<id>)
     #[arg(long, global = true, env = "CH32RV_PROBE")]
     pub probe: Option<String>,
     /// Target SKU or family (auto-detected when omitted; fail-closed on ambiguity)
@@ -575,7 +575,7 @@ pub struct IspArgs {
     #[arg(long, global = true, value_enum, default_value = "none")]
     pub entry: IspEntry,
     /// The running application's USB device, for `--entry auto|dfu-detach|touch1200`:
-    /// port:<serial port> | usb:<bus>-<ports> | VID:PID[:SERIAL]
+    /// a serial port / ch32rv-app://<id> as the IDE names it | usb:<bus>-<ports> | VID:PID[:SERIAL]
     #[arg(long, global = true, value_name = "SEL")]
     pub app_device: Option<String>,
 }
@@ -689,8 +689,8 @@ pub enum BootCmd {
         port: Option<String>,
     },
     /// USB DFU 1.1 download into an application that reflashes itself (DFU_DETACH first when it
-    /// runs its DFU run-time interface). Select it with --probe port:<serial port> |
-    /// port:ch32rv-app://<id> | usb:<bus>-<ports> | VID:PID[:SERIAL]; the only DFU device when
+    /// runs its DFU run-time interface). Select it with --probe <serial port> |
+    /// ch32rv-app://<id> | usb:<bus>-<ports> | VID:PID[:SERIAL]; the only DFU device when
     /// omitted
     #[command(subcommand)]
     Dfu(DfuCmd),

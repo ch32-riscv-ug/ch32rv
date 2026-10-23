@@ -33,8 +33,9 @@ pub enum Selector {
     /// `tcp:<host:port>`: an OEP endpoint over TCP (a probe's TCP transport or a ch32rv broker).
     /// Never a USB device, so it matches none here; the OEP layer opens it.
     Tcp(String),
-    /// `port:<address>`: an IDE port address - the probe that owns this serial port
-    /// (`/dev/ttyACM0`, `COM3`), or discovery's `wchlink://<serial>` / `hid://<topology>`.
+    /// An IDE port address, as it is or behind `port:` - the probe that owns this serial port
+    /// (`/dev/ttyACM0`, `COM3`), or discovery's `oep://...` / `hid://<topology>` /
+    /// `ch32rv-app://...` (`wchlink://<serial>` is [`Selector::Serial`]).
     Port(String),
     /// `index:<n>` (discouraged; rejected under `--non-interactive`)
     Index(usize),
@@ -55,14 +56,12 @@ pub enum SerialFilter {
 pub enum SelectorParseError {
     #[error("empty selector")]
     Empty,
-    #[error("invalid hex in `{field}`: `{value}`")]
-    InvalidHex { field: &'static str, value: String },
     #[error("invalid index: `{0}`")]
     InvalidIndex(String),
     #[error("empty value after `{0}:`")]
     EmptyValue(&'static str),
     #[error(
-        "unrecognized selector `{0}` (expected VID:PID[:SERIAL], serial:<sn>, name:<alias>, usb:<bus>-<ports>, port:<path>, tcp:<host:port>, index:<n>, wchlink://<serial>, or oep://<probe>[/<port>])"
+        "`{0}` is not a probe selector: use VID:PID[:SERIAL] (hex, e.g. 1a86:8010), serial:<sn>, name:<alias>, usb:<bus>-<ports>, tcp:<host:port>, index:<n>, or an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>], hid://<bus>-<ports>)"
     )]
     Unrecognized(String),
 }
@@ -73,20 +72,6 @@ impl FromStr for Selector {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
             return Err(SelectorParseError::Empty);
-        }
-        // en: The addresses discovery and `target list` print are selectors too, bare or behind
-        // `port:` (an IDE's `{upload.port.address}`): `wchlink://<serial>` /
-        // `wchlink://usb-<bus>-<ports>` name a WCH-Link, `oep://...` an OEP probe's port.
-        // ja: discovery と `target list` が出す住所も、そのまま(または `port:` の後ろで)使える。
-        let address = s.strip_prefix("port:").unwrap_or(s);
-        if let Some(v) = address.strip_prefix("wchlink://") {
-            return match v.strip_prefix("usb-") {
-                Some(t) => keyword_value(t, "usb").map(Selector::Topology),
-                None => keyword_value(v, "wchlink").map(Selector::Serial),
-            };
-        }
-        if address.starts_with("oep://") {
-            return Ok(Selector::Port(address.to_owned()));
         }
         if let Some(v) = s.strip_prefix("serial:") {
             return keyword_value(v, "serial").map(Selector::Serial);
@@ -100,8 +85,17 @@ impl FromStr for Selector {
         if let Some(v) = s.strip_prefix("tcp:") {
             return keyword_value(v, "tcp").map(Selector::Tcp);
         }
+        // en: An IDE port address is a selector as it is; `port:` in front of one is accepted too
+        // (the form ArduinoCore-CH32RV's recipes have sent, to be dropped).
+        // ja: IDE の port の住所はそのまま selector。前に `port:` が付いていても受ける(廃止予定)。
         if let Some(v) = s.strip_prefix("port:") {
-            return keyword_value(v, "port").map(Selector::Port);
+            return match address(v) {
+                Some(r) => r,
+                None => keyword_value(v, "port").map(Selector::Port),
+            };
+        }
+        if let Some(r) = address(s) {
+            return r;
         }
         if let Some(v) = s.strip_prefix("index:") {
             return v
@@ -110,21 +104,21 @@ impl FromStr for Selector {
                 .map_err(|_| SelectorParseError::InvalidIndex(v.to_owned()));
         }
 
-        // en: VID:PID[:SERIAL]. Split into at most 3 parts because a serial may contain `:`.
-        // ja: VID:PID[:SERIAL]。SERIAL は `:` を含みうるので 3 分割まで。
+        // en: VID:PID[:SERIAL], when the first two fields are 1-4 hex digits each; a serial may
+        // contain `:`, so at most 3 parts. Anything else matches no form.
+        // ja: VID:PID[:SERIAL](先頭 2 つが 1〜4 桁の 16 進のとき)。どの形でもなければ判別できない。
         let mut parts = s.splitn(3, ':');
-        let vid = parts.next().unwrap_or_default();
-        let Some(pid) = parts.next() else {
+        let hex4 = |f: &str| (1..=4).contains(&f.len()) && f.chars().all(|c| c.is_ascii_hexdigit());
+        let (Some(vid), Some(pid)) = (parts.next(), parts.next()) else {
             return Err(SelectorParseError::Unrecognized(s.to_owned()));
         };
-        let vid = u16::from_str_radix(vid, 16).map_err(|_| SelectorParseError::InvalidHex {
-            field: "VID",
-            value: vid.to_owned(),
-        })?;
-        let pid = u16::from_str_radix(pid, 16).map_err(|_| SelectorParseError::InvalidHex {
-            field: "PID",
-            value: pid.to_owned(),
-        })?;
+        if !hex4(vid) || !hex4(pid) {
+            return Err(SelectorParseError::Unrecognized(s.to_owned()));
+        }
+        let (Ok(vid), Ok(pid)) = (u16::from_str_radix(vid, 16), u16::from_str_radix(pid, 16))
+        else {
+            return Err(SelectorParseError::Unrecognized(s.to_owned()));
+        };
         let serial = match parts.next() {
             Option::None => SerialFilter::Any,
             Some("") => SerialFilter::NoSerial,
@@ -133,6 +127,30 @@ impl FromStr for Selector {
         Ok(Selector::UsbId { vid, pid, serial })
     }
 }
+
+/// en: An IDE port address, told apart from the keyword and VID:PID forms by its shape: a URL of
+/// a scheme discovery lists (`wchlink://<serial>`, `wchlink://usb-<bus>-<ports>`, `oep://...`,
+/// `hid://...`, `ch32rv-app://...`, `ch32rv-isp://...`; another scheme is no form), or a serial
+/// port's path (`/dev/ttyACM0`, `COM3`,
+/// `\\.\COM12`). None for anything else.
+/// ja: IDE の port の住所(URL か serial port の path)。形で見分ける。
+fn address(a: &str) -> Option<Result<Selector, SelectorParseError>> {
+    if let Some(v) = a.strip_prefix("wchlink://") {
+        return Some(match v.strip_prefix("usb-") {
+            Some(t) => keyword_value(t, "usb").map(Selector::Topology),
+            None => keyword_value(v, "wchlink").map(Selector::Serial),
+        });
+    }
+    let com = a.len() > 3
+        && a[..3].eq_ignore_ascii_case("com")
+        && a[3..].chars().all(|c| c.is_ascii_digit());
+    let url = ADDRESS_SCHEMES.iter().any(|scheme| a.starts_with(scheme));
+    (url || a.starts_with('/') || a.starts_with("\\\\.\\") || com)
+        .then(|| Ok(Selector::Port(a.to_owned())))
+}
+
+/// The URL forms of the addresses discovery lists (besides `wchlink://`, a serial).
+pub const ADDRESS_SCHEMES: [&str; 4] = ["oep://", "hid://", "ch32rv-app://", "ch32rv-isp://"];
 
 fn keyword_value(v: &str, kw: &'static str) -> Result<String, SelectorParseError> {
     if v.is_empty() {
@@ -268,6 +286,25 @@ mod tests {
             "port:oep://30eda0e34a0e/weact".parse::<Selector>().unwrap(),
             Selector::Port("oep://30eda0e34a0e/weact".to_owned())
         );
+        for a in [
+            "/dev/ttyACM0",
+            "COM3",
+            "com12",
+            "hid://3-2.4",
+            "ch32rv-app://3-2.4.3",
+            "ch32rv-isp://3-2.4.3",
+        ] {
+            assert_eq!(a.parse::<Selector>().unwrap(), Selector::Port(a.to_owned()));
+            assert_eq!(
+                format!("port:{a}").parse::<Selector>().unwrap(),
+                Selector::Port(a.to_owned())
+            );
+        }
+        // Not an address: still VID:PID.
+        assert!(matches!(
+            "1a86:8010".parse::<Selector>().unwrap(),
+            Selector::UsbId { .. }
+        ));
     }
 
     #[test]
@@ -351,10 +388,22 @@ mod tests {
 
     #[test]
     fn rejects_garbage() {
-        assert!(matches!(
-            "zz86:8010".parse::<Selector>(),
-            Err(SelectorParseError::InvalidHex { field: "VID", .. })
-        ));
+        // Not hex, or too long a field: no form matches.
+        for bad in [
+            "zz86:8010",
+            "1a86:80100",
+            "wchlink:49808F06CE30",
+            "oep:x",
+            "wchlnk://x",
+        ] {
+            assert!(
+                matches!(
+                    bad.parse::<Selector>(),
+                    Err(SelectorParseError::Unrecognized(_))
+                ),
+                "{bad}"
+            );
+        }
         assert!(matches!(
             "".parse::<Selector>(),
             Err(SelectorParseError::Empty)
