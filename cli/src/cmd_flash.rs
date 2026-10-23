@@ -1341,20 +1341,36 @@ fn erase_oep(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
                 None,
             );
         }
-        {
-            let mut d = t.dtm();
-            let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
-            for i in 0..pages {
-                let addr = start + i * page;
-                if let Err(e) = dm.flash_page_erase(addr, profile.mode) {
-                    return fail(
-                        cli,
-                        CMD,
-                        ErrorKind::TransferFailed,
-                        format!("page erase failed at 0x{addr:08x}: {e}"),
-                        None,
-                    );
+        // en: A page erase that fails is tried again after halting anew (an erase is idempotent):
+        // on CH32L103 over OEP one in many stopped with a DMI error now and then.
+        // ja: 失敗した page erase は、止め直してやり直す(消去は何度やっても同じ)。
+        for i in 0..pages {
+            let addr = start + i * page;
+            let mut last = None;
+            for _ in 0..3 {
+                let r = {
+                    let mut d = t.dtm();
+                    ch32rv_dmi::DebugModule::new(&mut d).flash_page_erase(addr, profile.mode)
+                };
+                match r {
+                    Ok(()) => {
+                        last = None;
+                        break;
+                    }
+                    Err(e) => {
+                        last = Some(e);
+                        let _ = t.halt();
+                    }
                 }
+            }
+            if let Some(e) = last {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("page erase failed at 0x{addr:08x}: {e}"),
+                    None,
+                );
             }
         }
         if cli.json {
