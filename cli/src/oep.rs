@@ -140,14 +140,21 @@ pub(crate) fn unit_at(addr: &str) -> Option<String> {
             return Some(u);
         }
     }
-    let (u, firmware) = read_identity(addr)?;
+    let (u, firmware, model) = read_identity(addr)?;
     let _ = std::fs::create_dir_all(ch32rv_usb::runtime_dir());
-    let _ = std::fs::write(&memo, format!("{u}\n{}\n", firmware.unwrap_or_default()));
+    let _ = std::fs::write(
+        &memo,
+        format!(
+            "{u}\n{}\n{}\n",
+            firmware.unwrap_or_default(),
+            model.unwrap_or_default()
+        ),
+    );
     Some(u)
 }
 
-/// en: Where the unit id (first line) and firmware (second line) last read at `addr` are kept.
-/// ja: `addr` で最後に読んだ unit id(1 行目)と firmware(2 行目)の控え。
+/// en: Where the unit id, firmware and model (lines 1-3) last read at `addr` are kept.
+/// ja: `addr` で最後に読んだ unit id、firmware、model(1〜3 行目)の控え。
 fn unit_memo(addr: &str) -> std::path::PathBuf {
     ch32rv_usb::runtime_dir().join(format!(
         "{}.unit",
@@ -158,16 +165,32 @@ fn unit_memo(addr: &str) -> std::path::PathBuf {
 /// en: The firmware the probe at `addr` described when [`unit_at`] last read it.
 /// ja: [`unit_at`] が最後に読んだときの firmware。
 pub(crate) fn firmware_at(addr: &str) -> Option<String> {
+    memo_line(addr, 1)
+}
+
+/// en: The model (`esp32`) the probe at `addr` described when [`unit_at`] last read it.
+/// ja: [`unit_at`] が最後に読んだときの model。
+pub(crate) fn model_at(addr: &str) -> Option<String> {
+    memo_line(addr, 2)
+}
+
+/// en: An OEP probe on the network named as the USB ones are (`OEP probe (esp32)`).
+/// ja: ネットワークの OEP の probe の名前(USB のものと同じ形)。
+pub(crate) fn net_model(addr: &str) -> String {
+    model_at(addr).map_or_else(|| "OEP probe".to_owned(), |m| format!("OEP probe ({m})"))
+}
+
+fn memo_line(addr: &str, n: usize) -> Option<String> {
     std::fs::read_to_string(unit_memo(addr))
         .ok()?
         .lines()
-        .nth(1)
+        .nth(n)
         .map(|l| l.trim().to_owned())
         .filter(|f| !f.is_empty())
 }
 
-/// The unit id and the firmware fn 0's describe gives, read directly over TCP.
-fn read_identity(addr: &str) -> Option<(String, Option<String>)> {
+/// The unit id, firmware and model fn 0's describe gives, read directly over TCP.
+fn read_identity(addr: &str) -> Option<(String, Option<String>, Option<String>)> {
     use std::net::ToSocketAddrs;
     let sa = addr.to_socket_addrs().ok()?.next()?;
     let s = std::net::TcpStream::connect_timeout(&sa, Duration::from_secs(2)).ok()?;
@@ -182,7 +205,11 @@ fn read_identity(addr: &str) -> Option<(String, Option<String>)> {
             .map(|t| String::from_utf8_lossy(&t.value).into_owned())
     };
     use ch32rv_oep::registry::core::tlvs::describe as dt;
-    Some((text(dt::UNIT_ID)?.to_ascii_lowercase(), text(dt::FIRMWARE)))
+    Some((
+        text(dt::UNIT_ID)?.to_ascii_lowercase(),
+        text(dt::FIRMWARE),
+        text(dt::MODEL),
+    ))
 }
 
 /// en: A probe found by DNS-SD, opened over TCP: used only when describe's unit_id is the one
@@ -474,8 +501,12 @@ fn connect_ordered(
 /// Resolve `oep://<probe>[/<port>[/<target>]]` to the probe's serial port.
 pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
     // oep://<probe>[/<port>[/<target>]] (host guide §5.3): segments of a-z 0-9 - . only; `any`
-    // is a wildcard written explicitly.
-    let rest = url.strip_prefix("oep://").unwrap_or(url);
+    // is a wildcard written explicitly. `oep-net://` names the same, reached over the network
+    // only (the unit id found by DNS-SD, whatever the IP; `oep://` prefers USB).
+    let (rest, net_only) = match url.strip_prefix("oep-net://") {
+        Some(r) => (r, true),
+        None => (url.strip_prefix("oep://").unwrap_or(url), false),
+    };
     let segs: Vec<&str> = rest.split('/').collect();
     let ok = |s: &str| {
         !s.is_empty()
@@ -494,8 +525,10 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
         .get(2)
         .filter(|t| **t != "any")
         .map(|s| (*s).to_ascii_lowercase());
-    let devs = oep_devices();
-    let dev = if id == "any" {
+    let devs = if net_only { Vec::new() } else { oep_devices() };
+    let dev = if net_only {
+        None
+    } else if id == "any" {
         if devs.len() > 1 {
             return Err(format!(
                 "oep://any matches {} OEP probes: name one by its unit id",
@@ -591,9 +624,11 @@ pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
         Some(Selector::Tcp(name)) => tcp_addr(&name)
             .map(Some)
             .map_err(|(m, hint)| fail(cli, cmd, ErrorKind::DeviceNotFound, m, hint)),
-        Some(Selector::Port(p)) if p.starts_with("oep://") => resolve_oep_url(&p)
-            .map(Some)
-            .map_err(|m| fail(cli, cmd, ErrorKind::DeviceNotFound, m, None)),
+        Some(Selector::Port(p)) if p.starts_with("oep://") || p.starts_with("oep-net://") => {
+            resolve_oep_url(&p)
+                .map(Some)
+                .map_err(|m| fail(cli, cmd, ErrorKind::DeviceNotFound, m, None))
+        }
         Some(Selector::Port(p)) if !p.starts_with("wchlink://") && !p.starts_with("hid://") => {
             let sel = Selector::Port(p.clone());
             let owned = crate::cmd_probe::wch_devices()

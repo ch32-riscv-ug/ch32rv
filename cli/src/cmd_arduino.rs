@@ -111,7 +111,7 @@ fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<V
         "pid": format!("0x{:04x}", dev.pid()),
         "port": path,
     });
-    port_entries(&mut p, &crate::oep::probe_id(dev), &props)
+    port_entries(&mut p, "oep", &crate::oep::probe_id(dev), &props)
 }
 
 /// en: OEP probes on the local network that are not on USB (DNS-SD `_oep._tcp`, oep-spec
@@ -140,7 +140,13 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
         };
         let read = opened.ok().and_then(|mut p| {
             p.link().set_timeout(std::time::Duration::from_millis(500));
-            port_entries(&mut p, &unit, &json!({"tcp": addr, "instance": f.instance}))
+            // Not on USB: named oep-net:// (reached over the network whatever its IP).
+            port_entries(
+                &mut p,
+                "oep-net",
+                &unit,
+                &json!({"tcp": addr, "instance": f.instance, "topology": "network"}),
+            )
         });
         match read {
             Some(ports) => {
@@ -166,7 +172,12 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
 /// attaching: the target is not known until a tool attaches.
 /// ja: probe のポートを discovery の port として出す。ラベルが名指すポートごとに 1 つ、名前が無ければ
 /// `oep://<id>/any`(名前の無い 1 つの口)。attach しないので target は分からない。
-fn port_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> Option<Vec<Value>> {
+fn port_entries(
+    p: &mut ch32rv_oep::session::Probe,
+    scheme: &str,
+    id: &str,
+    props: &Value,
+) -> Option<Vec<Value>> {
     let labels = ch32rv_oep::config::labels(p).ok()?;
     let ports = ch32rv_oep::config::ports_named(&labels);
     let entry = |port: Option<&str>| {
@@ -178,14 +189,14 @@ fn port_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> 
         }
         let (address, label, hw) = match port {
             Some(s) => (
-                format!("oep://{id}/{s}"),
+                format!("{scheme}://{id}/{s}"),
                 format!("{s} on OEP probe {id}"),
                 format!("{id}/{s}"),
             ),
             // The one unnamed port: `any` selects it (host guide §5.3; `oep://<probe>` alone
             // is the probe itself).
             None => (
-                format!("oep://{id}/any"),
+                format!("{scheme}://{id}/any"),
                 format!("OEP probe {id}"),
                 id.to_owned(),
             ),
@@ -731,7 +742,7 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
     if address.starts_with(crate::cmd_isp::ISP_SCHEME) {
         return Err("the ISP bootloader has no console to monitor".to_owned());
     }
-    if address.starts_with("oep://") {
+    if address.starts_with("oep://") || address.starts_with("oep-net://") {
         let a = crate::oep::resolve_oep_url(address)?;
         return Ok(Resolved {
             entry: None,

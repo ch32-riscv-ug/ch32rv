@@ -1151,14 +1151,19 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
                 "hid" => "hid",
                 _ => return None,
             };
+            // An OEP probe reached over the network says `network` (its IP is in the JSON).
             let topology = p["properties"]["topology"]
                 .as_str()
                 .unwrap_or("-")
                 .to_owned();
+            let model = match p["properties"]["tcp"].as_str() {
+                Some(addr) if mode == "oep" => crate::oep::net_model(addr),
+                _ => p["protocolLabel"].as_str().unwrap_or("-").to_owned(),
+            };
             Some(Place {
                 probe: (mode == "oep").then(|| address.clone()),
                 label: p["label"].as_str().unwrap_or("-").to_owned(),
-                model: p["protocolLabel"].as_str().unwrap_or("-").to_owned(),
+                model,
                 properties: p["properties"].clone(),
                 address,
                 mode,

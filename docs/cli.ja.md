@@ -150,11 +150,13 @@ chip = "CH32V203C8T6"
   name:<alias>          設定ファイルの別名
   usb:<bus>-<ports>     USB topology(固定 hub の物理 port。HIL lane 用)
   <IDE の住所>          IDE の port の住所をそのまま: probe の serial port(/dev/ttyACM0、COM3。symlink 可)、
-                        wchlink://<serial>、oep://<probe>[/<port>]、hid://<bus>-<ports>、ch32rv-app://<id>
+                        wchlink://<serial>、oep://<probe>[/<port>]、oep-net://<probe>[/<port>]、hid://<bus>-<ports>、
+                        ch32rv-app://<id>
   port:<住所>           上と同じ(廃止予定。ArduinoCore-CH32RV の recipe が送ってきた形)
   index:<n>             列挙順(非推奨)。--non-interactive では拒否
 ```
 
+- **OEP の経路(2026-10-23)**: `oep://<unit id>[/<port>]` は USB にあれば USB、無ければネットワーク(DNS-SD で unit id を探す)。`oep-net://<unit id>[/<port>]` はネットワークだけを使う(IP が変わっても unit id で届く)。mDNS の届かない所は `tcp:<host>:<port>`。`probe list` / `target list` / discovery は、USB に無い OEP の probe を `oep-net://` で出し、TOPOLOGY は `network`、MODEL は describe の model(`OEP probe (esp32)`)。両方から届く probe は `oep://` と USB の位置の 1 行で、JSON の `tcp` にネットワークの経路も出す。
 - **IDE の住所はそのまま(2026-10-23)**: IDE の port の住所は、形で見分けられる(`://` を含む URL、`/` で始まる path、`COM<n>`、`\\.\…`)ので、`port:` を付けずにそのまま `--probe` / `--app-device` に渡す。`port:` を付けた形も当面は同じに扱うが、ArduinoCore-CH32RV の recipe が `--probe {upload.port.address}` に移ったら外す。`wchlink://<serial>` は `serial:`、`wchlink://usb-<bus>-<ports>` は `usb:` と同じ。以前は `port:` 無しの `wchlink://…` が VID:PID と読まれて exit 2 になっていた。
 
 - **`port:`(2026-09-29、ArduinoCore-CH32RV `docs/oep-workflow.ja.md` §3.2)**: recipe が利用者の選んだ IDE port を問わず `--probe port:{upload.port.address}` を渡せるようにするもの。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial、`hid://` は位置で device を直接指す(`boot hid flash` は `usb:` と `port:hid://` だけを受ける)。どの probe の port でもなければ exit 10。

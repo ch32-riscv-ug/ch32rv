@@ -395,17 +395,17 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
             continue;
         };
         lines.push(vec![
-            format!("oep://{unit}"),
+            format!("oep-net://{unit}"),
             "oep".to_owned(),
             "tcp".to_owned(),
-            "-".to_owned(),
-            f.instance.trim_end_matches("._oep._tcp.local").to_owned(),
+            "network".to_owned(),
+            crate::oep::net_model(&addr),
             addr.clone(),
             crate::oep::firmware_at(&addr).unwrap_or_else(|| "-".to_owned()),
         ]);
         network.push(serde_json::json!({
             "kind": "oep",
-            "address": format!("oep://{unit}"),
+            "address": format!("oep-net://{unit}"),
             "firmware": crate::oep::firmware_at(&addr),
             "unit_id": unit,
             "tcp": addr,

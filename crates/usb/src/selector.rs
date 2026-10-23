@@ -150,7 +150,13 @@ fn address(a: &str) -> Option<Result<Selector, SelectorParseError>> {
 }
 
 /// The URL forms of the addresses discovery lists (besides `wchlink://`, a serial).
-pub const ADDRESS_SCHEMES: [&str; 4] = ["oep://", "hid://", "ch32rv-app://", "ch32rv-isp://"];
+pub const ADDRESS_SCHEMES: [&str; 5] = [
+    "oep://",
+    "oep-net://",
+    "hid://",
+    "ch32rv-app://",
+    "ch32rv-isp://",
+];
 
 fn keyword_value(v: &str, kw: &'static str) -> Result<String, SelectorParseError> {
     if v.is_empty() {
@@ -289,6 +295,7 @@ mod tests {
         for a in [
             "/dev/ttyACM0",
             "COM3",
+            "oep-net://50029191fe34/any",
             "com12",
             "hid://3-2.4",
             "ch32rv-app://3-2.4.3",
