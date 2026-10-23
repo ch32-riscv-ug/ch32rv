@@ -101,6 +101,7 @@ const LISTING_LIFE: std::time::Duration = std::time::Duration::from_secs(30);
 fn listing_or_recent(read: Option<Vec<Value>>, scheme: &str, unit: &str) -> Vec<Value> {
     let cache = crate::broker::listing_cache(&format!("{scheme}-{}", unit.to_ascii_lowercase()));
     if let Some(ports) = read {
+        let _ = std::fs::create_dir_all(ch32rv_usb::runtime_dir());
         let _ = std::fs::write(&cache, Value::Array(ports.clone()).to_string());
         return ports;
     }
