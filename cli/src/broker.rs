@@ -432,9 +432,9 @@ pub(crate) fn existing_link(path: &str) -> Option<Link> {
     existing_link_for(&BrokerTarget::Serial(path.to_owned()))
 }
 
-/// The runtime file discovery keeps a probe's last listing in (for when the probe is busy).
-pub(crate) fn listing_cache(path: &str) -> PathBuf {
-    ch32rv_usb::runtime_dir().join(format!("{}.ports.json", key_for(path)))
+/// The runtime file discovery keeps a probe's last listing in (for when the probe is busy), by `key`.
+pub(crate) fn listing_cache(key: &str) -> PathBuf {
+    ch32rv_usb::runtime_dir().join(format!("{}.ports.json", key_for(key)))
 }
 
 /// `broker endpoint --probe <sel> [--json]`: where the probe's broker listens, if it runs.

@@ -70,10 +70,10 @@ pub(crate) fn list_ports() -> Vec<Value> {
 /// en: OEP probes (`crate::oep::is_oep_device`) as one `oep://<probe>[/<port>]` port per port its
 /// labels name. The labels are read lock-free - through the probe's broker when one runs (never started
 /// here), else on its serial port opened briefly - and when the probe cannot be read (another tool
-/// holds the port), the last listing is shown again. Plain serial ports are never opened.
+/// holds the port), its last listing stands in for a short while. Plain serial ports are never opened.
 /// ja: OEP の probe を、ラベルが名指すポートごとに `oep://<probe>[/<port>]` で出す。ラベルは lock 無しで読む
 /// (ブローカーが動いていればそこ経由、ここでは起動しない。無ければ serial port を短く開く)。読めなければ
-/// 前回の一覧。普通の serial port は開かない。
+/// 少しの間だけ前回の一覧。普通の serial port は開かない。
 fn oep_ports() -> Vec<Value> {
     let mut out = Vec::new();
     let devices = crate::oep::oep_devices();
@@ -82,24 +82,56 @@ fn oep_ports() -> Vec<Value> {
         let Some(path) = crate::oep::oep_port(&dev) else {
             continue;
         };
-        let cache = crate::broker::listing_cache(&path);
-        match read_oep_listing(&dev, &path) {
-            Some(ports) => {
-                let _ = std::fs::write(&cache, Value::Array(ports.clone()).to_string());
-                out.extend(ports);
-            }
-            None => {
-                if let Some(Value::Array(ports)) = std::fs::read_to_string(&cache)
-                    .ok()
-                    .and_then(|t| serde_json::from_str(&t).ok())
-                {
-                    out.extend(ports);
-                }
-            }
-        }
+        let read = read_oep_listing(&dev, &path);
+        out.extend(listing_or_recent(read, "oep", &crate::oep::probe_id(&dev)));
     }
     out.extend(net_oep_ports(&on_usb));
     out
+}
+
+/// How long a probe's last listing stands in for it while it cannot be read (another tool holds
+/// it): enough for a short tussle such as one upload, not for a probe that changed meanwhile.
+const LISTING_LIFE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// en: The probe's ports: `read` when it could be read (kept as its last listing, by unit id),
+/// else that last listing while it is younger than [`LISTING_LIFE`], only its entries that name
+/// a port of this very probe in today's form (`<scheme>://<unit>/<port>`).
+/// ja: 読めればそれ(unit id ごとに前回の一覧として残す)。読めなければ 30 秒以内の前回の一覧を、
+/// 同じ probe の今の形のアドレスの分だけ。
+fn listing_or_recent(read: Option<Vec<Value>>, scheme: &str, unit: &str) -> Vec<Value> {
+    let cache = crate::broker::listing_cache(&format!("{scheme}-{}", unit.to_ascii_lowercase()));
+    if let Some(ports) = read {
+        let _ = std::fs::write(&cache, Value::Array(ports.clone()).to_string());
+        return ports;
+    }
+    let fresh = std::fs::metadata(&cache)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .is_some_and(|age| age < LISTING_LIFE);
+    let Some(Value::Array(ports)) = fresh
+        .then(|| std::fs::read_to_string(&cache).ok())
+        .flatten()
+        .and_then(|t| serde_json::from_str(&t).ok())
+    else {
+        return Vec::new();
+    };
+    let prefix = format!("{scheme}://{unit}/");
+    ports
+        .into_iter()
+        .filter(|p| {
+            p["address"].as_str().is_some_and(|a| {
+                a.get(..prefix.len())
+                    .is_some_and(|h| h.eq_ignore_ascii_case(&prefix))
+                    && port_name_ok(&a[prefix.len()..])
+            })
+        })
+        .collect()
+}
+
+/// A port name as an address carries it: the `S` of an `S.N` label.
+fn port_name_ok(name: &str) -> bool {
+    ch32rv_oep::config::port_line(&format!("{name}.x")).is_some()
 }
 
 fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<Value>> {
@@ -116,7 +148,7 @@ fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<V
 
 /// en: OEP probes on the local network that are not on USB (DNS-SD `_oep._tcp`, oep-spec
 /// transports §3), listed like the USB ones: one `oep://<unit_id>[/<port>]` per port, read over TCP
-/// (lock-free) after describe confirmed the unit id; the last listing when it cannot be read.
+/// (lock-free) after describe confirmed the unit id; its recent listing for a short while when it cannot be read.
 /// ja: USB に無い、ネットワークの OEP の probe(DNS-SD)。USB のものと同じくポートごとに出す。
 fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
     let mut out = Vec::new();
@@ -127,7 +159,6 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
         if on_usb.iter().any(|u| u.eq_ignore_ascii_case(&unit)) {
             continue;
         }
-        let cache = crate::broker::listing_cache(&format!("tcp-{unit}"));
         // Through its broker when one runs (never started here), else a brief direct look.
         let target = crate::broker::BrokerTarget::Net {
             addr: addr.clone(),
@@ -148,27 +179,7 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
                 &json!({"tcp": addr, "instance": f.instance, "topology": "network"}),
             )
         });
-        match read {
-            Some(ports) => {
-                let _ = std::fs::write(&cache, Value::Array(ports.clone()).to_string());
-                out.extend(ports);
-            }
-            None => {
-                if let Some(Value::Array(ports)) = std::fs::read_to_string(&cache)
-                    .ok()
-                    .and_then(|t| serde_json::from_str(&t).ok())
-                {
-                    // Only entries in today's form: one an older ch32rv kept (`oep://…/any`)
-                    // names no port an address can use.
-                    let prefix = format!("oep-net://{unit}/");
-                    out.extend(ports.into_iter().filter(|p| {
-                        p["address"].as_str().is_some_and(|a| {
-                            a.starts_with(&prefix) && !a[prefix.len()..].eq_ignore_ascii_case("any")
-                        })
-                    }));
-                }
-            }
-        }
+        out.extend(listing_or_recent(read, "oep-net", &unit));
     }
     out
 }
@@ -1161,4 +1172,23 @@ fn lost(sock: &mut TcpStream, why: &str) -> ! {
     let _ = sock.flush();
     let _ = sock.shutdown(Shutdown::Both);
     std::process::exit(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_recent_listing_stands_in_only_for_its_own_probe() {
+        let unit = format!("t{:x}", std::process::id());
+        let mine = json!({"address": format!("oep://{unit}/l103")});
+        let other = json!({"address": "oep://ffffffffffff/l103"});
+        let bad = json!({"address": format!("oep://{unit}/My Port")});
+        let read = vec![mine.clone(), other, bad];
+        assert_eq!(listing_or_recent(Some(read.clone()), "oep", &unit), read);
+        assert_eq!(listing_or_recent(None, "oep", &unit), vec![mine]);
+        // Another scheme is another listing.
+        assert!(listing_or_recent(None, "oep-net", &unit).is_empty());
+        let _ = std::fs::remove_file(crate::broker::listing_cache(&format!("oep-{unit}")));
+    }
 }
