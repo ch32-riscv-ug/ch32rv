@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.23.0 - 2026-10-23
+
 - (EN) **OEP probes need oep-probe-arduino 0.0.38 or later** (oep-spec cc82b5e, names and initial values). Settings values are read without an origin (a 7-byte head). A port is only the `S` of an `S.N` label (`S` a letter then letters, digits and `-`, 1-16 of them), kept as written and compared ignoring case, and a port's lines are found only by its labels. `any` is gone: an address names its port in full. The old `oep.probe.config` reading is dropped (no compatibility before v1). A probe whose labels name no port is driven with the new global `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]` (or `swio=`, `rx=`, `tx=`; a pin is the probe's channel name or number).
 - (JA) **OEP の probe は oep-probe-arduino 0.0.38 以降が必要**(oep-spec cc82b5e、名前と初期値)。設定の値は出どころ無し(固定部分 7 byte)で読む。口は `S.N` のラベルの `S` だけ(`S` は英字で始まり、英数字と `-` で 1〜16 文字)で、書いたとおりに持ち、大小文字を区別せずに比べる。口の線はそのラベルだけで探す。`any` は無くなり、アドレスは口まで書く。古い `oep.probe.config` を読む道は外した(v1 の前なので互換は持たない)。口に名前の無い probe は、新しい全体のオプション `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]`(または `swio=`、`rx=`、`tx=`。pin は probe の channel 名か番号)で使う。
 
