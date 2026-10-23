@@ -213,7 +213,11 @@ mod tests {
     #[test]
     fn a_table_is_as_wide_as_its_widest_cell() {
         let rows = vec![
-            vec!["oep".to_owned(), "9489dd2ae0953650".to_owned(), "x".to_owned()],
+            vec![
+                "oep".to_owned(),
+                "9489dd2ae0953650".to_owned(),
+                "x".to_owned(),
+            ],
             vec!["riscv".to_owned(), "-".to_owned(), "".to_owned()],
         ];
         assert_eq!(

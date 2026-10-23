@@ -152,7 +152,11 @@ chip = "CH32V203C8T6"
   port:<address>        IDE の port address。probe の serial port(/dev/ttyACM0、COM3。symlink 可)、
                         wchlink://<serial>、hid://<bus>-<ports>
   index:<n>             列挙順(非推奨)。--non-interactive では拒否
+  wchlink://<serial>    discovery / `target list` の住所をそのまま(serial: と同じ。wchlink://usb-<bus>-<ports> は usb:)
+  oep://<probe>[/<port>] 同じく OEP の probe の口(port:oep://… と同じ)
 ```
+
+- **discovery の住所(2026-10-23)**: `target list` と Arduino discovery が出す `wchlink://…` と `oep://…` は、`port:` を付けずにそのまま `--probe` に渡せる(`port:` 付きも同じ)。以前は `wchlink://…` が VID:PID と読まれて exit 2 になっていた。
 
 - **`port:`(2026-09-29、ArduinoCore-CH32RV `docs/oep-workflow.ja.md` §3.2)**: recipe が利用者の選んだ IDE port を問わず `--probe port:{upload.port.address}` を渡せるようにするもの。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial、`hid://` は位置で device を直接指す(`boot hid flash` は `usb:` と `port:hid://` だけを受ける)。どの probe の port でもなければ exit 10。
 

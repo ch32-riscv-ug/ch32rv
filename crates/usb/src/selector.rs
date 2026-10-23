@@ -62,7 +62,7 @@ pub enum SelectorParseError {
     #[error("empty value after `{0}:`")]
     EmptyValue(&'static str),
     #[error(
-        "unrecognized selector `{0}` (expected VID:PID[:SERIAL], serial:<sn>, name:<alias>, usb:<bus>-<ports>, port:<path>, tcp:<host:port>, or index:<n>)"
+        "unrecognized selector `{0}` (expected VID:PID[:SERIAL], serial:<sn>, name:<alias>, usb:<bus>-<ports>, port:<path>, tcp:<host:port>, index:<n>, wchlink://<serial>, or oep://<probe>[/<port>])"
     )]
     Unrecognized(String),
 }
@@ -73,6 +73,20 @@ impl FromStr for Selector {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
             return Err(SelectorParseError::Empty);
+        }
+        // en: The addresses discovery and `target list` print are selectors too, bare or behind
+        // `port:` (an IDE's `{upload.port.address}`): `wchlink://<serial>` /
+        // `wchlink://usb-<bus>-<ports>` name a WCH-Link, `oep://...` an OEP probe's port.
+        // ja: discovery と `target list` が出す住所も、そのまま(または `port:` の後ろで)使える。
+        let address = s.strip_prefix("port:").unwrap_or(s);
+        if let Some(v) = address.strip_prefix("wchlink://") {
+            return match v.strip_prefix("usb-") {
+                Some(t) => keyword_value(t, "usb").map(Selector::Topology),
+                None => keyword_value(v, "wchlink").map(Selector::Serial),
+            };
+        }
+        if address.starts_with("oep://") {
+            return Ok(Selector::Port(address.to_owned()));
         }
         if let Some(v) = s.strip_prefix("serial:") {
             return keyword_value(v, "serial").map(Selector::Serial);
@@ -231,6 +245,30 @@ where
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_addresses_are_selectors() {
+        assert_eq!(
+            "wchlink://49808F06CE30".parse::<Selector>().unwrap(),
+            Selector::Serial("49808F06CE30".to_owned())
+        );
+        assert_eq!(
+            "port:wchlink://49808F06CE30".parse::<Selector>().unwrap(),
+            Selector::Serial("49808F06CE30".to_owned())
+        );
+        assert_eq!(
+            "wchlink://usb-3-2.2.1".parse::<Selector>().unwrap(),
+            Selector::Topology("3-2.2.1".to_owned())
+        );
+        assert_eq!(
+            "oep://30eda0e34a0e/weact".parse::<Selector>().unwrap(),
+            Selector::Port("oep://30eda0e34a0e/weact".to_owned())
+        );
+        assert_eq!(
+            "port:oep://30eda0e34a0e/weact".parse::<Selector>().unwrap(),
+            Selector::Port("oep://30eda0e34a0e/weact".to_owned())
+        );
+    }
 
     #[test]
     fn canonical_vid_pid_serial() {

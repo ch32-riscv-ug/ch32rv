@@ -1135,7 +1135,7 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
             );
             if identify.is_none() {
                 eprintln!(
-                    "(`--identify` reads the chip at each OEP port without halting it; `--identify all` also attaches through each WCH-Link, which halts its target and sets its clock. Use an address with `--probe port:<address>`, a WCH-Link with `--probe serial:<serial>`)"
+                    "(`--identify` reads the chip at each OEP port without halting it; `--identify all` also attaches through each WCH-Link, which halts its target and sets its clock. An ADDRESS is a `--probe` selector as it is)"
                 );
             }
         }
