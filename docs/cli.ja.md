@@ -300,7 +300,12 @@ ch32rv recover --method power-off|nrst|unprotect|unbrick
 ch32rv probe list [--watch]                       --json に selector 全 key、Windows は interface ごとの bound driver 名。
                                                   各行に kind(wchlink / oep)。OEP の USB の probe は USB の記述子だけから出し、開かない
                                                   (serial = unit id)。USB の同一性の無い UART bridge の OEP の probe は出さない(2026-10-01)。
-                                                  表の列は中身の幅に合わせる(2026-10-23。長い serial で崩れていた)
+                                                  表の列は中身の幅に合わせる(2026-10-23。長い serial で崩れていた)。
+                                                  先頭の列 ADDRESS(JSON `address`)はそのまま --probe に渡せる住所: WCH-Link は
+                                                  wchlink://<serial>(serial が無ければ wchlink://usb-<bus>-<ports>)、OEP は oep://<unit id>。
+                                                  並びは種類(WCH-Link、USB の OEP、ネットワークの OEP)→ USB の位置を数として比べた順
+                                                  (ネットワークは unit id 順)。OEP の FIRMWARE は fn 0 の describe を lock 無しで短く読む
+                                                  (ブローカーがあればその link、無ければ serial port を短く開く。読めなければ -)
 ch32rv probe info [--probe <sel>]                 型番/HW/FW 版(raw・正規・WCH 表記)/mode/serial/interface 構成/使用中。
                                                   OEP の probe(`oep://<probe>`、`tcp:`、OEP の serial port)は、lock 無しで fn 0 の describe
                                                   (firmware、model、unit id、chip、max_op_ms)、interface の一覧、ラベルの口を出す(2026-10-23)

@@ -252,7 +252,7 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
     if watch {
         return watch_probes(cli);
     }
-    let entries = match wch_devices() {
+    let mut entries = match wch_devices() {
         Ok(e) => e,
         Err(e) => {
             return fail(
@@ -265,6 +265,8 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         }
     };
 
+    // Kind first (WCH-Links, OEP on USB, OEP on the network), then the USB position, as numbers.
+    entries.sort_by_key(|e| topology_key(&e.dev.topology()));
     let mut probes_json = Vec::new();
     let mut lines = Vec::new();
     let mut all_warnings = Vec::new();
@@ -285,6 +287,10 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         };
         if let Some(obj) = v.as_object_mut() {
             obj.insert("kind".to_owned(), serde_json::json!("wchlink"));
+            obj.insert(
+                "address".to_owned(),
+                serde_json::json!(wchlink_address(&report)),
+            );
             if let Some(err) = error {
                 obj.insert("probe_error".to_owned(), serde_json::Value::String(err));
             }
@@ -340,7 +346,9 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         }
     }
     let mut net = verified;
-    for dev in crate::oep::oep_devices() {
+    let mut oep_on_usb = crate::oep::oep_devices();
+    oep_on_usb.sort_by_key(|d| topology_key(&d.topology()));
+    for dev in oep_on_usb {
         let id = crate::oep::probe_id(&dev);
         let tcp = net
             .iter()
@@ -353,6 +361,7 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
             .and_then(|f| f.endpoint());
         let mut v = serde_json::json!({
             "kind": "oep",
+            "address": format!("oep://{id}"),
             "model": dev.product(),
             "serial": dev.serial(),
             "usb": dev.usb_id(),
@@ -362,26 +371,33 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         if let (Some(t), Some(m)) = (tcp, v.as_object_mut()) {
             m.insert("tcp".into(), t.into());
         }
+        // The firmware from the probe's describe, read lock-free and briefly (as discovery reads
+        // its labels); `-` when it cannot be read now.
+        let firmware = crate::oep::firmware_for_listing(&dev);
+        if let Some(m) = v.as_object_mut() {
+            m.insert("firmware".into(), firmware.clone().into());
+        }
         lines.push(vec![
+            format!("oep://{id}"),
             "oep".to_owned(),
             dev.usb_id(),
-            dev.serial().unwrap_or("-").to_owned(),
             dev.topology(),
             dev.product().unwrap_or("OEP probe").to_owned(),
             dev.serial_ports().join(","),
-            "-".to_owned(),
+            firmware.unwrap_or_else(|| "-".to_owned()),
         ]);
         probes_json.push(v);
     }
     let mut network = Vec::new();
+    net.sort_by(|a, b| a.unit_id.cmp(&b.unit_id));
     for f in net {
         let (Some(unit), Some(addr)) = (f.unit_id.clone(), f.endpoint()) else {
             continue;
         };
         lines.push(vec![
+            format!("oep://{unit}"),
             "oep".to_owned(),
             "tcp".to_owned(),
-            unit.clone(),
             "-".to_owned(),
             f.instance.trim_end_matches("._oep._tcp.local").to_owned(),
             addr.clone(),
@@ -389,6 +405,7 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         ]);
         network.push(serde_json::json!({
             "kind": "oep",
+            "address": format!("oep://{unit}"),
             "unit_id": unit,
             "tcp": addr,
             "instance": f.instance,
@@ -407,7 +424,7 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
             );
         } else {
             let head = [
-                "MODE", "USB", "SERIAL", "TOPOLOGY", "MODEL", "PORTS", "FIRMWARE",
+                "ADDRESS", "MODE", "USB", "TOPOLOGY", "MODEL", "PORTS", "FIRMWARE",
             ];
             print!("{}", crate::parse::table(&head, &lines));
         }
@@ -416,6 +433,25 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         }
         ExitCode::SUCCESS
     }
+}
+
+/// en: A WCH-Link's address, a `--probe` selector as it is and the one discovery lists:
+/// `wchlink://<serial>`, or `wchlink://usb-<bus>-<ports>` for one without a serial.
+/// ja: WCH-Link の住所(そのまま `--probe` に渡せる。discovery と同じ)。
+fn wchlink_address(r: &ProbeReport) -> String {
+    match (&r.serial, &r.topology) {
+        (Some(s), _) => format!("wchlink://{s}"),
+        (None, Some(t)) => format!("wchlink://usb-{t}"),
+        (None, None) => "-".to_owned(),
+    }
+}
+
+/// en: A USB position (`3-2.1.4`) as numbers, for sorting: `3-10` after `3-9`.
+/// ja: USB の位置を数の並びにする(並べ替え用)。
+pub(crate) fn topology_key(t: &str) -> Vec<u32> {
+    t.split(['-', '.'])
+        .map(|x| x.parse().unwrap_or(u32::MAX))
+        .collect()
 }
 
 fn row(r: &ProbeReport, error: Option<&str>) -> Vec<String> {
@@ -432,9 +468,9 @@ fn row(r: &ProbeReport, error: Option<&str>) -> Vec<String> {
         (None, None) => "-".to_owned(),
     };
     vec![
+        wchlink_address(r),
         r.mode.map(mode_str).unwrap_or("?").to_owned(),
         r.usb.clone().unwrap_or_else(|| "-".to_owned()),
-        r.serial.clone().unwrap_or_else(|| "-".to_owned()),
         r.topology.clone().unwrap_or_else(|| "-".to_owned()),
         r.model.clone(),
         if r.ports.is_empty() {

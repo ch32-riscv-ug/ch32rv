@@ -105,14 +105,7 @@ fn oep_ports() -> Vec<Value> {
 fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<Value>> {
     // A LIST must stay quick: a probe that does not answer (older firmware, another framing) costs
     // two short waits, not the usual reply timeout twice.
-    let quick = std::time::Duration::from_millis(300);
-    let mut p = match crate::broker::existing_link(path) {
-        Some(mut l) => {
-            l.set_timeout(quick);
-            ch32rv_oep::session::Probe::connect(l).ok()?
-        }
-        None => crate::oep::connect_for_listing(path, quick).ok()?.0,
-    };
+    let mut p = crate::oep::probe_for_listing(dev)?;
     let props = json!({
         "vid": format!("0x{:04x}", dev.vid()),
         "pid": format!("0x{:04x}", dev.pid()),

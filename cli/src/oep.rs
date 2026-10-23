@@ -207,6 +207,34 @@ pub(crate) fn oep_devices() -> Vec<ch32rv_usb::UsbDeviceInfo> {
         .collect()
 }
 
+/// en: An OEP probe on USB, read lock-free and quickly for a listing - through its broker's link
+/// when one runs (never started here), else on its serial port opened briefly. None when it
+/// cannot be read within short waits (another tool holds the port, older firmware).
+/// ja: 一覧用に OEP の probe を lock 無しで短く読む(ブローカーがあればその link、無ければ serial
+/// port を短く開く)。読めなければ None。
+pub(crate) fn probe_for_listing(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<Probe> {
+    let path = oep_port(dev)?;
+    let quick = Duration::from_millis(300);
+    match crate::broker::existing_link(&path) {
+        Some(mut l) => {
+            l.set_timeout(quick);
+            Probe::connect(l).ok()
+        }
+        None => connect_for_listing(&path, quick).ok().map(|(p, _)| p),
+    }
+}
+
+/// en: The firmware text fn 0's describe gives (`0.0.36+12e1222`), read as [`probe_for_listing`].
+/// ja: fn 0 の describe の firmware(一覧用に短く読む)。
+pub(crate) fn firmware_for_listing(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<String> {
+    let mut p = probe_for_listing(dev)?;
+    p.describe(oep_core::FN)
+        .ok()?
+        .into_iter()
+        .find(|t| t.tag == oep_core::tlvs::describe::FIRMWARE)
+        .map(|t| String::from_utf8_lossy(&t.value).into_owned())
+}
+
 /// A probe's name in `oep://<probe>/…`: its USB serial number, else its USB position.
 pub(crate) fn probe_id(dev: &ch32rv_usb::UsbDeviceInfo) -> String {
     dev.serial()
