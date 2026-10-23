@@ -125,13 +125,10 @@ pub(crate) fn unit_at(addr: &str) -> Option<String> {
     // and a probe serves only a few (the reference probe and the virtual bench 3), so it is not
     // asked again.
     // ja: 既に分かっていてそのブローカーが動いていれば聞き直さない(probe は同時接続が限られる)。
-    let memo = ch32rv_usb::runtime_dir().join(format!(
-        "{}.unit",
-        ch32rv_usb::sanitize_key(&format!("oep-tcp-{addr}"))
-    ));
+    let memo = unit_memo(addr);
     if let Some(u) = std::fs::read_to_string(&memo)
         .ok()
-        .map(|t| t.trim().to_owned())
+        .and_then(|t| t.lines().next().map(|l| l.trim().to_owned()))
         .filter(|u| !u.is_empty())
     {
         let t = crate::broker::BrokerTarget::Net {
@@ -143,13 +140,34 @@ pub(crate) fn unit_at(addr: &str) -> Option<String> {
             return Some(u);
         }
     }
-    let u = read_unit(addr)?;
+    let (u, firmware) = read_identity(addr)?;
     let _ = std::fs::create_dir_all(ch32rv_usb::runtime_dir());
-    let _ = std::fs::write(&memo, format!("{u}\n"));
+    let _ = std::fs::write(&memo, format!("{u}\n{}\n", firmware.unwrap_or_default()));
     Some(u)
 }
 
-fn read_unit(addr: &str) -> Option<String> {
+/// en: Where the unit id (first line) and firmware (second line) last read at `addr` are kept.
+/// ja: `addr` で最後に読んだ unit id(1 行目)と firmware(2 行目)の控え。
+fn unit_memo(addr: &str) -> std::path::PathBuf {
+    ch32rv_usb::runtime_dir().join(format!(
+        "{}.unit",
+        ch32rv_usb::sanitize_key(&format!("oep-tcp-{addr}"))
+    ))
+}
+
+/// en: The firmware the probe at `addr` described when [`unit_at`] last read it.
+/// ja: [`unit_at`] が最後に読んだときの firmware。
+pub(crate) fn firmware_at(addr: &str) -> Option<String> {
+    std::fs::read_to_string(unit_memo(addr))
+        .ok()?
+        .lines()
+        .nth(1)
+        .map(|l| l.trim().to_owned())
+        .filter(|f| !f.is_empty())
+}
+
+/// The unit id and the firmware fn 0's describe gives, read directly over TCP.
+fn read_identity(addr: &str) -> Option<(String, Option<String>)> {
     use std::net::ToSocketAddrs;
     let sa = addr.to_socket_addrs().ok()?.next()?;
     let s = std::net::TcpStream::connect_timeout(&sa, Duration::from_secs(2)).ok()?;
@@ -157,11 +175,14 @@ fn read_unit(addr: &str) -> Option<String> {
     let mut link = ch32rv_oep::link::Link::new(Box::new(s), ch32rv_oep::link::Framing::Length);
     link.set_timeout(Duration::from_secs(2));
     let mut p = Probe::connect(link).ok()?;
-    p.describe(ch32rv_oep::registry::core::FN)
-        .ok()?
-        .into_iter()
-        .find(|t| t.tag == ch32rv_oep::registry::core::tlvs::describe::UNIT_ID)
-        .map(|t| String::from_utf8_lossy(&t.value).to_ascii_lowercase())
+    let d = p.describe(ch32rv_oep::registry::core::FN).ok()?;
+    let text = |tag: u8| {
+        d.iter()
+            .find(|t| t.tag == tag)
+            .map(|t| String::from_utf8_lossy(&t.value).into_owned())
+    };
+    use ch32rv_oep::registry::core::tlvs::describe as dt;
+    Some((text(dt::UNIT_ID)?.to_ascii_lowercase(), text(dt::FIRMWARE)))
 }
 
 /// en: A probe found by DNS-SD, opened over TCP: used only when describe's unit_id is the one

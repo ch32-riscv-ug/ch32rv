@@ -401,11 +401,12 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
             "-".to_owned(),
             f.instance.trim_end_matches("._oep._tcp.local").to_owned(),
             addr.clone(),
-            "-".to_owned(),
+            crate::oep::firmware_at(&addr).unwrap_or_else(|| "-".to_owned()),
         ]);
         network.push(serde_json::json!({
             "kind": "oep",
             "address": format!("oep://{unit}"),
+            "firmware": crate::oep::firmware_at(&addr),
             "unit_id": unit,
             "tcp": addr,
             "instance": f.instance,
