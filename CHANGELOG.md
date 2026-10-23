@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+- (EN) **OEP probes need oep-probe-arduino 0.0.38 or later** (oep-spec cc82b5e, names and initial values). Settings values are read without an origin (a 7-byte head). A port is only the `S` of an `S.N` label (`S` a letter then letters, digits and `-`, 1-16 of them), kept as written and compared ignoring case, and a port's lines are found only by its labels. `any` is gone: an address names its port in full. The old `oep.probe.config` reading is dropped (no compatibility before v1). A probe whose labels name no port is driven with the new global `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]` (or `swio=`, `rx=`, `tx=`; a pin is the probe's channel name or number).
+- (JA) **OEP の probe は oep-probe-arduino 0.0.38 以降が必要**(oep-spec cc82b5e、名前と初期値)。設定の値は出どころ無し(固定部分 7 byte)で読む。口は `S.N` のラベルの `S` だけ(`S` は英字で始まり、英数字と `-` で 1〜16 文字)で、書いたとおりに持ち、大小文字を区別せずに比べる。口の線はそのラベルだけで探す。`any` は無くなり、アドレスは口まで書く。古い `oep.probe.config` を読む道は外した(v1 の前なので互換は持たない)。口に名前の無い probe は、新しい全体のオプション `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]`(または `swio=`、`rx=`、`tx=`。pin は probe の channel 名か番号)で使う。
+
+- (EN) `--probe` takes the addresses discovery and the lists print as they are: `wchlink://<serial>`, `wchlink://usb-<topology>`, `oep://<unit>[/<port>]`, `oep-net://<unit>[/<port>]`, `hid://`, `ch32rv-app://`, `ch32rv-isp://`, or a serial port's path (`/dev/…`, `COM<n>`). A `port:` in front is still read but deprecated. `VID:PID` is taken only as 1-4 hex digits each, and a selector that matches no form is one error that lists the forms. `index:` is removed.
+- (JA) `--probe` は、discovery と一覧が出すアドレスをそのまま受け付ける: `wchlink://<serial>`、`wchlink://usb-<topology>`、`oep://<unit>[/<port>]`、`oep-net://<unit>[/<port>]`、`hid://`、`ch32rv-app://`、`ch32rv-isp://`、または serial port のパス(`/dev/…`、`COM<n>`)。前に付けた `port:` はまだ読むが非推奨。`VID:PID` はそれぞれ 1〜4 桁の 16 進のときだけ。どの形にも合わなければ、形を並べた 1 つのエラーにする。`index:` は廃止。
+
+- (EN) `oep-net://<unit id>[/<port>]`: an OEP probe reached over the network only, found by its unit id through DNS-SD whatever its IP. `oep://` prefers USB.
+- (JA) `oep-net://<unit id>[/<port>]`: ネットワークだけで届く OEP の probe。IP によらず、DNS-SD で unit id から探す。`oep://` は USB を優先する。
+
+- (EN) `probe list`: an ADDRESS column first (a `--probe` selector as it is), columns as wide as their cells, sorted by kind (WCH-Link, OEP on USB, OEP on the network) then USB position as numbers. OEP probes show their firmware (read lock-free from describe); a probe on the network shows TOPOLOGY `network`. `probe info` works on an OEP probe (describe, interfaces, ports).
+- (JA) `probe list`: 先頭に ADDRESS 列(`--probe` にそのまま使える)。列幅は中身に合わせる。並びは種類(WCH-Link、USB の OEP、ネットワークの OEP)、次に USB の位置を数として。OEP の probe は firmware の版を出す(describe からロック無しで読む)。ネットワークの probe の TOPOLOGY は `network`。`probe info` が OEP の probe でも使える(describe、interface、口)。
+
+- (EN) `target list [--identify [oep|all]]`: every place a target can be reached, in `probe list`'s order and first columns (ADDRESS, MODE, TOPOLOGY, MODEL) then the chip (CHIP, CHIP ID, FLASH, SRAM). `--identify` reads the chip at each OEP port without halting it; `--identify all` also attaches through each WCH-Link. Only named OEP ports are listed.
+- (JA) `target list [--identify [oep|all]]`: target に届くすべての場所。`probe list` と同じ並びと先頭の列(ADDRESS、MODE、TOPOLOGY、MODEL)の後にチップの列(CHIP、CHIP ID、FLASH、SRAM)。`--identify` は OEP の各口のチップを止めずに読み、`--identify all` は WCH-Link でも接続して読む。OEP は名前のある口だけを出す。
+
+- (EN) `recover --method nrst` over OEP (a `<port>.nrst` label or `--pins nrst=`): the attach under reset is tried again (up to 4 rounds, the rest low while the family is unknown: CH32L103 needs it), the reset vector's page is erased first, and the rest is written through the RAM loader - the image given with the new `--image`, else the erased word over the code flash. Bench: a CH32L103 hung in a 96 MHz SystemInit came back in one command.
+- (JA) OEP での `recover --method nrst`(`<port>.nrst` のラベルか `--pins nrst=`): リセット中の接続を最大 4 回やり直し(family が分からないうちは SWCLK を low で休ませる。CH32L103 に要る)、リセットベクタのページを先に消し、残りを RAM ローダーで書く。書くのは新しい `--image` のイメージ、無ければ消去値で code flash を埋める。実機: 96 MHz の SystemInit で止まった CH32L103 が 1 コマンドで戻った。
+
+- (EN) `erase`: a page erase that fails is tried again after halting anew (up to 3 times). `erase --region code` on a CH32L103 over OEP stopped at some page every run before; it now erases all 256 pages.
+- (JA) `erase`: 失敗したページの消去は、止め直してやり直す(最大 3 回)。OEP での CH32L103 の `erase --region code` は、以前は毎回どこかのページで止まった。今は 256 ページすべて消せる。
+
+- (EN) Discovery keeps a probe's last listing by its unit id (not its tty path, which another probe can take) and shows it for at most 30 s while the probe cannot be read, and only its entries that name a port of that probe in today's form.
+- (JA) discovery は、probe の前回の一覧を unit id ごとに持つ(tty のパスは別の probe が使うことがある)。probe が読めない間に出すのは 30 秒までで、その probe の口を今の形で指す項目だけ。
+
 ## 0.22.2 - 2026-10-22
 
 ## 0.22.1 - 2026-10-22
