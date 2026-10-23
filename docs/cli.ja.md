@@ -331,10 +331,14 @@ ch32rv probe vendor <hex...>                      隠し。backend 固有 comman
 ### 4.3 target
 
 ```text
-ch32rv target list [--identify [oep|all]]         target に届く場所の一覧(Arduino discovery の LIST と同じ: WCH-Link、OEP の口、
-                                                  CH32RV のアプリ、ISP / HID の bootloader)。何も attach しない。`--identify` は
-                                                  OEP の口に止めずに attach して chip を読む(子 process の `target info`)。
-                                                  `--identify all` は WCH-Link も attach する(target を止め、clock を変える)
+ch32rv target list [--identify [oep|all]]         target に届く場所の一覧。列と並びは probe list と同じ先頭(ADDRESS、MODE、
+                                                  TOPOLOGY、MODEL。種類 → USB の位置)に、チップの列(CHIP、CHIP ID、FLASH、
+                                                  SRAM)が続く。WCH-Link、USB の OEP の口(ラベルを lock 無しで短く読む)、
+                                                  ネットワークの OEP、CH32RV のアプリ、ISP / HID の bootloader。既定では何も
+                                                  attach しない。`--identify` は OEP の口に止めずに attach し、子 process の
+                                                  `target info` でチップの列を埋める(列は変わらない。読めなければ短い理由、
+                                                  全文は JSON)。`--identify all` は WCH-Link も attach する(target を止め、
+                                                  clock を変える)。ADDRESS はそのまま --probe に渡せる
 ch32rv target info                                chip ID/family/SKU 候補(根拠付き)/UID/flash size/保護状態/option 要約/verified
 
 ch32rv target option get

@@ -1049,73 +1049,196 @@ pub fn protect(cli: &Cli, state: SwitchState) -> ExitCode {
     program_option(cli, CMD, &ob)
 }
 
-/// en: `target list`: every place a target can be reached, from Arduino discovery's listing (USB
-/// descriptors, OEP probe labels read lock-free, DNS-SD) - nothing is attached. With `identify`,
-/// each debug place (a WCH-Link, an OEP port) is asked for its chip through `target info` in a
-/// child process, one at a time (its broker and lock rules as for any command; a WCH-Link's attach
-/// halts the target and sets its clock, as `target info` does).
-/// ja: `target list`。discovery の一覧から、ターゲットに届く場所を出す(何も attach しない)。
-/// `identify` なら、debug の場所ごとに子 process の `target info` でチップを読む(既定は OEP
-/// の口だけ。WCH-Link は attach が target を止めて clock を変えるので `all` のときだけ)。
+/// en: `target list`: every place a target can be reached, in `probe list`'s order (kind, then
+/// the USB position as numbers) and with its first columns: WCH-Links (from USB descriptors, not
+/// opened), each port of an OEP probe on USB (its labels read lock-free and briefly), the OEP
+/// probes on the network, CH32RV applications and ISP / HID bootloaders (as discovery lists
+/// them). With `identify`, the chip columns are filled from `target info` run in a child process
+/// per place (the OEP ports by default; WCH-Links too with `all`, whose attach halts the target
+/// and sets its clock); the columns stay the same.
+/// ja: `target list`。`probe list` と同じ並びと先頭の列で、ターゲットに届く場所を出す。`identify`
+/// なら子 process の `target info` でチップの列を埋める(列は変わらない)。
 pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode {
+    use crate::args::IdentifyScope;
+    use crate::cmd_probe::topology_key;
     const CMD: &str = "target.list";
-    let ports = crate::cmd_arduino::list_ports();
+    struct Place {
+        address: String,
+        mode: &'static str,
+        topology: String,
+        model: String,
+        label: String,
+        properties: serde_json::Value,
+        probe: Option<String>,
+    }
+    let mut places: Vec<Place> = Vec::new();
+    // WCH-Links.
+    let mut links = crate::cmd_probe::wch_devices().unwrap_or_default();
+    links.sort_by_key(|e| topology_key(&e.dev.topology()));
+    for e in &links {
+        let topology = e.dev.topology();
+        let (address, probe) = match e.dev.serial() {
+            Some(sn) => (format!("wchlink://{sn}"), format!("serial:{sn}")),
+            None => (
+                format!("wchlink://usb-{topology}"),
+                format!("usb:{topology}"),
+            ),
+        };
+        places.push(Place {
+            label: format!("WCH-Link {}", e.dev.serial().unwrap_or(&topology)),
+            address,
+            mode: crate::cmd_probe::mode_str(e.mode),
+            // The model as `probe list` names it (the probe asked briefly, as there).
+            model: crate::cmd_probe::report_for(e).0.model,
+            properties: serde_json::json!({
+                "usb": e.dev.usb_id(), "serial": e.dev.serial(), "topology": topology,
+            }),
+            topology,
+            probe: Some(probe),
+        });
+    }
+    // OEP probes on USB: one place per port their labels name (`any` when none is named).
+    let mut oep = crate::oep::oep_devices();
+    oep.sort_by_key(|d| topology_key(&d.topology()));
+    let mut on_usb = Vec::new();
+    for d in &oep {
+        let id = crate::oep::probe_id(d);
+        on_usb.push(id.clone());
+        let ports = crate::oep::probe_for_listing(d)
+            .and_then(|mut p| ch32rv_oep::config::labels(&mut p).ok())
+            .map(|l| ch32rv_oep::config::ports_named(&l))
+            .unwrap_or_default();
+        let names: Vec<String> = if ports.is_empty() {
+            vec!["any".to_owned()]
+        } else {
+            ports
+        };
+        for port in names {
+            let address = format!("oep://{id}/{port}");
+            places.push(Place {
+                label: format!("{port} on OEP probe {id}"),
+                mode: "oep",
+                topology: d.topology(),
+                model: d.product().unwrap_or("OEP probe").to_owned(),
+                properties: serde_json::json!({
+                    "usb": d.usb_id(), "serial": d.serial(), "topology": d.topology(),
+                    "port_name": port, "ports": d.serial_ports(),
+                }),
+                probe: Some(address.clone()),
+                address,
+            });
+        }
+    }
+    // The rest as discovery lists them: OEP probes on the network, applications, bootloaders.
+    let mut rest: Vec<Place> = crate::cmd_arduino::list_ports()
+        .into_iter()
+        .filter_map(|p| {
+            let protocol = p["protocol"].as_str().unwrap_or("").to_owned();
+            let address = p["address"].as_str().unwrap_or("-").to_owned();
+            let mode = match protocol.as_str() {
+                "oep" => {
+                    let unit = address
+                        .strip_prefix("oep://")
+                        .and_then(|a| a.split('/').next())
+                        .unwrap_or("");
+                    if on_usb.iter().any(|u| u.eq_ignore_ascii_case(unit)) {
+                        return None;
+                    }
+                    "oep"
+                }
+                "ch32rv-app" => "app",
+                "ch32rv-isp" => "isp",
+                "hid" => "hid",
+                _ => return None,
+            };
+            let topology = p["properties"]["topology"]
+                .as_str()
+                .unwrap_or("-")
+                .to_owned();
+            Some(Place {
+                probe: (mode == "oep").then(|| address.clone()),
+                label: p["label"].as_str().unwrap_or("-").to_owned(),
+                model: p["protocolLabel"].as_str().unwrap_or("-").to_owned(),
+                properties: p["properties"].clone(),
+                address,
+                mode,
+                topology,
+            })
+        })
+        .collect();
+    let kind = |m: &str| match m {
+        "oep" => 0,
+        "app" => 1,
+        "isp" => 2,
+        _ => 3,
+    };
+    rest.sort_by(|a, b| {
+        (kind(a.mode), topology_key(&a.topology), &a.address).cmp(&(
+            kind(b.mode),
+            topology_key(&b.topology),
+            &b.address,
+        ))
+    });
+    places.extend(rest);
+
     let exe = std::env::current_exe().ok();
     let mut rows = Vec::new();
     let mut out = Vec::new();
-    for p in ports {
-        let protocol = p["protocol"].as_str().unwrap_or("-").to_owned();
-        let address = p["address"].as_str().unwrap_or("-").to_owned();
-        let label = p["label"].as_str().unwrap_or("-").to_owned();
-        let selector = match protocol.as_str() {
-            "wchlink" => address
-                .strip_prefix("wchlink://")
-                .map(|s| match s.strip_prefix("usb-") {
-                    Some(t) => format!("usb:{t}"),
-                    None => format!("serial:{s}"),
-                }),
-            "oep" => Some(format!("port:{address}")),
-            _ => None,
-        };
-        let mut target = serde_json::Value::Null;
-        let mut shown = match protocol.as_str() {
-            "ch32rv-app" => "application".to_owned(),
-            "ch32rv-isp" => "ISP bootloader".to_owned(),
-            "hid" => "HID bootloader".to_owned(),
-            _ => "-".to_owned(),
-        };
+    for p in &places {
         let wanted = match identify {
-            Some(crate::args::IdentifyScope::All) => true,
-            Some(crate::args::IdentifyScope::Oep) => protocol == "oep",
+            Some(IdentifyScope::All) => p.probe.is_some(),
+            Some(IdentifyScope::Oep) => p.mode == "oep",
             None => false,
         };
-        if identify == Some(crate::args::IdentifyScope::Oep) && protocol == "wchlink" {
-            shown = "(--identify all)".to_owned();
-        }
-        if wanted && let (Some(sel), Some(exe)) = (&selector, &exe) {
+        let mut chip = vec!["-".to_owned(); 4];
+        let mut target = serde_json::Value::Null;
+        if wanted && let (Some(sel), Some(exe)) = (&p.probe, &exe) {
             match identify_at(exe, sel) {
-                Ok((t, text)) => {
+                Ok(t) => {
+                    let kib = |v: &serde_json::Value| {
+                        v.as_u64()
+                            .map_or_else(|| "-".to_owned(), |b| format!("{} KiB", b / 1024))
+                    };
+                    chip = vec![
+                        t["sku"]
+                            .as_str()
+                            .or(t["family"].as_str())
+                            .unwrap_or("unknown")
+                            .to_owned(),
+                        t["chip_id"].as_str().unwrap_or("-").to_owned(),
+                        kib(&t["flash_bytes"]),
+                        kib(&t["sram_bytes"]),
+                    ];
                     target = t;
-                    shown = text;
                 }
                 Err(e) => {
+                    // The table keeps it short; the whole message is in the JSON.
+                    chip[0] = if e.starts_with("name the pins") {
+                        "(no pins labelled)".to_owned()
+                    } else if e.contains("the request failed on the probe") {
+                        "(no answer)".to_owned()
+                    } else {
+                        format!("({})", e.chars().take(40).collect::<String>())
+                    };
                     target = serde_json::json!({ "error": e });
-                    shown = format!("({e})");
                 }
             }
         }
-        rows.push(vec![
-            protocol.clone(),
-            address.clone(),
-            shown,
-            label.clone(),
-        ]);
+        let mut row = vec![
+            p.address.clone(),
+            p.mode.to_owned(),
+            p.topology.clone(),
+            p.model.clone(),
+        ];
+        row.extend(chip);
+        rows.push(row);
         out.push(serde_json::json!({
-            "protocol": protocol,
-            "address": address,
-            "probe": selector,
-            "label": label,
-            "properties": p["properties"],
+            "address": p.address,
+            "mode": p.mode,
+            "topology": p.topology,
+            "model": p.model,
+            "label": p.label,
+            "properties": p.properties,
             "target": target,
         }));
     }
@@ -1129,10 +1252,10 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
                 "no probe, application or bootloader found (run `ch32rv doctor` for diagnostics)"
             );
         } else {
-            print!(
-                "{}",
-                crate::parse::table(&["PROTOCOL", "ADDRESS", "TARGET", "LABEL"], &rows)
-            );
+            let head = [
+                "ADDRESS", "MODE", "TOPOLOGY", "MODEL", "CHIP", "CHIP ID", "FLASH", "SRAM",
+            ];
+            print!("{}", crate::parse::table(&head, &rows));
             if identify.is_none() {
                 eprintln!(
                     "(`--identify` reads the chip at each OEP port without halting it; `--identify all` also attaches through each WCH-Link, which halts its target and sets its clock. An ADDRESS is a `--probe` selector as it is)"
@@ -1143,12 +1266,9 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
     }
 }
 
-/// The chip at `selector`, by `target info --json` in a child process (bounded to 60 s): the
-/// target block and a one-line text.
-fn identify_at(
-    exe: &std::path::Path,
-    selector: &str,
-) -> Result<(serde_json::Value, String), String> {
+/// The target block `target info --json` answers at `selector`, run in a child process (bounded
+/// to 60 s), with `sram_bytes` from wherever the path puts it.
+fn identify_at(exe: &std::path::Path, selector: &str) -> Result<serde_json::Value, String> {
     use std::io::Read;
     let mut child = std::process::Command::new(exe)
         .args([
@@ -1186,21 +1306,24 @@ fn identify_at(
     if v["ok"] != serde_json::Value::Bool(true) {
         return Err(v["error"]["msg"].as_str().unwrap_or("failed").to_owned());
     }
-    let t = if v["target"].is_object() {
+    // The WCH-Link path fills the envelope's `target` and `result.sram_bytes`; the OEP path
+    // `result.target` (with `sram_bytes`).
+    let mut t = if v["target"].is_object() {
         v["target"].clone()
     } else {
         v["result"]["target"].clone()
     };
-    let name = t["sku"]
-        .as_str()
-        .or(t["family"].as_str())
-        .unwrap_or("unknown")
-        .to_owned();
-    let id = t["chip_id"]
-        .as_str()
-        .map(|c| format!(" ({c})"))
-        .unwrap_or_default();
-    Ok((t, format!("{name}{id}")))
+    if t["sram_bytes"].is_null() {
+        let sram = if v["result"]["sram_bytes"].is_null() {
+            v["result"]["target"]["sram_bytes"].clone()
+        } else {
+            v["result"]["sram_bytes"].clone()
+        };
+        if let Some(m) = t.as_object_mut() {
+            m.insert("sram_bytes".to_owned(), sram);
+        }
+    }
+    Ok(t)
 }
 
 #[cfg(test)]
