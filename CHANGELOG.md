@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Fix: the Arduino monitor's `dmseq` / `dmdata` and `gdb` through a WCH-Link failed to open in 0.23.0 with "the probe names no ports". The Link's broker has no settings, and 0.23.0 asked it for `<port>.swdio` labels; a Link is now attached on its own debug lines as before.
+- (JA) 修正: 0.23.0 で、WCH-Link を通る Arduino の monitor(`dmseq` / `dmdata`)と `gdb` が "the probe names no ports" で開けなかった。Link のブローカーには設定が無いのに、0.23.0 は `<port>.swdio` のラベルを求めていた。Link は以前どおり自分の debug の線で接続する。
+
 ## 0.23.0 - 2026-10-23
 
 - (EN) **OEP probes need oep-probe-arduino 0.0.38 or later** (oep-spec cc82b5e, names and initial values). Settings values are read without an origin (a 7-byte head). A port is only the `S` of an `S.N` label (`S` a letter then letters, digits and `-`, 1-16 of them), kept as written and compared ignoring case, and a port's lines are found only by its labels. `any` is gone: an address names its port in full. The old `oep.probe.config` reading is dropped (no compatibility before v1). A probe whose labels name no port is driven with the new global `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]` (or `swio=`, `rx=`, `tx=`; a pin is the probe's channel name or number).
