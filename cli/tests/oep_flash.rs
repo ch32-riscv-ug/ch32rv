@@ -254,10 +254,39 @@ fn a_raw_upload_to_a_probe_not_on_usb_is_not_sent_to_its_oep_address() {
 }
 
 #[test]
+fn pins_given_by_role_flash_a_probe_that_names_no_ports() {
+    // No labels: `--pins` names the wire's pins by role, and the probe itself is the address.
+    let Some(f) = fake(&["--pty", "--profile", "rp2350-pins", "--target-id", V203]) else {
+        return;
+    };
+    let pty = f.at.strip_prefix("PTY ").unwrap();
+    let out = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
+        .arg("flash")
+        .arg(root().join("tests/fixtures/runtest-ch32v203.bin"))
+        .args([
+            "--probe",
+            &format!("port:{pty}"),
+            "--pins",
+            "swdio=0,swclk=1",
+            "--chip",
+            "CH32V203C8T6",
+            "--json",
+            "--non-interactive",
+            "--progress",
+            "none",
+        ])
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    assert!(out.status.success(), "{v}");
+    assert_eq!(v["result"]["flash"]["family"], "CH32V20x");
+}
+
+#[test]
 fn a_wire_the_host_picks_pins_for_without_labels_asks_for_them() {
     // A probe whose wire takes its pins from the host (role_channels: hundreds of pairs) and that
-    // keeps no labels: resolving the address must not scan (an rvswd scan
-    // may reset a target, host guide §5.3), so ch32rv stops and asks for the pins.
+    // names no ports: resolving the address must not scan (an rvswd scan may reset a target,
+    // host guide §5.3), so ch32rv stops and says how to name a port.
     let Some(f) = fake(&["--pty", "--profile", "rp2350-pins", "--target-id", V203]) else {
         return;
     };
@@ -265,5 +294,5 @@ fn a_wire_the_host_picks_pins_for_without_labels_asks_for_them() {
     let (ok, v) = flash_raw(&probe, None);
     assert!(!ok);
     let msg = v["error"]["msg"].as_str().unwrap_or_default();
-    assert!(msg.contains("name the pins"), "{v}");
+    assert!(msg.contains("names no ports"), "{v}");
 }

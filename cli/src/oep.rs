@@ -52,20 +52,17 @@ pub(crate) enum OepAddr {
 }
 
 impl OepAddr {
-    /// The port the address names (`oep://<probe>/<port>`), if it does (`any`: none named).
+    /// The port the address names (`oep://<probe>/<port>`), if it does.
     pub(crate) fn port(&self) -> Option<&str> {
         match self {
-            OepAddr::Probe { port, .. } | OepAddr::Net { port, .. } => {
-                port.as_deref().filter(|p| *p != "any")
-            }
+            OepAddr::Probe { port, .. } | OepAddr::Net { port, .. } => port.as_deref(),
             _ => None,
         }
     }
 
     /// en: The address is `oep://<probe>` alone, which names the probe itself (host guide §5.3:
     /// a segment left out is not "unspecified"), so no port is chosen for it - not even the only
-    /// one: a port is named, or searched with `any` written. ja: `oep://<probe>` だけは probe
-    /// 自身。ポートは選ばない(名指すか `any` と書く)。
+    /// one. ja: `oep://<probe>` だけは probe 自身。口は選ばない。
     pub(crate) fn whole_probe(&self) -> bool {
         matches!(
             self,
@@ -500,9 +497,10 @@ fn connect_ordered(
 
 /// Resolve `oep://<probe>[/<port>[/<target>]]` to the probe's serial port.
 pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
-    // oep://<probe>[/<port>[/<target>]] (host guide §5.3): segments of a-z 0-9 - . only; `any`
-    // is a wildcard written explicitly. `oep-net://` names the same, reached over the network
-    // only (the unit id found by DNS-SD, whatever the IP; `oep://` prefers USB).
+    // oep://<probe>[/<port>[/<target>]] (host guide §5.3): segments of letters, digits, - and .
+    // only, compared ignoring ASCII case; written in full (no wildcard). `oep-net://` names the
+    // same, reached over the network only (the unit id found by DNS-SD, whatever the IP; `oep://`
+    // prefers USB).
     let (rest, net_only) = match url.strip_prefix("oep-net://") {
         Some(r) => (r, true),
         None => (url.strip_prefix("oep://").unwrap_or(url), false),
@@ -515,27 +513,21 @@ pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
     };
     if segs.len() > 3 || !segs.iter().all(|s| ok(s)) {
         return Err(format!(
-            "`{url}` is not oep://<probe>[/<port>[/<target>]] (a-z 0-9 - . only)"
+            "`{url}` is not oep://<probe>[/<port>[/<target>]] (letters, digits, - and . only)"
+        ));
+    }
+    if segs.iter().any(|s| s.eq_ignore_ascii_case("any")) {
+        return Err(format!(
+            "`{url}`: an address is written in full (`any` is gone, host guide §5.3); `ch32rv target list` lists the ports"
         ));
     }
     let id = segs[0];
     let whole = segs.len() == 1;
     let port = segs.get(1).map(|s| (*s).to_owned());
-    let target = segs
-        .get(2)
-        .filter(|t| **t != "any")
-        .map(|s| (*s).to_ascii_lowercase());
+    let target = segs.get(2).map(|s| (*s).to_ascii_lowercase());
     let devs = if net_only { Vec::new() } else { oep_devices() };
     let dev = if net_only {
         None
-    } else if id == "any" {
-        if devs.len() > 1 {
-            return Err(format!(
-                "oep://any matches {} OEP probes: name one by its unit id",
-                devs.len()
-            ));
-        }
-        devs.into_iter().next()
     } else {
         // unit_id against the USB serial, case aside (transports §3).
         devs.into_iter()
@@ -846,17 +838,110 @@ impl From<PlaceError> for String {
     }
 }
 
+/// en: `--pins`: the pins given by role (`swdio`, `swclk`, `swio`, `nrst`, `rx`, `tx`), each a
+/// channel name or number, used instead of a port's labels. Set once by `main`.
+/// ja: `--pins`。役目ごとのピン(channel の名前か番号)。口のラベルの代わりに使う。
+pub(crate) static PINS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+const PIN_ROLES: [&str; 6] = ["swdio", "swclk", "swio", "nrst", "rx", "tx"];
+
+/// `role=pin,...` as (role, pin); an unknown role, a role twice or an empty pin is an error.
+pub(crate) fn parse_pins(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for part in text.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let Some((role, pin)) = part.split_once('=') else {
+            return Err(format!("--pins: `{part}` is not role=pin"));
+        };
+        let role = role.trim().to_ascii_lowercase();
+        let pin = pin.trim();
+        if !PIN_ROLES.contains(&role.as_str()) {
+            return Err(format!(
+                "--pins: unknown role `{role}` (roles: {})",
+                PIN_ROLES.join(", ")
+            ));
+        }
+        if pin.is_empty() || out.iter().any(|(r, _)| *r == role) {
+            return Err(format!("--pins: `{role}` given empty or twice"));
+        }
+        out.push((role, pin.to_owned()));
+    }
+    if out.is_empty() {
+        return Err("--pins: no pins given".to_owned());
+    }
+    Ok(out)
+}
+
+/// en: The channel of `--pins`' `role`: a number as it is, else the channel whose name fn 0's
+/// describe gives (`channel_name`, core §7.5), ASCII case aside. ja: `--pins` の役目の channel。
+fn pin_channel(p: &mut Probe, role: &str) -> Result<Option<u16>, String> {
+    let Some((_, pin)) = PINS.get().and_then(|v| v.iter().find(|(r, _)| r == role)) else {
+        return Ok(None);
+    };
+    if let Ok(n) = pin.parse::<u16>() {
+        return Ok(Some(n));
+    }
+    let names = p.describe(oep_core::FN).map_err(|e| e.to_string())?;
+    names
+        .iter()
+        .filter(|t| t.tag == oep_core::tlvs::describe::CHANNEL_NAME && t.value.len() > 2)
+        .find(|t| String::from_utf8_lossy(&t.value[2..]).eq_ignore_ascii_case(pin))
+        .map(|t| Some(u16::from_le_bytes([t.value[0], t.value[1]])))
+        .ok_or_else(|| format!("--pins: the probe has no pin `{pin}` (its channel names)"))
+}
+
+/// en: The place `--pins` gives (no labels read): `swio` makes a one-wire place, `swdio` with
+/// `swclk` a two-wire one. ja: `--pins` の場所(ラベルを読まない)。
+fn place_from_pins(p: &mut Probe, chip: Option<&str>) -> Result<Place, PlaceError> {
+    let swio = pin_channel(p, "swio")?;
+    let swdio = pin_channel(p, "swdio")?;
+    let swclk = pin_channel(p, "swclk")?;
+    let (wire, pins) = match (swio, swdio, swclk) {
+        (Some(d), None, None) => (WireKind::Swio, (d, 0xFFFF)),
+        (None, Some(d), Some(c)) => (WireKind::Rvswd, (d, c)),
+        (None, Some(d), None) => (WireKind::Swio, (d, 0xFFFF)),
+        _ => {
+            return Err(PlaceError {
+                kind: ErrorKind::Usage,
+                msg: "--pins: give swio=<pin> (one wire) or swdio=<pin>,swclk=<pin> (two)"
+                    .to_owned(),
+            });
+        }
+    };
+    let idle_clock = (wire == WireKind::Rvswd && chip_idles_low(chip))
+        .then_some(ch32rv_oep::registry::wire_rvswd::enums::idle_clock::LOW);
+    Ok(Place {
+        wire,
+        pins: Some(pins),
+        max_speed: None,
+        idle_clock,
+        mechanism: None,
+    })
+}
+
+/// Whether `--chip` names a family whose rvswd line must idle low.
+fn chip_idles_low(chip: Option<&str>) -> bool {
+    chip.is_some_and(|c| {
+        ch32rv_target::Db::builtin()
+            .families_for_chip_name(c)
+            .iter()
+            .any(|f| idles_low(f))
+    })
+}
+
 /// en: Choose the port without attaching (host guide §5.3: resolving an address narrows probe and
 /// port by names only and stops unless one is left; an attach to search could wake and reset a
-/// target on rvswd). The port the address names; else the only port the labels name; else the
-/// probe's one unnamed port. Several ports and none named: an error listing them. The wire comes
-/// from the port's labels (`S.swio`: one wire, `S.swclk`: two), else from `--chip`.
-/// ja: attach せずにポートを選ぶ。アドレスのポート、無ければラベルが名指す唯一のポート、それも無ければ
-/// 名前の無い 1 つのポート。複数あって名指しが無ければ一覧つきで止める。
+/// target on rvswd). The port the address names (ASCII case aside, used as its labels write it);
+/// an address with no port (a serial port, `tcp:`) takes the probe's one named port, as a
+/// convenience of this tool. No port named by the labels: nothing to choose. The wire comes from
+/// the port's labels (`S.swio`: one wire, `S.swclk`: two), else from `--chip`.
+/// ja: attach せずに口を選ぶ。アドレスの口(大小文字を区別しない)、口の無いアドレスなら名前つきの
+/// 口がちょうど 1 つのときそれ。名前つきの口が無ければ選べない。
 fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place, PlaceError> {
-    use ch32rv_oep::config::{find_line, firmware_labels, labels, ports_named};
+    use ch32rv_oep::config::{find_line, labels, ports_named};
+    if PINS.get().is_some() {
+        return place_from_pins(p, chip);
+    }
     let labels = labels(p).map_err(|e| e.to_string())?;
-    let firmware = firmware_labels(p).map_err(|e| e.to_string())?;
     let ports = ports_named(&labels);
     if a.whole_probe() {
         return Err(PlaceError {
@@ -865,15 +950,13 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
         });
     }
     let port = match a.port() {
-        Some(name) => {
-            let name = name.to_ascii_lowercase();
-            if !ports.contains(&name) {
+        Some(name) => match ports.iter().find(|p| p.eq_ignore_ascii_case(name)) {
+            Some(p) => p.clone(),
+            None => {
                 return Err(PlaceError {
                     kind: ErrorKind::DeviceNotFound,
                     msg: if ports.is_empty() {
-                        format!(
-                            "the probe names no ports (no `{name}.swdio`-style labels): use oep://<probe> alone"
-                        )
+                        format!("the probe names no ports, so not `{name}`: {NO_PORTS_HINT}")
                     } else {
                         format!(
                             "the probe has no port `{name}` (its ports: {})",
@@ -882,11 +965,15 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
                     },
                 });
             }
-            Some(name)
-        }
+        },
         None => match ports.as_slice() {
-            [] => None,
-            [one] => Some(one.clone()),
+            [one] => one.clone(),
+            [] => {
+                return Err(PlaceError {
+                    kind: ErrorKind::Usage,
+                    msg: format!("the probe names no ports: {NO_PORTS_HINT}"),
+                });
+            }
             many => {
                 return Err(PlaceError::from(format!(
                     "the probe has {} ports ({}): name one, oep://<probe>/<port>",
@@ -896,7 +983,7 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
             }
         },
     };
-    let line = |name: &str| find_line(&labels, &firmware, port.as_deref(), name);
+    let line = |name: &str| find_line(&labels, &port, name);
     let has = |p: &mut Probe, k: WireKind| p.interface(k.interface()).is_ok();
     let wire = match (line("swio"), line("swclk")) {
         (Some(_), None) if has(p, WireKind::Swio) => WireKind::Swio,
@@ -979,17 +1066,21 @@ fn attach_at(
 /// Why `oep://<probe>` alone picks no port, with the addresses that would.
 fn whole_probe_msg(ports: &[String]) -> String {
     if ports.is_empty() {
-        "oep://<probe> names the probe itself, not a port: its one unnamed port is \
-         oep://<probe>/any"
-            .to_owned()
+        format!(
+            "oep://<probe> names the probe itself, not a port, and it names no ports: {NO_PORTS_HINT}"
+        )
     } else {
         format!(
             "oep://<probe> names the probe itself, not a port: name one, oep://<probe>/<port> \
-             (its ports: {}), or write oep://<probe>/any",
+             (its ports: {})",
             ports.join(", ")
         )
     }
 }
+
+/// What to do when a probe names no ports (host guide §5.3: only `S.N` labels name ports).
+const NO_PORTS_HINT: &str = "label its pins `<port>.swdio` / `<port>.swclk` (or `<port>.swio`) \
+     with `oep settings set <probe> core channel.<pin>.label=<port>.swdio ...`";
 
 /// The DB family of the attached target, checked against `--chip` (fail-closed).
 fn family(cli: &Cli, cmd: &str, chip_id: Option<u32>) -> Result<String, ExitCode> {
@@ -1710,46 +1801,58 @@ pub(crate) fn with_attached(
     with_attached_reset(cli, cmd, a, halt, cli.connect_under_reset, f)
 }
 
+/// en: The port an address names among the probe's named ports (ASCII case aside), or its one
+/// named port when the address names none (a serial port, `tcp:`). ja: アドレスの口、または唯一の口。
+fn port_of(ports: &[String], a: &OepAddr) -> Option<String> {
+    match a.port() {
+        Some(name) => ports.iter().find(|p| p.eq_ignore_ascii_case(name)).cloned(),
+        None => match ports {
+            [one] => Some(one.clone()),
+            _ => None,
+        },
+    }
+}
+
 /// en: The fixture UART's (rx, tx) channels from the port's labels `<port>.rx` / `<port>.tx`
-/// (the port as for a target; none named and one port: that one). A port with `rx` alone is
-/// received only (the target's RX not wired). ja: UART の rx / tx の channel。rx だけなら受信だけ。
+/// (the port as for a target). A port with `rx` alone is received only (the target's RX not
+/// wired). ja: UART の rx / tx の channel。rx だけなら受信だけ。
 fn uart_pins(p: &mut Probe, a: &OepAddr) -> Option<(u16, Option<u16>)> {
-    use ch32rv_oep::config::{find_line, firmware_labels, labels, ports_named};
+    use ch32rv_oep::config::{find_line, labels, ports_named};
+    if PINS.get().is_some() {
+        let rx = pin_channel(p, "rx").ok()??;
+        return Some((rx, pin_channel(p, "tx").ok().flatten()));
+    }
     let labels = labels(p).ok()?;
-    let firmware = firmware_labels(p).unwrap_or_default();
-    let ports = ports_named(&labels);
-    let port = match a.port() {
-        Some(port) => Some(port.to_ascii_lowercase()),
-        None if ports.len() <= 1 => ports.first().cloned(),
-        None => return None,
-    };
-    let line = |name| find_line(&labels, &firmware, port.as_deref(), name);
+    let port = port_of(&ports_named(&labels), a)?;
+    let line = |name| find_line(&labels, &port, name);
     line("rx").map(|rx| (rx, line("tx")))
 }
 
 /// How long the NRST line is held low on an attach under reset (the host's own value).
 const NRST_HOLD_MS: u16 = 20;
 
-/// en: The port's NRST line by the label convention (host guide §5.3): `<port>.nrst`, or a bare
-/// `nrst` on a probe with at most one port, or the firmware's label. ja: ポートの NRST の線。
+/// en: The port's NRST line by the label convention (host guide §5.3): `<port>.nrst`.
+/// ja: 口の NRST の線(ラベル `<port>.nrst`)。
 fn nrst_line(p: &mut Probe, a: &OepAddr) -> Result<u16, String> {
-    use ch32rv_oep::config::{find_line, firmware_labels, labels, ports_named};
+    use ch32rv_oep::config::{find_line, labels, ports_named};
+    if PINS.get().is_some() {
+        return pin_channel(p, "nrst")?
+            .ok_or_else(|| "--pins: give nrst=<pin> for an attach under reset".to_owned());
+    }
     let labels = labels(p).map_err(|e| e.to_string())?;
-    let firmware = firmware_labels(p).map_err(|e| e.to_string())?;
     let ports = ports_named(&labels);
-    let port = match a.port() {
-        Some(port) => Some(port.to_ascii_lowercase()),
-        None if ports.len() <= 1 => ports.first().cloned(),
-        None => {
-            return Err(format!(
+    let Some(port) = port_of(&ports, a) else {
+        return Err(if ports.is_empty() {
+            format!("the probe names no ports: {NO_PORTS_HINT}")
+        } else {
+            format!(
                 "name the port (`oep://<probe>/<port>`) to find its NRST line (ports: {})",
                 ports.join(", ")
-            ));
-        }
+            )
+        });
     };
-    find_line(&labels, &firmware, port.as_deref(), "nrst").ok_or_else(|| match &port {
-        Some(s) => format!("no NRST line for port `{s}`: set a label `{s}.nrst` on its channel"),
-        None => "no NRST line: set a label `nrst` on its channel".to_owned(),
+    find_line(&labels, &port, "nrst").ok_or_else(|| {
+        format!("no NRST line for port `{port}`: set a label `{port}.nrst` on its channel")
     })
 }
 
@@ -2361,7 +2464,7 @@ pub(crate) fn probe_info(cli: &Cli, a: &OepAddr) -> ExitCode {
         println!(
             "ports:      {}",
             if ports.is_empty() {
-                "(none named: `any`)".to_owned()
+                "(none named)".to_owned()
             } else {
                 ports.join(", ")
             }

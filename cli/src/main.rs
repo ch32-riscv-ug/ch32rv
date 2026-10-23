@@ -178,6 +178,22 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         std::sync::atomic::Ordering::Relaxed,
     );
     session::RELEASE_DM.store(cli.release_dm, std::sync::atomic::Ordering::Relaxed);
+    if let Some(pins) = &cli.pins {
+        match oep::parse_pins(pins) {
+            Ok(v) => {
+                let _ = oep::PINS.set(v);
+            }
+            Err(m) => {
+                return cmd_probe::fail(
+                    cli,
+                    canonical_name(&cli.command),
+                    ch32rv_contract::ErrorKind::Usage,
+                    m,
+                    None,
+                );
+            }
+        }
+    }
     session::RESUME_OTHER_HARTS.store(
         !matches!(cli.command, Command::Dbg(_))
             || matches!(cli.command, Command::Dbg(DbgCmd::Resume { all: true })),

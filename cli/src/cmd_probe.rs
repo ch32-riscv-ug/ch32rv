@@ -595,15 +595,6 @@ pub(crate) fn parse_selector(cli: &Cli, cmd: &str) -> Result<Option<Selector>, E
         },
         other => other,
     };
-    if matches!(sel, Selector::Index(_)) && cli.non_interactive {
-        return Err(fail(
-            cli,
-            cmd,
-            ErrorKind::Usage,
-            "index: selectors are rejected under --non-interactive (not stable across replug)",
-            Some("use VID:PID:SERIAL, serial:, name:, or usb:<bus>-<ports>"),
-        ));
-    }
     Ok(Some(sel))
 }
 

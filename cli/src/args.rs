@@ -26,7 +26,7 @@ pub struct Cli {
 
     // en: Global options (docs/cli.ja.md §3.1).
     // ja: グローバルオプション(docs/cli.ja.md §3.1)。
-    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | usb:<bus>-<ports> | index:<n> | an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>/<port>, hid://<bus>-<ports>, ch32rv-app://<id>)
+    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | usb:<bus>-<ports> | an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>/<port>, oep-net://<probe>/<port>, hid://<bus>-<ports>, ch32rv-app://<id>)
     #[arg(long, global = true, env = "CH32RV_PROBE")]
     pub probe: Option<String>,
     /// Target SKU or family (auto-detected when omitted; fail-closed on ambiguity)
@@ -45,6 +45,11 @@ pub struct Cli {
     /// that runs the target (H417: core 1 back to deep sleep, no debugger state left behind)
     #[arg(long, global = true)]
     pub release_dm: bool,
+    /// An OEP probe's pins by role, for a probe whose labels name no port: swdio=<pin>,swclk=<pin>
+    /// (or swio=<pin>), and nrst / rx / tx; a pin is the probe's channel name (GPIO0) or number.
+    /// Used instead of the port's labels
+    #[arg(long, global = true, value_name = "ROLE=PIN,...")]
+    pub pins: Option<String>,
     /// Print the result as JSON on stdout
     #[arg(long, global = true)]
     pub json: bool,

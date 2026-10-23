@@ -482,16 +482,18 @@ fn ports_and_lines_are_read_from_the_labels_without_the_lock() {
     let Some(f) = fake(
         "cobs",
         &[
-            // Pins the host picks: a probe with fixed labels on its wire pins takes no user label
-            // there (core §13.4).
+            // Pins the host picks; a label written in capitals keeps them, and a plain pin name
+            // names no port.
             "--profile",
             "rp2350-pins",
             "--label",
-            "2=x035.swdio",
+            "2=X035.swdio",
             "--label",
             "3=x035.swclk",
             "--label",
             "4=spare.swdio",
+            "--label",
+            "5=NRST",
             "--target-id",
             "0x035e0601",
         ],
@@ -502,9 +504,8 @@ fn ports_and_lines_are_read_from_the_labels_without_the_lock() {
     // No session opened: all of this is lock-free.
     let labels = ch32rv_oep::config::labels(&mut p).unwrap();
     let ports = ch32rv_oep::config::ports_named(&labels);
-    assert_eq!(ports, ["x035", "spare"], "{labels:?}");
-    let firmware = ch32rv_oep::config::firmware_labels(&mut p).unwrap();
-    let line = |port, name| ch32rv_oep::config::find_line(&labels, &firmware, Some(port), name);
+    assert_eq!(ports, ["X035", "spare"], "{labels:?}");
+    let line = |port, name| ch32rv_oep::config::find_line(&labels, port, name);
     assert_eq!(line("x035", "swdio"), Some(2));
     assert_eq!(line("x035", "swclk"), Some(3));
     assert_eq!(line("spare", "swclk"), None);

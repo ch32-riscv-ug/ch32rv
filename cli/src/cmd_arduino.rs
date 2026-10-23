@@ -167,11 +167,11 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
 }
 
 /// en: The probe's ports as discovery ports (host guide §5.3): one `oep://<id>/<port>` per port
-/// its saved labels name (the `S` of `S.swdio`-style labels), or `oep://<id>/any` for a probe
-/// whose one port is unnamed; `props` added to each one's properties. Read lock-free, without
-/// attaching: the target is not known until a tool attaches.
-/// ja: probe のポートを discovery の port として出す。ラベルが名指すポートごとに 1 つ、名前が無ければ
-/// `oep://<id>/any`(名前の無い 1 つの口)。attach しないので target は分からない。
+/// its labels name (the `S` of the `S.N` labels, as written); a probe naming none has no port to
+/// list. `props` added to each one's properties. Read lock-free, without attaching: the target
+/// is not known until a tool attaches.
+/// ja: probe の口を discovery の port として出す。ラベルが名指す口ごとに 1 つ。名前つきの口が
+/// 無い probe は出さない。attach しないので target は分からない。
 fn port_entries(
     p: &mut ch32rv_oep::session::Probe,
     scheme: &str,
@@ -180,41 +180,23 @@ fn port_entries(
 ) -> Option<Vec<Value>> {
     let labels = ch32rv_oep::config::labels(p).ok()?;
     let ports = ch32rv_oep::config::ports_named(&labels);
-    let entry = |port: Option<&str>| {
+    let entry = |port: &str| {
         let mut properties = json!({ "port_name": port });
         if let (Some(m), Some(extra)) = (properties.as_object_mut(), props.as_object()) {
             for (k, v) in extra {
                 m.insert(k.clone(), v.clone());
             }
         }
-        let (address, label, hw) = match port {
-            Some(s) => (
-                format!("{scheme}://{id}/{s}"),
-                format!("{s} on OEP probe {id}"),
-                format!("{id}/{s}"),
-            ),
-            // The one unnamed port: `any` selects it (host guide §5.3; `oep://<probe>` alone
-            // is the probe itself).
-            None => (
-                format!("{scheme}://{id}/any"),
-                format!("OEP probe {id}"),
-                id.to_owned(),
-            ),
-        };
         json!({
-            "address": address,
-            "label": label,
+            "address": format!("{scheme}://{id}/{port}"),
+            "label": format!("{port} on OEP probe {id}"),
             "protocol": "oep",
             "protocolLabel": "OEP probe",
-            "hardwareId": hw,
+            "hardwareId": format!("{id}/{port}"),
             "properties": properties,
         })
     };
-    Some(if ports.is_empty() {
-        vec![entry(None)]
-    } else {
-        ports.iter().map(|s| entry(Some(s))).collect()
-    })
+    Some(ports.iter().map(|s| entry(s)).collect())
 }
 
 /// WCH-Links as `wchlink://<serial>`, or `wchlink://usb-<bus>-<ports>` for one without a serial.

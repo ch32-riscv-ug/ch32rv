@@ -1097,7 +1097,7 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
             probe: Some(probe),
         });
     }
-    // OEP probes on USB: one place per port their labels name (`any` when none is named).
+    // OEP probes on USB: one place per port their labels name (none: the probe is not a place).
     let mut oep = crate::oep::oep_devices();
     oep.sort_by_key(|d| topology_key(&d.topology()));
     let mut on_usb = Vec::new();
@@ -1108,11 +1108,7 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
             .and_then(|mut p| ch32rv_oep::config::labels(&mut p).ok())
             .map(|l| ch32rv_oep::config::ports_named(&l))
             .unwrap_or_default();
-        let names: Vec<String> = if ports.is_empty() {
-            vec!["any".to_owned()]
-        } else {
-            ports
-        };
+        let names = ports;
         for port in names {
             let address = format!("oep://{id}/{port}");
             places.push(Place {

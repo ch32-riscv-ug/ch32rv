@@ -7,9 +7,9 @@
 //! name:<alias>          alias from the config file
 //! usb:<bus>-<ports>     USB topology (physical port on a fixed hub; for HIL lanes)
 //! tcp:<host:port>       an OEP endpoint over TCP (a probe's TCP transport, a ch32rv broker)
-//! port:<address>        an IDE port address: a probe's serial port (/dev/ttyACM0, COM3),
-//!                       wchlink://<serial> or hid://<topology>
-//! index:<n>             enumeration order (discouraged; rejected under --non-interactive)
+//! <address>             an IDE port address as it is (also behind `port:`): a probe's serial
+//!                       port (/dev/ttyACM0, COM3), wchlink://<serial>, oep://..., oep-net://...,
+//!                       hid://<topology>, ch32rv-app://..., ch32rv-isp://...
 //! ```
 
 use std::str::FromStr;
@@ -37,8 +37,6 @@ pub enum Selector {
     /// (`/dev/ttyACM0`, `COM3`), or discovery's `oep://...` / `hid://<topology>` /
     /// `ch32rv-app://...` (`wchlink://<serial>` is [`Selector::Serial`]).
     Port(String),
-    /// `index:<n>` (discouraged; rejected under `--non-interactive`)
-    Index(usize),
 }
 
 /// Meaning of the third field of `VID:PID[:SERIAL]`.
@@ -56,12 +54,10 @@ pub enum SerialFilter {
 pub enum SelectorParseError {
     #[error("empty selector")]
     Empty,
-    #[error("invalid index: `{0}`")]
-    InvalidIndex(String),
     #[error("empty value after `{0}:`")]
     EmptyValue(&'static str),
     #[error(
-        "`{0}` is not a probe selector: use VID:PID[:SERIAL] (hex, e.g. 1a86:8010), serial:<sn>, name:<alias>, usb:<bus>-<ports>, tcp:<host:port>, index:<n>, or an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>], hid://<bus>-<ports>)"
+        "`{0}` is not a probe selector: use VID:PID[:SERIAL] (hex, e.g. 1a86:8010), serial:<sn>, name:<alias>, usb:<bus>-<ports>, tcp:<host:port>, or an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>], hid://<bus>-<ports>)"
     )]
     Unrecognized(String),
 }
@@ -96,12 +92,6 @@ impl FromStr for Selector {
         }
         if let Some(r) = address(s) {
             return r;
-        }
-        if let Some(v) = s.strip_prefix("index:") {
-            return v
-                .parse::<usize>()
-                .map(Selector::Index)
-                .map_err(|_| SelectorParseError::InvalidIndex(v.to_owned()));
         }
 
         // en: VID:PID[:SERIAL], when the first two fields are 1-4 hex digits each; a serial may
@@ -171,7 +161,7 @@ impl Selector {
     /// `Name` never matches here: aliases must be resolved to another selector first.
     /// ja: 列挙順 `index` の device にこの selector が一致するか。`Name` はここでは一致しない
     /// (別名は先に別の selector へ解決しておく)。
-    pub fn matches(&self, dev: &crate::UsbDeviceInfo, index: usize) -> bool {
+    pub fn matches(&self, dev: &crate::UsbDeviceInfo, _index: usize) -> bool {
         match self {
             Selector::UsbId { vid, pid, serial } => {
                 dev.vid() == *vid
@@ -204,7 +194,6 @@ impl Selector {
                 let want = normalize_port(p);
                 dev.serial_ports().iter().any(|q| normalize_port(q) == want)
             }
-            Selector::Index(i) => index == *i,
             Selector::Name(_) | Selector::Tcp(_) => false,
         }
     }
@@ -382,7 +371,6 @@ mod tests {
             "usb:3-1.4.2".parse::<Selector>().unwrap(),
             Selector::Topology("3-1.4.2".into())
         );
-        assert_eq!("index:2".parse::<Selector>().unwrap(), Selector::Index(2));
         assert_eq!(
             "port:/dev/ttyACM0".parse::<Selector>().unwrap(),
             Selector::Port("/dev/ttyACM0".into())
@@ -420,8 +408,8 @@ mod tests {
             Err(SelectorParseError::Unrecognized(_))
         ));
         assert!(matches!(
-            "index:x".parse::<Selector>(),
-            Err(SelectorParseError::InvalidIndex(_))
+            "index:2".parse::<Selector>(),
+            Err(SelectorParseError::Unrecognized(_))
         ));
         assert!(matches!(
             "serial:".parse::<Selector>(),

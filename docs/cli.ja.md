@@ -153,9 +153,10 @@ chip = "CH32V203C8T6"
                         wchlink://<serial>、oep://<probe>[/<port>]、oep-net://<probe>[/<port>]、hid://<bus>-<ports>、
                         ch32rv-app://<id>
   port:<住所>           上と同じ(廃止予定。ArduinoCore-CH32RV の recipe が送ってきた形)
-  index:<n>             列挙順(非推奨)。--non-interactive では拒否
 ```
 
+- **`index:` は廃止(2026-10-23)**: 一覧の順番で選ぶ書き方は、機器の増減で別の probe を指しうるので外した。`probe list` / `target list` の ADDRESS をそのまま渡す。
+- **OEP の口と `--pins`(2026-10-23、oep-spec cc82b5e)**: 口は `channel.{}.label` の `S.N` だけが名付ける(`S` は英字で始まる英字・数字・`-` の 1〜16 文字、`N` は英字・数字・`-`・`_`)。ラベルは書いたとおりの大小文字で表示し、比べるときは ASCII の大小文字を区別しない。名前の無い口と `any` は無くなった(住所はいつも全部を書く)。名前つきの口が無い probe は `target list` と discovery に出ない。住所に口の無いとき(シリアルポート、`tcp:`)は、名前つきの口がちょうど 1 つならそれを使う(道具の便利機能)。ラベルの無い probe には `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]`(1 線は `swio=<pin>`、UART は `rx` / `tx`)でピンを直接指定する。ピンは probe の channel の名前(fn 0 の describe の `channel_name`、`GPIO0` など)か番号。`--pins` を付けるとラベルは読まず、`oep://<probe>`(probe 自身)とも組み合わせられる。
 - **OEP の経路(2026-10-23)**: `oep://<unit id>[/<port>]` は USB にあれば USB、無ければネットワーク(DNS-SD で unit id を探す)。`oep-net://<unit id>[/<port>]` はネットワークだけを使う(IP が変わっても unit id で届く)。mDNS の届かない所は `tcp:<host>:<port>`。`probe list` / `target list` / discovery は、USB に無い OEP の probe を `oep-net://` で出し、TOPOLOGY は `network`、MODEL は describe の model(`OEP probe (esp32)`)。両方から届く probe は `oep://` と USB の位置の 1 行で、JSON の `tcp` にネットワークの経路も出す。
 - **IDE の住所はそのまま(2026-10-23)**: IDE の port の住所は、形で見分けられる(`://` を含む URL、`/` で始まる path、`COM<n>`、`\\.\…`)ので、`port:` を付けずにそのまま `--probe` / `--app-device` に渡す。`port:` を付けた形も当面は同じに扱うが、ArduinoCore-CH32RV の recipe が `--probe {upload.port.address}` に移ったら外す。`wchlink://<serial>` は `serial:`、`wchlink://usb-<bus>-<ports>` は `usb:` と同じ。以前は `port:` 無しの `wchlink://…` が VID:PID と読まれて exit 2 になっていた。
 
