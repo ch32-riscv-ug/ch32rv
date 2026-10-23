@@ -1026,6 +1026,39 @@ fn idles_low(family: &str) -> bool {
     family.eq_ignore_ascii_case("CH32L103")
 }
 
+/// en: An attach under reset, tried again: whether the hart is caught right after NRST is
+/// released is a race against the firmware (measured on CH32L103, 2026-10-23: one try in several
+/// got through), and while the family is unknown the rvswd rest is too - CH32L103's debug module
+/// resets while the line rests high - so each round tries the probe's own rest and then low.
+/// ja: リセットを押さえたままの attach をやり直す。離した直後に捕まえられるかは firmware との競争で、
+/// 族が分からない間は rvswd の休ませ方も分からない(L103 は high だと DM がリセットされる)ので、
+/// 毎回、probe の休ませ方と low を試す。
+fn attach_under_reset_retrying(
+    p: &mut Probe,
+    wire: WireKind,
+    options: AttachOptions,
+) -> Result<ch32rv_oep::target::Attached, ch32rv_oep::session::OepError> {
+    const ROUNDS: usize = 4;
+    let low = ch32rv_oep::registry::wire_rvswd::enums::idle_clock::LOW;
+    let rests: Vec<Option<u8>> = match (wire, options.idle_clock) {
+        (WireKind::Rvswd, None) => vec![None, Some(low)],
+        (_, rest) => vec![rest],
+    };
+    let mut last = None;
+    for _ in 0..ROUNDS {
+        for rest in &rests {
+            let mut o = options;
+            o.idle_clock = *rest;
+            match attach(p, wire, o) {
+                Ok(at) => return Ok(at),
+                Err(e) => last = Some(e),
+            }
+        }
+    }
+    Err(last
+        .unwrap_or_else(|| ch32rv_oep::session::OepError::Malformed("no attach was tried".into())))
+}
+
 /// en: Attach; when the target that answers needs its rvswd line idling low ([`idles_low`]), the
 /// place did not know it (no `--chip`, no family in the address), and the connection does not
 /// rest low - the probe's setting `rest.{}` (oep.wire.rvswd) turned its own choice off, or an older probe
@@ -1894,7 +1927,12 @@ pub(crate) fn with_attached_reset(
                 }
             }
         }
-        let at = match attach_at(&mut p, wire, options) {
+        let at = if under_reset {
+            attach_under_reset_retrying(&mut p, wire, options)
+        } else {
+            attach_at(&mut p, wire, options)
+        };
+        let at = match at {
             Ok(a) => a,
             Err(e) => return oep_fail(cli, cmd, e),
         };

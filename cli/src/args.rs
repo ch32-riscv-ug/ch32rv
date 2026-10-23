@@ -323,6 +323,10 @@ pub struct RecoverArgs {
     /// method. `auto`: diagnose, then apply the recommendation (asks for confirmation).
     #[arg(long, value_enum)]
     pub method: Option<RecoverMethod>,
+    /// An OEP probe's `--method nrst`: write this image (ELF / HEX / bin) instead of leaving the
+    /// code flash erased
+    #[arg(long, value_name = "FILE")]
+    pub image: Option<std::path::PathBuf>,
 }
 
 // en: §4.2 probe. / ja: §4.2 probe。

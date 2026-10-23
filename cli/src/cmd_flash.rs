@@ -1703,7 +1703,7 @@ pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
     ) {
         match crate::oep::addr(cli, "recover") {
             Ok(Some(a)) if args.method == Some(RecoverMethod::Nrst) => {
-                return recover_nrst_oep(cli, &a);
+                return recover_nrst_oep(cli, &a, args.image.as_deref());
             }
             Ok(Some(_)) => {
                 return fail(
@@ -1738,8 +1738,39 @@ pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
 /// ja: OEP の probe での `recover --method nrst`。スロットの NRST の線(label)をかけながら止める
 /// attach で、firmware が走る前に止め、保護を外す(全消去)か、code flash を page 消去する。
 /// リセットベクタ以外で止まったら、NRST が配線されていないか RST_MODE で GPIO にされている可能性を言う。
-fn recover_nrst_oep(cli: &Cli, a: &crate::oep::OepAddr) -> ExitCode {
+fn recover_nrst_oep(
+    cli: &Cli,
+    a: &crate::oep::OepAddr,
+    image_path: Option<&std::path::Path>,
+) -> ExitCode {
     const CMD: &str = "recover";
+    // The image to leave behind, read before anything is touched.
+    let image = match image_path {
+        Some(path) => match std::fs::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| {
+                parse_image(
+                    &b,
+                    ch32rv_contract::policy::ImageFormat::Auto,
+                    path,
+                    None,
+                    CODE_FLASH_START,
+                )
+                .map_err(|e| e.to_string())
+            }) {
+            Ok(i) => Some(i),
+            Err(e) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    format!("--image {}: {e}", path.display()),
+                    None,
+                );
+            }
+        },
+        None => None,
+    };
     if let Err(why) = confirm_destructive(
         cli,
         "ERASE the target's code flash, attaching under its NRST line?",
@@ -1823,26 +1854,74 @@ fn recover_nrst_oep(cli: &Cli, a: &crate::oep::OepAddr) -> ExitCode {
                         None,
                     );
                 }
-                for i in 0..flash_bytes / profile.page_size {
-                    let addr = CODE_FLASH_START + i * profile.page_size;
-                    if let Err(e) = dm.flash_page_erase(addr, profile.mode) {
-                        return fail(
-                            cli,
-                            CMD,
-                            ErrorKind::TransferFailed,
-                            format!("page erase failed at 0x{addr:08x}: {e}"),
-                            None,
-                        );
+                // en: The reset vector's page first, so the firmware that kept the debugger out
+                // no longer starts whatever happens next (a few tries: the DMI page erase was
+                // seen to stop now and then on CH32L103 over OEP).
+                // ja: 先にリセットベクタのページを消し、何があっても壊れた firmware が起動しない
+                // ようにする(L103 で DMI の page erase が時々止まったので数回試す)。
+                let mut first = Err(ch32rv_dmi::DmiError::OperationFailed("not tried".into()));
+                for _ in 0..3 {
+                    first = dm.flash_page_erase(CODE_FLASH_START, profile.mode);
+                    if first.is_ok() {
+                        break;
                     }
+                }
+                if let Err(e) = first {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("erasing the reset vector's page failed: {e}"),
+                        None,
+                    );
                 }
             }
             protected
         };
+        // en: The rest through the RAM loader, which erases and writes whole pages and reads
+        // them back: the image given, else the erased word over the whole code flash.
+        // ja: 残りは RAM loader で(ページを消して書き、読み返す)。イメージか、消去済みの値。
+        if !protected {
+            let Some(plan) = ch32rv_flash::loader::plan_for_family(&family) else {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::CapabilityUnsupported,
+                    format!("the device DB has no loader plan for {family}"),
+                    None,
+                );
+            };
+            let segments = match &image {
+                Some(i) => i.segments.clone(),
+                None => {
+                    let word = ch32rv_target::flash_geometry(&family)
+                        .and_then(|g| g.erased_word)
+                        .unwrap_or(0xFFFF_FFFF);
+                    vec![ch32rv_flash::Segment {
+                        addr: CODE_FLASH_START,
+                        data: word.to_le_bytes().repeat(flash_bytes as usize / 4),
+                    }]
+                }
+            };
+            let crate::cmd_target::OnTarget::Oep(x) = &mut t else {
+                unreachable!("an OEP connection");
+            };
+            if let Err(e) = ch32rv_flash::loader::program(&mut x.t, plan, &segments, &mut |_, _| {})
+            {
+                return fail(
+                    cli,
+                    CMD,
+                    loader_error_kind(&e),
+                    format!("writing the code flash failed: {e}"),
+                    None,
+                );
+            }
+        }
         t.system_reset();
-        let how = if protected {
-            "read protection cleared (mass erase)"
-        } else {
-            "code flash erased"
+        let how = match (protected, image.is_some()) {
+            (true, _) => "read protection cleared (mass erase)",
+            (false, true) => "image written",
+            (false, false) => "code flash erased",
         };
         if cli.json {
             let mut env = ResultEnvelope::success(CMD);
@@ -1858,7 +1937,8 @@ fn recover_nrst_oep(cli: &Cli, a: &crate::oep::OepAddr) -> ExitCode {
                 "family": family,
                 "stopped_at": stopped.map(|d| format!("0x{d:08x}")),
                 "unprotected": protected,
-                "erased": true,
+                "erased": image.is_none(),
+                "image": image.as_ref().map(|i| i.total_len()),
             }));
             crate::print_envelope(&env)
         } else {
