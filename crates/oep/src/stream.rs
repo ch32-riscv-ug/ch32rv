@@ -98,10 +98,12 @@ pub struct PosStream {
 impl PosStream {
     /// en: `oep.target.console` open on `connection`: a new stream (one per connection; a second
     /// open on it is refused, oep-if-console §2). conn(u32) mech(u8) -> stream(u32). A probe may
-    /// offer several consoles; one that answers `unavailable` is passed over for the next
-    /// (ESP32-P4 0.0.38: its console/0 refused every open while console/1 opened all three).
-    /// ja: console を開く(接続ごとに 1 つ。2 つ目は断られる)。console が複数あれば、unavailable を
-    /// 返すものは飛ばして次を試す。
+    /// offer several consoles, each serving some wires' connections, and describe does not say
+    /// which (ESP32-P4: console/0 rides rvswd, console/1 swio); one that answers `unavailable` is
+    /// passed over for the next.
+    /// ja: console を開く(接続ごとに 1 つ。2 つ目は断られる)。console が複数あり、それぞれが
+    /// どの wire の接続に乗るかは describe から分からない(ESP32-P4 は console/0 が rvswd、
+    /// console/1 が swio)ので、unavailable を返すものは飛ばして次を試す。
     pub fn open_console(p: &mut Probe, connection: u32, mech: Mechanism) -> Result<Self, OepError> {
         let mut funcs: Vec<(u16, u16)> = p
             .list(console::NAME)?

@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- (EN) An OEP console that answers `unavailable` is passed over for the probe's next console. On ESP32-P4 / P4X probes (oep-probe-arduino 0.0.38) console/0 refused every open (reason 0x04) while console/1 opened sdi, dmdata and dmseq, so `monitor --source dmseq` failed at every P4 port. It now opens.
-- (JA) OEP の console が `unavailable` を返したら、probe の次の console を試す。ESP32-P4 / P4X の probe(oep-probe-arduino 0.0.38)では console/0 がどの open も断り(reason 0x04)、console/1 は sdi / dmdata / dmseq を開けたので、P4 のどの口でも `monitor --source dmseq` が失敗していた。今は開く。
+- (EN) An OEP console that answers `unavailable` is passed over for the probe's next console. A probe may have one console per wire, and describe does not say which wire each serves: ESP32-P4 / P4X probes put console/0 on rvswd connections and console/1 on swio ones, and ch32rv tried only the first, so `monitor` failed at every swio port of a P4 (v407, v003, m030) with reason 0x04. It now opens.
+- (JA) OEP の console が `unavailable` を返したら、probe の次の console を試す。probe は wire ごとに console を持つことがあり、どれがどの wire を受け持つかは describe から分からない。ESP32-P4 / P4X の probe は console/0 が rvswd、console/1 が swio の接続を受け持ち、ch32rv は最初の console しか試さなかったので、P4 の swio の口(v407、v003、m030)では `monitor` が reason 0x04 で失敗していた。今は開く。
 
 ## 0.23.1 - 2026-10-23
 
