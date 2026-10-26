@@ -97,13 +97,13 @@ pub struct PosStream {
 
 impl PosStream {
     /// en: `oep.target.console` open on `connection`: a new stream (one per connection; a second
-    /// open on it is refused, oep-if-console §2). conn(u32) mech(u8) -> stream(u32). A probe may
-    /// offer several consoles, each serving some wires' connections, and describe does not say
-    /// which (ESP32-P4: console/0 rides rvswd, console/1 swio); one that answers `unavailable` is
-    /// passed over for the next.
-    /// ja: console を開く(接続ごとに 1 つ。2 つ目は断られる)。console が複数あり、それぞれが
-    /// どの wire の接続に乗るかは describe から分からない(ESP32-P4 は console/0 が rvswd、
-    /// console/1 が swio)ので、unavailable を返すものは飛ばして次を試す。
+    /// open on it is refused, oep-if-console §2). conn(u32) mech(u8) -> stream(u32). A probe has
+    /// one console taking every wire's connections (oep-spec 4a75ae1, common §2), but
+    /// oep-probe-arduino 0.0.38 has one per wire on ESP32-P4 / P4X (console/0 rvswd, console/1
+    /// swio), so one that answers `unavailable` is passed over for the next.
+    /// ja: console を開く(接続ごとに 1 つ。2 つ目は断られる)。console は probe に 1 つ(oep-spec
+    /// 4a75ae1)だが、0.0.38 の ESP32-P4 / P4X は wire ごとに持つので、unavailable を返すものは
+    /// 飛ばして次を試す。
     pub fn open_console(p: &mut Probe, connection: u32, mech: Mechanism) -> Result<Self, OepError> {
         let mut funcs: Vec<(u16, u16)> = p
             .list(console::NAME)?
