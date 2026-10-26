@@ -97,10 +97,42 @@ pub struct PosStream {
 
 impl PosStream {
     /// en: `oep.target.console` open on `connection`: a new stream (one per connection; a second
-    /// open on it is refused, oep-if-console §2). conn(u32) mech(u8) -> stream(u32).
-    /// ja: console を開く(接続ごとに 1 つ。2 つ目は断られる)。
+    /// open on it is refused, oep-if-console §2). conn(u32) mech(u8) -> stream(u32). A probe may
+    /// offer several consoles; one that answers `unavailable` is passed over for the next
+    /// (ESP32-P4 0.0.38: its console/0 refused every open while console/1 opened all three).
+    /// ja: console を開く(接続ごとに 1 つ。2 つ目は断られる)。console が複数あれば、unavailable を
+    /// 返すものは飛ばして次を試す。
     pub fn open_console(p: &mut Probe, connection: u32, mech: Mechanism) -> Result<Self, OepError> {
-        let func = p.interface(console::NAME)?.func;
+        let mut funcs: Vec<(u16, u16)> = p
+            .list(console::NAME)?
+            .into_iter()
+            .filter(|i| i.name == console::NAME)
+            .map(|i| (i.instance, i.func))
+            .collect();
+        funcs.sort_unstable();
+        if funcs.is_empty() {
+            funcs.push((0, p.interface(console::NAME)?.func));
+        }
+        let mut last = None;
+        for (_, func) in funcs {
+            match Self::open_console_on(p, func, connection, mech) {
+                Err(OepError::Rejected { reason, payload })
+                    if reason == crate::registry::reject_reasons::UNAVAILABLE =>
+                {
+                    last = Some(OepError::Rejected { reason, payload });
+                }
+                other => return other,
+            }
+        }
+        Err(last.unwrap_or_else(|| OepError::NoInterface(console::NAME.into())))
+    }
+
+    fn open_console_on(
+        p: &mut Probe,
+        func: u16,
+        connection: u32,
+        mech: Mechanism,
+    ) -> Result<Self, OepError> {
         let mut pl = connection.to_le_bytes().to_vec();
         pl.push(mech.place(p, func)?);
         let a = check(p.call(func, console::op::OPEN, pl)?)?;

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) An OEP console that answers `unavailable` is passed over for the probe's next console. On ESP32-P4 / P4X probes (oep-probe-arduino 0.0.38) console/0 refused every open (reason 0x04) while console/1 opened sdi, dmdata and dmseq, so `monitor --source dmseq` failed at every P4 port. It now opens.
+- (JA) OEP の console が `unavailable` を返したら、probe の次の console を試す。ESP32-P4 / P4X の probe(oep-probe-arduino 0.0.38)では console/0 がどの open も断り(reason 0x04)、console/1 は sdi / dmdata / dmseq を開けたので、P4 のどの口でも `monitor --source dmseq` が失敗していた。今は開く。
+
 ## 0.23.1 - 2026-10-23
 
 - (EN) Fix: the Arduino monitor's `dmseq` / `dmdata` and `gdb` through a WCH-Link failed to open in 0.23.0 with "the probe names no ports". The Link's broker has no settings, and 0.23.0 asked it for `<port>.swdio` labels; a Link is now attached on its own debug lines as before.
