@@ -829,7 +829,7 @@ fn finish_flash(
         }
         ResetPolicy::Halt => {
             let mut dm = session.dm();
-            let _ = dm.halt();
+            let _ = dm.reset_halt();
         }
         ResetPolicy::None => {}
     }
@@ -1041,9 +1041,17 @@ fn flash_via_loader(
         Err(e) => return fail(cli, CMD, loader_error_kind(&e), e.to_string(), None),
     };
     let secs = started.elapsed().as_secs_f64();
-    if args.reset == ResetPolicy::Run
-        && let Err(e) = soft_reset_and_run(&mut session)
-    {
+    let reset = match args.reset {
+        ResetPolicy::Run => soft_reset_and_run(&mut session),
+        // Out of reset, at the reset vector: the loader's own ebreak is not where a resume
+        // should start the program.
+        ResetPolicy::Halt => session
+            .dm()
+            .reset_halt()
+            .map_err(|e| format!("reset-halt failed: {e}")),
+        ResetPolicy::None => Ok(()),
+    };
+    if let Err(e) = reset {
         return fail(cli, CMD, ErrorKind::TransferFailed, e, None);
     }
     // The Link's soft reset gives no word on whether the program runs.

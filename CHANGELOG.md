@@ -5,6 +5,12 @@
 - (EN) An OEP console that answers `unavailable` is passed over for the probe's next console. A probe may have one console per wire, and describe does not say which wire each serves: ESP32-P4 / P4X probes put console/0 on rvswd connections and console/1 on swio ones, and ch32rv tried only the first, so `monitor` failed at every swio port of a P4 (v407, v003, m030) with reason 0x04. It now opens.
 - (JA) OEP の console が `unavailable` を返したら、probe の次の console を試す。probe は wire ごとに console を持つことがあり、どれがどの wire を受け持つかは describe から分からない。ESP32-P4 / P4X の probe は console/0 が rvswd、console/1 が swio の接続を受け持ち、ch32rv は最初の console しか試さなかったので、P4 の swio の口(v407、v003、m030)では `monitor` が reason 0x04 で失敗していた。今は開く。
 
+- (EN) Fix: `flash --reset halt` through a WCH-Link did not reset. The hart stayed halted in the RAM loader's `ebreak`, so a later `dbg resume` never started the program (CH32V205, ArduinoCore-CH32RV). The target is now reset and halted, as over OEP.
+- (JA) 修正: WCH-Link での `flash --reset halt` が reset していなかった。hart は RAM ローダーの `ebreak` で止まったままで、後から `dbg resume` してもプログラムが始まらなかった(CH32V205、ArduinoCore-CH32RV)。今は OEP と同じく、reset して止める。
+
+- (EN) Known issue, not ch32rv's: on a CH32V205 the WCH-LinkE's (fw 2.22) AttachChip leaves `s0` (and `dscratch0`) set to `0xE000D004`, and the value it held is kept nowhere. Every command that attaches - `read`, `dbg`, `gdb`, a `monitor` started without a reset - so breaks a running program that keeps a pointer in `s0`: it faults at its next use (`mtval` `0xE000D008`). The chip-type byte sent before the attach does not change it. `flash --reset run` and `reset` are safe, since the program starts after them. ch32rv's own halt, memory access and resume leave `s0` as it was.
+- (JA) 既知の問題(ch32rv の外): CH32V205 では、WCH-LinkE(fw 2.22)の AttachChip が `s0`(と `dscratch0`)を `0xE000D004` にしたまま戻さず、元の値はどこにも残らない。そのため、接続するコマンド(`read`、`dbg`、`gdb`、reset を伴わない `monitor`)はどれも、`s0` にポインタを持って走っているプログラムを壊し、次にそれを使った所で例外になる(`mtval` `0xE000D008`)。接続前に送るチップの種類の値を変えても変わらない。`flash --reset run` と `reset` は、その後でプログラムが始まるので影響しない。ch32rv 自身の halt、メモリの読み書き、resume は `s0` を変えない。
+
 ## 0.23.1 - 2026-10-23
 
 - (EN) Fix: the Arduino monitor's `dmseq` / `dmdata` and `gdb` through a WCH-Link failed to open in 0.23.0 with "the probe names no ports". The Link's broker has no settings, and 0.23.0 asked it for `<port>.swdio` labels; a Link is now attached on its own debug lines as before.
