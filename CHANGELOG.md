@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Fix: writing the option bytes (`target option write-raw` / `set` / `reset`, `target protect`) right after a write that failed on a protected page stopped with "option-byte erase: write-protect error" and left the option bytes erased, so read protection came on at the next reset. The option erase had done its work; the error was the earlier write's WRPRTERR, still set in STATR (with CTLR PAGE_PG). The controller is now cleared first (CH32V203, ArduinoCore-CH32RV).
+- (JA) 修正: 保護されたページへの書き込みが失敗した直後にオプションバイトを書く(`target option write-raw` / `set` / `reset`、`target protect`)と、"option-byte erase: write-protect error" で止まり、オプションバイトが消えたまま残って、次の reset で読み出し保護がかかっていた。オプションバイトの消去は済んでいて、誤りは前の書き込みの WRPRTERR が STATR に残っていた(CTLR の PAGE_PG も)ものだった。今は先に controller をきれいにする(CH32V203、ArduinoCore-CH32RV)。
+
 ## 0.23.2 - 2026-10-27
 
 - (EN) An OEP console that answers `unavailable` is passed over for the probe's next console. A probe may have one console per wire, and describe does not say which wire each serves: ESP32-P4 / P4X probes put console/0 on rvswd connections and console/1 on swio ones, and ch32rv tried only the first, so `monitor` failed at every swio port of a P4 (v407, v003, m030) with reason 0x04. It now opens.

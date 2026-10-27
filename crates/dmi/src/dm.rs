@@ -1131,6 +1131,18 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
                 "option-byte unlock failed (OPTWRE not set)".to_owned(),
             ));
         }
+        // en: Start from a clean controller. A write the program (or a tool) left behind keeps
+        // its CTLR bits and a sticky WRPRTERR: on a CH32V203, a fast-page store into a protected
+        // page left STATR 0x12 and CTLR PAGE_PG, the option erase that followed did its work but
+        // read back WRPRTERR, and stopping there left the option bytes erased - read protection
+        // on at the next reset (ArduinoCore-CH32RV, 2026-10-28).
+        // ja: controller をきれいにしてから始める。前の書き込みが残した CTLR のビットと WRPRTERR
+        // のせいで、V203 では option の消去は済んでいたのに誤りと読み、消えたまま止まっていた。
+        self.write_mem32(FLASH_CTLR, OPTWRE)?;
+        let stale = self.read_mem32(FLASH_STATR)?;
+        if stale & (FLASH_WPRERR | FLASH_EOP) != 0 {
+            self.write_mem32(FLASH_STATR, stale)?;
+        }
         // en: Erase all option bytes (they must be blank before programming). On a read-protected
         // part this starts the mass erase of the whole flash, and the debug module may not
         // answer until it is done: a CH32X035 behind an OEP probe ran past the 4000 polls and
@@ -1229,6 +1241,7 @@ const FLASH_PGSTART: u32 = 1 << 21; // start fast page program (PgStart mode)
 const FLASH_BUSY: u32 = 1 << 0;
 const FLASH_WRBUSY: u32 = 1 << 1;
 const FLASH_WPRERR: u32 = 1 << 4;
+const FLASH_EOP: u32 = 1 << 5;
 
 /// en: `abstractauto.autoexecdata[0]` read back as written (the field is WARL): a DM that does
 /// not implement it ignores the write, and a block access through it would quietly touch only
