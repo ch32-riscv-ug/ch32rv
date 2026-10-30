@@ -2126,7 +2126,7 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
                 ErrorKind::AttachFailed,
                 "unbrick needs the target to attach over DMI, but attach failed",
                 Some(
-                    "if the app repurposed SWDIO/SWCLK, use: recover --method power-off --chip <family>",
+                    "if the app sleeps or repurposed SWDIO/SWCLK: retry with --attach-wait 10 and press the target's RESET while it waits, or use recover --method power-off --chip <family>",
                 ),
             );
         }
@@ -2185,7 +2185,15 @@ fn recover_unbrick(cli: &Cli) -> ExitCode {
     let action = if protected {
         "read protection cleared (RDPR=0xA5, mass erase)"
     } else {
-        if let Err(e) = session.link().erase_flash() {
+        // en: Attach afresh first, as `erase --all` erases straight after its attach. A WCH-Link
+        // (CH549) fw 2.12 on a CH32V103 left the chip erase unanswered (timeout, then a stalled
+        // endpoint until a replug) after the halt and option-byte reads above (2026-10-30).
+        // ja: `erase --all` と同じく attach し直してから消す。上の halt と option byte の読み出しの
+        // 後だと、WCH-Link(CH549)fw 2.12 + V103 で chip erase が返らなかった。
+        let link = session.link();
+        let _ = link.detach_chip();
+        let erased = link.attach_chip().and_then(|_| link.erase_flash());
+        if let Err(e) = erased {
             return fail(
                 cli,
                 CMD,

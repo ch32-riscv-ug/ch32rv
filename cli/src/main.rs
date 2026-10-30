@@ -178,6 +178,10 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         std::sync::atomic::Ordering::Relaxed,
     );
     session::RELEASE_DM.store(cli.release_dm, std::sync::atomic::Ordering::Relaxed);
+    session::ATTACH_WAIT_S.store(
+        cli.attach_wait.unwrap_or(0),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     if let Some(pins) = &cli.pins {
         match oep::parse_pins(pins) {
             Ok(v) => {

@@ -309,6 +309,15 @@ fn diagnose(cli: &Cli) -> Result<Diagnosis, ExitCode> {
             "if the probe's RST line is wired to the target's NRST, --method nrst erases through it; through a WCH-LinkE there is no way back that keeps the flash"
                 .to_owned(),
         );
+        // en: Firmware that sleeps or takes the debug pins only after a boot wait (a delay at the
+        // top of setup, CH32RV_BOOT_HOLD_MS) is caught by retrying the attach through that wait.
+        // ja: 起動待ちの後に眠る・ピンを取る firmware は、その待ちの間に attach を繰り返せば止まる。
+        if cli.attach_wait.is_none() {
+            notes.push(
+                "firmware that sleeps or takes the debug pins after a boot wait: run with --attach-wait 10 and power-cycle the target or press its RESET while it waits; the hart is halted inside the wait, flash untouched"
+                    .to_owned(),
+            );
+        }
         return Ok(Diagnosis {
             state: State::Unreachable,
             action: recommend(State::Unreachable, power_capable),
@@ -491,7 +500,7 @@ fn render(cli: &Cli, d: &Diagnosis) -> ExitCode {
             if d.probe == "unknown" {
                 "the probe could not be identified; if it is a WCH-LinkE / LinkW, try `ch32rv recover --method power-off --chip <family>`, otherwise power-cycle the target by hand, or wire NRST and use --method nrst"
             } else {
-                "this probe cannot switch the target's power; power-cycle it by hand, or wire NRST and use --method nrst"
+                "this probe cannot switch the target's power; retry with --attach-wait 10 and power-cycle the target or press its RESET by hand while it waits, or wire NRST and use --method nrst"
             }
         ),
         (a, Some(c)) => {

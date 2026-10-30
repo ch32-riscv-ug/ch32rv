@@ -41,6 +41,11 @@ pub struct Cli {
     /// Attach with NRST asserted
     #[arg(long, global = true)]
     pub connect_under_reset: bool,
+    /// Keep retrying the attach for up to this many seconds and halt the hart the moment it
+    /// answers; meanwhile power-cycle the target or press its RESET. For firmware that sleeps or
+    /// takes the debug pins right after boot, on a board whose NRST the probe cannot drive
+    #[arg(long, global = true, value_name = "SECONDS")]
+    pub attach_wait: Option<u64>,
     /// Leave the debug module inactive (DMCONTROL = 0) when done, and clear it before a reset
     /// that runs the target (H417: core 1 back to deep sleep, no debugger state left behind)
     #[arg(long, global = true)]

@@ -1071,6 +1071,33 @@ fn attach_under_reset_retrying(
         .unwrap_or_else(|| ch32rv_oep::session::OepError::Malformed("no attach was tried".into())))
 }
 
+/// en: `--attach-wait`: attach, halting, until the target answers or the deadline passes (the
+/// user power-cycles it or presses its RESET meanwhile), so firmware that sleeps or takes the
+/// debug pins after its boot wait is stopped inside that wait.
+/// ja: `--attach-wait`。答えるか期限まで、止める attach を繰り返す(その間に電源か RESET)。
+fn attach_waiting(
+    p: &mut Probe,
+    wire: WireKind,
+    mut options: AttachOptions,
+    deadline: std::time::Instant,
+) -> Result<ch32rv_oep::target::Attached, ch32rv_oep::session::OepError> {
+    options.halt = true;
+    loop {
+        match attach_at(p, wire, options) {
+            Ok(at) => return Ok(at),
+            // en: The probe or the session, not the target: waiting does not help.
+            Err(
+                e @ (OepError::Locked { .. }
+                | OepError::Link(_)
+                | OepError::NoInterface(_)
+                | OepError::PinsNeeded { .. }),
+            ) => return Err(e),
+            Err(e) if std::time::Instant::now() >= deadline => return Err(e),
+            Err(_) => {}
+        }
+    }
+}
+
 /// en: Attach; when the target that answers needs its rvswd line idling low ([`idles_low`]), the
 /// place did not know it (no `--chip`, no family in the address), and the connection does not
 /// rest low - the probe's setting `rest.{}` (oep.wire.rvswd) turned its own choice off, or an older probe
@@ -1941,6 +1968,8 @@ pub(crate) fn with_attached_reset(
         }
         let at = if under_reset {
             attach_under_reset_retrying(&mut p, wire, options)
+        } else if let Some(deadline) = crate::session::attach_wait_deadline() {
+            attach_waiting(&mut p, wire, options, deadline)
         } else {
             attach_at(&mut p, wire, options)
         };

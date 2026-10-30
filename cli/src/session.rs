@@ -376,6 +376,27 @@ pub(crate) fn check_chip(
 pub(crate) static CONNECT_UNDER_RESET: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// en: `--attach-wait` for this process, in seconds (0: attach once).
+/// ja: この process の `--attach-wait`(秒。0 なら 1 回だけ attach)。
+pub(crate) static ATTACH_WAIT_S: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// en: The `--attach-wait` deadline, said once on stderr: what the user should do meanwhile.
+/// ja: `--attach-wait` の期限。待つ間にすることを stderr に 1 度だけ言う。
+pub(crate) fn attach_wait_deadline() -> Option<std::time::Instant> {
+    let s = ATTACH_WAIT_S.load(std::sync::atomic::Ordering::Relaxed);
+    if s == 0 {
+        return None;
+    }
+    static SAID: std::sync::Once = std::sync::Once::new();
+    SAID.call_once(|| {
+        eprintln!(
+            "waiting up to {s} s for the target to answer: power-cycle it or press its RESET now"
+        )
+    });
+    Some(std::time::Instant::now() + Duration::from_secs(s))
+}
+
 /// en: Resume, at the end of a session, the H417 hart the command did not select (set by `main`:
 /// every command but `dbg`, which leaves the other core as it is unless `dbg resume --all`).
 /// ja: session の終わりに、選ばなかった H417 の hart を resume する(`dbg` 以外。`dbg` は
@@ -429,11 +450,47 @@ fn attach_under_reset(link: &mut WchLink) -> Result<AttachInfo, SessionError> {
     })
 }
 
+/// en: `--attach-wait`: repeat AttachChip until the target answers or the deadline passes, and
+/// request a halt at once, before firmware that sleeps or takes the debug pins after its boot wait
+/// gets that far. Measured on a WCH-Link (CH549) built into a CH32V103 board, whose NRST it does
+/// not drive, running a sketch that went into standby 1.5 s after each boot (2026-10-30): with
+/// RESET pressed by hand, attempt 123 (about 5 s in, about 40 ms each) answered and halted.
+/// ja: `--attach-wait`。答えるか期限まで AttachChip を繰り返し、答えたらすぐ haltreq を立てる。
+/// 起動待ちの後に眠る・デバッグのピンを取る firmware がそこへ行く前に止める。
+fn attach_waiting(
+    link: &mut WchLink,
+    deadline: std::time::Instant,
+) -> Result<AttachInfo, SessionError> {
+    loop {
+        match link.attach_chip() {
+            Ok(a) => {
+                for _ in 0..3 {
+                    let _ = link.dmi_op(DMCONTROL, DMCONTROL_HALT, 2);
+                }
+                let _ = link.dmi_op(DMSTATUS, 0, 1);
+                return Ok(a);
+            }
+            Err(
+                WchLinkError::Protocol { reason: 0x55, .. } | WchLinkError::UnexpectedResponse(_),
+            ) if std::time::Instant::now() < deadline => {}
+            Err(
+                WchLinkError::Protocol { reason: 0x55, .. } | WchLinkError::UnexpectedResponse(_),
+            ) => {
+                return Err(SessionError::NoTarget);
+            }
+            Err(e) => return Err(SessionError::Attach(format!("attach failed: {e}"))),
+        }
+    }
+}
+
 fn attach_once(link: &mut WchLink, speed: Speed) -> Result<AttachInfo, SessionError> {
     link.set_speed_default(speed)
         .map_err(|e| SessionError::Attach(format!("SetSpeed failed: {e}")))?;
     if CONNECT_UNDER_RESET.load(std::sync::atomic::Ordering::Relaxed) {
         return attach_under_reset(link);
+    }
+    if let Some(deadline) = attach_wait_deadline() {
+        return attach_waiting(link, deadline);
     }
     link.attach_chip().map_err(|e| match e {
         // No response on the debug pins - a distinct, common case worth its own exit code (20).
