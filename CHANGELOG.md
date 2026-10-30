@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.24.0 - 2026-10-30
+
 - (EN) OEP port labels may carry the target pin after `@` (oep-spec 4e31422, host guide §5.3): `x035.swdio@pc18` is looked up as `x035.swdio` (wire, pins, `--connect-under-reset`'s `nrst`, the fixture UART), and `x035@pb6`, a line with no role, counts toward port `x035` but is never found by a role name.
 - (JA) OEP の口の label に target のピンを `@` で添えられる(oep-spec 4e31422、host ガイド §5.3)。`x035.swdio@pc18` は `x035.swdio` として引き(wire、ピン、`--connect-under-reset` の `nrst`、fixture UART)、役目の無い線 `x035@pb6` は口 `x035` に数えるが役目の名前では引かない。
 - (EN) Fix: the OEP path read no unique ID on CH32M030 (`uid: -`). It read 0x1FFFF7E8 on every family; CH32M030 keeps its UID at 0x1FFFF3A8. The address now comes from ch32-device-data `index/esig.csv` (UNIID1), generated into `crates/target/generated/esig.csv` by `cargo xtask db-gen`. Measured: CH32M030G8R7 on an ESP32-P4X OEP probe, `04f9abcd6d13bc4d`.
