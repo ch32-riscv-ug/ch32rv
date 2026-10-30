@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) `target list --identify` shows each chip's unique ID in a UID column (CHIP ID tells the part and revision, the same for every chip of a part; the UID tells one chip from another). It was already read by `target info` and in the JSON as `target.uid`.
+- (JA) `target list --identify` が各チップの固有 ID を UID の列に出す(CHIP ID は型番と版で、同じ型番なら同じ値。個体を見分けるのは UID)。`target info` で読んでいて、JSON の `target.uid` には入っていた。
 - (EN) Fix: writing the option bytes (`target option write-raw` / `set` / `reset`, `target protect`) right after a write that failed on a protected page stopped with "option-byte erase: write-protect error" and left the option bytes erased, so read protection came on at the next reset. The option erase had done its work; the error was the earlier write's WRPRTERR, still set in STATR (with CTLR PAGE_PG). The controller is now cleared first (CH32V203, ArduinoCore-CH32RV).
 - (JA) 修正: 保護されたページへの書き込みが失敗した直後にオプションバイトを書く(`target option write-raw` / `set` / `reset`、`target protect`)と、"option-byte erase: write-protect error" で止まり、オプションバイトが消えたまま残って、次の reset で読み出し保護がかかっていた。オプションバイトの消去は済んでいて、誤りは前の書き込みの WRPRTERR が STATR に残っていた(CTLR の PAGE_PG も)ものだった。今は先に controller をきれいにする(CH32V203、ArduinoCore-CH32RV)。
 

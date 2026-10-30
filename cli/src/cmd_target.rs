@@ -1191,7 +1191,7 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
             Some(IdentifyScope::Oep) => p.mode == "oep",
             None => false,
         };
-        let mut chip = vec!["-".to_owned(); 4];
+        let mut chip = vec!["-".to_owned(); 5];
         let mut target = serde_json::Value::Null;
         if wanted && let (Some(sel), Some(exe)) = (&p.probe, &exe) {
             match identify_at(exe, sel) {
@@ -1207,6 +1207,7 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
                             .unwrap_or("unknown")
                             .to_owned(),
                         t["chip_id"].as_str().unwrap_or("-").to_owned(),
+                        t["uid"].as_str().unwrap_or("-").to_owned(),
                         kib(&t["flash_bytes"]),
                         kib(&t["sram_bytes"]),
                     ];
@@ -1254,7 +1255,7 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
             );
         } else {
             let head = [
-                "ADDRESS", "MODE", "TOPOLOGY", "MODEL", "CHIP", "CHIP ID", "FLASH", "SRAM",
+                "ADDRESS", "MODE", "TOPOLOGY", "MODEL", "CHIP", "CHIP ID", "UID", "FLASH", "SRAM",
             ];
             print!("{}", crate::parse::table(&head, &rows));
             if identify.is_none() {

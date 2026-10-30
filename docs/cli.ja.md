@@ -337,8 +337,8 @@ ch32rv probe vendor <hex...>                      隠し。backend 固有 comman
 
 ```text
 ch32rv target list [--identify [oep|all]]         target に届く場所の一覧。列と並びは probe list と同じ先頭(ADDRESS、MODE、
-                                                  TOPOLOGY、MODEL。種類 → USB の位置)に、チップの列(CHIP、CHIP ID、FLASH、
-                                                  SRAM)が続く。WCH-Link、USB の OEP の口(ラベルを lock 無しで短く読む)、
+                                                  TOPOLOGY、MODEL。種類 → USB の位置)に、チップの列(CHIP、CHIP ID、UID、
+                                                  FLASH、SRAM)が続く。WCH-Link、USB の OEP の口(ラベルを lock 無しで短く読む)、
                                                   ネットワークの OEP、CH32RV のアプリ、ISP / HID の bootloader。既定では何も
                                                   attach しない。`--identify` は OEP の口に止めずに attach し、子 process の
                                                   `target info` でチップの列を埋める(列は変わらない。読めなければ短い理由、
