@@ -195,6 +195,7 @@ ch32rv は attach せずに分かること(unit_id、口の名前)だけで口�
   - USB にも OEP の device として出る probe の port なら、upload は常に断る(`port:oep://<probe>[/<port>]` を案内する)。
 - `oep://<probe>` だけは probe 自身を指すので、口を選ばない(exit 2)。名前の無い口は `oep://<probe>/any` で選ぶ。discovery もそう出す。
 - wire は口の label(`S.swio` / `S.swclk`)で、決まらなければ `--chip` の家系で決める。ピン・NRST・fixture UART の線も、その口の label から引く。
+- label には target のピンを `@P` で添えてよい(oep-spec 4e31422): `x035.swdio@pc18` は `x035.swdio` として引く。役目の無い線 `x035@pb6` は口 `x035` に数えるが、役目の名前では引かない。`P` は英数字と `-`・`_`(`pc16-pc11` のようにパッケージの中でつながったピン)。
 - rvswd の休ませ方は、§10 の 3b32b12 の項。
 
 ## 7. monitor とブローカー(依頼 11、12)

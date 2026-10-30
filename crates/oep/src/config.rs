@@ -109,29 +109,65 @@ pub fn labels(p: &mut Probe) -> Result<Vec<(u16, String)>, OepError> {
         .collect())
 }
 
-/// en: A label's `(S, N)` when it names a port's line (host guide §5.3): one `.`, `S` a letter
-/// then letters, digits and `-` (1-16), `N` letters, digits, `-` and `_` (1 or more). None for
-/// any other label (a pin's plain name such as `NRST`, or `My Port.swdio`).
-/// ja: 口の線を名付けるラベルなら `(S, N)`。それ以外(`NRST`、`My Port.swdio` など)は None。
-pub fn port_line(label: &str) -> Option<(&str, &str)> {
-    let (s, n) = label.split_once('.')?;
-    let s_ok = (1..=16).contains(&s.len())
+/// en: A label split at its target pin (host guide §5.3, oep-spec 4e31422): `x035.swdio@pc18` is
+/// `(x035.swdio, Some(pc18))`. `P` is letters, digits, `-` and `_` (`pc16-pc11` for pins joined in
+/// the package); a label with no `@`, or a bad `P`, is returned whole with no pin.
+/// ja: ラベルを target のピン `@P` で分ける。`@` が無いか `P` が形に合わなければ、そのまま返す。
+pub fn split_pin(label: &str) -> (&str, Option<&str>) {
+    match label.split_once('@') {
+        Some((head, pin))
+            if !pin.is_empty()
+                && pin
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') =>
+        {
+            (head, Some(pin))
+        }
+        _ => (label, None),
+    }
+}
+
+/// A port name `S`: a letter, then letters, digits and `-` (1-16).
+fn port_name_ok(s: &str) -> bool {
+    (1..=16).contains(&s.len())
         && s.starts_with(|c: char| c.is_ascii_alphabetic())
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// en: A label's `(S, N)` when it names a port's line (host guide §5.3): `S.N`, or `S.N@P` with the
+/// target pin after `@`. One `.`, `S` a letter then letters, digits and `-` (1-16), `N` letters,
+/// digits, `-` and `_` (1 or more). None for any other label (a pin's plain name such as `NRST`,
+/// `My Port.swdio`, or `S@P`, a port's line with no role).
+/// ja: 口の線を名付けるラベルなら `(S, N)`(`S.N` か `S.N@P`)。それ以外(`NRST`、`S@P` など)は None。
+pub fn port_line(label: &str) -> Option<(&str, &str)> {
+    let (s, n) = split_pin(label).0.split_once('.')?;
     let n_ok = !n.is_empty()
         && n.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
-    (s_ok && n_ok).then_some((s, n))
+    (port_name_ok(s) && n_ok).then_some((s, n))
 }
 
-/// en: The ports the labels name (host guide §5.3): the distinct `S` of the `S.N` labels, as
+/// en: The port a label belongs to: the `S` of `S.N` / `S.N@P`, or of `S@P` (a line with no role,
+/// still the port's). ja: ラベルが属する口(`S@P` も口 `S` に入る)。
+pub fn port_of_label(label: &str) -> Option<&str> {
+    if let Some((s, _)) = port_line(label) {
+        return Some(s);
+    }
+    match split_pin(label) {
+        (s, Some(_)) if port_name_ok(s) => Some(s),
+        _ => None,
+    }
+}
+
+/// en: The ports the labels name (host guide §5.3): the distinct `S` of the `S.N` (and `S.N@P`,
+/// `S@P`) labels, as
 /// written (the first spelling), distinct ignoring ASCII case, in order. Empty: the probe has no
 /// port an address can name.
 /// ja: ラベルが名指す口(`S.N` の `S`。書いたとおり、大小文字を区別せずに重ねない)。
 pub fn ports_named(labels: &[(u16, String)]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for (_, text) in labels {
-        if let Some((port, _)) = port_line(text)
+        if let Some(port) = port_of_label(text)
             && !out.iter().any(|p| p.eq_ignore_ascii_case(port))
         {
             out.push(port.to_owned());
@@ -205,5 +241,27 @@ mod tests {
         assert_eq!(port_line("x_y.swdio"), None);
         assert_eq!(port_line(".swdio"), None);
         assert_eq!(port_line("v003."), None);
+        assert_eq!(port_line("x035.swdio@pc18"), Some(("x035", "swdio")));
+        assert_eq!(port_line("x035.nrst@pa21"), Some(("x035", "nrst")));
+        assert_eq!(port_line("x035@pb6"), None);
+        assert_eq!(port_line("x035.swdio@"), None);
+        assert_eq!(port_line("x035.swdio@p c"), None);
+    }
+
+    #[test]
+    fn pin_suffixed_labels() {
+        let labels = [
+            l(14, "x035.swclk@pc19"),
+            l(15, "X035.swdio@pc18"),
+            l(21, "x035.nrst@pa21"),
+            l(13, "x035@pc16-pc11"),
+            l(6, "rp@gp6"),
+        ];
+        assert_eq!(ports_named(&labels), vec!["x035", "rp"]);
+        assert_eq!(find_line(&labels, "x035", "swdio"), Some(15));
+        assert_eq!(find_line(&labels, "x035", "nrst"), Some(21));
+        assert_eq!(split_pin("x035@pc16-pc11"), ("x035", Some("pc16-pc11")));
+        assert_eq!(port_of_label("x035@pb6"), Some("x035"));
+        assert_eq!(port_of_label("NRST"), None);
     }
 }

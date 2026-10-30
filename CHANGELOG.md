@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) OEP port labels may carry the target pin after `@` (oep-spec 4e31422, host guide §5.3): `x035.swdio@pc18` is looked up as `x035.swdio` (wire, pins, `--connect-under-reset`'s `nrst`, the fixture UART), and `x035@pb6`, a line with no role, counts toward port `x035` but is never found by a role name.
+- (JA) OEP の口の label に target のピンを `@` で添えられる(oep-spec 4e31422、host ガイド §5.3)。`x035.swdio@pc18` は `x035.swdio` として引き(wire、ピン、`--connect-under-reset` の `nrst`、fixture UART)、役目の無い線 `x035@pb6` は口 `x035` に数えるが役目の名前では引かない。
 - (EN) Fix: the OEP path read no unique ID on CH32M030 (`uid: -`). It read 0x1FFFF7E8 on every family; CH32M030 keeps its UID at 0x1FFFF3A8. The address now comes from ch32-device-data `index/esig.csv` (UNIID1), generated into `crates/target/generated/esig.csv` by `cargo xtask db-gen`. Measured: CH32M030G8R7 on an ESP32-P4X OEP probe, `04f9abcd6d13bc4d`.
 - (JA) 修正: OEP 経由で CH32M030 の固有 ID が読めなかった(`uid: -`)。全系列で 0x1FFFF7E8 を読んでいたが、CH32M030 の UID は 0x1FFFF3A8 にある。番地は ch32-device-data の `index/esig.csv`(UNIID1)から取り、`cargo xtask db-gen` で `crates/target/generated/esig.csv` に生成する。実測: ESP32-P4X の OEP probe の CH32M030G8R7 で `04f9abcd6d13bc4d`。
 - (EN) A chip ID that two SKUs share (CH32V006K8U6 / K8U7, temperature grades) now shows both in `target list --identify` (`CH32V006K8U6/U7` instead of the Link's family name `CH32V00X`), and the SRAM size when the candidates agree. `target info --json` carries them as `result.sku_candidates` and `result.sram_bytes`.
