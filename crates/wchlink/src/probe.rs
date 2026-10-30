@@ -689,7 +689,8 @@ impl WchLink {
     /// en: Control the WCH-LinkE target-power output (SetPower, cmd 0x0d): 3.3V on=`09`/off=`0a`,
     /// 5V on=`0b`/off=`0c`. The probe acknowledges all four, but a WCH-LinkE fw 2.22 was measured
     /// keeping 3V3 at 3.24 V after `0a` and after `0c` (wch-protocols E167). WCH-LinkE only - the caller must check the variant (the CH549 Link has
-    /// no power output). ja: WCH-LinkE の target 給電出力を制御(SetPower)。LinkE 限定。
+    /// no power output: fw 2.12 acknowledges `0a` / `0c`, and the CH32V103 on the same board ran on
+    /// through 2 s of each, 2026-10-30). ja: WCH-LinkE の target 給電出力を制御(SetPower)。LinkE 限定。
     pub fn set_power(&mut self, rail_5v: bool, on: bool) -> Result<(), WchLinkError> {
         let payload: u8 = match (rail_5v, on) {
             (false, true) => 0x09,
