@@ -343,7 +343,7 @@ ch32rv target list [--identify [oep|all]]         target に届く場所の一�
                                                   attach しない。`--identify` は OEP の口に止めずに attach し、子 process の
                                                   `target info` でチップの列を埋める(列は変わらない。読めなければ短い理由、
                                                   全文は JSON)。`--identify all` は WCH-Link も attach する(target を止め、
-                                                  clock を変える)。ADDRESS はそのまま --probe に渡せる
+                                                  clock を変える)。CH32RV のアプリ(USB の serial がチップの UID)は、同じ UID を読んだデバッグの場所があれば、そのチップの列を出す(JSON は `runs_on` にその場所)。ADDRESS はそのまま --probe に渡せる
 ch32rv target info                                chip ID/family/SKU 候補(根拠付き)/UID/flash size/保護状態/option 要約/verified
 
 ch32rv target option get

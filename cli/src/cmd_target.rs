@@ -1256,6 +1256,7 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
             "target": target,
         }));
     }
+    link_apps(&mut rows, &mut out);
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({ "places": out }));
@@ -1277,6 +1278,36 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
             }
         }
         ExitCode::SUCCESS
+    }
+}
+
+/// A CH32RV application names itself by its chip's UID (its USB serial, UNIID1 then UNIID2 as
+/// `target.uid` prints them; ArduinoCore-CH32RV 0edef113), so a chip read at a debug place also
+/// tells which application runs on it: the application's row gets that chip's columns and target,
+/// and `runs_on` the debug place. `rows` and `out` are the table rows and JSON places, in step.
+fn link_apps(rows: &mut [Vec<String>], out: &mut [serde_json::Value]) {
+    for i in 0..out.len() {
+        if out[i]["mode"] != "app" {
+            continue;
+        }
+        let Some(serial) = out[i]["address"]
+            .as_str()
+            .and_then(|a| a.rsplit_once("://"))
+            .map(|(_, s)| s.to_owned())
+        else {
+            continue;
+        };
+        let Some(j) = out.iter().position(|o| {
+            o["target"]["uid"]
+                .as_str()
+                .is_some_and(|u| u.eq_ignore_ascii_case(&serial))
+        }) else {
+            continue;
+        };
+        let chip = rows[j][4..].to_vec();
+        rows[i].splice(4.., chip);
+        out[i]["target"] = out[j]["target"].clone();
+        out[i]["runs_on"] = out[j]["address"].clone();
     }
 }
 
@@ -1376,6 +1407,36 @@ mod tests {
         BLANKET_FACTORY, option_base, option_bytes_plausible, option_method_warning, parse_hex16,
         reset_user_byte, unprotect_image,
     };
+
+    #[test]
+    fn an_application_gets_the_chip_whose_uid_it_carries() {
+        let chip = |c: &str| vec![c.to_owned(); 5];
+        let head =
+            |a: &str, m: &str| vec![a.to_owned(), m.to_owned(), "-".to_owned(), "-".to_owned()];
+        let mut rows: Vec<Vec<String>> = [
+            ("wchlink://FB868F068059", "riscv", "CH32X035F8U6"),
+            ("ch32rv-app://C016ABCD283FBC5C", "app", "-"),
+            ("ch32rv-app://B6C99C7F640EB63C", "app", "-"),
+        ]
+        .iter()
+        .map(|(a, m, c)| [head(a, m), chip(c)].concat())
+        .collect();
+        let mut out = vec![
+            serde_json::json!({"address": "wchlink://FB868F068059", "mode": "riscv",
+                "target": {"uid": "c016abcd283fbc5c"}}),
+            serde_json::json!({"address": "ch32rv-app://C016ABCD283FBC5C", "mode": "app",
+                "target": null}),
+            serde_json::json!({"address": "ch32rv-app://B6C99C7F640EB63C", "mode": "app",
+                "target": null}),
+        ];
+        super::link_apps(&mut rows, &mut out);
+        assert_eq!(rows[1][4], "CH32X035F8U6");
+        assert_eq!(out[1]["runs_on"], "wchlink://FB868F068059");
+        assert_eq!(out[1]["target"]["uid"], "c016abcd283fbc5c");
+        // No debug place read that UID (a word-swapped serial from an older core): left as it was.
+        assert_eq!(rows[2][4], "-");
+        assert!(out[2]["runs_on"].is_null());
+    }
 
     #[test]
     fn sku_candidates_written_short() {

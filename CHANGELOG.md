@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) `target list --identify` ties a CH32RV application to the chip it runs on: an application's USB serial is its chip's UID (UNIID1 then UNIID2, ArduinoCore-CH32RV 0edef113), so when a debug place read the same UID, the application's row shows that chip and its JSON place carries `runs_on` with the debug place's address. An application built with an older core (the two words swapped) is left unmatched.
+- (JA) `target list --identify` が、CH32RV のアプリとそれが動くチップを結びつける。アプリの USB serial はチップの UID(UNIID1、UNIID2 の順。ArduinoCore-CH32RV 0edef113)なので、同じ UID をデバッグの場所で読めたら、アプリの行にそのチップを出し、JSON の場所に `runs_on`(デバッグの場所の ADDRESS)を付ける。古い core で作ったアプリ(2 語が逆)は結びつかない。
 ## 0.24.0 - 2026-10-30
 
 - (EN) OEP port labels may carry the target pin after `@` (oep-spec 4e31422, host guide §5.3): `x035.swdio@pc18` is looked up as `x035.swdio` (wire, pins, `--connect-under-reset`'s `nrst`, the fixture UART), and `x035@pb6`, a line with no role, counts toward port `x035` but is never found by a role name.
