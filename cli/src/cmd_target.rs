@@ -144,9 +144,19 @@ pub fn info(cli: &Cli) -> ExitCode {
     };
 
     let identification = identification_status(&resolution);
+    // Candidates that share an id (a temperature grade, CH32V006K8U6/U7) share the size too.
     let sram_bytes = match &resolution {
         ch32rv_target::Resolution::Sku(s) => Some(s.sram_bytes),
+        ch32rv_target::Resolution::Family(_, c)
+            if c.windows(2).all(|w| w[0].sram_bytes == w[1].sram_bytes) =>
+        {
+            c.first().map(|s| s.sram_bytes)
+        }
         _ => None,
+    };
+    let sku_candidates: Vec<&str> = match &resolution {
+        ch32rv_target::Resolution::Family(_, c) => c.iter().map(|s| s.sku.as_str()).collect(),
+        _ => Vec::new(),
     };
 
     // Debug wiring (1-wire SWIO vs 2-wire RVSWD) for the resolved series (data request 0002).
@@ -177,6 +187,7 @@ pub fn info(cli: &Cli) -> ExitCode {
             "family_byte": format!("0x{:02x}", session.attach.family_byte),
             "silicon_revision": (session.attach.chip_id >> 4) & 0x0f,
             "sram_bytes": sram_bytes,
+            "sku_candidates": sku_candidates,
             "flash_capacity_source": flash_capacity_source,
             "flash_capacity_raw": chip.as_ref().map(|c| format!("0x{:04x}", c.flash_bytes / 1024)),
             "protection_raw": chip.as_ref().map(|c| hex(&c.protection_raw)),
@@ -1203,9 +1214,10 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
                     chip = vec![
                         t["sku"]
                             .as_str()
-                            .or(t["family"].as_str())
-                            .unwrap_or("unknown")
-                            .to_owned(),
+                            .map(str::to_owned)
+                            .or_else(|| candidates(&t["sku_candidates"]))
+                            .or_else(|| t["family"].as_str().map(str::to_owned))
+                            .unwrap_or_else(|| "unknown".to_owned()),
                         t["chip_id"].as_str().unwrap_or("-").to_owned(),
                         t["uid"].as_str().unwrap_or("-").to_owned(),
                         kib(&t["flash_bytes"]),
@@ -1268,6 +1280,29 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
     }
 }
 
+/// SKUs that share one chip id, written short: `CH32V006K8U6/U7` (the common prefix once).
+fn candidates(v: &serde_json::Value) -> Option<String> {
+    let names: Vec<&str> = v.as_array()?.iter().filter_map(|n| n.as_str()).collect();
+    let first = *names.first()?;
+    if names.len() == 1 {
+        return Some(first.to_owned());
+    }
+    let common = names.iter().fold(first.len(), |n, s| {
+        first
+            .bytes()
+            .zip(s.bytes())
+            .take(n)
+            .take_while(|(a, b)| a == b)
+            .count()
+    });
+    // Keep the part number whole: cut back to where the package code starts (after the digits).
+    let keep = first[..common]
+        .rfind(|c: char| c.is_ascii_digit())
+        .map_or(0, |i| i + 1);
+    let rest: Vec<&str> = names[1..].iter().map(|n| &n[keep..]).collect();
+    Some(format!("{first}/{}", rest.join("/")))
+}
+
 /// The target block `target info --json` answers at `selector`, run in a child process (bounded
 /// to 60 s), with `sram_bytes` from wherever the path puts it.
 fn identify_at(exe: &std::path::Path, selector: &str) -> Result<serde_json::Value, String> {
@@ -1315,6 +1350,12 @@ fn identify_at(exe: &std::path::Path, selector: &str) -> Result<serde_json::Valu
     } else {
         v["result"]["target"].clone()
     };
+    if let Some(m) = t.as_object_mut() {
+        m.insert(
+            "sku_candidates".to_owned(),
+            v["result"]["sku_candidates"].clone(),
+        );
+    }
     if t["sram_bytes"].is_null() {
         let sram = if v["result"]["sram_bytes"].is_null() {
             v["result"]["target"]["sram_bytes"].clone()
@@ -1335,6 +1376,16 @@ mod tests {
         BLANKET_FACTORY, option_base, option_bytes_plausible, option_method_warning, parse_hex16,
         reset_user_byte, unprotect_image,
     };
+
+    #[test]
+    fn sku_candidates_written_short() {
+        let v = serde_json::json!(["CH32V006K8U6", "CH32V006K8U7"]);
+        assert_eq!(super::candidates(&v).as_deref(), Some("CH32V006K8U6/U7"));
+        let one = serde_json::json!(["CH32V003F4P6"]);
+        assert_eq!(super::candidates(&one).as_deref(), Some("CH32V003F4P6"));
+        assert_eq!(super::candidates(&serde_json::json!([])), None);
+        assert_eq!(super::candidates(&serde_json::Value::Null), None);
+    }
 
     /// en: Clearing read protection must not disturb the family-specific USER bits. These are the
     /// bytes actually read off the bench (docs/data-requests/measured/option-bytes-2026-09-06.md):

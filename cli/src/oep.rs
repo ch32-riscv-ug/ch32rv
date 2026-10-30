@@ -2403,13 +2403,18 @@ pub(crate) fn write(cli: &Cli, addr: u32, bytes: &[u8], a: &OepAddr) -> ExitCode
 /// behind its broker answers `target info` through this path (ArduinoCore-CH32RV, 2026-10-15).
 /// ja: ESIG の 64 bit の UID(WCH-Link の ChipInfo と同じ表記)。止めずに読めなければ一瞬止めて読む。
 fn read_uid(x: &mut Attached<'_>) -> Option<String> {
-    const ESIG_UID: u32 = 0x1FFF_F7E8;
-    let words = match x.t.read_words(ESIG_UID, 2) {
+    // Most families keep it at 0x1FFFF7E8; CH32M030 at 0x1FFFF3A8 (ch32-device-data esig).
+    let at = x
+        .family
+        .as_deref()
+        .and_then(ch32rv_target::uid_addr)
+        .unwrap_or(0x1FFF_F7E8);
+    let words = match x.t.read_words(at, 2) {
         Ok(w) => w,
         Err(_) => {
             let was_running = x.halted_at.is_none();
             x.t.halt().ok()?;
-            let w = x.t.read_words(ESIG_UID, 2);
+            let w = x.t.read_words(at, 2);
             if was_running {
                 resume_after(&mut x.t);
             }

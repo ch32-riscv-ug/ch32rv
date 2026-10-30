@@ -46,6 +46,9 @@ const GENERATED_OPTION_FIELDS: &str = include_str!("../generated/option_fields.c
 /// The embedded generated per-series debug-wiring table (produced by `cargo xtask db-gen`).
 const GENERATED_DEBUG_WIRING: &str = include_str!("../generated/debug_wiring.csv");
 
+/// The embedded generated per-family unique-ID address (produced by `cargo xtask db-gen`).
+const GENERATED_ESIG: &str = include_str!("../generated/esig.csv");
+
 /// The embedded generated per-family flash geometry (produced by `cargo xtask db-gen`).
 const GENERATED_FLASH_GEOMETRY: &str = include_str!("../generated/flash_geometry.csv");
 
@@ -294,6 +297,22 @@ pub fn debug_wiring(series: &str) -> Option<DebugWiring> {
             swdio: (*swdio).to_owned(),
             swclk: (*swclk).to_owned(),
         })
+    })
+}
+
+/// en: Where a family keeps its unique ID (ESIG UNIID1; read with UNIID2 after it as 8 bytes).
+/// None when the family is not in the DB. ja: family の固有 ID(UNIID1)の番地。
+pub fn uid_addr(family: &str) -> Option<u32> {
+    GENERATED_ESIG.lines().find_map(|line| {
+        let line = line.trim();
+        if line.starts_with('#') {
+            return None;
+        }
+        let (f, addr) = line.split_once(',')?;
+        if !f.eq_ignore_ascii_case(family) {
+            return None;
+        }
+        u32::from_str_radix(addr.trim_start_matches("0x"), 16).ok()
     })
 }
 
@@ -761,6 +780,13 @@ CH32FICTIONAL,CH32V006,CH32V006,0x00990900,0x1ffff704,1,1,false,9999\n";
         assert!(db.families_for_chip_name("C").is_empty());
         assert!(db.families_for_chip_name("CH32L103C8").is_empty());
         assert!(db.families_for_chip_name("").is_empty());
+    }
+
+    #[test]
+    fn uid_addr_per_family() {
+        assert_eq!(uid_addr("CH32M030"), Some(0x1FFF_F3A8));
+        assert_eq!(uid_addr("ch32v003"), Some(0x1FFF_F7E8));
+        assert_eq!(uid_addr("CH32NOPE"), None);
     }
 
     #[test]
