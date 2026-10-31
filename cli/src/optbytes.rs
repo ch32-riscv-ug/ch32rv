@@ -1,11 +1,11 @@
 //! en: The one option-byte vocabulary of `target option get|set` (debug probe) and
 //! `isp config get|set` (factory bootloader), docs/cli.ja.md §4.3. The USER-byte options go by
-//! the WCH EVT `FLASH_UserOptionByteConfig` names (`iwdg=sw|hw` is OB_IWDG_SW / OB_IWDG_HW,
-//! `stop-reset=on|off` is OB_STOP_RST / OB_STOP_NoRST, ...), so the polarity is in the value word;
-//! a USER bit EVT names no option for is written by its reference-manual field name as
-//! `user.<FIELD>=<bit value>`, raw. Both `get`s print the same shape: every key with the value word
+//! the WCH EVT `FLASH_UserOptionByteConfig` names the device DB gives (`option_byte_fields`:
+//! `iwdg=sw|hw` is OB_IWDG_SW / OB_IWDG_HW, `stop-reset=on|off` is OB_STOP_RST / OB_STOP_NoRST,
+//! ...), so the polarity is in the value word; a USER field the DB names no option for is written
+//! by its reference-manual field name as `user.<FIELD>=<bit value>`, raw. Both `get`s print the same shape: every key with the value word
 //! `set` takes and the raw field value.
-//! ja: `target option` と `isp config` の共通の語彙。USER byte は EVT の
+//! ja: `target option` と `isp config` の共通の語彙。USER byte は DB が与える EVT の
 //! `FLASH_UserOptionByteConfig` の名前で書き(極性は値の語が持つ)、EVT に名前の無い bit は RM の
 //! field 名で `user.<FIELD>=<bit の値>`(生の値)と書く。2 つの `get` は同じ形を出す。
 
@@ -189,8 +189,7 @@ fn semantic(layout: &Layout, key: &str) -> Result<&'static OptionSemantic, Strin
     if let Some(s) = layout.semantic(key) {
         return Ok(s);
     }
-    const SEMANTIC_KEYS: &[&str] = &["iwdg", "stop-reset", "standby-reset", "reset-pin"];
-    if SEMANTIC_KEYS.contains(&key) {
+    if ch32rv_target::option_semantic_keys().contains(&key) {
         return Err(match layout.semantics {
             None => format!(
                 "{key}: the USER-byte options of {} are not known",
@@ -203,6 +202,9 @@ fn semantic(layout: &Layout, key: &str) -> Result<&'static OptionSemantic, Strin
         });
     }
     // A bare reference-manual name: say how it is written now.
+    if let Some(s) = by_rm_name(layout, key) {
+        return Err(format!("unknown key `{key}`: write it as {}", spelled(s)));
+    }
     if let Some(f) = layout
         .user_fields
         .iter()
@@ -225,6 +227,13 @@ fn user_field<'a>(
     v: &str,
 ) -> Result<(&'a OptionUserField, u8), String> {
     let key = format!("user.{name}");
+    // A field with an EVT name, also one the DB gives no reset value (CH32V006 RST_MODE).
+    if let Some(s) = by_rm_name(layout, name) {
+        return Err(format!(
+            "{key}: this bit has a WCH EVT name; write it as {}",
+            spelled(s)
+        ));
+    }
     let Some(f) = layout
         .user_fields
         .iter()
@@ -247,6 +256,14 @@ fn user_field<'a>(
         Ok(b) if u16::from(b) <= top => Ok((f, b)),
         _ => Err(format!("{key}: expected 0..={top}, got `{v}`")),
     }
+}
+
+/// The semantic option a reference-manual field name is.
+fn by_rm_name(layout: &Layout, name: &str) -> Option<&'static OptionSemantic> {
+    layout
+        .semantics?
+        .iter()
+        .find(|s| s.field.eq_ignore_ascii_case(name))
 }
 
 fn covering(layout: &Layout, f: &OptionUserField) -> Option<&'static OptionSemantic> {
@@ -401,24 +418,79 @@ mod tests {
     }
 
     #[test]
-    fn family_specific_bits_go_by_their_rm_name_raw() {
-        let l = Layout::of("CH32L103");
+    fn fields_without_an_evt_name_go_by_their_rm_name_raw() {
+        // CH32V103 PORCTR: the DB names no EVT option for it.
+        let l = Layout::of("CH32V103");
         let mut f = factory();
-        apply(&l, &mut f, &s(&["user.CFGCANM=0"]), 0x00).unwrap();
+        apply(&l, &mut f, &s(&["user.PORCTR=0"]), 0x00).unwrap();
         assert_eq!(f.user, 0xdf);
         assert_eq!(
-            decode(&l, f)["user.CFGCANM"],
+            decode(&l, f)["user.PORCTR"],
             json!({"value": "0", "raw": 0})
         );
+        let e = apply(&l, &mut f, &s(&["PORCTR=0"]), 0x00).unwrap_err();
+        assert!(e.contains("user.PORCTR=<bit value>"), "{e}");
+        assert!(apply(&l, &mut f, &s(&["user.PORCTR=2"]), 0x00).is_err());
         // A bit with an EVT name is not reachable by its RM name, bare or under user.
         let e = apply(&l, &mut f, &s(&["user.STOPRST=0"]), 0x00).unwrap_err();
-        assert!(e.contains("stop-reset=on (OB_STOP_RST)"), "{e}");
+        assert!(
+            e.contains("stop-reset=off (OB_STOP_NoRST) | on (OB_STOP_RST)"),
+            "{e}"
+        );
         let e = apply(&l, &mut f, &s(&["STOPRST=0"]), 0x00).unwrap_err();
         assert!(e.contains("stop-reset="), "{e}");
-        let e = apply(&l, &mut f, &s(&["CFGCANM=0"]), 0x00).unwrap_err();
-        assert!(e.contains("user.CFGCANM=<bit value>"), "{e}");
-        assert!(apply(&l, &mut f, &s(&["user.CFGCANM=2"]), 0x00).is_err());
         assert!(!decode(&l, f).contains_key("user.STOPRST"));
+    }
+
+    #[test]
+    fn fields_the_db_now_names_go_by_their_evt_name() {
+        // CH32L103 CFGCANM is OB_CAN: user.CFGCANM is refused with the EVT form.
+        let l = Layout::of("CH32L103");
+        let mut f = factory();
+        let e = apply(&l, &mut f, &s(&["user.CFGCANM=0"]), 0x00).unwrap_err();
+        assert!(e.contains("can-bus-off=mode1 (OB_CAN_BusOff_MODE1)"), "{e}");
+        apply(&l, &mut f, &s(&["can-bus-off=mode2"]), 0x00).unwrap();
+        assert_eq!(f.user, 0xdf);
+        assert_eq!(
+            decode(&l, f)["can-bus-off"],
+            json!({"value": "mode2", "raw": 0})
+        );
+        assert!(!decode(&l, f).contains_key("user.CFGCANM"));
+        // CH32V006 RST_MODE has no reset value in the DB but is still reset-pin, not user.*.
+        let l = Layout::of("CH32V006");
+        let e = apply(&l, &mut f, &s(&["user.RST_MODE=3"]), 0x00).unwrap_err();
+        assert!(e.contains("reset-pin="), "{e}");
+        let e = apply(&l, &mut f, &s(&["RST_MODE=3"]), 0x00).unwrap_err();
+        assert!(e.contains("reset-pin="), "{e}");
+        // CH32M030 / CH32X315 / CH32V407 options the hand table did not have.
+        let mut f = factory();
+        apply(
+            &Layout::of("CH32M030"),
+            &mut f,
+            &s(&["reset-pin-select=pc0", "over-voltage=on"]),
+            0,
+        )
+        .unwrap();
+        assert_eq!(f.user, 0x5f);
+        let mut f = factory();
+        apply(
+            &Layout::of("CH32X315"),
+            &mut f,
+            &s(&[
+                "start-mode=user",
+                "usbhs-download=off",
+                "usart-download=off",
+            ]),
+            0,
+        )
+        .unwrap();
+        assert_eq!(f.user, 0x2f);
+        let mut f = factory();
+        apply(&Layout::of("CH32V407"), &mut f, &s(&["ram-split=mod0"]), 0).unwrap();
+        assert_eq!(f.user, 0xbf);
+        // A key some family has, on a family without it.
+        let e = apply(&Layout::of("CH32V307"), &mut f, &s(&["start-mode=boot"]), 0).unwrap_err();
+        assert!(e.contains("no such option"), "{e}");
     }
 
     #[test]
@@ -484,7 +556,8 @@ mod tests {
     fn keys_list_the_family_vocabulary() {
         let k = Layout::of("CH32V003").keys();
         assert!(k.contains("reset-pin=off|12ms|1ms|128us"), "{k}");
-        assert!(k.contains("user.START_MODE=0..1"), "{k}");
+        assert!(k.contains("start-mode=boot|user"), "{k}");
+        assert!(!k.contains("user."), "{k}");
         assert!(!k.contains("STANDYRST"), "{k}");
         assert!(!k.contains("stop-reset"), "{k}");
     }

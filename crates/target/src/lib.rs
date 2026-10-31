@@ -357,9 +357,9 @@ pub fn option_user_fields(family: &str) -> Vec<OptionUserField> {
             if line.is_empty() || line.starts_with('#') {
                 return None;
             }
-            // family,bit,width,field,default
+            // family,bit,width,field,default,option,evt_argument,evt_values,words
             let f: Vec<&str> = line.split(',').collect();
-            let [fam, bit, width, field, default] = f.as_slice() else {
+            let [fam, bit, width, field, default, ..] = f.as_slice() else {
                 return None;
             };
             if !fam.eq_ignore_ascii_case(family) {
@@ -370,11 +370,13 @@ pub fn option_user_fields(family: &str) -> Vec<OptionUserField> {
             if width == 0 || bit + width > 8 {
                 return None;
             }
+            // A field the manual leaves open is listed only for its EVT name (option_semantics).
+            let default: u8 = default.parse().ok()?;
             Some(OptionUserField {
                 bit,
                 width,
                 field: (*field).to_owned(),
-                default: default.parse().unwrap_or(0),
+                default,
             })
         })
         .collect();
@@ -393,19 +395,25 @@ pub struct OptionValue {
 }
 
 /// en: A USER-byte option under its semantic name - one argument of the WCH EVT
-/// `FLASH_UserOptionByteConfig` (OB_IWDG, OB_STOP, OB_STDBY, OB_RST). The polarity lives in the
-/// value words (`stop-reset=on` is `OB_STOP_RST`, bit 0), never in the caller.
-/// ja: USER byte の option を意味名で表したもの。EVT の `FLASH_UserOptionByteConfig` の引数 1 つに
-/// 当たる。極性は値の語が持つ(`stop-reset=on` は `OB_STOP_RST`、bit 0)。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `FLASH_UserOptionByteConfig` (OB_IWDG, OB_STOP, OB_RST, ...), from the device DB's
+/// `option_byte_fields` (`option`, `evt_argument`, `evt_values`; the value words are derived from
+/// the EVT constants by `cargo xtask db-gen`, docs/cli.ja.md §4.3). The polarity lives in the value
+/// words (`stop-reset=on` is `OB_STOP_RST`, bit 0), never in the caller.
+/// ja: USER byte の option を意味名で表したもの。DB の `option_byte_fields` の EVT の列から作る
+/// (値の語は db-gen が EVT の定数から作る)。極性は値の語が持つ(`stop-reset=on` は `OB_STOP_RST`、bit 0)。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OptionSemantic {
-    /// The key on the command line (`iwdg`, `stop-reset`, `standby-reset`, `reset-pin`).
+    /// The key on the command line (`iwdg`, `stop-reset`, `reset-pin`, `start-mode`, ...).
     pub key: &'static str,
+    /// The reference-manual field it is (`IWDGSW`, `RST_MODE`, ...).
+    pub field: &'static str,
+    /// The `FLASH_UserOptionByteConfig` argument (`OB_IWDG`, `OB_RST`, ...).
+    pub evt_argument: &'static str,
     /// The lowest bit within the USER byte.
     pub bit: u8,
     /// How many bits it takes.
     pub width: u8,
-    pub values: &'static [OptionValue],
+    pub values: Vec<OptionValue>,
 }
 
 impl OptionSemantic {
@@ -425,94 +433,93 @@ impl OptionSemantic {
     }
 
     /// The value word for a field value (`None` for a value EVT gives no name).
-    pub fn word(&self, bits: u8) -> Option<&'static OptionValue> {
+    pub fn word(&self, bits: u8) -> Option<&OptionValue> {
         self.values.iter().find(|v| v.bits == bits)
     }
 }
 
-const fn ov(word: &'static str, bits: u8, evt: &'static str) -> OptionValue {
-    OptionValue { word, bits, evt }
+/// Every family of the generated option field table with its semantic options (bit order).
+fn semantic_table() -> &'static [(&'static str, Vec<OptionSemantic>)] {
+    static TABLE: std::sync::OnceLock<Vec<(&'static str, Vec<OptionSemantic>)>> =
+        std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        let mut out: Vec<(&'static str, Vec<OptionSemantic>)> = Vec::new();
+        for line in GENERATED_OPTION_FIELDS.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let f: Vec<&'static str> = line.split(',').collect();
+            let [fam, bit, width, field, _default, key, arg, evt, words] = f.as_slice() else {
+                continue;
+            };
+            let i = match out.iter().position(|(x, _)| x == fam) {
+                Some(i) => i,
+                None => {
+                    out.push((fam, Vec::new()));
+                    out.len() - 1
+                }
+            };
+            let (Ok(bit), Ok(width)) = (bit.parse::<u8>(), width.parse::<u8>()) else {
+                continue;
+            };
+            if key.is_empty() || width == 0 || bit + width > 8 {
+                continue;
+            }
+            // `<field value>=<constant>` and `<field value>=<word>`, joined on the field value.
+            let pairs = |s: &'static str| {
+                s.split(';')
+                    .filter_map(|p| p.split_once('='))
+                    .filter_map(|(v, x)| Some((v.parse::<u8>().ok()?, x)))
+                    .collect::<Vec<_>>()
+            };
+            let consts = pairs(evt);
+            let values = pairs(words)
+                .into_iter()
+                .filter_map(|(bits, word)| {
+                    let evt = consts.iter().find(|(b, _)| *b == bits)?.1;
+                    Some(OptionValue { word, bits, evt })
+                })
+                .collect();
+            out[i].1.push(OptionSemantic {
+                key,
+                field,
+                evt_argument: arg,
+                bit,
+                width,
+                values,
+            });
+        }
+        for (_, s) in &mut out {
+            s.sort_by_key(|o| o.bit);
+        }
+        out
+    })
 }
 
-const OB_IWDG: OptionSemantic = OptionSemantic {
-    key: "iwdg",
-    bit: 0,
-    width: 1,
-    values: &[ov("sw", 1, "OB_IWDG_SW"), ov("hw", 0, "OB_IWDG_HW")],
-};
-const OB_STOP: OptionSemantic = OptionSemantic {
-    key: "stop-reset",
-    bit: 1,
-    width: 1,
-    values: &[ov("on", 0, "OB_STOP_RST"), ov("off", 1, "OB_STOP_NoRST")],
-};
-const OB_STDBY: OptionSemantic = OptionSemantic {
-    key: "standby-reset",
-    bit: 2,
-    width: 1,
-    values: &[ov("on", 0, "OB_STDBY_RST"), ov("off", 1, "OB_STDBY_NoRST")],
-};
-/// CH32V003 / CH32V00X / CH32X035: RST_MODE[4:3].
-const OB_RST_12MS: OptionSemantic = OptionSemantic {
-    key: "reset-pin",
-    bit: 3,
-    width: 2,
-    values: &[
-        ov("off", 3, "OB_RST_NoEN"),
-        ov("12ms", 2, "OB_RST_EN_DT12ms"),
-        ov("1ms", 1, "OB_RST_EN_DT1ms"),
-        ov("128us", 0, "OB_RST_EN_DT128us"),
-    ],
-};
-/// CH32M030: RST_MODE[4:3] with other delays.
-const OB_RST_512US: OptionSemantic = OptionSemantic {
-    key: "reset-pin",
-    bit: 3,
-    width: 2,
-    values: &[
-        ov("off", 3, "OB_RST_NoEN"),
-        ov("1ms", 2, "OB_RST_EN_DT1ms"),
-        ov("512us", 1, "OB_RST_EN_DT512us"),
-        ov("128us", 0, "OB_RST_EN_DT128us"),
-    ],
-};
-/// CH32X315: CFGRSTEN, one bit.
-const OB_RST_EN: OptionSemantic = OptionSemantic {
-    key: "reset-pin",
-    bit: 3,
-    width: 1,
-    values: &[ov("off", 1, "OB_RST_NoEN"), ov("on", 0, "OB_RST_EN")],
-};
-
 /// en: The semantic USER-byte options of a DB family: the `FLASH_UserOptionByteConfig` arguments
-/// of its WCH EVT (`Peripheral/src/*_flash.c`; the function's own parameter list, not the header's
-/// stray defines - CH32V003 defines OB_STOP_* but does not take it, CH32M030's header and source
-/// disagree and the source is what writes). The arguments EVT gives that are not here (start mode,
-/// CAN bus-off, USB/USART download, RAM split, reset-pin select, over-voltage) are reached by their
-/// reference-manual field name as `user.<field>`. `None` when the family is not known.
-/// ja: DB family の意味名の option。EVT の `FLASH_UserOptionByteConfig` の引数(header ではなく
-/// source の引数並び)。ここに無い引数(起動モード、CAN、download、RAM 分割など)は RM の field 名で
-/// `user.<field>` と書く。知らない family は `None`。
+/// of its WCH EVT, as the device DB's `option_byte_fields` gives them (`option` column). A USER
+/// field with no `option` (CH32V103 PORCTR) is reached by its reference-manual field name as
+/// `user.<field>`. `None` when the family is not in the DB.
+/// ja: DB family の意味名の option(DB の `option_byte_fields` の `option` 列)。`option` の無い
+/// field は RM の field 名で `user.<field>` と書く。DB に無い family は `None`。
 pub fn option_semantics(family: &str) -> Option<&'static [OptionSemantic]> {
-    const STM32F1_LIKE: &[OptionSemantic] = &[OB_IWDG, OB_STOP, OB_STDBY];
-    let table: &[(&str, &'static [OptionSemantic])] = &[
-        ("CH32V103", STM32F1_LIKE),
-        ("CH32V20x", STM32F1_LIKE),
-        ("CH32V205", STM32F1_LIKE),
-        ("CH32V307", STM32F1_LIKE),
-        ("CH32V407", STM32F1_LIKE),
-        ("CH32L103", STM32F1_LIKE),
-        ("CH32X035", &[OB_IWDG, OB_STOP, OB_STDBY, OB_RST_12MS]),
-        ("CH32V003", &[OB_IWDG, OB_STDBY, OB_RST_12MS]),
-        ("CH32V006", &[OB_IWDG, OB_STDBY, OB_RST_12MS]),
-        ("CH32M030", &[OB_STOP, OB_STDBY, OB_RST_512US]),
-        ("CH32X315", &[OB_IWDG, OB_RST_EN]),
-        ("CH32H417", &[OB_IWDG]),
-    ];
-    table
+    semantic_table()
         .iter()
         .find(|(f, _)| f.eq_ignore_ascii_case(family))
-        .map(|(_, s)| *s)
+        .map(|(_, s)| s.as_slice())
+}
+
+/// en: Every semantic option key some family has (to tell "this family lacks it" from "unknown").
+/// ja: いずれかの family が持つ意味名の key 全部。
+pub fn option_semantic_keys() -> Vec<&'static str> {
+    let mut k: Vec<&'static str> = semantic_table()
+        .iter()
+        .flat_map(|(_, s)| s.iter().map(|o| o.key))
+        .collect();
+    k.sort_unstable();
+    k.dedup();
+    k
 }
 
 /// Silicon-revision bits `[7:4]` of the device_id are don't-care when matching (every delivered row
@@ -891,49 +898,96 @@ CH32FICTIONAL,CH32V006,CH32V006,0x00990900,0x1ffff704,1,1,false,9999\n";
         assert!(f.iter().all(|x| x.field != "Reserved"));
     }
 
-    /// en: Every semantic option lies on the bits the DB gives the matching reference-manual field,
-    /// and never on another field; the DB families and the semantic table name the same families.
-    /// ja: 意味名の bit は DB の対応する RM の field と同じ位置で、ほかの field と重ならない。
+    /// en: The vocabulary the generated table gives each family (the words derived from the EVT
+    /// constants); a data change that moves a word shows up here. The options never overlap a
+    /// field with a reset value under another name.
+    /// ja: 生成した表が family ごとに与える語彙。データの変化で語が動けばここで分かる。
     #[test]
-    fn option_semantics_agree_with_the_db_fields() {
-        let rm_names = |key: &str| -> &[&str] {
-            match key {
-                "iwdg" => &["IWDGSW", "IWDG_SW"],
-                "stop-reset" => &["STOPRST"],
-                "standby-reset" => &["STANDYRST"],
-                "reset-pin" => &["RST_MODE", "CFGRSTEN"],
-                _ => &[],
-            }
+    fn option_semantics_vocabulary() {
+        let vocab = |fam: &str| -> String {
+            let mut v: Vec<String> = option_semantics(fam)
+                .unwrap_or_else(|| panic!("{fam}: no semantic table"))
+                .iter()
+                .map(|s| {
+                    let mut w: Vec<&OptionValue> = s.values.iter().collect();
+                    w.sort_by_key(|x| core::cmp::Reverse(x.bits));
+                    let w: Vec<&str> = w.iter().map(|x| x.word).collect();
+                    format!("{}={}", s.key, w.join("|"))
+                })
+                .collect();
+            v.sort();
+            v.join(" ")
         };
-        let families: std::collections::BTreeSet<&str> = GENERATED_OPTION_FIELDS
-            .lines()
-            .filter(|l| !l.starts_with('#'))
-            .filter_map(|l| l.split(',').next())
-            .collect();
-        for fam in families {
-            let sem = option_semantics(fam).unwrap_or_else(|| panic!("{fam}: no semantic table"));
-            for s in sem {
-                for f in option_user_fields(fam) {
-                    if f.mask() & s.mask() == 0 {
-                        continue;
-                    }
-                    assert!(
-                        rm_names(s.key).contains(&f.field.as_str())
-                            && (f.bit, f.width) == (s.bit, s.width),
-                        "{fam}: {} overlaps {}",
-                        s.key,
-                        f.field
-                    );
-                }
-                // Every field value has an EVT word.
-                assert!((0..1u16 << s.width).all(|b| s.word(b as u8).is_some()));
-            }
+        let f1 = "iwdg=sw|hw standby-reset=off|on stop-reset=off|on";
+        for fam in ["CH32V103", "CH32V20x", "CH32V307"] {
+            assert_eq!(vocab(fam), f1, "{fam}");
         }
+        assert_eq!(
+            vocab("CH32V407"),
+            "iwdg=sw|hw ram-split=mod1|mod0 standby-reset=off|on stop-reset=off|on"
+        );
+        for fam in ["CH32L103", "CH32V205"] {
+            assert_eq!(vocab(fam), format!("can-bus-off=mode1|mode2 {f1}"), "{fam}");
+        }
+        let rst12 = "reset-pin=off|12ms|1ms|128us";
+        assert_eq!(
+            vocab("CH32X035"),
+            format!("iwdg=sw|hw {rst12} standby-reset=off|on stop-reset=off|on")
+        );
+        for fam in ["CH32V003", "CH32V006"] {
+            assert_eq!(
+                vocab(fam),
+                format!("iwdg=sw|hw {rst12} standby-reset=off|on start-mode=boot|user"),
+                "{fam}"
+            );
+        }
+        assert_eq!(
+            vocab("CH32M030"),
+            "over-voltage=off|on reset-pin-select=pa15|pc0 reset-pin=off|1ms|512us|128us standby-reset=off|on stop-reset=off|on"
+        );
+        assert_eq!(
+            vocab("CH32X315"),
+            "iwdg=sw|hw reset-pin=off|on start-mode=boot|user usart-download=on|off usbhs-download=on|off"
+        );
+        assert_eq!(
+            vocab("CH32H417"),
+            "iwdg=sw|hw usart-download=on|off usbfs-download=on|off"
+        );
         assert!(option_semantics("CH32NOPE").is_none());
         let x035 = option_semantics("CH32X035").unwrap_or_default();
         let stop = x035.iter().find(|s| s.key == "stop-reset");
         // OB_STOP_RST: reset on entering STOP = bit cleared.
         assert_eq!(stop.map(|s| s.set(0xff, 0)), Some(0xfd));
+        assert_eq!(
+            stop.and_then(|s| s.word(0)).map(|v| (v.word, v.evt)),
+            Some(("on", "OB_STOP_RST"))
+        );
+        for (fam, sem) in semantic_table() {
+            for s in sem {
+                // Every field value has an EVT word.
+                assert!(
+                    (0..1u16 << s.width).all(|b| s.word(b as u8).is_some()),
+                    "{fam} {}",
+                    s.key
+                );
+                for f in option_user_fields(fam) {
+                    if f.mask() & s.mask() != 0 {
+                        assert_eq!(
+                            (f.field.as_str(), f.bit, f.width),
+                            (s.field, s.bit, s.width)
+                        );
+                    }
+                }
+            }
+        }
+        // V006 RST_MODE (prose default) and V407 RAM_CODE_MOD (open) carry an option but no reset
+        // value: semantic, not in option_user_fields.
+        assert!(
+            option_user_fields("CH32V006")
+                .iter()
+                .all(|f| f.field != "RST_MODE")
+        );
+        assert!(option_semantic_keys().contains(&"reset-pin"));
     }
 
     #[test]

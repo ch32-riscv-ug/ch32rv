@@ -106,7 +106,7 @@
         "write_protected": {"type": "boolean", "description": "WRPR に 0 の bit がある"},
         "options": {
           "type": "object",
-          "description": "key ごとに値の語(value)と生の値(raw)。USER の意味名(iwdg / stop-reset / standby-reset / reset-pin)は family が持つものだけ、EVT に名前の無い USER の field は user.<RM の名前>",
+          "description": "key ごとに値の語(value)と生の値(raw)。USER の意味名(iwdg / stop-reset / standby-reset / reset-pin / start-mode / can-bus-off / ram-split / reset-pin-select / over-voltage / usbfs-download / usbhs-download / usart-download。device DB の option_byte_fields の option 列)は family が持つものだけ、option の無い USER の field は user.<RM の名前>",
           "required": ["read-protect", "write-protect", "data0", "data1"],
           "properties": {
             "read-protect": {"$ref": "#/$defs/option_value"},

@@ -452,8 +452,9 @@ pub enum OptionCmd {
     Get,
     /// Change option bytes (the vocabulary of `isp config set`): read-protect=on|off
     /// write-protect=<mask> data0=<byte> data1=<byte> iwdg=sw|hw stop-reset=on|off
-    /// standby-reset=on|off reset-pin=off|12ms|1ms|128us (the values the family's WCH EVT names);
-    /// a USER bit EVT has no name for: user.<RM field>=<bit value>
+    /// standby-reset=on|off reset-pin=off|12ms|1ms|128us start-mode=boot|user ... (the options and
+    /// values the family's WCH EVT names, from the device DB; `set` with a wrong key lists them);
+    /// a USER field with no EVT name: user.<RM field>=<bit value>
     Set {
         #[arg(required = true)]
         kv: Vec<String>,
@@ -661,8 +662,9 @@ pub enum IspConfigCmd {
     Get,
     /// Change option bytes (the vocabulary of `target option set`): read-protect=on|off
     /// write-protect=<mask> data0=<byte> data1=<byte> iwdg=sw|hw stop-reset=on|off
-    /// standby-reset=on|off reset-pin=off|12ms|1ms|128us (the values the family's WCH EVT names);
-    /// a USER bit EVT has no name for: user.<RM field>=<bit value>
+    /// standby-reset=on|off reset-pin=off|12ms|1ms|128us start-mode=boot|user ... (the options and
+    /// values the family's WCH EVT names, from the device DB; `set` with a wrong key lists them);
+    /// a USER field with no EVT name: user.<RM field>=<bit value>
     Set {
         #[arg(required = true)]
         kv: Vec<String>,

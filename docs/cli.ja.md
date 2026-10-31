@@ -369,7 +369,7 @@ ch32rv target list [--identify [oep|all]]         target に届く場所の一�
 ch32rv target info                                chip ID/family/SKU 候補(根拠付き)/UID/flash size/保護状態/option 要約/verified
 
 ch32rv target option get                          option bytes を key ごとに値の語と生の値で表示
-ch32rv target option set <key>=<value>...         例: stop-reset=on reset-pin=off user.CFGCANM=0
+ch32rv target option set <key>=<value>...         例: stop-reset=on reset-pin=off can-bus-off=mode2
 ch32rv target option reset                        工場出荷値
 ch32rv target option write-raw <hex> [--yes]      生値(expert)
 ch32rv target protect <on|off> [--yes]            off は全消去を伴う旨を明示
@@ -386,12 +386,12 @@ WCH-Link の `target info` は未登録チップでも接続成功とDB照合結
 `flash_capacity_source` (`probe` / `db` / `unavailable`) で出所を示す。X315のDB容量192 KiBは
 ゼロウェイト領域で、総Flash480 KiB (192 + 288)とは区別する。
 
-- **option bytes の語彙(`target option set` と `isp config set` で同じ)**。USER byte の option は WCH の EVT の `FLASH_UserOptionByteConfig` の定数の名前で書き、極性は値の語が持つ(bit の値を書かない)。family が持たない key は usage error(exit 2)で、hint にその family の key を全部出す。
+- **option bytes の語彙(`target option set` と `isp config set` で同じ)**。USER byte の option は WCH の EVT の `FLASH_UserOptionByteConfig` の定数の名前で書き、極性は値の語が持つ(bit の値を書かない)。family が持たない key は usage error(exit 2)で、hint にその family の key を全部出す。**USER の意味名・値の語・EVT の定数は手書きせず、ch32-device-data の `index/option_byte_fields` の `option` / `evt_argument` / `evt_values` 列から `cargo xtask db-gen` が作る**(`crates/target/generated/option_fields.csv`。`option` の無い field だけが `user.<field>`)。
 
   | key | 値 | EVT の定数(USER の bit) | 極性 |
   |---|---|---|---|
   | `read-protect` | `on` / `off` | (RDPR。`off` = `0xA5`) | `on` は RDPR を `0xA5` 以外にする(debug 線は `0xFF`、ISP は `0x00`)。状態が変わるときだけ書く |
-  | `write-protect` | `<mask>`(u32) | `FLASH_EnableWriteProtection` の `FLASH_WRProt_Pages*`(WRPR0–3) | 立った bit の sector(群)を保護。WRPR はその反転で、`get` の `raw` は WRPR の値 |
+  | `write-protect` | `<mask>`(u32) | `FLASH_EnableWriteProtection` の `FLASH_WRProt_Pages*`(WRPR0–3) | 立った bit の sector(群)を保護(DB の WRPR の行の `evt_values` = `1=protected`。違えば db-gen が止まる)。WRPR はその反転で、`get` の `raw` は WRPR の値 |
   | `data0` / `data1` | `<byte>`(10 進か `0x`) | (Data0 / Data1) | — |
   | `iwdg` | `sw` / `hw` | `OB_IWDG_SW` / `OB_IWDG_HW`(bit 0) | `sw` = 1 |
   | `stop-reset` | `on` / `off` | `OB_STOP_RST` / `OB_STOP_NoRST`(bit 1) | `on`(STOP で reset)= 0 |
@@ -399,11 +399,21 @@ WCH-Link の `target info` は未登録チップでも接続成功とDB照合結
   | `reset-pin` | `off` / `12ms` / `1ms` / `128us` | `OB_RST_NoEN` / `OB_RST_EN_DT12ms` / `_DT1ms` / `_DT128us`(bit 4:3) | `off`(NRST を使わない)= 11b、`12ms` = 10b、`1ms` = 01b、`128us` = 00b |
   | `reset-pin`(CH32M030) | `off` / `1ms` / `512us` / `128us` | `OB_RST_NoEN` / `OB_RST_EN_DT1ms` / `_DT512us` / `_DT128us`(bit 4:3) | 11b / 10b / 01b / 00b |
   | `reset-pin`(CH32X315) | `off` / `on` | `OB_RST_NoEN` / `OB_RST_EN`(bit 3) | `off` = 1 |
-  | `user.<RM の field 名>` | bit の値(`0`〜) | EVT の上の 4 つに無い USER の field(DB の `option_fields`) | 変換しない(生の bit の値) |
+  | `reset-pin-select`(CH32M030) | `pa15` / `pc0` | `OB_RST_PIN_PA15` / `OB_RST_PIN_PC0`(bit 5、RST_PIN_SEL) | `pa15` = 1 |
+  | `over-voltage`(CH32M030) | `on` / `off` | `OB_OV_CFG_EN` / `OB_OV_CFG_NoEN`(bit 7、OV_CFG) | `off` = 1 |
+  | `start-mode`(V003 / V006 / X315) | `boot` / `user` | `OB_PowerON_Start_Mode_BOOT` / `_USER`(V003 / V006 は bit 5 START_MODE、X315 は bit 4 START_MD) | `boot` = 1 |
+  | `can-bus-off`(L103 / V205) | `mode1` / `mode2` | `OB_CAN_BusOff_MODE1` / `_MODE2`(bit 5、CFGCANM) | `mode1` = 1 |
+  | `ram-split`(V407) | `mod1` / `mod0` | `OB_RAM_CODE_MOD1` / `_MOD0`(bit 6、RAM_CODE_MOD) | `mod1` = 1 |
+  | `usbfs-download`(H417) | `on` / `off` | `OB_USBFSDL_EN` / `_NoEN`(bit 6、USBFSDLEN) | `on` = 1 |
+  | `usbhs-download`(X315) | `on` / `off` | `OB_USBHSDL_EN` / `_NoEN`(bit 6、USBHSDLEN) | `on` = 1 |
+  | `usart-download`(H417 / X315) | `on` / `off` | `OB_USARTDL_EN` / `_NoEN`(bit 7、USARTDLEN) | `on` = 1 |
+  | `user.<RM の field 名>` | bit の値(`0`〜) | DB に `option` の無い USER の field(DB の `option_fields`。いまは V103 の `PORCTR` だけ) | 変換しない(生の bit の値) |
 
-- family ごとの意味名(EVT の各 `*_flash.c` の `FLASH_UserOptionByteConfig` の引数): V103 / V20x / V205 / V307 / V407 / L103 = `iwdg` `stop-reset` `standby-reset`。X035 = その 3 つ + `reset-pin`。V003 / V006 = `iwdg` `standby-reset` `reset-pin`(`stop-reset` は無い)。M030 = `stop-reset` `standby-reset` `reset-pin`(`iwdg` は無い)。X315 = `iwdg` `reset-pin`。H417 = `iwdg`。
-- `user.<field>` は意味名の無い bit だけに使う(例: L103 / V205 の `user.CFGCANM`、V003 / V006 の `user.START_MODE`、X315 の `user.START_MD` / `user.USBHSDLEN` / `user.USARTDLEN`、M030 の `user.RST_PIN_SEL` / `user.OV_CFG`)。意味名のある bit を `user.STOPRST` や素の `STOPRST` で書くと、意味名での書き方を示して usage error。field 名の大小文字は区別しない。
-- `get` は 2 つのコマンドで同じ形(`docs/contract/commands.schema.json` の `option_bytes`): `family`、`db_family`、`raw`(読んだ byte の hex。debug 線は補数込み 16 byte、ISP は config 12 byte)、`read_protected`、`write_protected`、`options`。`options` は `set` が受ける key ごとに `{"value": "<値の語>", "raw": <生の値>}`(例 `"stop-reset": {"value": "on", "raw": 0}`、`"user.CFGCANM": {"value": "1", "raw": 1}`)。`value` はそのまま `set` に渡せる。文字の出力も `key=value` を 1 行ずつ出す。USER の配置を知らない family は `read-protect` / `write-protect` / `data0` / `data1` だけを出し、`warning[option-decode-interim]`。
+- **値の語の規則**(db-gen が `evt_values` の定数から作る。手で付けない): その option の全部の定数に共通する、`_` で終わるいちばん長い頭(ふつうは引数名 + `_`。`OB_RST_`、`OB_PowerON_Start_Mode_`、`OB_CAN_BusOff_`、`OB_RAM_CODE_`)を除き、残りが `RST` / `EN` なら `on`、`NoRST` / `NoEN` なら `off`、`EN_DT<時間>` なら `<時間>`、それ以外は小文字にして `_` を `-` にする(`OB_IWDG_SW` → `sw`、`OB_RST_EN_DT512us` → `512us`、`OB_RST_PIN_PA15` → `pa15`、`OB_RAM_CODE_MOD1` → `mod1`)。field の値ごとにちょうど 1 つの語が付かない・語が重なる・その形にならない定数があれば db-gen が止まる。
+- family ごとの意味名(DB の `option` 列。EVT の各 `*_flash.c` の `FLASH_UserOptionByteConfig` の引数): V103 / V20x / V307 = `iwdg` `stop-reset` `standby-reset`。V407 = その 3 つ + `ram-split`。L103 / V205 = その 3 つ + `can-bus-off`。X035 = その 3 つ + `reset-pin`。V003 / V006 = `iwdg` `standby-reset` `reset-pin` `start-mode`(`stop-reset` は無い)。M030 = `stop-reset` `standby-reset` `reset-pin` `reset-pin-select` `over-voltage`(`iwdg` は無い)。X315 = `iwdg` `reset-pin` `start-mode` `usbhs-download` `usart-download`。H417 = `iwdg` `usbfs-download` `usart-download`。
+- `user.<field>` は `option` の無い field だけに使う(いまは V103 の `user.PORCTR`)。意味名のある bit を `user.STOPRST` / `user.CFGCANM` や素の `STOPRST` で書くと、意味名での書き方(値の語と EVT の定数)を示して usage error。DB が復位値を持たない意味名の field(V006 の RST_MODE、V407 の RAM_CODE_MOD)も同じ。field 名の大小文字は区別しない。
+- DB の `confidence` が `conflict` の行(M030 の RST_MODE、V003 / V205 の IWDG。RM の中国語版と英語版で field 名の綴りが違うだけで、bit の位置と `option` / `evt_*` 列は一致)も、ほかの行と同じに使う。db-gen はこの表の `confidence` を読まない。
+- `get` は 2 つのコマンドで同じ形(`docs/contract/commands.schema.json` の `option_bytes`): `family`、`db_family`、`raw`(読んだ byte の hex。debug 線は補数込み 16 byte、ISP は config 12 byte)、`read_protected`、`write_protected`、`options`。`options` は `set` が受ける key ごとに `{"value": "<値の語>", "raw": <生の値>}`(例 `"stop-reset": {"value": "on", "raw": 0}`、`"user.PORCTR": {"value": "1", "raw": 1}`)。`value` はそのまま `set` に渡せる。文字の出力も `key=value` を 1 行ずつ出す。USER の配置を知らない family は `read-protect` / `write-protect` / `data0` / `data1` だけを出し、`warning[option-decode-interim]`。
 - `target option set` は現在値を読み → 指定の field だけ変え → **補数を全部計算し直し** → §4.2.1 の直接 controller で erase+program → reset してから read-back で照合(違えば exit 30)。反映は system reset 後。変更は必ず確認する(`--yes`)。**保護中の `read-protect=off` は全消去、`read-protect=on` は読めなくなる**旨を確認文に出す。実機(L103、意味名にする前の RM 名の経路): STOPRST の bit を 0 にして USER `0xff→0xfd`(補数 `00→02`)、read-back で反映、1 に戻して復元。
 - 「未対応 SKU」と「DB に無い SKU」は JSON で区別する(exit 20 の detail)。
 - `option get` は option bytes(DB の base から 16 byte)を DMI で読む(読み取り専用)。実機: V203 / V307 / V003 / X035 で RDPR=`0xA5`(保護なし)と補数の整合を確認。
