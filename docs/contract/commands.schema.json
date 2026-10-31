@@ -94,10 +94,41 @@
         "flash_bytes": {"type": ["integer", "null"]}
       }
     },
-    "isp_options": {
+    "option_bytes": {
       "type": "object",
-      "description": "option の名前と値(ISP の語彙。family で変わる)",
-      "properties": {}
+      "description": "target option get と isp config get の共通の形。options の key と value は option set / isp config set にそのまま渡せる",
+      "required": ["family", "db_family", "raw", "read_protected", "write_protected", "options"],
+      "properties": {
+        "family": {"type": ["string", "null"], "description": "target: session の family。isp: bootloader の series(知らなければ null)"},
+        "db_family": {"type": ["string", "null"], "description": "option の配置を引いた DB の family"},
+        "raw": {"type": "string", "description": "読んだ byte の hex。target は補数込みの 16 byte、isp は bootloader の config 12 byte"},
+        "read_protected": {"type": "boolean"},
+        "write_protected": {"type": "boolean", "description": "WRPR に 0 の bit がある"},
+        "options": {
+          "type": "object",
+          "description": "key ごとに値の語(value)と生の値(raw)。USER の意味名(iwdg / stop-reset / standby-reset / reset-pin)は family が持つものだけ、EVT に名前の無い USER の field は user.<RM の名前>",
+          "required": ["read-protect", "write-protect", "data0", "data1"],
+          "properties": {
+            "read-protect": {"$ref": "#/$defs/option_value"},
+            "write-protect": {"$ref": "#/$defs/option_value"},
+            "data0": {"$ref": "#/$defs/option_value"},
+            "data1": {"$ref": "#/$defs/option_value"},
+            "iwdg": {"$ref": "#/$defs/option_value"},
+            "stop-reset": {"$ref": "#/$defs/option_value"},
+            "standby-reset": {"$ref": "#/$defs/option_value"},
+            "reset-pin": {"$ref": "#/$defs/option_value"}
+          },
+          "additionalProperties": {"$ref": "#/$defs/option_value"}
+        }
+      }
+    },
+    "option_value": {
+      "type": "object",
+      "required": ["value", "raw"],
+      "properties": {
+        "value": {"type": "string", "description": "set に渡す値の語(on / off / sw / 12ms / 0x5a など)"},
+        "raw": {"type": "integer", "minimum": 0, "description": "field の生の値(bit の値、byte、WRPR の 32 bit)"}
+      }
     },
     "version": {
       "type": "object",
@@ -446,28 +477,7 @@
         }
       }
     },
-    "target.option.get": {
-      "type": "object",
-      "required": ["raw", "read_protected", "write_protected"],
-      "properties": {
-        "family": {"type": "string"},
-        "db_family": {"type": ["string", "null"]},
-        "raw": {"type": "string", "description": "16 byte の hex"},
-        "read_protected": {"type": "boolean"},
-        "rdpr": {"type": "string", "description": "0x 付きの hex"},
-        "user": {"type": "string", "description": "0x 付きの hex"},
-        "user_bits": {
-          "type": "object",
-          "description": "USER の bit の名前と値",
-          "properties": {},
-          "additionalProperties": {"type": "boolean"}
-        },
-        "data0": {"type": "string", "description": "0x 付きの hex"},
-        "data1": {"type": "string", "description": "0x 付きの hex"},
-        "wrpr": {"type": "string", "description": "0x 付きの hex"},
-        "write_protected": {"type": "boolean"}
-      }
-    },
+    "target.option.get": {"$ref": "#/$defs/option_bytes"},
     "target.option.set": {
       "type": "object",
       "required": ["before", "after", "verified"],
@@ -624,15 +634,12 @@
       "required": ["erased_sectors"],
       "properties": {"erased_sectors": {"type": "integer"}}
     },
-    "isp.config.get": {
-      "type": "object",
-      "required": ["options", "config"],
-      "properties": {"options": {"$ref": "#/$defs/isp_options"}, "config": {"type": "string"}}
-    },
+    "isp.config.get": {"$ref": "#/$defs/option_bytes"},
     "isp.config.set": {
-      "type": "object",
-      "required": ["options", "changed"],
-      "properties": {"options": {"$ref": "#/$defs/isp_options"}, "changed": {"type": "boolean"}}
+      "allOf": [
+        {"$ref": "#/$defs/option_bytes"},
+        {"type": "object", "required": ["changed"], "properties": {"changed": {"type": "boolean"}}}
+      ]
     },
     "boot.dfu.info": {
       "type": "object",

@@ -382,6 +382,139 @@ pub fn option_user_fields(family: &str) -> Vec<OptionUserField> {
     out
 }
 
+/// en: One value of an [`OptionSemantic`]: the word written on the command line, the field value
+/// it stands for, and the WCH EVT constant it is (`FLASH_UserOptionByteConfig` argument).
+/// ja: 意味名の値 1 つ: コマンドで書く語、field の値、それに当たる EVT の定数。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptionValue {
+    pub word: &'static str,
+    pub bits: u8,
+    pub evt: &'static str,
+}
+
+/// en: A USER-byte option under its semantic name - one argument of the WCH EVT
+/// `FLASH_UserOptionByteConfig` (OB_IWDG, OB_STOP, OB_STDBY, OB_RST). The polarity lives in the
+/// value words (`stop-reset=on` is `OB_STOP_RST`, bit 0), never in the caller.
+/// ja: USER byte の option を意味名で表したもの。EVT の `FLASH_UserOptionByteConfig` の引数 1 つに
+/// 当たる。極性は値の語が持つ(`stop-reset=on` は `OB_STOP_RST`、bit 0)。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptionSemantic {
+    /// The key on the command line (`iwdg`, `stop-reset`, `standby-reset`, `reset-pin`).
+    pub key: &'static str,
+    /// The lowest bit within the USER byte.
+    pub bit: u8,
+    /// How many bits it takes.
+    pub width: u8,
+    pub values: &'static [OptionValue],
+}
+
+impl OptionSemantic {
+    /// The field's bits within the USER byte.
+    pub fn mask(&self) -> u8 {
+        (((1u16 << self.width) - 1) << self.bit) as u8
+    }
+
+    /// The field's value in `user`.
+    pub fn get(&self, user: u8) -> u8 {
+        (user & self.mask()) >> self.bit
+    }
+
+    /// `user` with this field set to `bits`.
+    pub fn set(&self, user: u8, bits: u8) -> u8 {
+        (user & !self.mask()) | ((bits << self.bit) & self.mask())
+    }
+
+    /// The value word for a field value (`None` for a value EVT gives no name).
+    pub fn word(&self, bits: u8) -> Option<&'static OptionValue> {
+        self.values.iter().find(|v| v.bits == bits)
+    }
+}
+
+const fn ov(word: &'static str, bits: u8, evt: &'static str) -> OptionValue {
+    OptionValue { word, bits, evt }
+}
+
+const OB_IWDG: OptionSemantic = OptionSemantic {
+    key: "iwdg",
+    bit: 0,
+    width: 1,
+    values: &[ov("sw", 1, "OB_IWDG_SW"), ov("hw", 0, "OB_IWDG_HW")],
+};
+const OB_STOP: OptionSemantic = OptionSemantic {
+    key: "stop-reset",
+    bit: 1,
+    width: 1,
+    values: &[ov("on", 0, "OB_STOP_RST"), ov("off", 1, "OB_STOP_NoRST")],
+};
+const OB_STDBY: OptionSemantic = OptionSemantic {
+    key: "standby-reset",
+    bit: 2,
+    width: 1,
+    values: &[ov("on", 0, "OB_STDBY_RST"), ov("off", 1, "OB_STDBY_NoRST")],
+};
+/// CH32V003 / CH32V00X / CH32X035: RST_MODE[4:3].
+const OB_RST_12MS: OptionSemantic = OptionSemantic {
+    key: "reset-pin",
+    bit: 3,
+    width: 2,
+    values: &[
+        ov("off", 3, "OB_RST_NoEN"),
+        ov("12ms", 2, "OB_RST_EN_DT12ms"),
+        ov("1ms", 1, "OB_RST_EN_DT1ms"),
+        ov("128us", 0, "OB_RST_EN_DT128us"),
+    ],
+};
+/// CH32M030: RST_MODE[4:3] with other delays.
+const OB_RST_512US: OptionSemantic = OptionSemantic {
+    key: "reset-pin",
+    bit: 3,
+    width: 2,
+    values: &[
+        ov("off", 3, "OB_RST_NoEN"),
+        ov("1ms", 2, "OB_RST_EN_DT1ms"),
+        ov("512us", 1, "OB_RST_EN_DT512us"),
+        ov("128us", 0, "OB_RST_EN_DT128us"),
+    ],
+};
+/// CH32X315: CFGRSTEN, one bit.
+const OB_RST_EN: OptionSemantic = OptionSemantic {
+    key: "reset-pin",
+    bit: 3,
+    width: 1,
+    values: &[ov("off", 1, "OB_RST_NoEN"), ov("on", 0, "OB_RST_EN")],
+};
+
+/// en: The semantic USER-byte options of a DB family: the `FLASH_UserOptionByteConfig` arguments
+/// of its WCH EVT (`Peripheral/src/*_flash.c`; the function's own parameter list, not the header's
+/// stray defines - CH32V003 defines OB_STOP_* but does not take it, CH32M030's header and source
+/// disagree and the source is what writes). The arguments EVT gives that are not here (start mode,
+/// CAN bus-off, USB/USART download, RAM split, reset-pin select, over-voltage) are reached by their
+/// reference-manual field name as `user.<field>`. `None` when the family is not known.
+/// ja: DB family の意味名の option。EVT の `FLASH_UserOptionByteConfig` の引数(header ではなく
+/// source の引数並び)。ここに無い引数(起動モード、CAN、download、RAM 分割など)は RM の field 名で
+/// `user.<field>` と書く。知らない family は `None`。
+pub fn option_semantics(family: &str) -> Option<&'static [OptionSemantic]> {
+    const STM32F1_LIKE: &[OptionSemantic] = &[OB_IWDG, OB_STOP, OB_STDBY];
+    let table: &[(&str, &'static [OptionSemantic])] = &[
+        ("CH32V103", STM32F1_LIKE),
+        ("CH32V20x", STM32F1_LIKE),
+        ("CH32V205", STM32F1_LIKE),
+        ("CH32V307", STM32F1_LIKE),
+        ("CH32V407", STM32F1_LIKE),
+        ("CH32L103", STM32F1_LIKE),
+        ("CH32X035", &[OB_IWDG, OB_STOP, OB_STDBY, OB_RST_12MS]),
+        ("CH32V003", &[OB_IWDG, OB_STDBY, OB_RST_12MS]),
+        ("CH32V006", &[OB_IWDG, OB_STDBY, OB_RST_12MS]),
+        ("CH32M030", &[OB_STOP, OB_STDBY, OB_RST_512US]),
+        ("CH32X315", &[OB_IWDG, OB_RST_EN]),
+        ("CH32H417", &[OB_IWDG]),
+    ];
+    table
+        .iter()
+        .find(|(f, _)| f.eq_ignore_ascii_case(family))
+        .map(|(_, s)| *s)
+}
+
 /// Silicon-revision bits `[7:4]` of the device_id are don't-care when matching (every delivered row
 /// uses this mask; `xtask db-gen` rejects any other).
 const DEVICE_ID_MASK: u32 = 0xFFFF_FF0F;
@@ -756,6 +889,51 @@ CH32FICTIONAL,CH32V006,CH32V006,0x00990900,0x1ffff704,1,1,false,9999\n";
         assert_eq!(rst.get(0x1f), 3);
         assert_eq!(rst.set(0xe7, 3), 0xff);
         assert!(f.iter().all(|x| x.field != "Reserved"));
+    }
+
+    /// en: Every semantic option lies on the bits the DB gives the matching reference-manual field,
+    /// and never on another field; the DB families and the semantic table name the same families.
+    /// ja: 意味名の bit は DB の対応する RM の field と同じ位置で、ほかの field と重ならない。
+    #[test]
+    fn option_semantics_agree_with_the_db_fields() {
+        let rm_names = |key: &str| -> &[&str] {
+            match key {
+                "iwdg" => &["IWDGSW", "IWDG_SW"],
+                "stop-reset" => &["STOPRST"],
+                "standby-reset" => &["STANDYRST"],
+                "reset-pin" => &["RST_MODE", "CFGRSTEN"],
+                _ => &[],
+            }
+        };
+        let families: std::collections::BTreeSet<&str> = GENERATED_OPTION_FIELDS
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .filter_map(|l| l.split(',').next())
+            .collect();
+        for fam in families {
+            let sem = option_semantics(fam).unwrap_or_else(|| panic!("{fam}: no semantic table"));
+            for s in sem {
+                for f in option_user_fields(fam) {
+                    if f.mask() & s.mask() == 0 {
+                        continue;
+                    }
+                    assert!(
+                        rm_names(s.key).contains(&f.field.as_str())
+                            && (f.bit, f.width) == (s.bit, s.width),
+                        "{fam}: {} overlaps {}",
+                        s.key,
+                        f.field
+                    );
+                }
+                // Every field value has an EVT word.
+                assert!((0..1u16 << s.width).all(|b| s.word(b as u8).is_some()));
+            }
+        }
+        assert!(option_semantics("CH32NOPE").is_none());
+        let x035 = option_semantics("CH32X035").unwrap_or_default();
+        let stop = x035.iter().find(|s| s.key == "stop-reset");
+        // OB_STOP_RST: reset on entering STOP = bit cleared.
+        assert_eq!(stop.map(|s| s.set(0xff, 0)), Some(0xfd));
     }
 
     #[test]

@@ -444,8 +444,12 @@ pub enum IdentifyScope {
 
 #[derive(Subcommand)]
 pub enum OptionCmd {
+    /// Show the option bytes: each key with its value and raw value
     Get,
-    /// e.g. rdp=off nrst=gpio split=160/32 debug=off
+    /// Change option bytes (the vocabulary of `isp config set`): read-protect=on|off
+    /// write-protect=<u32> data0=<byte> data1=<byte> iwdg=sw|hw stop-reset=on|off
+    /// standby-reset=on|off reset-pin=off|12ms|1ms|128us (the values the family's WCH EVT names);
+    /// a USER bit EVT has no name for: user.<RM field>=<bit value>
     Set {
         #[arg(required = true)]
         kv: Vec<String>,
@@ -453,9 +457,7 @@ pub enum OptionCmd {
     /// Restore factory defaults
     Reset,
     /// Raw value (expert)
-    WriteRaw {
-        hex: String,
-    },
+    WriteRaw { hex: String },
 }
 
 // en: §4.4 dbg. / ja: §4.4 dbg。
@@ -648,10 +650,12 @@ pub enum IspReset {
 
 #[derive(Subcommand)]
 pub enum IspConfigCmd {
-    /// Show the option bytes, decoded
+    /// Show the option bytes: each key with its value and raw value
     Get,
-    /// Change option bytes: data0=<n> data1=<n> iwdg=sw|hw stop-reset=on|off
-    /// standby-reset=on|off reset-pin=off|12ms|1ms|128us write-protect=<u32> read-protect=on|off
+    /// Change option bytes (the vocabulary of `target option set`): read-protect=on|off
+    /// write-protect=<u32> data0=<byte> data1=<byte> iwdg=sw|hw stop-reset=on|off
+    /// standby-reset=on|off reset-pin=off|12ms|1ms|128us (the values the family's WCH EVT names);
+    /// a USER bit EVT has no name for: user.<RM field>=<bit value>
     Set {
         #[arg(required = true)]
         kv: Vec<String>,

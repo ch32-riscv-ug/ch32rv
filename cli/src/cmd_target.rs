@@ -250,14 +250,11 @@ fn identification_status(resolution: &ch32rv_target::Resolution<'_>) -> &'static
     }
 }
 
-/// en: `target option get` (docs/cli.ja.md §4.3): read the option bytes (0x1FFF_F800, 16 bytes)
-/// over DMI and decode the common fields (read protection, the USER byte's IWDG/STOP/STANDBY
-/// bits, the Data0/Data1 user bytes, and the WRP write-protect mask). Read-only. Family-specific
-/// USER bits need the generated target DB, so the raw bytes are always shown and the structured
-/// decode is marked interim.
-/// ja: `target option get`。option bytes(0x1FFF_F800、16 byte)を DMI で読み、共通フィールド
-/// (読み出し保護・USER の IWDG/STOP/STANDBY・Data0/Data1・WRP)を復号。読み取り専用。family 固有の
-/// USER ビットは DB 生成後。生バイトは常に表示し、構造化復号は暫定扱い。
+/// en: `target option get` (docs/cli.ja.md §4.3): read the option bytes (the DB's base, 16
+/// bytes) over DMI and print them in the vocabulary `option set` takes (crate::optbytes): each key
+/// with its value word and raw value. Read-only.
+/// ja: `target option get`。option bytes を DMI で読み、`option set` と同じ語彙(optbytes)で、
+/// key ごとに値の語と生の値を出す。読み取り専用。
 pub fn option_get(cli: &Cli) -> ExitCode {
     const CMD: &str = "target.option.get";
     let mut warnings = match parse::speed(&cli.speed) {
@@ -268,91 +265,27 @@ pub fn option_get(cli: &Cli) -> ExitCode {
         Ok(v) => v,
         Err(c) => return c,
     };
-    let user_fields = ch32rv_target::option_user_fields(&db_family);
-
-    // Layout (STM32F1-style, shared by CH32V0/V1/V2/V3/X0): each logical byte is stored with its
-    // complement. [0]=RDPR [2]=USER [4]=Data0 [6]=Data1 [8/10/12/14]=WRPR0..3.
-    let rdpr = raw[0];
-    let user = raw[2];
-    let data0 = raw[4];
-    let data1 = raw[6];
-    let wrpr = u32::from(raw[8])
-        | u32::from(raw[10]) << 8
-        | u32::from(raw[12]) << 16
-        | u32::from(raw[14]) << 24;
-    // RDPR == 0xA5 means read-out protection disabled (the factory/unprotected value).
-    let unprotected = rdpr == 0xA5;
-
-    // USER byte: decode per the family's named bits from the generated DB (request 0003). When the
-    // family is not in the DB, fall back to the common STM32F1-style bits and flag it interim.
-    let user_bits: Vec<(String, u8)> = if user_fields.is_empty() {
-        [(0u8, "IWDGSW"), (1, "nRST_STOP"), (2, "nRST_STDBY")]
-            .iter()
-            .map(|(bit, name)| ((*name).to_owned(), (user >> bit) & 1))
-            .collect()
-    } else {
-        user_fields
-            .iter()
-            .map(|f| (f.field.clone(), f.get(user)))
-            .collect()
-    };
-    if user_fields.is_empty() {
+    let layout = crate::optbytes::Layout::of(&db_family);
+    if let Some(msg) = layout.interim_warning() {
         warnings.push(Warning {
             code: "option-decode-interim".to_owned(),
-            msg: format!(
-                "USER-byte fields for {db_family} are not in the DB; decoded with the common STM32F1-style bits only (data request 0003)"
-            ),
+            msg,
         });
     }
-    let user_str = user_bits
-        .iter()
-        .map(|(name, v)| format!("{name}={v}"))
-        .collect::<Vec<_>>()
-        .join("  ");
-
+    let v = crate::optbytes::result(
+        Some(&family),
+        Some(&db_family),
+        &hex(&raw),
+        &layout,
+        crate::optbytes::from_ob16(&raw),
+    );
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
-        let user_json: serde_json::Map<String, serde_json::Value> = user_bits
-            .iter()
-            .map(|(name, v)| (name.clone(), serde_json::json!(*v == 1)))
-            .collect();
-        env.result = Some(serde_json::json!({
-            "family": family,
-            "db_family": db_family,
-            "raw": hex(&raw),
-            "read_protected": !unprotected,
-            "rdpr": format!("0x{rdpr:02x}"),
-            "user": format!("0x{user:02x}"),
-            "user_bits": user_json,
-            "data0": format!("0x{data0:02x}"),
-            "data1": format!("0x{data1:02x}"),
-            "wrpr": format!("0x{wrpr:08x}"),
-            "write_protected": wrpr != 0xFFFF_FFFF,
-        }));
+        env.result = Some(v);
         env.warnings = warnings;
         crate::print_envelope(&env)
     } else {
-        println!("family:          {family}");
-        println!("raw:             {}", hex(&raw));
-        println!(
-            "read protection: {}  (RDPR=0x{rdpr:02x}{})",
-            if unprotected { "off" } else { "ON" },
-            if unprotected {
-                ", 0xA5=unprotected"
-            } else {
-                ""
-            }
-        );
-        println!("user (0x{user:02x}):     {user_str}");
-        println!("data0/data1:     0x{data0:02x} / 0x{data1:02x}");
-        println!(
-            "write protect:   0x{wrpr:08x}  ({})",
-            if wrpr == 0xFFFF_FFFF {
-                "none (all pages writable)"
-            } else {
-                "some pages write-protected"
-            }
-        );
+        crate::optbytes::print(&v);
         for w in &warnings {
             eprintln!("warning[{}]: {}", w.code, w.msg);
         }
@@ -864,146 +797,46 @@ pub fn option_reset(cli: &Cli) -> ExitCode {
     program_option(cli, CMD, &defaults)
 }
 
-/// en: `target option set <key=value ...>`: read-modify-write named option fields. Keys: a USER
-/// bit field name from the DB (per family, e.g. `IWDGSW=0`), `rdp=on|off`, `data0=<hex>`,
-/// `data1=<hex>`. Complement bytes are recomputed. `rdp=off` triggers a full mass erase.
-/// ja: `target option set <key=value ...>`。DB の USER bit 名(family 別)/`rdp`/`data0`/`data1` を
-/// read-modify-write。補数は再計算。`rdp=off` は全消去を伴う。
+/// en: `target option set <key=value ...>`: read-modify-write in the one option vocabulary
+/// (crate::optbytes, shared with `isp config set`). Complement bytes are recomputed.
+/// `read-protect=off` on a protected part triggers a full mass erase.
+/// ja: `target option set`。`isp config set` と同じ語彙で read-modify-write。補数は再計算。
+/// 保護中の `read-protect=off` は全消去を伴う。
 pub fn option_set(cli: &Cli, kv: &[String]) -> ExitCode {
     const CMD: &str = "target.option.set";
-    let (db_family, mut ob) = match read_option_bytes(cli, CMD) {
+    let (db_family, ob) = match read_option_bytes(cli, CMD) {
         Ok(v) => v,
         Err(c) => return c,
     };
-    let fields = ch32rv_target::option_user_fields(&db_family);
-    let mut changes: Vec<String> = Vec::new();
-    let mut mass_erase = false;
-    let mut protect_on = false;
-
-    for pair in kv {
-        let Some((key, val)) = pair.split_once('=') else {
+    let layout = crate::optbytes::Layout::of(&db_family);
+    let mut f = crate::optbytes::from_ob16(&ob);
+    // en: `target protect on` writes 0xFF too. ja: `target protect on` と同じ 0xFF。
+    let applied = match crate::optbytes::apply(&layout, &mut f, kv, 0xFF) {
+        Ok(a) => a,
+        Err(m) => {
             return fail(
                 cli,
                 CMD,
                 ErrorKind::Usage,
-                format!("expected key=value, got {pair:?}"),
-                Some("e.g. IWDGSW=0 rdp=off data0=0x42"),
+                m,
+                Some(&format!("keys for {db_family}: {}", layout.keys())),
             );
-        };
-        let key_l = key.to_ascii_lowercase();
-        match key_l.as_str() {
-            "rdp" | "protect" => match val.to_ascii_lowercase().as_str() {
-                "off" | "0" | "none" => {
-                    if ob[0] != 0xA5 {
-                        mass_erase = true;
-                    }
-                    ob[0] = 0xA5;
-                    changes.push("rdp=off".to_owned());
-                }
-                "on" | "1" => {
-                    ob[0] = 0xFF;
-                    protect_on = true;
-                    changes.push("rdp=on".to_owned());
-                }
-                other => {
-                    return fail(
-                        cli,
-                        CMD,
-                        ErrorKind::Usage,
-                        format!("rdp must be on/off, got {other:?}"),
-                        None,
-                    );
-                }
-            },
-            "data0" | "data1" => {
-                let Some(byte) = parse_u8(val) else {
-                    return fail(
-                        cli,
-                        CMD,
-                        ErrorKind::Usage,
-                        format!("{key}: expected a byte 0..255 (e.g. 0x42), got {val:?}"),
-                        None,
-                    );
-                };
-                let idx = if key_l == "data0" { 4 } else { 6 };
-                ob[idx] = byte;
-                changes.push(format!("{key_l}=0x{byte:02x}"));
-            }
-            _ => {
-                // A named USER-byte bit for this family.
-                let Some(f) = fields.iter().find(|f| f.field.eq_ignore_ascii_case(key)) else {
-                    let names: Vec<&str> = fields.iter().map(|f| f.field.as_str()).collect();
-                    return fail(
-                        cli,
-                        CMD,
-                        ErrorKind::Usage,
-                        format!("unknown option field {key:?} for {db_family}"),
-                        Some(&format!(
-                            "known USER fields: {} (plus rdp, data0, data1)",
-                            names.join(", ")
-                        )),
-                    );
-                };
-                let top = (1u16 << f.width) - 1;
-                let value = match parse_u8(val).filter(|&v| u16::from(v) <= top) {
-                    Some(v) => v,
-                    None => {
-                        return fail(
-                            cli,
-                            CMD,
-                            ErrorKind::Usage,
-                            format!("{key}: expected 0..={top}, got {val:?}"),
-                            None,
-                        );
-                    }
-                };
-                ob[2] = f.set(ob[2], value);
-                changes.push(format!("{}={value}", f.field));
-            }
         }
-    }
-
-    if changes.is_empty() {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::Usage,
-            "no key=value pairs given".to_owned(),
-            None,
-        );
-    }
-    // Recompute every complement byte so the halfwords are valid regardless of what we touched.
-    for i in (0..16).step_by(2) {
-        ob[i + 1] = 0xFF ^ ob[i];
-    }
-
-    let prompt = if mass_erase {
-        format!(
-            "Apply option changes [{}]? rdp=off ERASES ALL FLASH (mass erase).",
-            changes.join(", ")
-        )
-    } else if protect_on {
-        format!(
-            "Apply option changes [{}]? rdp=on makes the flash unreadable/undebuggable.",
-            changes.join(", ")
-        )
-    } else {
-        format!("Apply option changes [{}]?", changes.join(", "))
+    };
+    let changes = applied.changes.join(", ");
+    let prompt = match applied.read_protect {
+        Some(false) => format!(
+            "Apply option changes [{changes}]? read-protect=off ERASES ALL FLASH (mass erase)."
+        ),
+        Some(true) => format!(
+            "Apply option changes [{changes}]? read-protect=on makes the flash unreadable/undebuggable."
+        ),
+        None => format!("Apply option changes [{changes}]?"),
     };
     if !ob_confirm(cli, &prompt) {
         return fail(cli, CMD, ErrorKind::Usage, "aborted (no --yes)", None);
     }
-    program_option(cli, CMD, &ob)
-}
-
-/// Parse a byte as decimal or `0x`-hex.
-fn parse_u8(s: &str) -> Option<u8> {
-    let s = s.trim();
-    if let Some(h) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        u8::from_str_radix(h, 16).ok()
-    } else {
-        s.parse().ok()
-    }
+    program_option(cli, CMD, &crate::optbytes::to_ob16(f))
 }
 
 /// `target protect on|off`: enable/disable flash read protection (RDPR). Turning it OFF triggers a

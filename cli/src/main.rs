@@ -28,6 +28,7 @@ mod cmd_write;
 mod config;
 mod mdns;
 mod oep;
+mod optbytes;
 mod parse;
 mod progress;
 mod session;

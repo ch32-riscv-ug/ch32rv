@@ -436,8 +436,20 @@ fn isp_config_set_replays() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "stderr: {stderr}");
-    assert!(stdout.contains(r#""data0":90"#), "stdout: {stdout}");
-    assert!(stdout.contains(r#""data1":7"#), "stdout: {stdout}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    let o = &v["result"]["options"];
+    assert_eq!(o["data0"], serde_json::json!({"value": "0x5a", "raw": 90}));
+    assert_eq!(o["data1"], serde_json::json!({"value": "0x07", "raw": 7}));
+    // en: X035's USER byte 0x1f in the EVT vocabulary. ja: X035 の USER 0x1f を EVT の語彙で。
+    assert_eq!(
+        o["stop-reset"],
+        serde_json::json!({"value": "off", "raw": 1})
+    );
+    assert_eq!(
+        o["reset-pin"],
+        serde_json::json!({"value": "off", "raw": 3})
+    );
+    assert_eq!(v["result"]["db_family"], "CH32X035");
     assert!(stdout.contains(r#""changed":true"#), "stdout: {stdout}");
     assert!(!stderr.contains("diverged"), "stderr: {stderr}");
 }

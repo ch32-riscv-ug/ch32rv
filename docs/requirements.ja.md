@@ -77,7 +77,7 @@ wlink の契約上の欠陥で、ch32rv が同じ轍を踏まないもの: verif
 | `-U`(bootloader unlock) | `flash --region system` に内蔵 | P1。unlock 手順(FLASH_BOOT_MODEKEYR)は自動化 |
 | `-a -A -b -e` | `dbg halt --reset` / `dbg halt` / `reset` / `dbg resume` | P1 |
 | `-B`(bootloader へ再起動) | `boot enter` / `isp enter` | P2 |
-| `-d -D`(NRST/GPIO) | `target option set nrst=nrst\|gpio` | P1 |
+| `-d -D`(NRST/GPIO) | `target option set reset-pin=off\|<遅延>`(EVT の `OB_RST_*`) | P1 |
 | `-p -P`(読み出し保護) | `target protect off\|on` | P0 |
 | `-N -n`(debug module 有効/無効) | `target option set debug=on\|off` | P1。二段階確認を継承 |
 | `-S flashKB ramKB` | `target option set split=<code>/<ram>` | P1。許可組合せは DB 由来 |

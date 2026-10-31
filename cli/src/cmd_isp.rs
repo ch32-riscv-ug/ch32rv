@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ch32rv_contract::policy::ImageFormat;
-use ch32rv_contract::{ErrorKind, ResultEnvelope};
+use ch32rv_contract::{ErrorKind, ResultEnvelope, Warning};
 use ch32rv_isp::{Identity, IspConfig, IspDevice, IspError, OptionFields};
 use ch32rv_usb::UsbDeviceInfo;
 
@@ -1158,55 +1158,58 @@ fn touch1200(port: &str) -> Result<(), serialport::Error> {
     Ok(())
 }
 
-/// en: The option bytes as JSON / text, decoded. USER's reset-pin field is CH32X03x's (bits 4:3).
-/// ja: option bytes を解いたもの。USER の reset-pin 欄は CH32X03x のもの。
-fn decode_options(id: Identity, f: OptionFields) -> serde_json::Value {
-    let x03x = id.device_type == 0x23;
-    serde_json::json!({
-        "read_protect": f.rdpr != ch32rv_isp::RDPR_OFF,
-        "rdpr": format!("0x{:02x}", f.rdpr),
-        "user": format!("0x{:02x}", f.user),
-        "iwdg": if f.user & 0x01 != 0 { "sw" } else { "hw" },
-        "stop_reset": f.user & 0x02 == 0,
-        "standby_reset": f.user & 0x04 == 0,
-        "reset_pin": x03x.then_some(match (f.user >> 3) & 0x03 {
-            0b11 => "off",
-            0b10 => "12ms",
-            0b01 => "1ms",
-            _ => "128us",
-        }),
-        "data0": f.data0,
-        "data1": f.data1,
-        "write_protect": format!("0x{:08x}", f.wrpr),
-    })
+/// en: The DB family whose option layout a bootloader's series has, by Identify's device type.
+/// The CH32F parts share their reference manual with the CH32V ones (CH32FV103, CH32FV2x_V3x).
+/// CH32V00x names several parts whose USER fields differ in the DB, so it has no DB family; its
+/// EVT options are the same on all of them (CH32V003 and the CH32V00X EVT), taken from CH32V006.
+/// ja: Identify の device type から、option の配置を持つ DB family。CH32V00x は部品で DB の
+/// field が違うので DB family は無いが、EVT の option はどれも同じ(V006 のものを使う)。
+fn option_layout(id: Identity) -> (Option<&'static str>, crate::optbytes::Layout) {
+    let db = match id.device_type {
+        0x14 | 0x15 => Some("CH32V103"),
+        0x17 => Some("CH32V307"),
+        0x18 | 0x19 => Some("CH32V20x"),
+        0x23 => Some("CH32X035"),
+        0x24 => Some("CH32L103"),
+        _ => None,
+    };
+    let label = series(id);
+    let layout = match db {
+        Some(f) => crate::optbytes::Layout {
+            label,
+            ..crate::optbytes::Layout::of(f)
+        },
+        None => crate::optbytes::Layout {
+            semantics: matches!(id.device_type, 0x20 | 0x21 | 0x25)
+                .then(|| ch32rv_target::option_semantics("CH32V006"))
+                .flatten(),
+            user_fields: Vec::new(),
+            label,
+        },
+    };
+    (db, layout)
 }
 
-fn print_options(v: &serde_json::Value) {
-    let on = |k: &str| {
-        if v[k].as_bool() == Some(true) {
-            "on"
-        } else {
-            "off"
-        }
-    };
-    println!(
-        "read-protect:  {} (rdpr {})",
-        on("read_protect"),
-        v["rdpr"].as_str().unwrap_or("-")
+/// en: The `config get` result (crate::optbytes::result), plus its warnings.
+/// ja: `config get` の result と警告。
+fn options_result(o: &Opened, cfg: &[u8; 12]) -> (serde_json::Value, Vec<Warning>) {
+    let (db, layout) = option_layout(o.id);
+    let warnings = layout
+        .interim_warning()
+        .map(|msg| Warning {
+            code: "option-decode-interim".to_owned(),
+            msg,
+        })
+        .into_iter()
+        .collect();
+    let v = crate::optbytes::result(
+        ch32rv_isp::series_name(o.id.device_type),
+        db,
+        &hex(cfg),
+        &layout,
+        OptionFields::from_config(cfg),
     );
-    println!("user:          {}", v["user"].as_str().unwrap_or("-"));
-    println!("  iwdg:          {}", v["iwdg"].as_str().unwrap_or("-"));
-    println!("  stop-reset:    {}", on("stop_reset"));
-    println!("  standby-reset: {}", on("standby_reset"));
-    if let Some(r) = v["reset_pin"].as_str() {
-        println!("  reset-pin:     {r}");
-    }
-    println!("data0:         {}", v["data0"]);
-    println!("data1:         {}", v["data1"]);
-    println!(
-        "write-protect: {} (a set bit leaves its sectors writable)",
-        v["write_protect"].as_str().unwrap_or("-")
-    );
+    (v, warnings)
 }
 
 fn config_get(cli: &Cli, args: &IspArgs) -> ExitCode {
@@ -1215,84 +1218,19 @@ fn config_get(cli: &Cli, args: &IspArgs) -> ExitCode {
         Ok(o) => o,
         Err(c) => return c,
     };
-    let v = decode_options(o.id, OptionFields::from_config(&o.cfg.config));
+    let (v, warnings) = options_result(&o, &o.cfg.config);
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
-        env.result = Some(serde_json::json!({ "options": v, "config": hex(&o.cfg.config) }));
+        env.result = Some(v);
+        env.warnings = warnings;
         crate::print_envelope(&env)
     } else {
-        print_options(&v);
+        crate::optbytes::print(&v);
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
         ExitCode::SUCCESS
     }
-}
-
-/// en: Apply `key=value` changes to the option fields. Returns whether read protection changes
-/// (the destructive one: turning it off erases code flash). ja: `key=value` を当てる。
-fn apply_options(id: Identity, f: &mut OptionFields, kv: &[String]) -> Result<bool, String> {
-    let mut rdp_changed = false;
-    let onoff = |k: &str, v: &str| match v {
-        "on" => Ok(true),
-        "off" => Ok(false),
-        _ => Err(format!("{k}: expected on|off, got `{v}`")),
-    };
-    let num = |k: &str, v: &str| -> Result<u32, String> {
-        let r = match v.strip_prefix("0x").or_else(|| v.strip_prefix("0X")) {
-            Some(h) => u32::from_str_radix(h, 16),
-            None => v.parse(),
-        };
-        r.map_err(|_| format!("{k}: `{v}` is not a number"))
-    };
-    let byte = |k: &str, v: &str| -> Result<u8, String> {
-        u8::try_from(num(k, v)?).map_err(|_| format!("{k}: `{v}` is out of 0..=255"))
-    };
-    let bit = |user: &mut u8, mask: u8, set: bool| {
-        if set {
-            *user |= mask;
-        } else {
-            *user &= !mask;
-        }
-    };
-    for item in kv {
-        let (k, v) = item
-            .split_once('=')
-            .ok_or_else(|| format!("`{item}`: expected key=value"))?;
-        match k {
-            "data0" => f.data0 = byte(k, v)?,
-            "data1" => f.data1 = byte(k, v)?,
-            "iwdg" => match v {
-                "sw" => bit(&mut f.user, 0x01, true),
-                "hw" => bit(&mut f.user, 0x01, false),
-                _ => return Err(format!("iwdg: expected sw|hw, got `{v}`")),
-            },
-            // A cleared bit means "reset on entering the mode".
-            "stop-reset" => bit(&mut f.user, 0x02, !onoff(k, v)?),
-            "standby-reset" => bit(&mut f.user, 0x04, !onoff(k, v)?),
-            "reset-pin" => {
-                if id.device_type != 0x23 {
-                    return Err("reset-pin: only CH32X03x's USER layout is known".to_owned());
-                }
-                let mode = match v {
-                    "off" => 0b11,
-                    "12ms" => 0b10,
-                    "1ms" => 0b01,
-                    "128us" => 0b00,
-                    _ => return Err(format!("reset-pin: expected off|12ms|1ms|128us, got `{v}`")),
-                };
-                f.user = (f.user & !0x18) | (mode << 3);
-            }
-            "write-protect" => f.wrpr = num(k, v)?,
-            "read-protect" => {
-                let want = onoff(k, v)?;
-                let now = f.rdpr != ch32rv_isp::RDPR_OFF;
-                if want != now {
-                    rdp_changed = true;
-                    f.rdpr = if want { 0x00 } else { ch32rv_isp::RDPR_OFF };
-                }
-            }
-            _ => return Err(format!("unknown key `{k}`")),
-        }
-    }
-    Ok(rdp_changed)
 }
 
 fn config_set(cli: &Cli, args: &IspArgs, kv: &[String]) -> ExitCode {
@@ -1303,17 +1241,16 @@ fn config_set(cli: &Cli, args: &IspArgs, kv: &[String]) -> ExitCode {
     };
     let before = OptionFields::from_config(&o.cfg.config);
     let mut want = before;
-    let rdp_changed = match apply_options(o.id, &mut want, kv) {
-        Ok(r) => r,
+    let (_, layout) = option_layout(o.id);
+    let rdp_changed = match crate::optbytes::apply(&layout, &mut want, kv, 0x00) {
+        Ok(a) => a.read_protect.is_some(),
         Err(m) => {
             return fail(
                 cli,
                 CMD,
                 ErrorKind::Usage,
                 m,
-                Some(
-                    "keys: data0 data1 iwdg stop-reset standby-reset reset-pin write-protect read-protect",
-                ),
+                Some(&format!("keys for {}: {}", layout.label, layout.keys())),
             );
         }
     };
@@ -1333,10 +1270,11 @@ fn config_set(cli: &Cli, args: &IspArgs, kv: &[String]) -> ExitCode {
         return isp_fail(cli, CMD, e);
     }
     // Read back what the bootloader now reports.
-    let after = match o.dev.read_config() {
-        Ok(c) => OptionFields::from_config(&c.config),
+    let after_cfg = match o.dev.read_config() {
+        Ok(c) => c.config,
         Err(e) => return isp_fail(cli, CMD, e),
     };
+    let after = OptionFields::from_config(&after_cfg);
     if after != want {
         return fail(
             cli,
@@ -1350,16 +1288,21 @@ fn config_set(cli: &Cli, args: &IspArgs, kv: &[String]) -> ExitCode {
             Some("some option changes take effect only after a reset; check with `isp config get`"),
         );
     }
-    let v = decode_options(o.id, after);
+    let (mut v, warnings) = options_result(&o, &after_cfg);
     if cli.json {
+        v["changed"] = serde_json::json!(want != before);
         let mut env = ResultEnvelope::success(CMD);
-        env.result = Some(serde_json::json!({ "options": v, "changed": want != before }));
+        env.result = Some(v);
+        env.warnings = warnings;
         crate::print_envelope(&env)
     } else {
         if want == before {
             println!("no change");
         }
-        print_options(&v);
+        crate::optbytes::print(&v);
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
         ExitCode::SUCCESS
     }
 }
