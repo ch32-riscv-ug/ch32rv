@@ -205,7 +205,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 {"ev":"phase","name":"erase","total":12}
 {"ev":"progress","phase":"program","done":8192,"total":16700}
 {"ev":"retry","phase":"program","attempt":2,"cause":"transport-timeout"}
-{"ev":"warn","code":"fw-known-bad","msg":"WCH-Link (CH549) firmware 2.11 (v31) has a known defect: the target is not started after flashing (reset does not take effect); 2.12 does not have it"}
+{"ev":"warn","code":"fw-known-bad","msg":"WCH-Link (CH549) RISC-V firmware 2.11 (v31) has a known defect (measured with probe-rs on CH32V103R8T6): download --reset writes the flash and reports success, but the core stays halted (...); a wlink reset starts it; 2.12 works"}
 ```
 
 ### 3.6 exit code
@@ -341,7 +341,7 @@ ch32rv probe power <3v3|5v> <on|off>
 ch32rv probe power cycle [--off-ms 300]
 ch32rv probe mode get
 ch32rv probe mode set <riscv|dap> [--yes]
-ch32rv probe firmware info                        版(0 埋めしない "2.22"、WCH 表記 v42、raw 0216)、variant、mode、既知不良の判定(variant と版で照合。hash では照合しない。既知不良は CH549 の WCH-Link の 2.11 だけ)
+ch32rv probe firmware info                        版(0 埋めしない "2.22"、WCH 表記 v42、raw 0216)、variant、mode、既知不良の判定(ch32-device-data の `index/link_firmware_issues.csv` から生成した表を variant・mode・版で照合。hash では照合しない。probe が mode を返さないときは mode を問わず当てる。今の行は CH549 の WCH-Link の RISC-V 2.11 だけ。文面(warning `fw-known-bad` の msg、`known_bad_reason`)は表の symptom と works_in から作り、約束しない)
 ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12(実装済。実機: LinkE 2.22 は --min 2.20 通過/2.30 で exit12、CH549 2.12 は --min 2.20 で exit12)
 ch32rv probe firmware update --image <FILE> [--yes]  IAP 経由で probe 自身の firmware を書換(実装済。実機: LinkE 2.22 ⇔ 2.13 を相互に更新し版を確認)
 ch32rv probe firmware exit-iap                     IAP mode の probe を、何も書かずに今入っている app で起動させる(実装済)
@@ -354,7 +354,7 @@ ch32rv probe firmware exit-iap                     IAP mode の probe を、何�
 - **IAP entry は不揮発**: probe を IAP に入れると、app が無傷でも電源再投入では戻らない(protocol §6.1)。抜けるのは終了 frame だけなので、`firmware exit-iap` を脱出口として持つ。中断した更新は `firmware update` の再実行でそのまま復旧する(どの時点で切れても IAP に残る)。
 - image は渡された時点で検査する: **BL 付き `*_APP_IAP.bin` は拒否**(外部書込機用。IAP に流すと app 領域に BL を書く)、非 RISC-V image は拒否、版は image 内の `bcdDevice` から読む。
 - **image の型番は sha256 で照合する**。WCH-LinkUtility が配る 10 本の image を ch32-device-data の `index/link_firmware.csv` から `cargo xtask db-gen` が `crates/target/generated/link_firmware.csv` に作り、image の sha256 で引く。表の語彙:
-  - `device`: probe の製品名(`WCH-LinkE` / `WCH-Link`(CH549)/ `WCH-LinkW` / `WCH-DAPLink`)。probe の variant と照らす(`linke` = `WCH-LinkE` など)。
+  - `device`: probe の製品名(`WCH-LinkE` / `WCH-Link`(CH549)/ `WCH-LinkW` / `WCH-DAPLink`)。probe の variant と照らす(`linke` = `WCH-LinkE` など。対応は `crates/target/src/link_variant.rs` の 1 か所)。
   - `mode`: CH549 の WCH-Link の image だけが持つ `RISC-V` / `ARM`。ほかの型番は空(1 本で両方)。CH549 はこのコマンドで更新しないので照合には使わない。
   - `role`: `offline` = `FIRMWARE_*.bin`(application だけ。IAP 経路で書くのはこれ)、`iap` = `*APP_IAP*.bin`(IAP bootloader の後に application。外部書込機用)。
   - `version`: その image で probe が返す版。

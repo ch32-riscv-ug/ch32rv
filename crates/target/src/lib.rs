@@ -30,6 +30,9 @@
 
 use serde::{Deserialize, Serialize};
 
+mod link_variant;
+pub use link_variant::{LINK_VARIANTS, variant_id as link_variant_id};
+
 /// The embedded generated SKU table (produced by `cargo xtask db-gen`).
 const GENERATED_SKUS: &str = include_str!("../generated/skus.csv");
 
@@ -60,6 +63,9 @@ const GENERATED_OPTION_BYTES: &str = include_str!("../generated/option_bytes.csv
 
 /// The embedded generated WCH probe firmware images, keyed by sha256 (`cargo xtask db-gen`).
 const GENERATED_LINK_FIRMWARE: &str = include_str!("../generated/link_firmware.csv");
+
+/// The embedded generated probe firmware versions measured to fail (`cargo xtask db-gen`).
+const GENERATED_LINK_FIRMWARE_ISSUES: &str = include_str!("../generated/link_firmware_issues.csv");
 
 /// en: Provenance of the embedded device DB, for `version --json` reproducibility
 /// (docs/architecture.ja.md §3). ja: 埋め込み device DB の来歴。`version --json` の再現性表示用。
@@ -101,6 +107,7 @@ pub fn provenance() -> DbProvenance {
         GENERATED_OPTION_BYTES,
         GENERATED_ESIG,
         GENERATED_LINK_FIRMWARE,
+        GENERATED_LINK_FIRMWARE_ISSUES,
     ] {
         for &b in part.as_bytes() {
             h ^= u64::from(b);
@@ -373,6 +380,98 @@ pub fn link_firmware(sha256_hex: &str) -> Option<LinkFirmware> {
     link_firmwares()
         .find(|(sha, _)| sha.eq_ignore_ascii_case(sha256_hex))
         .map(|(_, f)| f)
+}
+
+/// en: The ch32-device-data `device` name of a probe variant ID (`linke` -> `WCH-LinkE`), from
+/// [`LINK_VARIANTS`]; None for an ID it does not map.
+/// ja: variant ID の ch32-device-data での `device` 名。
+pub fn link_device(variant_id: &str) -> Option<&'static str> {
+    LINK_VARIANTS
+        .iter()
+        .find(|(_, _, id)| *id == variant_id)
+        .map(|(d, _, _)| *d)
+}
+
+/// en: A probe firmware version measured to fail (ch32-device-data `index/link_firmware_issues.csv`).
+/// Keyed by `(variant, mode, major, minor)`. The record behind each row is its `basis`, carried in
+/// the generated table (crates/target/generated/link_firmware_issues.csv), not here.
+/// ja: 実測で不良と分かった probe firmware の版。根拠は生成した表の `basis` 列にある。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LinkFirmwareIssue {
+    /// The probe variant ID (`link-ch549`), from `device` + `mcu` ([`LINK_VARIANTS`]).
+    pub variant: String,
+    /// `RISC-V` / `ARM`: the firmware mode the failure was measured in.
+    pub mode: String,
+    /// The reported version, `major.minor`.
+    pub major: u8,
+    pub minor: u8,
+    /// The same version in WCH's numbering (`31` for 2.11, shown as `v31`).
+    pub wcfg_version: u32,
+    /// Probe product (`WCH-Link`) and its MCU (`CH549`).
+    pub device: String,
+    pub mcu: String,
+    /// The host tool and target part the failure was seen with.
+    pub tool: String,
+    pub target: String,
+    /// The version measured to work on the same hardware; empty when none was measured.
+    pub works_in: String,
+    /// `reference` etc. and the measurement record (`measured:<date>(<where>)`).
+    pub confidence: String,
+    pub basis: String,
+    /// What fails, as recorded.
+    pub symptom: String,
+}
+
+/// en: Every probe firmware version measured to fail, from the embedded table.
+/// ja: 埋め込み表の、実測で不良の probe firmware の版を全部返す。
+pub fn link_firmware_issues() -> Vec<LinkFirmwareIssue> {
+    GENERATED_LINK_FIRMWARE_ISSUES
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .filter_map(|line| {
+            let c = split_quoted(line);
+            if c.len() < 12 {
+                return None;
+            }
+            let (major, minor) = c[2].split_once('.')?;
+            Some(LinkFirmwareIssue {
+                variant: c[0].clone(),
+                mode: c[1].clone(),
+                major: major.parse().ok()?,
+                minor: minor.parse().ok()?,
+                wcfg_version: c[3].parse().ok()?,
+                device: c[4].clone(),
+                mcu: c[5].clone(),
+                tool: c[6].clone(),
+                target: c[7].clone(),
+                works_in: c[8].clone(),
+                confidence: c[9].clone(),
+                basis: c[10].clone(),
+                symptom: c[11].clone(),
+            })
+        })
+        .collect()
+}
+
+/// One CSV line's fields, honouring double-quoted fields (`""` is a quote).
+fn split_quoted(line: &str) -> Vec<String> {
+    let mut fields = Vec::new();
+    let mut cur = String::new();
+    let mut in_quotes = false;
+    let mut chars = line.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '"' if in_quotes && chars.peek() == Some(&'"') => {
+                cur.push('"');
+                chars.next();
+            }
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => fields.push(std::mem::take(&mut cur)),
+            _ => cur.push(ch),
+        }
+    }
+    fields.push(cur);
+    fields
 }
 
 /// One named field of the option USER byte, for a family: one bit, or a range (`RST_MODE[4:3]`).
@@ -842,6 +941,40 @@ mod tests {
             .expect("WCH-Link_APP_IAP_ARM.bin");
         assert_eq!((e.device, e.mode, e.role), ("WCH-Link", "ARM", "iap"));
         assert!(link_firmware(&"0".repeat(64)).is_none());
+    }
+
+    #[test]
+    fn link_firmware_issues_from_the_table() {
+        let all = link_firmware_issues();
+        assert!(!all.is_empty());
+        for i in &all {
+            // Every row's variant is the one mapping's ID of its device + mcu.
+            assert_eq!(
+                link_variant_id(&i.device, &i.mcu),
+                Some(i.variant.as_str()),
+                "{i:?}"
+            );
+            assert!(matches!(i.mode.as_str(), "RISC-V" | "ARM"), "{i:?}");
+            assert_eq!(i.wcfg_version, u32::from(i.major) * 10 + u32::from(i.minor));
+            assert!(i.basis.starts_with("measured:"), "{i:?}");
+            assert!(!i.symptom.is_empty());
+        }
+        let ch549 = all
+            .iter()
+            .find(|i| (i.variant.as_str(), i.major, i.minor) == ("link-ch549", 2, 11))
+            .expect("the CH549 2.11 row");
+        assert_eq!(ch549.works_in, "2.12");
+        assert!(ch549.symptom.contains("halted"), "{}", ch549.symptom);
+    }
+
+    #[test]
+    fn every_link_firmware_device_maps_to_a_variant() {
+        for (_, f) in link_firmwares() {
+            let id = link_variant_id(f.device, f.mcu).expect("unmapped probe device");
+            assert_eq!(link_device(id), Some(f.device));
+        }
+        assert_eq!(link_device("linke"), Some("WCH-LinkE"));
+        assert_eq!(link_device("unknown-77"), None);
     }
 
     #[test]

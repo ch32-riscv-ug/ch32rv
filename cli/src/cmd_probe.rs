@@ -140,11 +140,12 @@ pub(crate) fn apply_probe_info(
 ) {
     let mut fw = FirmwareVersion::from_major_minor(info.fw_major, info.fw_minor);
     fw.mode = info.fw_mode.map(|m| m.as_str().to_owned());
-    if let Some(msg) = known_bad_firmware(info.variant, info.fw_major, info.fw_minor) {
+    if let Some(msg) = known_bad_firmware(info.variant, info.fw_mode, info.fw_major, info.fw_minor)
+    {
         fw.known_bad = Some(true);
         warnings.push(Warning {
             code: "fw-known-bad".to_owned(),
-            msg: msg.to_owned(),
+            msg,
         });
     } else {
         fw.known_bad = Some(false);
@@ -798,19 +799,14 @@ pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
 fn read_firmware(
     cli: &Cli,
     cmd: &str,
-) -> Result<(wchlink::Variant, u8, u8, Option<String>), ExitCode> {
+) -> Result<(wchlink::Variant, u8, u8, Option<wchlink::FwMode>), ExitCode> {
     let entry = select_entry(cli, cmd)?;
     let mut link = WchLink::open(&entry.dev)
         .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
     let info = link
         .probe_info()
         .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
-    Ok((
-        info.variant,
-        info.fw_major,
-        info.fw_minor,
-        info.fw_mode.map(|m| m.as_str().to_owned()),
-    ))
+    Ok((info.variant, info.fw_major, info.fw_minor, info.fw_mode))
 }
 
 /// `probe firmware info`: the probe's firmware version (raw / WCH notation), mode, known-bad status.
@@ -821,7 +817,8 @@ pub fn firmware_info(cli: &Cli) -> ExitCode {
         Err(c) => return c,
     };
     let fw = FirmwareVersion::from_major_minor(maj, min);
-    let bad = known_bad_firmware(variant, maj, min);
+    let bad = known_bad_firmware(variant, mode, maj, min);
+    let mode = mode.map(|m| m.as_str());
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
@@ -851,11 +848,11 @@ pub fn firmware_info(cli: &Cli) -> ExitCode {
 /// below `--min`; exit 0 otherwise.
 pub fn firmware_check(cli: &Cli, min: Option<&str>) -> ExitCode {
     const CMD: &str = "probe.firmware.check";
-    let (variant, maj, mn, _mode) = match read_firmware(cli, CMD) {
+    let (variant, maj, mn, mode) = match read_firmware(cli, CMD) {
         Ok(v) => v,
         Err(c) => return c,
     };
-    if let Some(reason) = known_bad_firmware(variant, maj, mn) {
+    if let Some(reason) = known_bad_firmware(variant, mode, maj, mn) {
         return fail(
             cli,
             CMD,
@@ -992,17 +989,11 @@ fn wait_for_mode(topology: &str, want: ProbeMode, timeout: Duration) -> Option<E
     }
 }
 
-/// en: The ch32-device-data `link_firmware.device` name of a probe variant; None for a variant
-/// with no image in the table.
-/// ja: variant の `link_firmware.device` での名前。表に image の無い variant は None。
+/// en: The ch32-device-data `link_firmware.device` name of a probe variant, from the one mapping
+/// (ch32rv_target::LINK_VARIANTS); None for an unknown variant.
+/// ja: variant の `link_firmware.device` での名前(対応は ch32rv_target::LINK_VARIANTS だけ)。
 fn link_device(v: wchlink::Variant) -> Option<&'static str> {
-    match v {
-        wchlink::Variant::Ch549 => Some("WCH-Link"),
-        wchlink::Variant::LinkE => Some("WCH-LinkE"),
-        wchlink::Variant::LinkW => Some("WCH-LinkW"),
-        wchlink::Variant::DapLink => Some("WCH-DAPLink"),
-        _ => None,
-    }
+    ch32rv_target::link_device(&v.id())
 }
 
 /// What the image table (ch32-device-data `index/link_firmware.csv`, by sha256) says about an

@@ -483,33 +483,53 @@ pub struct ProbeInfo {
     pub fw_mode: Option<FwMode>,
 }
 
-/// en: Known-bad firmware: (variant ID, or `None` for every variant, major, minor, why). Matched by
-/// version and variant; there is no hash check (docs/freeze-decisions.ja.md §12). Source of the 2.11
-/// entry: ArduinoCore-CH32RV e6e9dfa6 (2026-08-22), docs/upload-and-fixture.ja.md section
-/// "probe の firmware 版が upload の成否を変える": the original WCH-Link (CH549) on 2.11 (v31) with a
-/// CH32V103R8T6 - probe-rs `download --reset` wrote the flash but the core stayed halted, every
-/// time; the same CH549 on 2.12 (v32) ran it every time. The WCH-LinkE boards there (on 2.12) never
-/// showed it, and no LinkE on 2.11 was tried, so the entry is the CH549's only. The images
-/// themselves (sha256, version) are in ch32-device-data `index/link_firmware.csv`.
-/// ja: 既知の不良の firmware。(variant の ID か全 variant の `None`、版、理由)で照合する。hash での照合は
-/// しない。2.11 の出典は ArduinoCore-CH32RV e6e9dfa6 の docs/upload-and-fixture.ja.md
-/// 「probe の firmware 版が upload の成否を変える」: 初代 WCH-Link(CH549)の 2.11(v31)+ CH32V103R8T6 で
-/// probe-rs `download --reset` が書けてもコアが halt のまま(毎回)、同じ CH549 を 2.12(v32)に上げると
-/// 毎回走った。LinkE(2.12)では出ておらず、2.11 の LinkE は試していないので CH549 にだけ当てる。
-/// image の sha256 と版は ch32-device-data `index/link_firmware.csv`。
-const KNOWN_BAD: &[(Option<&str>, u8, u8, &str)] = &[(
-    Some("link-ch549"),
-    2,
-    11,
-    "WCH-Link (CH549) firmware 2.11 (v31) has a known defect: the target is not started after flashing (reset does not take effect); 2.12 does not have it",
-)];
-
-pub fn known_bad_firmware(variant: Variant, major: u8, minor: u8) -> Option<&'static str> {
+/// en: Known-bad firmware: the probe firmware versions measured to fail, from ch32-device-data
+/// `index/link_firmware_issues.csv` (generated into crates/target/generated/link_firmware_issues.csv,
+/// whose `basis` column names each measurement). Matched by variant, mode and version; there is
+/// no hash check (docs/freeze-decisions.ja.md §12). A row's mode matches when the probe reports the
+/// same mode or none / an unknown one. The message is the row's symptom and the version measured
+/// to work.
+/// ja: 既知の不良の firmware。ch32-device-data の `index/link_firmware_issues.csv`(根拠は生成表の
+/// `basis` 列)を variant・mode・版で照合する。hash では照合しない。probe が mode を返さない・未知の
+/// mode のときは mode を問わず当てる。文面は表の symptom と動く版から作る。
+pub fn known_bad_firmware(
+    variant: Variant,
+    mode: Option<FwMode>,
+    major: u8,
+    minor: u8,
+) -> Option<String> {
     let id = variant.id();
-    KNOWN_BAD
-        .iter()
-        .find(|(v, a, b, _)| (*a, *b) == (major, minor) && v.is_none_or(|v| v == id))
-        .map(|(_, _, _, why)| *why)
+    let mode = match mode {
+        Some(FwMode::RiscV) => Some("RISC-V"),
+        Some(FwMode::Arm) => Some("ARM"),
+        Some(FwMode::Unknown(_)) | None => None,
+    };
+    ch32rv_target::link_firmware_issues()
+        .into_iter()
+        .find(|i| {
+            i.variant == id
+                && (i.major, i.minor) == (major, minor)
+                && mode.is_none_or(|m| m == i.mode)
+        })
+        .map(|i| {
+            let fixed = if i.works_in.is_empty() {
+                "no version measured to work yet".to_owned()
+            } else {
+                format!("{} works", i.works_in)
+            };
+            format!(
+                "{} ({}) {} firmware {}.{} (v{}) has a known defect (measured with {} on {}): {}; {fixed}",
+                i.device,
+                i.mcu,
+                i.mode,
+                i.major,
+                i.minor,
+                i.wcfg_version,
+                i.tool,
+                i.target,
+                i.symptom
+            )
+        })
 }
 
 /// An opened WCH-Link (RISC-V mode) session.
@@ -1111,13 +1131,50 @@ mod tests {
 
     #[test]
     fn known_bad_is_only_ch549_2_11() {
-        assert!(known_bad_firmware(Variant::Ch549, 2, 11).is_some());
-        assert!(known_bad_firmware(Variant::Ch549, 2, 12).is_none());
-        assert!(known_bad_firmware(Variant::LinkE, 2, 11).is_none());
-        assert!(known_bad_firmware(Variant::LinkE, 2, 22).is_none());
-        assert!(known_bad_firmware(Variant::LinkE, 2, 12).is_none());
+        let rv = Some(FwMode::RiscV);
+        let msg = known_bad_firmware(Variant::Ch549, rv, 2, 11).unwrap_or_default();
+        assert!(
+            msg.starts_with("WCH-Link (CH549) RISC-V firmware 2.11 (v31)"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("halted") && msg.ends_with("2.12 works"),
+            "{msg}"
+        );
+        assert!(known_bad_firmware(Variant::Ch549, None, 2, 11).is_some());
+        assert!(known_bad_firmware(Variant::Ch549, Some(FwMode::Unknown(7)), 2, 11).is_some());
+        assert!(known_bad_firmware(Variant::Ch549, Some(FwMode::Arm), 2, 11).is_none());
+        assert!(known_bad_firmware(Variant::Ch549, rv, 2, 12).is_none());
+        assert!(known_bad_firmware(Variant::LinkE, rv, 2, 11).is_none());
+        assert!(known_bad_firmware(Variant::LinkE, None, 2, 22).is_none());
+        assert!(known_bad_firmware(Variant::LinkE, rv, 2, 12).is_none());
         assert_eq!(Variant::LinkE.id(), "linke");
         assert_eq!(Variant::Ch549.id(), "link-ch549");
+    }
+
+    /// The device -> variant mapping (ch32rv_target::LINK_VARIANTS) names exactly the known variants.
+    #[test]
+    fn link_variants_cover_every_variant() {
+        let known = [
+            Variant::Ch549,
+            Variant::LinkE,
+            Variant::LinkS,
+            Variant::DapLink,
+            Variant::LinkW,
+        ];
+        for v in known {
+            assert!(
+                ch32rv_target::link_device(&v.id()).is_some(),
+                "{} has no device in LINK_VARIANTS",
+                v.id()
+            );
+        }
+        for (device, mcu, id) in ch32rv_target::LINK_VARIANTS {
+            assert!(
+                known.iter().any(|v| v.id() == *id),
+                "{device}/{mcu} maps to `{id}`, which is no Variant"
+            );
+        }
     }
 
     #[test]

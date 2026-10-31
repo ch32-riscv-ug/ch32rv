@@ -78,6 +78,7 @@ pub fn doctor(cli: &Cli, args: &DoctorArgs) -> ExitCode {
                     Ok(info) => {
                         let bad = wchlink::known_bad_firmware(
                             info.variant,
+                            info.fw_mode,
                             info.fw_major,
                             info.fw_minor,
                         );
@@ -88,9 +89,9 @@ pub fn doctor(cli: &Cli, args: &DoctorArgs) -> ExitCode {
                                 "{label}: opened, firmware {}.{}{}",
                                 info.fw_major,
                                 info.fw_minor,
-                                bad.map(|_| " [KNOWN BAD]").unwrap_or("")
+                                if bad.is_some() { " [KNOWN BAD]" } else { "" }
                             ),
-                            hint: bad.map(|m| m.to_owned()),
+                            hint: bad,
                         });
                     }
                     Err(e) => {

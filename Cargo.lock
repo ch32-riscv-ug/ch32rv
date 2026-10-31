@@ -260,6 +260,7 @@ version = "0.24.0"
 dependencies = [
  "ch32rv-contract",
  "ch32rv-dmi",
+ "ch32rv-target",
  "ch32rv-usb",
  "thiserror",
 ]

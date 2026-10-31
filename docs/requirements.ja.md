@@ -173,7 +173,7 @@ wchisp は GPL-2.0 のため**コードは取り込まない**。protocol(0xa1 I
 |---|---|---|
 | IAP entry / exit | `probe firmware update` に内蔵 | P1 |
 | image 書込 | `probe firmware update --image <file>` | P1。firmware blob は同梱しない |
-| (無し) | `probe firmware info\|check` | P0。**既知不良版(2.11 の reset 問題)の検出**。既知不良は variant と版で照合する(CH549 の 2.11)。`probe firmware update` の image の型番照合は `ch32-device-data/index/link_firmware.csv` の sha256 |
+| (無し) | `probe firmware info\|check` | P0。**既知不良版(2.11 の reset 問題)の検出**。既知不良は `ch32-device-data/index/link_firmware_issues.csv`(実測で不良の版)を variant・mode・版で照合する(今の行は CH549 の WCH-Link の RISC-V 2.11 だけ)。`probe firmware update` の image の型番照合は `ch32-device-data/index/link_firmware.csv` の sha256 |
 
 注意: LinkE の IAP mode は `4348:55e0` で enumerate され、**WCH factory ISP device と同じ VID:PID**(LinkE の IAP は搭載 CH32V305 の ISP そのもの)。`isp list` は BTVER/chip 種別で区別し、LinkE と判定したら `probe firmware` へ誘導する。IAP に滞留した個体の検出・脱出(`0x83`)も `probe firmware` / `doctor` が持つ。
 
