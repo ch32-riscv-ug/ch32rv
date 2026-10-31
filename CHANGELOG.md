@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.25.1 - 2026-10-31
+
 ## 0.25.0 - 2026-10-31
 
 - (EN) Fix (keep-store way b, unreleased): the STORE is written back through ch32rv's RAM loader over DMI after a reset-halt, not a second WCH stub run - the second stub run did not take effect (V307, LinkE 2.22, 2026-11-01: `verify mismatch at 0x0803f000`, the STORE read back blank; the image itself verified and the host backup held the pattern). Way (b) is chosen only for a family with a loader plan. `result.flash.store.method` gains `blank`: a chip erase over a STORE that held only the erased value, so nothing was written back (it reported `restored` before). The stub's page self-erase table is re-measured (ch32rv bench 2026-11-01, LinkE 2.22, (sector - chip) / pages): V20x 19.5 ms (was an assumed 27), L103 13 ms (was 6.4 from app-side timing); V003 3.1 and V30x 27 confirmed; X035 / V103 stay unmeasured.
