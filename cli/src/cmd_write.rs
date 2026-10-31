@@ -97,6 +97,7 @@ pub fn write(cli: &Cli, args: &WriteArgs) -> ExitCode {
         Ok(s) => s,
         Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
+    crate::cmd_flash::clear_stale_flash_mode(&mut session, &mut warnings);
 
     // `--at option` was resolved against the common base before attach; now that the family is
     // known, resolve it again from the DB - the option block is not at the same address on every

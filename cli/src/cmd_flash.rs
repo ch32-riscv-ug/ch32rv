@@ -117,6 +117,38 @@ fn planned_writes(programmer: &Programmer, image: &Image) -> Vec<Segment> {
     }
 }
 
+/// en: Before writing, put down mode bits a stopped earlier write left in FLASH_CTLR (see
+/// `DebugModule::flash_clear_stale_mode`), with a `flash-controller-reset` warning when it found
+/// any. A hart that was running runs again afterwards; a check that cannot run is skipped, and
+/// so is a replay (its recordings hold no such exchange).
+/// ja: 書く前に、止まった前の書き込みが FLASH_CTLR に残したビットを下ろす。見つけたら warning。
+/// 走っていた hart は走らせ直す。replay では飛ばす(記録にこのやり取りが無い)。
+pub(crate) fn clear_stale_flash_mode(session: &mut Session, warnings: &mut Vec<Warning>) {
+    if ch32rv_usb::replay::active() {
+        return;
+    }
+    let mut dm = session.dm();
+    let Ok(was_halted) = dm.is_halted() else {
+        return;
+    };
+    if !was_halted && dm.halt().is_err() {
+        return;
+    }
+    if let Ok(stale) = dm.flash_clear_stale_mode()
+        && stale != 0
+    {
+        warnings.push(Warning {
+            code: "flash-controller-reset".to_owned(),
+            msg: format!(
+                "FLASH_CTLR held mode bits 0x{stale:08x} from a write that was stopped; cleared them"
+            ),
+        });
+    }
+    if !was_halted {
+        let _ = dm.resume();
+    }
+}
+
 pub(crate) fn covered_pages(
     segments: impl IntoIterator<Item = (u32, u32)>,
     page: u32,
@@ -285,6 +317,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
         Ok(s) => s,
         Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
+    clear_stale_flash_mode(&mut session, &mut warnings);
 
     if args.programmer == crate::args::ProgrammerChoice::Loader {
         return flash_via_loader(cli, args, &bytes, session, warnings);
@@ -1236,6 +1269,8 @@ pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
             Some("pass --yes to confirm"),
         );
     }
+    let mut warnings = Vec::new();
+    clear_stale_flash_mode(&mut session, &mut warnings);
     if let Err(e) = session.link().erase_flash() {
         return fail(
             cli,
@@ -1248,6 +1283,7 @@ pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({ "scope": "chip", "family": session.family() }));
+        env.warnings = warnings;
         crate::print_envelope(&env)
     } else {
         println!("erased entire chip flash ({})", session.family());
@@ -1411,6 +1447,7 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
+    clear_stale_flash_mode(&mut session, &mut Vec::new());
     let family = session.attach.family_byte;
     let Some(profile) = ch32rv_flash::flash_controller_profile(family) else {
         return fail(

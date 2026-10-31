@@ -923,6 +923,22 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// must be halted.
     /// ja: `addr` の fast page を FTER + STRT で消去。`mode` で family 差を選ぶ(V103 は commit 副作用
     /// が必須)。halt 済みで。
+    /// en: Put down erase / program mode bits a stopped operation left in FLASH_CTLR, and return
+    /// the bits it found (0 when the controller was idle). A process killed between setting FTER
+    /// and clearing it (a page erase over DMI) leaves FTER set; the WCH stub then programs only
+    /// the first page of every image until the chip resets (CH32V003, 2026-10-31). The hart must
+    /// be halted.
+    /// ja: 止まった操作が FLASH_CTLR に残した消去・書き込みのモードのビットを下ろし、見つけたビットを
+    /// 返す。FTER を立てて下ろす前に止まると FTER が残り、WCH の stub は以後 1 ページ目しか書かない。
+    pub fn flash_clear_stale_mode(&mut self) -> Result<u32, DmiError> {
+        let ctlr = self.read_mem32(FLASH_CTLR)?;
+        let stale = ctlr & FLASH_MODE_BITS;
+        if stale != 0 {
+            self.write_mem32(FLASH_CTLR, ctlr & !FLASH_MODE_BITS)?;
+        }
+        Ok(stale)
+    }
+
     pub fn flash_page_erase(&mut self, addr: u32, mode: FlashProgMode) -> Result<(), DmiError> {
         self.flash_unlock()?;
         if self.read_mem32(FLASH_STATR)? & FLASH_BUSY != 0 {
@@ -1237,6 +1253,19 @@ const FLASH_FTER: u32 = 1 << 17; // fast page erase
 const FLASH_BUFLOAD: u32 = 1 << 18; // load one word into the page buffer (buffered mode)
 const FLASH_BUFRST: u32 = 1 << 19; // reset the page buffer (buffered mode)
 const FLASH_PGSTART: u32 = 1 << 21; // start fast page program (PgStart mode)
+// The erase / program mode and start bits: PG, PER, MER, OBPG, OBER, STRT, FTPG, FTER, BUFLOAD,
+// BUFRST, PGSTART.
+const FLASH_MODE_BITS: u32 = FLASH_PG
+    | (1 << 1)
+    | (1 << 2)
+    | (1 << 4)
+    | (1 << 5)
+    | FLASH_STRT
+    | FLASH_FTPG
+    | FLASH_FTER
+    | FLASH_BUFLOAD
+    | FLASH_BUFRST
+    | FLASH_PGSTART;
 // STATR bits.
 const FLASH_BUSY: u32 = 1 << 0;
 const FLASH_WRBUSY: u32 = 1 << 1;
