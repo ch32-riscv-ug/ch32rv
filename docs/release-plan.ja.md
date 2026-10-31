@@ -50,14 +50,14 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 | `crates-io` | tag を checkout → `rust-lang/crates-io-auth-action`(OIDC 短命トークン)→ 依存順に `cargo publish`。`inputs.publish_crates=false` で無効化可。 |
 | `binaries` | matrix(下表)で `cargo build --release --locked` → tar.gz(Unix)/ zip(Windows)+ `.sha256` → 同じ Release に `gh release upload`。 |
 
-バイナリ matrix(すべて **ネイティブ**ビルド。cross 不使用):
+バイナリ matrix(cross 不使用。macOS の x86_64 だけは Apple Silicon の runner で `--target` を替えて作り、実行の確認はしない):
 
 | runner | target |
 |---|---|
 | ubuntu-latest | x86_64-unknown-linux-gnu |
 | ubuntu-24.04-arm | aarch64-unknown-linux-gnu |
-| macos-13 | x86_64-apple-darwin |
-| macos-14 | aarch64-apple-darwin |
+| macos-15 | aarch64-apple-darwin |
+| macos-15 | x86_64-apple-darwin |
 | windows-latest | x86_64-pc-windows-msvc |
 
 要対応(ユーザー):
