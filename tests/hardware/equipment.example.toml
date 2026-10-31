@@ -5,7 +5,7 @@ example = true
 [probe]
 port = "/dev/serial/by-id/EXAMPLE"
 unit_id = "000000000000"
-selector = "port:oep://000000000000/EXAMPLE"
+selector = "oep://000000000000/EXAMPLE"
 [target]
 chip = "CH32L103C8T6"
 chip_id = "0x10310710"

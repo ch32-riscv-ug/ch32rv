@@ -3,6 +3,7 @@
 //!
 //! - [`registry`]: every number on the wire, generated from oep-spec's `registry/oep-v1.toml`
 //!   (`cargo xtask oep-gen`).
+//! - [`address`]: the `oep://<probe>[/<port>[/<target>]][?via=<route>]` grammar (host guide §5.3).
 //! - [`codec`]: framing (COBS + CRC-16 for serial transports, `length(u16)` for vendor bulk / HID /
 //!   TCP) and the message layer (headers, TLV).
 //! - [`config`]: the probe's settings (core §13; `oep.probe.config` on older firmware) - the labels, the ports they name, and line lookup.
@@ -16,6 +17,7 @@
 //! ja: ch32rv の OEP v1 host 側。probe は target を知らず、この crate も CH32 固有のことは持たない。
 //! [`registry`] は台帳から生成した番号、[`codec`] は framing と message 層。
 
+pub mod address;
 pub mod codec;
 pub mod config;
 pub mod hid;

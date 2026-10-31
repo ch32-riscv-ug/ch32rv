@@ -20,7 +20,7 @@ use crate::session::Session;
 const CMD: &str = "target.info";
 
 pub fn info(cli: &Cli) -> ExitCode {
-    // An OEP probe (`tcp:`, `oep://`, or a serial port no WCH-Link owns) takes the OEP path.
+    // An OEP probe (`oep://`, or a serial port no WCH-Link owns) takes the OEP path.
     match crate::oep::addr(cli, "target.info") {
         Ok(Some(a)) => return crate::oep::target_info(cli, &a),
         Ok(None) => {}
@@ -1092,7 +1092,7 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
             Some(sn) => (format!("wchlink://{sn}"), format!("serial:{sn}")),
             None => (
                 format!("wchlink://usb-{topology}"),
-                format!("usb:{topology}"),
+                format!("topology:{topology}"),
             ),
         };
         places.push(Place {

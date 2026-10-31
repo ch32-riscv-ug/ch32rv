@@ -69,7 +69,7 @@ fn cases() -> Vec<(Vec<String>, &'static str, bool)> {
                 "broker",
                 "endpoint",
                 "--probe",
-                "port:/dev/ch32rv-no-such-port",
+                "/dev/ch32rv-no-such-port",
                 "--json",
             ]),
             "broker.endpoint",

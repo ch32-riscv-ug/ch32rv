@@ -95,7 +95,7 @@ pub(crate) fn select_entry(cli: &Cli, cmd: &str) -> Result<Entry, ExitCode> {
                 cmd,
                 ErrorKind::DeviceAmbiguous,
                 format!("{} probes match; specify --probe", candidates.len()),
-                Some("select one with --probe VID:PID:SERIAL or usb:<bus>-<ports>"),
+                Some("select one with --probe VID:PID:SERIAL or topology:<bus>-<ports>"),
                 candidates,
             ));
         }
@@ -395,7 +395,7 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
             continue;
         };
         lines.push(vec![
-            format!("oep-net://{unit}"),
+            format!("oep://{unit}"),
             "oep".to_owned(),
             "tcp".to_owned(),
             "network".to_owned(),
@@ -405,7 +405,7 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
         ]);
         network.push(serde_json::json!({
             "kind": "oep",
-            "address": format!("oep-net://{unit}"),
+            "address": format!("oep://{unit}"),
             "firmware": crate::oep::firmware_at(&addr),
             "unit_id": unit,
             "tcp": addr,
@@ -484,7 +484,7 @@ fn row(r: &ProbeReport, error: Option<&str>) -> Vec<String> {
 }
 
 pub fn info(cli: &Cli) -> ExitCode {
-    // An OEP probe (`oep://`, `tcp:`, or a serial port no WCH-Link owns) answers from its describe.
+    // An OEP probe (`oep://`, or a serial port no WCH-Link owns) answers from its describe.
     match crate::oep::addr(cli, "probe.info") {
         Ok(Some(a)) if !matches!(a, crate::oep::OepAddr::Wch(_)) => {
             return crate::oep::probe_info(cli, &a);
@@ -555,14 +555,14 @@ pub(crate) fn parse_selector(cli: &Cli, cmd: &str) -> Result<Option<Selector>, E
         return Ok(None);
     };
     let sel: Selector = raw.parse().map_err(|e| match e {
-        // en: `port:` with nothing after it is what an IDE recipe sends when no port was picked
+        // en: An empty `--probe` is what an IDE recipe sends when no port was picked
         // (`{upload.port.address}` empty): say that, and stay fail-closed rather than guess a probe.
-        // ja: 空の `port:` は、port を選ばずに IDE の recipe が送る形。そう言い、probe は推測しない。
-        ch32rv_usb::SelectorParseError::EmptyValue("port") => fail(
+        // ja: 空の `--probe` は、port を選ばずに IDE の recipe が送る形。そう言い、probe は推測しない。
+        ch32rv_usb::SelectorParseError::Empty => fail(
             cli,
             cmd,
             ErrorKind::Usage,
-            "no port selected (`--probe port:` is empty)",
+            "no port selected (`--probe` is empty)",
             Some(
                 "pick the board's port (the IDE's port menu, or `arduino-cli upload -p <port>`), \
                  or name the probe with `--probe serial:<sn>` (`ch32rv probe list` lists them)",

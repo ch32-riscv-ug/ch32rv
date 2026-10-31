@@ -28,7 +28,7 @@ fn upload(chip: &str) -> std::process::Output {
             "--progress",
             "none",
             "--probe",
-            "port:/dev/ch32rv-no-such-port",
+            "/dev/ch32rv-no-such-port",
         ])
         .output()
         .expect("run ch32rv")

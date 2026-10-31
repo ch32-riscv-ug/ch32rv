@@ -59,7 +59,7 @@
   - 判定は 1 つの関数(`is_oep_device`)にまとめ、後で PID の判定に差し替えられるようにする。discovery(`oep://`)も、serial port を選んだときの「OEP の probe なら raw の serial port の upload は断る」(§6)も、この関数を使う。
   - 名前は device を開かずに読む(nusb の列挙が持つ product の文字列)。
   - fn 0 の describe の `discoverable`(0x4A)= 1 は「この形で列挙している device がある」という意味で、USJ などから開いたときにも分かる。
-- 口は interface の種類で選ぶ(core §3.3): CDC(ACM)はすべて OEP を受ける serial port、vendor class の bulk の組は vendor bulk、vendor 定義の HID は HID。DFU や Mass Storage は OEP の外。vendor bulk、HID、serial port の順に試す(2026-09-29 実装、`oep::connect_upstream`)。ブローカーと discovery は、`port:<path>` / `oep://` の serial port を持つ OEP の device の vendor bulk → vendor HID → その serial port の順に開き、confirm が通った最初の経路を使う(開けない・答えないものは次へ。Linux で udev の規則が無く USB のノードに書けないときも serial port に落ちる)。`CH32RV_OEP_TRANSPORT=vendor-bulk|hid|serial` でその経路から始める(比較と切り分け用)。ブローカーの key は serial port の path のまま。
+- 口は interface の種類で選ぶ(core §3.3): CDC(ACM)はすべて OEP を受ける serial port、vendor class の bulk の組は vendor bulk、vendor 定義の HID は HID。DFU や Mass Storage は OEP の外。vendor bulk、HID、serial port の順に試す(2026-09-29 実装、`oep::connect_upstream`)。ブローカーと discovery は、`oep://` / serial port の path の serial port を持つ OEP の device の vendor bulk → vendor HID → その serial port の順に開き、confirm が通った最初の経路を使う(開けない・答えないものは次へ。Linux で udev の規則が無く USB のノードに書けないときも serial port に落ちる)。住所の `?via=bulk|hid|cdc` はその種類だけ、`?via=tty:<path>` はその serial port だけを開く(cli §3.4)。どの経路でも、開いたら describe の unit_id が住所の `<probe>` と同じかを確かめる。
 - vendor bulk は nusb で扱う(`ch32rv_usb::BulkPipe`)。alt 0 の vendor class(0xFF)の interface で、bulk の OUT と IN を持つ最初のもの。
   - IN の転送を 2 本出したままにする(read の timeout で cancel しない。cancel すると、その瞬間に届いた分を落とす)。汲み続けるので OUT も詰まらない(参照 client の E160)。
   - wMaxPacketSize の倍数の書き込みの後には ZLP を送る。
@@ -192,8 +192,8 @@ ch32rv は attach せずに分かること(unit_id、口の名前)だけで口�
 
 - serial port の path が WCH-Link のものでなければ、その port を開いて confirm を送る(利用者がその port を選んだので、開いてよい)。
   - `OEP!` が返らなければ「OEP の probe ではない」として exit 10。
-  - USB にも OEP の device として出る probe の port なら、upload は常に断る(`port:oep://<probe>[/<port>]` を案内する)。
-- `oep://<probe>` だけは probe 自身を指すので、口を選ばない(exit 2)。名前の無い口は `oep://<probe>/any` で選ぶ。discovery もそう出す。
+  - USB にも OEP の device として出る probe の port なら、upload は常に断る(`oep://<probe>[/<port>]` を案内する)。経路を明示する `oep://<probe>/<port>?via=tty:<path>` は断らない。
+- `oep://<probe>` だけは probe 自身を指すので、口を選ばない(exit 2)。名前の無い口は住所で指せない(`--pins` で線を指す)。
 - wire は口の label(`S.swio` / `S.swclk`)で、決まらなければ `--chip` の家系で決める。ピン・NRST・fixture UART の線も、その口の label から引く。
 - label には target のピンを `@P` で添えてよい(oep-spec 4e31422): `x035.swdio@pc18` は `x035.swdio` として引く。役目の無い線 `x035@pb6` は口 `x035` に数えるが、役目の名前では引かない。`P` は英数字と `-`・`_`(`pc16-pc11` のようにパッケージの中でつながったピン)。
 - rvswd の休ませ方は、§10 の 3b32b12 の項。
@@ -220,7 +220,7 @@ ch32rv は attach せずに分かること(unit_id、口の名前)だけで口�
 - **serial の速さ(port_speed、oep-core §3.5、2026-10-01 から既定で使う)**: probe を serial(UART bridge)で開いたブローカーは、endpoint を書いた後、client に答え始める前に、921600 → 750000 → 500000 の順に試す(`CH32RV_PORT_SPEED` で `off` か並びを指定できる)。手順は参照 client の `raise_speed` と同じ: 試す → host も切り替えて 20 ms 待ち confirm → link_source / link_sink で両方向を 1 秒か 32 KiB 確かめる(max_inflight で並べ、壊れたら 1 つずつで確かめ直し、通った上限で使う) → 壊れたフレームが無ければ決める、あれば戻す。全体の上限は 6 秒。試した結果(速さごとの通った / 壊れた、in / out の KB/s、並べた数、かかった時間)はブローカーの log に 1 行で出す。session が口を持っている間は、壊れたフレームを待たずに同じ corr ですぐ送り直す。上げた速さで答えが来なければ、起動時の速さ(115200)に戻って confirm し、送り直す。決めるときの idle_ms は仕様の上限の 3000 ms(`port_speed_idle_max_ms`): ブローカーが落ちても probe は 3 秒の黙りで戻り、ブローカーは 1 秒ごとの keepalive で保つ。serial を開いたときの confirm は、前の host が上げた速さの残りを待つために約 4 秒まで繰り返す(oep-core §3.5)。上げている間はフレームの様子を見て、悪ければ port_speed(戻す)を送って probe と揃えて起動時の速さに戻り、その session では上げない。判定は probe の firmware(fn 0 describe の firmware)で分ける: oep-probe-arduino 0.0.27 以降(壊れ 3 つが続いて初めて自分で戻る)は直近 3 秒の(壊れ + 失われ)の割合が 10 % を超えたら(50 フレーム未満は判定しない。host 開発ガイド §7.4、基準 0)、それより前(1 秒に 3 つで戻る)は 5 秒に 2 つで(probe より先に下げる)。上げた速さで答えが無ければ、まず起動時の速さで約 4 秒 confirm し(開く側と同じ。通らなければリンクの失敗、oep-core §3.5 の義務 5)、probe がそこにいれば(自分で戻っていた)残りをそこで送り直す。この立て直しが lease の中に収まるよう、ブローカーの lease は 10 秒。ブローカーは最後の client が抜けた後 3 秒残り、その間も keepalive で session と速さを保つ(IDE がモニターを閉じてからアップロードを始めるまでの間)。CLI の 1 回だけのコマンドはブローカーの client なので、別に速さを触らない。
 
 - **起動**:
-  - client は、まず `<runtime>/<key>.oep`(待ち受けの場所)を見てつなぐ。key は probe の同一性(2026-10-01、docs/freeze-decisions.ja.md §4): OEP の USB の probe は `oep-<USB serial>`(serial = unit_id。無ければ `oep-usb-<位置>`)、OEP の USB device を持たない serial port(UART bridge)は `oep-port-<正規化した path>`、WCH-Link は `wch-<serial>`(無ければ `wch-usb-<位置>`)。同じ probe へのどの道(`oep://`、どちらの CDC の `port:`)も同じブローカーに着く。runtime は DeviceLock と同じ利用者ごとのディレクトリ。
+  - client は、まず `<runtime>/<key>.oep`(待ち受けの場所)を見てつなぐ。key は probe の同一性(2026-10-01、docs/freeze-decisions.ja.md §4): `oep://` の probe は `oep-<unit_id の小文字>`(`via` によらない。USB の probe は serial = unit_id、serial が無ければ `oep-usb-<位置>`)、unit を名指さずに渡した、OEP の USB device を持たない serial port(UART bridge)は `oep-port-<正規化した path>`、WCH-Link は `wch-<serial>`(無ければ `wch-usb-<位置>`)。同じ probe へのどの道(`oep://` のどの `via`、どちらの CDC の path)も同じブローカーに着く。runtime は DeviceLock と同じ利用者ごとのディレクトリ。
   - 無ければ `ch32rv broker serve --probe <sel>`(利用者向けではない subcommand)を切り離して起動する。Linux / macOS は double fork + setsid、Windows は DETACHED_PROCESS と job object からの breakaway。stdio は捨てる。
   - 起動の取り合いは `<runtime>/<key>.broker.lock` の flock で 1 つにする。取れなかったほうは起動をやめ、`<key>.oep` が現れるのを待ってつなぐ。
 - **待ち受け**: 127.0.0.1 の TCP を 1 つ(port 0 で選ぶ)。`<key>.oep` には port、pid、起動時刻、transport、ch32rv の版、client との取り決めの番号を書き、file は 0600 にする(ファイルは内部のもの。版の扱いは cli.ja.md §4.12)。`ch32rv broker endpoint --probe <sel> --json` がこれを返す(結果の封筒の `result` が `{endpoint, pid, transport, version}`。`endpoint` は `"127.0.0.1:<port>"`、ブローカーが無ければ null)。認証は無い(OEP の TCP の注意どおり)。
@@ -241,7 +241,7 @@ ch32rv は attach せずに分かること(unit_id、口の名前)だけで口�
   - `oep.target.console` はブローカーの中で dmdata / dmseq / rtt の mailbox を poll して、位置付きのストリームにする(mechanism は OEP の番号)。
   - WCH の stub での書き込みは、ch32rv 独自の interface(例 `io.github.ch32-riscv-ug.wchlink`)に置く。今の `flash` の速さを保つため。
   - これで gdb と dmseq などの monitor が同じ LinkE を同時に使える。
-  - **実装済み(2026-09-29)**: `broker serve --probe serial:<sn>|usb:<topology>|port:<Link の CDC>` で LinkE を裏に置く。`arduino monitor` の dmdata / dmseq は LinkE でもブローカー経由。1 回だけのコマンド(verify / read / reset / target info)は、その LinkE のブローカーが動いていればブローカーを通し、動いていなければ今までどおり直接開く。**flash はブローカーから Link を借りる**: ch32rv 独自の interface `io.github.ch32-riscv-ug.wchlink` の lend でブローカーが session を手放し(console の read は手元の出力で答え続ける)、flash は直接の経路(WCH の stub)で書き、reclaim で返す(flash のプロセスが落ちてもブローカーが取り返す)。V003 で 2.6 KB に 1.0 秒(ブローカーの loader の経路では約 20 秒だった)。rtt / sdi / gdb / erase / dbg などは、まだブローカーを通らない(LinkE のブローカーが動いている間は lock で断られる)。
+  - **実装済み(2026-09-29)**: `broker serve --probe serial:<sn>|topology:<bus>-<ports>|<Link の CDC の path>` で LinkE を裏に置く。`arduino monitor` の dmdata / dmseq は LinkE でもブローカー経由。1 回だけのコマンド(verify / read / reset / target info)は、その LinkE のブローカーが動いていればブローカーを通し、動いていなければ今までどおり直接開く。**flash はブローカーから Link を借りる**: ch32rv 独自の interface `io.github.ch32-riscv-ug.wchlink` の lend でブローカーが session を手放し(console の read は手元の出力で答え続ける)、flash は直接の経路(WCH の stub)で書き、reclaim で返す(flash のプロセスが落ちてもブローカーが取り返す)。V003 で 2.6 KB に 1.0 秒(ブローカーの loader の経路では約 20 秒だった)。rtt / sdi / gdb / erase / dbg などは、まだブローカーを通らない(LinkE のブローカーが動いている間は lock で断られる)。
   - **LinkE の高速の read(`read_mem`)は memory 専用で、書いた直後は古い値を返す**(CH32V003 で実測): 周辺の register(FLASH_CTLR)では直前に書いた鍵の値を返し、DMI で書いた直後の SRAM と、loader で書いた直後の flash も古い値を返した。ブローカーは、code flash の範囲で、しかもその attach の間に何も書いていないときだけ高速の read を使い、それ以外は Debug Module で読む。
   - **uart の source の monitor は CDC だけを使い、ブローカーにも probe の lock にも触れない**(実装済み、e66f7cf)。
 - **時間の制約**: `arduino monitor` の OPEN は、ブローカーの起動・transport の open・attach まで含めて、arduino-cli の待ちの内に返す。実測では、OPEN の返事が 6 秒遅れても通り、9 秒遅れるとエラー無しで閉じる。目標は 3 秒以内。
@@ -343,7 +343,7 @@ LIST に出す interface は上の 5 つ(rvswd、swio、riscv-dm、console、wch
 ## 12. 実装の順
 
 1. `ch32rv-oep`: codec + 台帳の生成 + serial(COBS)+ link + session。偽の probe で試験する。
-2. `OepDtm` + `TargetAccess`。`target info` と `read` を OEP で動かす(`--probe port:<path>` で OEP の probe を引く)。
+2. `OepDtm` + `TargetAccess`。`target info` と `read` を OEP で動かす(`--probe <serial port の path>` で OEP の probe を引く)。
 3. RV32EC の loader + `flash` / `verify` / `reset`。
 4. `arduino monitor` の OEP の console。
 5. ブローカー + `broker endpoint`。他のコマンドがブローカーを通るようにする。

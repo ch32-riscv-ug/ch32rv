@@ -119,7 +119,6 @@ flag > 環境変数 > 設定ファイル > 既定値。
 
 | 変数 | 働き |
 |---|---|
-| `CH32RV_OEP_TRANSPORT` | `vendor-bulk` / `hid` / `serial`: OEP の probe につなぐ経路の順の始まりを変える(docs/oep-host.ja.md §3.3) |
 | `CH32RV_PORT_SPEED` | `off`、または速さの並び(`921600,500000`): ブローカーが UART bridge の probe との serial を上げるとき(oep-core §3.5 port_speed)に試す速さ。未設定は 500000 だけ(oep-if-link §3 の host の義務 7: 利用者が明示しなければ 500000 より上を試さない)。500000 より上を並べたときは、各方向 1 秒の確かめを通ったときだけ使う。切り分け用で、契約の外 |
 | `CH32RV_USB_TRACE` | file の path: OEP の vendor bulk の書き込みと IN の完了を 1 行ずつ記録する |
 | `CH32RV_OEP_TRACE` | file の path: OEP の要求と答えを 1 行ずつ記録する(時刻、pid、向き、corr、fn / op / session_id / payload の長さ、payload の先頭)。ブローカーの上流の分は、ブローカーを起動したプロセスの環境に置く(切り分け用、契約の外) |
@@ -131,7 +130,8 @@ flag > 環境変数 > 設定ファイル > 既定値。
 ```toml
 [probes]
 bench-01 = "1a86:8010:434A124C5596"
-bench-02 = "usb:3-1.4.2"
+bench-02 = "topology:3-1.4.2"
+bench-03 = "oep://50029191fe34/v003?via=tcp:192.168.1.40:4242"
 
 [defaults]
 chip = "CH32V203C8T6"
@@ -143,21 +143,36 @@ chip = "CH32V203C8T6"
 --probe <selector>
   VID:PID[:SERIAL]      canonical(probe-rs 互換)。例 1a86:8010:434A124C5596
   serial:<sn>           serial だけで指定
-  name:<alias>          設定ファイルの別名
-  usb:<bus>-<ports>     USB topology(固定 hub の物理 port。HIL lane 用)
+  name:<alias>          設定ファイルの別名(値は下のどの形でもよい。?via= 付きの住所も書ける)
+  topology:<bus>-<ports>  USB の位置(固定 hub の物理 port。HIL lane 用)
   <IDE の住所>          IDE の port の住所をそのまま: probe の serial port(/dev/ttyACM0、COM3。symlink 可)、
-                        wchlink://<serial>、oep://<probe>[/<port>]、oep-net://<probe>[/<port>]、hid://<bus>-<ports>、
+                        wchlink://<serial>、oep://<probe>[/<port>[/<target>]][?via=<経路>]、hid://<bus>-<ports>、
                         ch32rv-app://<id>
-  port:<住所>           上と同じ(廃止予定。ArduinoCore-CH32RV の recipe が送ってきた形)
 ```
+
+`oep://` の住所(oep-spec host ガイド §5.3)は、場所(probe の unit_id、口、target)と、そこへ届く経路 `via` からなる。`via` は場所の一部ではない。
+
+| `via` | 経路 |
+|---|---|
+| 無し | ch32rv が選ぶ。USB にその unit_id(serial)の OEP の device があれば USB(vendor bulk → HID → CDC の順)、無ければ DNS-SD で unit_id を探して TCP |
+| `usb` | USB の経路のどれか(vendor bulk → HID → CDC の順)。USB に無ければ止まる |
+| `bulk`、`hid`、`cdc` | USB の、その種類の経路だけ |
+| `net` | DNS-SD で見つけた TCP だけ(IP が変わっても unit_id で届く) |
+| `tcp:<host>:<port>` | そのアドレスと port の TCP。IPv6 は `[...]` で囲む。mDNS の届かない所(NAT の裏、WSL 2、VM)はこれで書く |
+| `tty:<path>` | OS の serial port(`/dev/ttyACM0`、`/dev/serial/by-id/...`、`COM3`)。USB-UART の変換のように unit_id で見つけられない経路 |
+
+- どの経路でも、開いたら confirm と fn 0 の describe の unit_id が `<probe>` と同じか(大小は区別しない)を確かめ、違えば使わない(書込みなどの前に止まる)。
+- 住所は `?` から後を先に外してから、場所を `/` で割る(`tty:` の値は `/` を含む)。`via` の値の `?`、`#`、`&`、`%`、空白は `%XX` で書く。query は `via` の 1 つだけで、知らない名前の query を持つ住所は exit 2 で断る。
+- ブローカーの key(この PC での probe の持ち主)は unit_id で決まり、`via` によらない(docs/oep-host.ja.md §7.2)。すでに動いているブローカーが別の経路で probe を持っているとき、`via` を付けた住所はその経路を守れないので exit 13 で断る(`via` 無しならそのブローカーを使う)。
+- `probe list` / `target list` / discovery は、`via` の無い形を 1 つの場所につき 1 行出す。
+- unit_id を知らないときは、serial port の path をそのまま `--probe` に渡してよい(道具の便利機能)。WCH-Link のものでない serial port は OEP の probe として開く(unit_id は確かめない)。
+- 無くなった形は、代わりの書き方を添えて exit 2 で断る: `port:<住所>` → 住所をそのまま、`tcp:<host>:<port>` / `tcp://<host>:<port>` → `oep://<unit_id>?via=tcp:<host>:<port>`、`tcp:<unit_id>` → `oep://<unit_id>?via=net`、`oep-net://<probe>[/<port>]` → `oep://<probe>[/<port>]?via=net`、`usb:<bus>-<ports>` → `topology:<bus>-<ports>`。環境変数 `CH32RV_OEP_TRANSPORT` も無い(`via=bulk|hid|cdc` で選ぶ)。
 
 - **`index:` は廃止(2026-10-23)**: 一覧の順番で選ぶ書き方は、機器の増減で別の probe を指しうるので外した。`probe list` / `target list` の ADDRESS をそのまま渡す。
 - **OEP の復旧(2026-10-23)**: `--connect-under-reset` は、リセットを押さえたままの attach を最大 4 回やり直し、族が分からない rvswd では SWCLK の休ませ方を probe の自動と low の両方で試す(CH32L103 は high で休ませると DM がリセットされる。離した直後に止められるかは firmware との競争で、1 回では通らないことがあった)。`recover --method nrst [--image <FILE>]`(OEP)は、NRST を押さえて止めたあと、リセットベクタのページを先に DMI で消し(壊れた firmware がもう起動しない)、残りを RAM loader で書く: `--image` を渡せばそのイメージ、無ければ消去済みの値(DB の erased_word)で code flash 全体。読み出し保護があれば、従来どおり外して全消去する。実機: L103(RP2350、`--pins swdio=0,swclk=1,nrst=2`)で `--connect-under-reset target info` 3 回とも通り、`recover --method nrst --image` も 1 回で書けた。
-- **OEP の口と `--pins`(2026-10-23、oep-spec cc82b5e)**: 口は `channel.{}.label` の `S.N` だけが名付ける(`S` は英字で始まる英字・数字・`-` の 1〜16 文字、`N` は英字・数字・`-`・`_`)。ラベルは書いたとおりの大小文字で表示し、比べるときは ASCII の大小文字を区別しない。名前の無い口と `any` は無くなった(住所はいつも全部を書く)。名前つきの口が無い probe は `target list` と discovery に出ない。住所に口の無いとき(シリアルポート、`tcp:`)は、名前つきの口がちょうど 1 つならそれを使う(道具の便利機能)。ラベルの無い probe には `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]`(1 線は `swio=<pin>`、UART は `rx` / `tx`)でピンを直接指定する。ピンは probe の channel の名前(fn 0 の describe の `channel_name`、`GPIO0` など)か番号。`--pins` を付けるとラベルは読まず、`oep://<probe>`(probe 自身)とも組み合わせられる。
-- **OEP の経路(2026-10-23)**: `oep://<unit id>[/<port>]` は USB にあれば USB、無ければネットワーク(DNS-SD で unit id を探す)。`oep-net://<unit id>[/<port>]` はネットワークだけを使う(IP が変わっても unit id で届く)。mDNS の届かない所は `tcp:<host>:<port>`。`probe list` / `target list` / discovery は、USB に無い OEP の probe を `oep-net://` で出し、TOPOLOGY は `network`、MODEL は describe の model(`OEP probe (esp32)`)。両方から届く probe は `oep://` と USB の位置の 1 行で、JSON の `tcp` にネットワークの経路も出す。
-- **IDE の住所はそのまま(2026-10-23)**: IDE の port の住所は、形で見分けられる(`://` を含む URL、`/` で始まる path、`COM<n>`、`\\.\…`)ので、`port:` を付けずにそのまま `--probe` / `--app-device` に渡す。`port:` を付けた形も当面は同じに扱うが、ArduinoCore-CH32RV の recipe が `--probe {upload.port.address}` に移ったら外す。`wchlink://<serial>` は `serial:`、`wchlink://usb-<bus>-<ports>` は `usb:` と同じ。以前は `port:` 無しの `wchlink://…` が VID:PID と読まれて exit 2 になっていた。
-
-- **`port:`(2026-09-29、ArduinoCore-CH32RV `docs/oep-workflow.ja.md` §3.2)**: recipe が利用者の選んだ IDE port を問わず `--probe port:{upload.port.address}` を渡せるようにするもの。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial、`hid://` は位置で device を直接指す(`boot hid flash` は `usb:` と `port:hid://` だけを受ける)。どの probe の port でもなければ exit 10。
+- **OEP の口と `--pins`(2026-10-23、oep-spec cc82b5e)**: 口は `channel.{}.label` の `S.N` だけが名付ける(`S` は英字で始まる英字・数字・`-` の 1〜16 文字、`N` は英字・数字・`-`・`_`)。ラベルは書いたとおりの大小文字で表示し、比べるときは ASCII の大小文字を区別しない。名前の無い口と `any` は無くなった(住所はいつも全部を書く)。名前つきの口が無い probe は `target list` と discovery に出ない。住所でないシリアルポートの path を渡したときは、名前つきの口がちょうど 1 つならそれを使う(道具の便利機能)。ラベルの無い probe には `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]`(1 線は `swio=<pin>`、UART は `rx` / `tx`)でピンを直接指定する。ピンは probe の channel の名前(fn 0 の describe の `channel_name`、`GPIO0` など)か番号。`--pins` を付けるとラベルは読まず、`oep://<probe>`(probe 自身)とも組み合わせられる。
+- **OEP の一覧**: `probe list` / `target list` / discovery は、USB に無い OEP の probe も `oep://<unit id>[/<port>]` で出し、TOPOLOGY は `network`、MODEL は describe の model(`OEP probe (esp32)`)。両方から届く probe は `oep://` と USB の位置の 1 行で、JSON の `tcp` にネットワークの経路も出す。
+- **IDE の住所はそのまま**: IDE の port の住所は、形で見分けられる(`://` を含む URL、`/` で始まる path、`COM<n>`、`\\.\…`)ので、前置き無しでそのまま `--probe` / `--app-device` に渡す(recipe は `--probe "{upload.port.address}"`)。`wchlink://<serial>` は `serial:`、`wchlink://usb-<bus>-<ports>` は `topology:` と同じ。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial、`hid://` は位置で device を直接指す(`boot hid flash` は `topology:` と `hid://` だけを受ける)。どの probe の port でもなければ exit 10。
 
 - serial を持たない device(ISP mode 等)は `VID:PID:` (空 serial)と topology で選ぶ。
 - 解決結果が 0 台なら exit 10、2 台以上なら exit 14 で候補一覧を出す。
@@ -319,7 +334,7 @@ ch32rv probe list [--watch]                       --json に selector 全 key、
                                                   (ネットワークは unit id 順)。OEP の FIRMWARE は fn 0 の describe を lock 無しで短く読む
                                                   (ブローカーがあればその link、無ければ serial port を短く開く。読めなければ -)
 ch32rv probe info [--probe <sel>]                 型番/HW/FW 版(raw・正規・WCH 表記)/mode/serial/interface 構成/使用中。
-                                                  OEP の probe(`oep://<probe>`、`tcp:`、OEP の serial port)は、lock 無しで fn 0 の describe
+                                                  OEP の probe(`oep://<probe>`、OEP の serial port)は、lock 無しで fn 0 の describe
                                                   (firmware、model、unit id、chip、max_op_ms)、interface の一覧、ラベルの口を出す(2026-10-23)
 ch32rv probe power <3v3|5v> <on|off>
 ch32rv probe power cycle [--off-ms 300]
@@ -392,7 +407,7 @@ ch32rv dbg dmi read|write <addr> [<value>]          DM レジスタ直接(expert
 ```text
 ch32rv monitor [--source uart|sdi|dmdata|dmseq|rtt|fixture-uart]
   --source 省略時: WCH-Link では uart、OEP の probe では target の console(dmseq)
-  --port <serial port の path>   省略時は --probe の probe の CDC(どの probe かは --probe で選ぶ。path: / usb: の文法は 2026-10-01 に削った)
+  --port <serial port の path>   省略時は --probe の probe の CDC(どの probe かは --probe で選ぶ)
   --baud 115200      uart と fixture-uart の速さ。ほかの source には当てはまらない
 ch32rv monitor list [--json]                        候補 port と役割(uart/sdi)の対応
 ch32rv monitor sdi <on|off>
@@ -454,8 +469,8 @@ ch32rv gdb [--listen 127.0.0.1:3333] [--reset-halt] [--no-flash]
 ### 4.7 isp(factory ISP 経路)
 
 ```text
-ch32rv isp [--transport usb|uart] [--device usb:<bus>-<ports>] [--port <serial port>] [--baud <bps>] [--wait <SECS>]
-           [--entry none|auto|probe|dfu-detach|touch1200] [--app-device port:<p>|usb:<bus>-<ports>|VID:PID[:SN]]
+ch32rv isp [--transport usb|uart] [--device topology:<bus>-<ports>] [--port <serial port>] [--baud <bps>] [--wait <SECS>]
+           [--entry none|auto|probe|dfu-detach|touch1200] [--app-device <serial port>|ch32rv-app://<id>|topology:<bus>-<ports>|VID:PID[:SN]]
 ch32rv isp list                                     ISP mode device の列挙。Identify に答えない device(LinkE IAP 等)は区別して表示
 ch32rv isp info                                     chip/BTVER/UID/保護状態/config 12 B
 ch32rv isp enter [--via probe]                      --probe の debug 線で boot mode を立てて reset(CH32X03x)
@@ -469,21 +484,21 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
 
 - **USB transport は実装済み(2026-10-13)**。CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で info / flash / verify / erase / reset を実機確認し、書いた内容は RVSWD の読み出しで照合した。byte の記録は [protocol/factory-isp.ja.md](protocol/factory-isp.ja.md)、replay fixture は `tests/fixtures/replay/isp-*-x035.ndjson`。
 - **UART transport(2026-10-22 実装、実機未確認)**: `--transport uart --port <serial port>`(`--baud` 既定 115200、8N1)。frame は USB と同じで、request を `57 ab` + frame + byte 和、reply を `55 aa` + frame + byte 和で包む(先行実装からの転記)。reply の前の余計な byte は読み飛ばし、和が合わなければ transfer-failed。UART には「現れる」が無いので、`--wait`(entry をしたなら最低 5 s)の間 Identify を繰り返し、答えなければ exit 10。`--entry` は USB と同じ入り方をしてから port を開く。出力の位置は `uart:<port>`(JSON は `at`、`usb` / `topology` は null)。auto-baud と `0xC5` SetBaud は使わない(`--baud` は port の速さだけ)。疑似 bootloader(pty)で info を通した。
-- ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed(2 台以上は exit 14 で位置の候補を出す)。複数台は `--device usb:<bus>-<ports>` で選ぶ。
+- ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed(2 台以上は exit 14 で位置の候補を出す)。複数台は `--device topology:<bus>-<ports>` で選ぶ。
 - `--wait <SECS>`(既定 0): device が無ければその秒数だけ待つ。最初に、入り方(Boot キーを押したまま USB を接続、または `--entry probe`)を stderr に 1 回出す。期限切れは exit 10。
 - `--entry probe`: ISP device が無ければ、`--probe` の debug 線で hart を reset vector で止め、`FLASH_KEYR` と `FLASH_BOOT_MODEKEYR` を外し、`FLASH_STATR.BOOT_MODE` を立てて reset してから、最大 5 s 待つ。flash の中身を先に走らせないので、壊れた image が入っていても入れる。OEP の probe と WCH-Link の両方で使える(WCH-Link は DMI の reset-halt で捕まえ、最後は probe の system reset)。family は CH32X033 / X035 だけ(他は exit 24)。WCH-LinkE(fw 2.22)+ CH32X035C8T6 でも、reset 後に `FLASH_STATR` = `0xF000`・PC が BOOT 領域になることを確認した(この板の USB は PC に未接続)。入れたのに ISP device が現れないときは、チップの USB の接続を疑うよう hint を出す。読み出し保護中のチップ(`FLASH_OBR.RDPRT`)には入れず exit 21(bootloader が走らないため。`recover --method unprotect` を hint に出す)。`isp enter` は `--entry probe` で開いて Identify / ReadConfig までして終わる。
 - `--entry` は ISP device が居ないときの入り方(既定 `none`)。どれも、入れた後は最大 5 s(`--wait` が長ければそれ)待つ。
   - **DFU について**: ここで使う DFU は、DFU 1.1 の **run-time interface と DFU_DETACH 要求だけ**(アプリに「bootloader へ再起動して」と頼む標準の合図)。その後に現れるのは WCH の factory ISP(`1a86:55e0`、独自 protocol)で、DFU mode の device ではない。**DFU の download(DNLOAD)は使わず、dfu-util では書けない**。DFU mode で書く DFU の device は別の経路(`boot dfu`)。
   - `dfu-detach`: アプリの DFU 1.1 run-time interface(class `0xfe`/`0x01`/`0x01`)へ DFU_DETACH(`21 00`、`wValue` 1000、`wIndex` = interface)。`--app-device` が無ければ、run-time interface を持つ device がちょうど 1 台のときだけそれを使う(0 台 exit 10、2 台以上 exit 14)。アプリは status stage の前に切れることがあり(Linux では stall)、それでも detach するので、エラーは `warning[dfu-detach]` にとどめて待つ。
   - `touch1200`: アプリの serial port を 1200 bps で開き、DTR を落として閉じる(Arduino の約束)。**`--app-device` で名指しした device にだけ送る**(無関係な板を reset しないため。無ければ exit 2)。
-  - `auto`: 名指しされたアプリが DFU run-time interface を持てば `dfu-detach`、無くて serial port があれば `touch1200`。アプリの指定が無く `--probe` があれば `probe`。どれも無ければ何もせず、`--wait` の間、入り方を出して待つ。Arduino の upload recipe はこれを使う(`--entry auto --app-device "port:{upload.port.address}"`)。
-  - `--app-device`: `port:<path>`(IDE が渡す serial port。裏の USB device を引く。Linux では上流の hub も同じ tty を持つので、他の一致の下に居ないものを本体とする)、`usb:<bus>-<ports>`、`VID:PID[:SERIAL]`。ちょうど 1 台でなければ exit 10 / 14。
+  - `auto`: 名指しされたアプリが DFU run-time interface を持てば `dfu-detach`、無くて serial port があれば `touch1200`。アプリの指定が無く `--probe` があれば `probe`。どれも無ければ何もせず、`--wait` の間、入り方を出して待つ。Arduino の upload recipe はこれを使う(`--entry auto --app-device "{upload.port.address}"`)。
+  - `--app-device`: serial port の path(IDE が渡す serial port。裏の USB device を引く。Linux では上流の hub も同じ tty を持つので、他の一致の下に居ないものを本体とする)、`topology:<bus>-<ports>`、`VID:PID[:SERIAL]`。ちょうど 1 台でなければ exit 10 / 14。
   - アプリ経由で入れたとき、`--device` が無ければ **アプリと同じ USB の位置に現れた ISP device だけ** を使う(X035 で一致を確認)。
-  - 実機確認(2026-10-14、CH32X035F8U6、ArduinoCore-CH32RV の CH32RVUsbDevice で CDC + DFU run-time interface + HID のスケッチ): `dfu-detach`(`--app-device` 無し / VID:PID / `port:` / `usb:`)、`touch1200`、`auto`、アプリ指定無しの `auto` + `--probe` のどれも、書込・照合・アプリ再起動まで通った。DFU_DETACH はほぼ毎回 stall で返った。
+  - 実機確認(2026-10-14、CH32X035F8U6、ArduinoCore-CH32RV の CH32RVUsbDevice で CDC + DFU run-time interface + HID のスケッチ): `dfu-detach`(`--app-device` 無し / VID:PID / serial port / USB の位置)、`touch1200`、`auto`、アプリ指定無しの `auto` + `--probe` のどれも、書込・照合・アプリ再起動まで通った。DFU_DETACH はほぼ毎回 stall で返った。
 - **discovery(2026-10-14、ArduinoCore-CH32RV と合意)**: アプリの VID:PID はスケッチ次第(既定は pid.codes のテスト用 PID)で serial も自由なので、外から CH32RV のアプリだと分かる印は **DFU run-time interface の iInterface `CH32RV`**(ArduinoCore-CH32RV の `CH32RV_USB_DFU_RUNTIME_NAME` の既定)だけ。名前を変えたスケッチは discovery に出ない(`--app-device` で名指せば DFU_DETACH は動く)。
   - `ch32rv-app://<id>`: 名前 `CH32RV` の DFU run-time を持つ device。id は USB serial(ArduinoCore-CH32RV の既定はチップの UID 由来なので、別の USB port に挿し直しても同じ名前になる)。serial が無いか、つながっている他のアプリと重なるとき(スケッチは serial を自由に決められる)だけ `usb-<bus>-<ports>`。`wchlink://` と同じ規則。CDC があっても出す(serial port だけでは CH32RV と分からないので、書込はこちらを選ぶ)。label は `<product 文字列> (CH32RV, USB)`、properties は `vid` / `pid` / `serialNumber` / `topology`、hardwareId は serial(無ければ位置)。monitor はその device の CDC port を開く(CDC の無いアプリは「monitor する CDC が無い」で断る)。
   - `ch32rv-isp://<bus>-<ports>`: `1a86:55e0`(Boot キーなどで入った bootloader。約 10 s で app へ戻るので一時的)。`4348:55e0` は WCH-Link の IAP と同じなので出さない。monitor は無い(断る)。
-  - `--app-device` は `port:ch32rv-app://<id>`(その id のアプリを今の位置で探す。serial が 2 台で重なれば exit 14)と `port:ch32rv-isp://…`(頼まずにその位置の ISP へ書く)も受ける。upload recipe は `--entry auto --app-device "port:{upload.port.address}"` のまま、tty / ch32rv-app / ch32rv-isp のどれを選んでも動く。
+  - `--app-device` は `ch32rv-app://<id>`(その id のアプリを今の位置で探す。serial が 2 台で重なれば exit 14)と `ch32rv-isp://…`(頼まずにその位置の ISP へ書く)も受ける。upload recipe は `--entry auto --app-device "{upload.port.address}"` で、tty / ch32rv-app / ch32rv-isp のどれを選んでも動く。
   - `--entry dfu-detach` で `--app-device` が無いときも、名前 `CH32RV` の DFU run-time を持つ device だけを候補にする(他社の本物の DFU 機器を再起動させないため)。
   - 実機確認(CH32X035F8U6、CDC の無い DFU run-time のみのスケッチ): discovery の LIST に `ch32rv-app://3-2.4.3` が出て、その port から書込・照合・起動まで通った。ISP に入れた後は `ch32rv-isp://3-2.4.3` が出て、その port からも書けた。CDC のあるアプリでは、`ch32rv-app://<serial>` の monitor がその CDC の出力を流すことも確認した。
 - `isp flash` は ELF / HEX / bin を code flash 先頭からの 1 塊にし(隙間は `0xff`)、`--erase auto` は image の長さ分の 1 KiB sector(最小 8)を消す。書いた後の `IspEnd` は応答を読んでから終える(読まないと bootloader に残る。protocol ノート §5)。
@@ -559,7 +574,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
 - **discovery**: HELLO/START/LIST/START_SYNC/STOP/QUIT。**USB descriptor だけから列挙**し AttachChip しない(同一 probe への upload/monitor 中でも乱さない。LinkE の attach は target のクロックを組み替える)。**普通の serial port は開かない**(組み込みの serial discovery が出す)。START_SYNC は現在の port を `add` で一度出す(hotplug 監視は後続、IDE の再 LIST に委ねる)。
   - `wchlink://<serial>`: protocol `wchlink`、properties に serial / vid / pid / mode。Windows で device に ch32rv が開けない driver が付いている Link(usbipd の stub など)は、label を `WCH-Link <serial> (cannot open: driver <name>)` にし、properties に `driver` を足す(2026-09-29。一覧からは消さない)。実機確認(0.12.1 のリリースの zip、Windows): usbipd で WSL に attach 中の LinkE 7 台がすべて `WCH-Link <sn> (cannot open: driver VBoxUSB)`(usbipd-win の stub は `VBoxUSB` の名で見える)。
   - `oep://<probe>/<port>`(2026-10-16、oep-spec host ガイド §5.3。それまでのスロットは廃止): OEP の probe(`is_oep_device` = USB ID 1209:4F45 の device。oep-core §3.3)の口ごとに 1 つ。口は probe に保存した label `S.N`(`S.swdio` / `S.swclk` / `S.swio` / `S.nrst` / `S.rx` / `S.tx`)の `S` で、名前つきの口が無い probe は名前の無い口 1 つとして `oep://<probe>/any` で出す(`oep://<probe>` だけは probe 自身を指し、口を選ばない)。`<probe>` は USB の serial(= OEP の unit_id、oep-spec v1-freeze #3。serial の無い device だけ位置)。attach しないので target は出さない。label は lock 無しで読む(その port のブローカーが動いていればブローカー経由、ここでは起動しない。無ければ HID、vendor bulk、CDC の順に短く開く(HID は他の道具と取り合わない)。応答待ちは 0.3 秒)。読めなければ前回の一覧(runtime dir の `<key>.ports.json`)。properties に vid / pid / port_name(名前の無い口は null)/ port。普通の serial port は開かない。
-  - `hid://<topology>`(2026-09-29): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --probe port:hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology。
+  - `hid://<topology>`(2026-09-29): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --probe hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology。
 - **monitor(2026-09-29 に組み直し、ArduinoCore-CH32RV `docs/oep-workflow.ja.md` §6)**: platform.txt の `pluggable_monitor.pattern.<protocol>` に登録し、protocol を `--protocol` で渡す(既定 `serial`)。arduino-cli 1.3.1 は DESCRIBE の `protocol` を port の protocol と照合し、違うと OPEN の前に止まる(ArduinoCore-CH32RV の実測)。
   - **DESCRIBE**: キーは `port_description`、列挙の値は `value`(arduino-cli が読むキー。0.10.1 までの `port_descriptor` / `values` は arduino-cli に読まれなかった)。設定は `source` / `baudrate` / `dtr` / `rts` / `chip`。
     - `source`(2026-10-01 に凍結する表、docs/freeze-decisions.ja.md §3。先頭が既定):
@@ -573,7 +588,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
       `wchlink` に `uart` と `fixture-uart` は無い(uart は Link の CDC を `serial` で開く)。`--protocol` はこの 3 つだけを受け、ほかは usage(exit 2)。
     - `baudrate` / `dtr` / `rts`: `uart` 用。値と既定は組み込みの serial-monitor と同じ(9600、on、on)。他の source でも受けて無視する。開いたまま変えるとすぐ効く。
     - `chip`: `--chip` と同じ意味(板の `monitor_port.serial.chip` を IDE が渡す入口)。値は `auto`(既定、= 指定なし)と DB の family / SKU(`--chip`・core の `build.ch32rv_chip` と同じ綴り)。attach する source(sdi / dmdata / dmseq / rtt)で fail-closed に照合し、合わなければ OPEN が error。`uart` は attach しないので照合しない。
-  - **OPEN の address**: `wchlink://<serial>`、または serial port の path(`port:` と同じ逆引きで WCH probe を引く)。probe の無い素の serial port は `uart` だけが使え、他の source は OPEN が error。解決・source の open・TCP 接続までを OPEN の中で済ませ、失敗は OPEN の error(arduino-cli は exit 1 で message を出す)。
+  - **OPEN の address**: `wchlink://<serial>`、`oep://<probe>[/<port>[/<target>]][?via=<経路>]`(`--probe` と同じに解く)、または serial port の path(`--probe` と同じ逆引きで WCH probe を引く)。probe の無い素の serial port は `uart` だけが使え、他の source は OPEN が error。解決・source の open・TCP 接続までを OPEN の中で済ませ、失敗は OPEN の error(arduino-cli は exit 1 で message を出す)。
   - **source**: `uart` = serial port の素通し(双方向、serialport crate で排他 open)。`sdi` = LinkE の SDI 転送を有効にして CDC を読む(受信のみ。DTR を立てない素の open + TIOCEXCL + raw termios)。`dmdata` / `dmseq` / `rtt` = attach して DMI で(双方向)。開いたまま `source` を変えると同じ TCP のまま backend を替える。
   - **`fixture-uart`**(2026-09-29): OEP の probe の fixture の UART(`oep.fixture.uart`)。`baudrate` を configure で送る(開いたまま変えるとすぐ効く)。`wchlink://` の port には出さない(CONFIGURE が unknown source)。WCH-Link の CDC を `serial` で開いた port では、選べるが OPEN が error。
   - **`oep://<probe>/<port>`**(protocol `oep`): source は上の表のとおり。その口の label が名指すピンで attach する(下の「口の選び方」)。
@@ -592,28 +607,28 @@ ch32rv broker serve --probe <sel>               ブローカー本体(利用者�
 
 - **ブローカー**(docs/oep-host.ja.md §7.2): probe ごとに 1 つの、誰の子でもないプロセス。probe の transport と session を持ち、ch32rv のコマンドと pytest の `oep_host` は 127.0.0.1 の TCP で OEP を話す client になる。client の session の要求はブローカーが自分で答え、残りは 1 回の pipeline にまとめて probe に送る。接続と plan は client ごとの台帳に持ち、抜けた client の分だけ外す。最後の client が抜けたらすぐ終わる。起動の取り合いは runtime dir の flock で 1 つに、待ち受けは `<runtime>/<key>.oep`(0600)。
   - **公開の口**: `broker endpoint --json` の `result`(`endpoint`、`pid`、`transport`、`version`。ブローカーが動いていなければどれも null。`version` は版を持たない古いブローカーでも null)と、そのブローカーの TCP(127.0.0.1、素の OEP)。runtime dir のファイル(`<key>.oep`、`.broker.lock`、`.sid`、`.broker.log`、`.ports.json`、`.unit`、`<key>.lock`)は内部のもので、名前も中身も約束しない。
-  - **版**: ブローカーは自分の ch32rv の版と、client との取り決めの番号(OEP の外の部分。変えたら上げる)を、`<key>.oep` と confirm の答え(名前つき拡張 `io.github.ch32-riscv-ug.broker`、値は `protocol(u8) version(utf8)`)に出す。ch32rv の client は、番号と版の両方が自分と同じブローカーとだけ話す。合わなければ §3.7 の「別の版の ch32rv のブローカー」のとおり待って exit 13。ファイルで分かればつながずに待ち、ファイルが同じ版でも confirm の答えが違えば同じに扱う。この PC のブローカー自身を `tcp:127.0.0.1:<port>` で名指したときは confirm の答えだけで決め、別の版ならすぐ exit 13。WCH-Link を借りる直接のコマンド(flash など)も同じ。一覧(`probe list`、`arduino discovery`)は別の版のブローカーにはつながず、ブローカーが無いときと同じに扱う。
-  - **OEP の probe**: serial port(`port:<path>`、`port:oep://…`)も TCP(`tcp:`)も、OEP の probe を使うコマンドはすべてブローカーを通る(無ければ起動する。2026-10-07 のユーザーの判断: どの経路でも同じ振る舞い)。TCP の probe のブローカーの key は、名指し方によらず unit_id(同じ unit_id の USB の probe と同じ key なので、この PC での持ち主は 1 つ)。アドレス(`tcp:<host>:<port>`)で名指したときは、probe に直接 confirm と describe を送って unit_id を読み(読んだ unit_id は runtime の場所に覚え、そのブローカーが動いていれば聞き直さない。probe の同時接続は限られるため)、読めないときだけ警告を出してアドレスを key にする。unit_id で名指したブローカーは起動のたびに DNS-SD で引き直す(Wi-Fi に入り直してアドレスが変わっても追う)。この PC の ch32rv のブローカー自身の `127.0.0.1:<port>` を `tcp:` で名指したときだけ、ブローカーを重ねずに直接つなぐ。
+  - **版**: ブローカーは自分の ch32rv の版と、client との取り決めの番号(OEP の外の部分。変えたら上げる)を、`<key>.oep` と confirm の答え(名前つき拡張 `io.github.ch32-riscv-ug.broker`、値は `protocol(u8) version(utf8)`)に出す。ch32rv の client は、番号と版の両方が自分と同じブローカーとだけ話す。合わなければ §3.7 の「別の版の ch32rv のブローカー」のとおり待って exit 13。ファイルで分かればつながずに待ち、ファイルが同じ版でも confirm の答えが違えば同じに扱う。この PC のブローカー自身を `oep://<unit_id>?via=tcp:127.0.0.1:<port>` で名指したときは confirm の答えだけで決め、別の版ならすぐ exit 13。WCH-Link を借りる直接のコマンド(flash など)も同じ。一覧(`probe list`、`arduino discovery`)は別の版のブローカーにはつながず、ブローカーが無いときと同じに扱う。
+  - **OEP の probe**: どの経路(`oep://` のどの `via` も、serial port の path も)でも、OEP の probe を使うコマンドはすべてブローカーを通る(無ければ起動する。2026-10-07 のユーザーの判断: どの経路でも同じ振る舞い)。`oep://` の probe のブローカーの key は経路によらず unit_id(この PC での持ち主は 1 つ)。ブローカーは住所の `via` を守って probe を開き、開いたら describe の unit_id が住所の `<probe>` と同じかを確かめ、違えば使わない。`via` 無しか `via=net` のブローカーは起動のたびに DNS-SD で引き直す(Wi-Fi に入り直してアドレスが変わっても追う)。この PC の ch32rv のブローカー自身の `127.0.0.1:<port>` を `via=tcp:` で名指したときだけ、ブローカーを重ねずに直接つなぎ、その接続で unit_id を確かめる。WCH-Link のブローカーの unit_id は Link の serial(小文字)なので、`oep://<Link の serial>?via=tcp:127.0.0.1:<port>`(`<port>` は `broker endpoint --json` の `endpoint`)で名指せる。
   - **WCH-Link**: ブローカーの裏に置け、OEP を Link に写す(attach は AttachChip、riscv-dm は DmiOp / Debug Module、console は dmdata / dmseq の mailbox をブローカーが poll する)。`arduino monitor` の dmdata / dmseq は LinkE でもブローカー経由。verify / read / reset / target info は、その Link のブローカーが動いていればブローカーを通り、動いていなければ直接開く。flash は、ブローカーが動いていれば Link を借りて(`io.github.ch32-riscv-ug.wchlink` の lend / reclaim。貸している間ブローカーは console の手元の出力だけを答える)直接の経路(WCH の stub)で書き、終わったら返す。uart は CDC だけを使いブローカーに触れない。それ以外で Link を直接開くコマンド(probe info / mode / power / firmware、target option / protect、dbg、erase、recover、capabilities、write、run、monitor の sdi / rtt)は、ブローカーが動いていれば flash と同じく Link を借りて使い、終わったら返す。**貸している間は誰も console を汲まないので、その間に target が出した出力は落ちる**(dmseq の target は答えが無いと待ってから捨てる)。**gdb はブローカーの client**(2026-09-29): ブローカーが動いていれば Link を借りずにブローカー経由で attach し(monitor の接続を共有)、gdb の間も console は流れ続ける(target が止まっている間は出力が無いだけ)。ブローカーが無ければ今までどおり直接開く。
   - gdb は止めた時の DATA0 / DATA1(DM の console の mailbox)を覚え、走らせる直前に戻す(register の読み書きは DATA0 を通るので、残った値で dmseq が止まるのを防ぐ)。OEP の probe では、走らせるのに probe 自身の resume を使う(probe は host が raw DMI を書いてから自分で resume するまで console の poll を止めるので、DMI で走らせると console が止まったままになった。X035 治具で実測)。
   - 後始末の flash breakpoint の復元は、hart が走っていれば止めてから行い、走らせ直す(continue 中に GDB が切れた session で `ebreak` が flash に残った。V203 で実測)。戻せなかった page は警告する。
   - 実機確認(2026-09-29): X035 治具(OEP、vendor bulk)と LinkE→V203 のブローカー経由で、monitor(dmseq)を開いたまま riscv-none-elf-gdb の break / step / メモリの読み出し / detach が通り、monitor は gdb の後も流れ続けた。V203(trigger 無し)の flash breakpoint は 1 回に約 2 秒(ブローカー経由 1.9 秒、直接 1.6 秒)で、gdb の既定の応答待ち 2 秒に近いので `set remotetimeout 10` を勧める(接続時の表示にも出す)。
-- **OEP の probe で使えるコマンド**(2026-09-29): `flash`(ch32rv の RAM loader)、`verify`、`read`、`reset`、`target info`、`gdb`(§4.6。止めずに attach し、GDB がつながったら止める。終わったら flash の breakpoint を外し、止まっていれば走らせてから detach)、`arduino monitor`(console / fixture-uart)、`arduino discovery`(`oep://`)。`--probe` は `tcp:<host:port>`、`tcp:<unit_id>`、`port:oep://<probe>[/<port>[/<target>]]`(`any` は書いたときだけ探す)、`port:<WCH-Link のものでない serial port>`。**TCP の probe の発見(2026-10-07、oep-spec transports §3)**: TCP で待ち受ける probe は DNS-SD の `_oep._tcp` を mDNS で名乗る(TXT `unit_id=`、port は SRV)。ch32rv は 1 回の問い合わせ(224.0.0.251:5353 へ、unicast で答えを受ける。IPv4 だけ)を、IPv4 のすべての口からそれぞれ出して引く(Windows では 0.0.0.0 のソケットが WSL などの仮想アダプタから出し、Wi-Fi の probe に届かなかった。2026-10-07 に Windows で ATOM の probe を見つけて確認)。`tcp:<unit_id>`(port の無い形)と、USB に無い probe の `oep://<unit_id>/<port>` はこれで見つけ、開いた後に describe の unit_id が同じときだけ使う。`probe list` は USB にもある probe に `tcp`(`<address>:<port>`)を足し、ネットワークだけの probe を `network` に出す。`_oep._tcp` は IANA に登録しない名前で他のサービスも名乗りうるので(oep-spec host ガイド §4.1)、名乗った unit_id に短い confirm と describe で答えたものだけを出し、ほかは警告 `oep-tcp-unverified` をつけて除く。`arduino discovery` はネットワークだけの probe の口も `oep://<unit_id>/<port>` で出す(properties の `tcp`)。mDNS は同じリンクの中だけなので、NAT の裏(WSL 2 の既定、VM)では見つからない: そのときは `tcp:<host>:<port>` で名指す。target の family は attach で読む chip id から引く。
+- **OEP の probe で使えるコマンド**(2026-09-29): `flash`(ch32rv の RAM loader)、`verify`、`read`、`reset`、`target info`、`gdb`(§4.6。止めずに attach し、GDB がつながったら止める。終わったら flash の breakpoint を外し、止まっていれば走らせてから detach)、`arduino monitor`(console / fixture-uart)、`arduino discovery`(`oep://`)。`--probe` は `oep://<probe>[/<port>[/<target>]][?via=<経路>]`(§3.4)、または WCH-Link のものでない serial port の path。**TCP の probe の発見(2026-10-07、oep-spec transports §3)**: TCP で待ち受ける probe は DNS-SD の `_oep._tcp` を mDNS で名乗る(TXT `unit_id=`、port は SRV)。ch32rv は 1 回の問い合わせ(224.0.0.251:5353 へ、unicast で答えを受ける。IPv4 だけ)を、IPv4 のすべての口からそれぞれ出して引く(Windows では 0.0.0.0 のソケットが WSL などの仮想アダプタから出し、Wi-Fi の probe に届かなかった。2026-10-07 に Windows で ATOM の probe を見つけて確認)。USB に無い probe の `oep://<unit_id>/<port>` と `?via=net` はこれで見つけ、開いた後に describe の unit_id が同じときだけ使う。`probe list` は USB にもある probe に `tcp`(`<address>:<port>`)を足し、ネットワークだけの probe を `network` に出す。`_oep._tcp` は IANA に登録しない名前で他のサービスも名乗りうるので(oep-spec host ガイド §4.1)、名乗った unit_id に短い confirm と describe で答えたものだけを出し、ほかは警告 `oep-tcp-unverified` をつけて除く。`arduino discovery` はネットワークだけの probe の口も `oep://<unit_id>/<port>` で出す(properties の `tcp`)。mDNS は同じリンクの中だけなので、NAT の裏(WSL 2 の既定、VM)では見つからない: そのときは `oep://<unit_id>/<port>?via=tcp:<host>:<port>` で名指す。target の family は attach で読む chip id から引く。
   - **口の選び方**(2026-10-16、oep-spec host ガイド §5.3 の解決): attach せずに分かること(probe の unit_id、保存した label が名指す口の名前)だけで 1 つに絞り、残りが 1 つでなければ止める。家系(`--chip`)で口を選ぶことはしない(家系は、口の label から wire が決まらないときに wire を決めるのにだけ使う)。
     - `oep://<probe>/<port>`: その口。その名前の口が無ければ exit 10(口の一覧つき)。
     - `oep://<probe>/any`: 口が 1 つ(名前つき 1 つ、または名前の無い 1 つ)ならそこ。2 つ以上は exit 23(一覧つき)。
     - `oep://<probe>` だけ: probe 自身を指すので口を選ばず、exit 2(`oep://<probe>/<port>` か `/any` を案内)。
     - `oep://<probe>/<port>/<target>`(target は `<family 小文字>-<UID の 16 進>`): その口で作業に使う接続を作り、書き込みなどの前に同じ接続で UID を読んで照合する。違えば何もせず exit 23。
-    - アドレスではない `port:<serial port>` / `tcp:` は、口が 1 つならそこを使い、2 つ以上なら一覧つきで exit 23。
+    - アドレスではない serial port の path は、口が 1 つならそこを使い、2 つ以上なら一覧つきで exit 23。
     - wire は口の label で決める(`S.swio` があれば swio、`S.swclk` があれば rvswd)。決まらなければ `--chip` の家系から。ピンはその口の `S.swdio` / `S.swclk` / `S.swio`。probe が組を 1 つだけ許す wire はピンを付けずに attach し、host がピンを選ぶ wire で label が無ければ「ピンを名指して」と止める(scan で組を探すことはしない)。fixture の UART は `S.rx` / `S.tx`、NRST は `S.nrst`(口が 1 つなら素の `nrst` も、最後に firmware の label)。
     - rvswd の線の休ませ方(oep-spec debug §3.1、3b32b12): `--chip`(またはアドレスの target)が CH32L103 なら idle_clock low を明示する。指定が無ければ probe が決め(設定 `rvswd-rest`、無ければ target_id の系統)、attach の応答の休ませ方を読む。L103 なのに low でない接続(設定で自動を切った probe や古い firmware)は、low を明示して attach し直す。
 
 ## 5. 呼び出し例
 
-Arduino recipe(platform.txt、ArduinoCore-CH32RV の upload)。port は discovery の address を `--probe port:` で渡し、ch32rv が自分で解く(`wchlink://` / `oep://` / serial port)。`{build.ch32rv_chip}` は板ごとに SKU か family、ch32rv に名前の無い series の板は series 名(DB に無ければ exit 20 で書く前に止まる)。`auto` は使わない(つながっている別の chip に書いてしまう。docs/freeze-decisions.ja.md §1):
+Arduino recipe(platform.txt、ArduinoCore-CH32RV の upload)。port は discovery の address を `--probe` にそのまま渡し、ch32rv が自分で解く(`wchlink://` / `oep://` / serial port)。`{build.ch32rv_chip}` は板ごとに SKU か family、ch32rv に名前の無い series の板は series 名(DB に無ければ exit 20 で書く前に止まる)。`auto` は使わない(つながっている別の chip に書いてしまう。docs/freeze-decisions.ja.md §1):
 
 ```text
-"{path}/{cmd}" flash "{build.path}/{build.project_name}.elf" --format elf --chip {build.ch32rv_chip} --reset run --confirm-run --non-interactive --progress none {upload.verbose} --probe "port:{upload.port.address}"
+"{path}/{cmd}" flash "{build.path}/{build.project_name}.elf" --format elf --chip {build.ch32rv_chip} --reset run --confirm-run --non-interactive --progress none {upload.verbose} --probe "{upload.port.address}"
 ```
 
 CI / HIL:

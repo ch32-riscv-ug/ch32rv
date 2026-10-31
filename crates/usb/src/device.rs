@@ -210,9 +210,9 @@ impl UsbDeviceInfo {
         }
         // en: Elsewhere the OS names the port (COM3, /dev/cu.usbmodem…) and reports the USB
         // device behind it by VID/PID/serial only, not by position. Two serial-less devices with
-        // the same VID:PID then both claim both ports, which `port:` resolves as ambiguous.
+        // the same VID:PID then both claim both ports, which a serial port path resolves as ambiguous.
         // ja: 他 OS は port 名と、その裏の USB の VID/PID/serial しか教えない(位置は無い)。serial の
-        // 無い同 VID:PID が 2 台あると両方が両方の port を持ち、`port:` は曖昧として断る。
+        // 無い同 VID:PID が 2 台あると両方が両方の port を持ち、serial port の path は曖昧として断る。
         #[cfg(not(target_os = "linux"))]
         {
             let (vid, pid, serial) = (nusb.vendor_id(), nusb.product_id(), nusb.serial_number());

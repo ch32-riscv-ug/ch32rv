@@ -30,7 +30,7 @@ def load(path):
         raise ValueError('an explicit stable serial path is required')
     if not re.fullmatch(r'[0-9a-fA-F]{12,32}', probe['unit_id']):
         raise ValueError('complete OEP unit ID required')
-    prefix = 'port:oep://' + probe['unit_id'] + '/'
+    prefix = 'oep://' + probe['unit_id'] + '/'
     if not isinstance(probe['selector'], str) or not probe['selector'].startswith(prefix) or not re.fullmatch(r'[A-Za-z0-9_-]+', probe['selector'][len(prefix):]):
         raise ValueError('selector must name this OEP unit and an explicit installed slot')
     if not isinstance(data['target']['chip'], str) or not re.fullmatch(r'0x[0-9a-fA-F]{8}', data['target']['chip_id']):

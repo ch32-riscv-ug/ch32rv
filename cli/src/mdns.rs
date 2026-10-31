@@ -5,7 +5,7 @@
 //! 224.0.0.251:5353 from an ephemeral port with the unicast-response bit, so responders answer
 //! this socket directly (RFC 6762 §5.4, §6.7). IPv4 only. mDNS stays on the local link: behind a
 //! NAT (WSL 2's default network, a VM) nothing is found, and the user names the probe as
-//! `tcp:<host>:<port>`. The same as oep-client-python's `discovery` module.
+//! `oep://<unit_id>?via=tcp:<host>:<port>`. The same as oep-client-python's `discovery` module.
 //! ja: TCP で待ち受ける OEP の probe を見つける(DNS-SD の `_oep._tcp` を mDNS で引く)。依存の無い
 //! 最小の 1 回の問い合わせ。IPv4 だけ。mDNS は同じリンクの中だけ(NAT の裏では見つからない)。
 
@@ -147,34 +147,6 @@ fn browse_at(to: SocketAddr, wait: Duration, enough: &dyn Fn(&[Found]) -> bool) 
         }
     }
     st.found()
-}
-
-/// en: The probe `name` names, browsing up to `wait`: its TXT unit_id (case aside), else its SRV
-/// host name (with or without `.local`), else one of its addresses (`tcp://<host>` with the port
-/// from SRV). ja: `name` が指す probe(unit_id、無ければ SRV の host 名か address)。
-pub(crate) fn find_named(name: &str, wait: Duration) -> Option<Found> {
-    let host = |f: &Found| {
-        let h = f.host.trim_end_matches('.');
-        h.eq_ignore_ascii_case(name)
-            || h.strip_suffix(".local")
-                .is_some_and(|b| b.eq_ignore_ascii_case(name))
-    };
-    let unit = |f: &Found| {
-        f.unit_id
-            .as_deref()
-            .is_some_and(|u| u.eq_ignore_ascii_case(name))
-    };
-    // Done as soon as the unit id answered with an endpoint (a host name or address may also be
-    // a later instance's: those wait for the whole browse).
-    let all = browse_at(target(), wait, &|fs: &[Found]| {
-        fs.iter().any(|f| unit(f) && f.endpoint().is_some())
-    });
-    let by_unit = all.iter().position(unit);
-    let i = by_unit.or_else(|| all.iter().position(host)).or_else(|| {
-        all.iter()
-            .position(|f| f.addrs.iter().any(|a| a.to_string() == name))
-    })?;
-    all.into_iter().nth(i)
 }
 
 /// The probe whose TXT unit_id is `unit_id` (case aside, oep-core §3.3), browsing up to `wait`.

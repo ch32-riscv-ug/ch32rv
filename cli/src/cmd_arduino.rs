@@ -83,7 +83,7 @@ fn oep_ports() -> Vec<Value> {
             continue;
         };
         let read = read_oep_listing(&dev, &path);
-        out.extend(listing_or_recent(read, "oep", &crate::oep::probe_id(&dev)));
+        out.extend(listing_or_recent(read, &crate::oep::probe_id(&dev)));
     }
     out.extend(net_oep_ports(&on_usb));
     out
@@ -95,11 +95,11 @@ const LISTING_LIFE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// en: The probe's ports: `read` when it could be read (kept as its last listing, by unit id),
 /// else that last listing while it is younger than [`LISTING_LIFE`], only its entries that name
-/// a port of this very probe in today's form (`<scheme>://<unit>/<port>`).
+/// a port of this very probe in today's form (`oep://<unit>/<port>`).
 /// ja: 読めればそれ(unit id ごとに前回の一覧として残す)。読めなければ 30 秒以内の前回の一覧を、
 /// 同じ probe の今の形のアドレスの分だけ。
-fn listing_or_recent(read: Option<Vec<Value>>, scheme: &str, unit: &str) -> Vec<Value> {
-    let cache = crate::broker::listing_cache(&format!("{scheme}-{}", unit.to_ascii_lowercase()));
+fn listing_or_recent(read: Option<Vec<Value>>, unit: &str) -> Vec<Value> {
+    let cache = crate::broker::listing_cache(&format!("oep-{}", unit.to_ascii_lowercase()));
     if let Some(ports) = read {
         let _ = ch32rv_usb::create_runtime_dir();
         let _ = std::fs::write(&cache, Value::Array(ports.clone()).to_string());
@@ -117,7 +117,7 @@ fn listing_or_recent(read: Option<Vec<Value>>, scheme: &str, unit: &str) -> Vec<
     else {
         return Vec::new();
     };
-    let prefix = format!("{scheme}://{unit}/");
+    let prefix = format!("oep://{unit}/");
     ports
         .into_iter()
         .filter(|p| {
@@ -144,7 +144,7 @@ fn read_oep_listing(dev: &ch32rv_usb::UsbDeviceInfo, path: &str) -> Option<Vec<V
         "pid": format!("0x{:04x}", dev.pid()),
         "port": path,
     });
-    port_entries(&mut p, "oep", &crate::oep::probe_id(dev), &props)
+    port_entries(&mut p, &crate::oep::probe_id(dev), &props)
 }
 
 /// en: OEP probes on the local network that are not on USB (DNS-SD `_oep._tcp`, oep-spec
@@ -163,8 +163,8 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
         // Through its broker when one runs (never started here), else a brief direct look.
         let target = crate::broker::BrokerTarget::Net {
             addr: addr.clone(),
-            unit: Some(unit.clone()),
-            by_unit: true,
+            unit: unit.clone(),
+            via: None,
         };
         let opened = match crate::broker::existing_link_for(&target) {
             Some(l) => ch32rv_oep::session::Probe::connect(l).map_err(|e| e.to_string()),
@@ -172,15 +172,15 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
         };
         let read = opened.ok().and_then(|mut p| {
             p.link().set_timeout(std::time::Duration::from_millis(500));
-            // Not on USB: named oep-net:// (reached over the network whatever its IP).
+            // Not on USB: `oep://` without `via` too (host guide §5.3: one line per place; the
+            // address reaches it over the network whatever its IP).
             port_entries(
                 &mut p,
-                "oep-net",
                 &unit,
                 &json!({"tcp": addr, "instance": f.instance, "topology": "network"}),
             )
         });
-        out.extend(listing_or_recent(read, "oep-net", &unit));
+        out.extend(listing_or_recent(read, &unit));
     }
     out
 }
@@ -191,12 +191,7 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
 /// is not known until a tool attaches.
 /// ja: probe の口を discovery の port として出す。ラベルが名指す口ごとに 1 つ。名前つきの口が
 /// 無い probe は出さない。attach しないので target は分からない。
-fn port_entries(
-    p: &mut ch32rv_oep::session::Probe,
-    scheme: &str,
-    id: &str,
-    props: &Value,
-) -> Option<Vec<Value>> {
+fn port_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> Option<Vec<Value>> {
     let labels = ch32rv_oep::config::labels(p).ok()?;
     let ports = ch32rv_oep::config::ports_named(&labels);
     let entry = |port: &str| {
@@ -207,7 +202,7 @@ fn port_entries(
             }
         }
         json!({
-            "address": format!("{scheme}://{id}/{port}"),
+            "address": format!("oep://{id}/{port}"),
             "label": format!("{port} on OEP probe {id}"),
             "protocol": "oep",
             "protocolLabel": "OEP probe",
@@ -259,10 +254,10 @@ fn wchlink_ports() -> Vec<Value> {
 
 /// en: rv003usb / UIAPduino HID bootloaders (`1209:b803`, `1209:b003`) as `hid://<topology>`: a
 /// bootloader has no serial number, and the position is what `boot hid flash --probe
-/// port:hid://…` finds it by again. `vid` / `pid` let boards.txt's `upload_port.N.vid/pid` name
+/// hid://…` finds it by again. `vid` / `pid` let boards.txt's `upload_port.N.vid/pid` name
 /// the board.
 /// ja: rv003usb / UIAPduino の HID bootloader を `hid://<topology>` で出す(serial 番号が無く、
-/// `boot hid flash --probe port:hid://…` も位置で引く)。`vid` / `pid` で boards.txt が板名を出す。
+/// `boot hid flash --probe hid://…` も位置で引く)。`vid` / `pid` で boards.txt が板名を出す。
 fn hid_ports() -> Vec<Value> {
     let devs = ch32rv_usb::enumerate().unwrap_or_default();
     devs.iter()
@@ -718,15 +713,8 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
             oep: None,
         });
     }
-    // A probe on TCP (`tcp:<host>:<port>`, `tcp://…`, `tcp:<unit_id>`): the same resolution as
-    // `--probe`, so the monitor meets the broker the upload used.
-    if let Some(rest) = address.strip_prefix("tcp:") {
-        let a = crate::oep::tcp_addr(rest).map_err(|(m, _)| m)?;
-        return Ok(Resolved {
-            entry: None,
-            port: None,
-            oep: Some(a),
-        });
+    if let Some(instead) = ch32rv_usb::selector::removed(address) {
+        return Err(format!("`{address}`: this form is gone; write {instead}"));
     }
     // A CH32RV application: its CDC port, if it has one. The bootloader has no console.
     if let Some(id) = address.strip_prefix(crate::cmd_isp::APP_SCHEME) {
@@ -743,7 +731,9 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
     if address.starts_with(crate::cmd_isp::ISP_SCHEME) {
         return Err("the ISP bootloader has no console to monitor".to_owned());
     }
-    if address.starts_with("oep://") || address.starts_with("oep-net://") {
+    // `oep://` with any `via`: the same resolution as `--probe`, so the monitor meets the broker
+    // the upload used.
+    if address.starts_with("oep://") {
         let a = crate::oep::resolve_oep_url(address)?;
         return Ok(Resolved {
             entry: None,
@@ -836,12 +826,7 @@ impl Backend {
                 .then(|| crate::oep::OepAddr::Wch(crate::broker::BrokerTarget::wch(e)))
         });
         if let Some(oep) = wch_via_broker.as_ref().or(r.oep.as_ref())
-            && (s.source != MonitorSource::Uart
-                || oep.port().is_some()
-                || matches!(
-                    oep,
-                    crate::oep::OepAddr::Tcp(_) | crate::oep::OepAddr::Net { .. }
-                ))
+            && (s.source != MonitorSource::Uart || matches!(oep, crate::oep::OepAddr::Named { .. }))
         {
             use crate::oep::StreamWanted;
             use ch32rv_oep::stream::Mechanism;
@@ -1186,10 +1171,8 @@ mod tests {
         let other = json!({"address": "oep://ffffffffffff/l103"});
         let bad = json!({"address": format!("oep://{unit}/My Port")});
         let read = vec![mine.clone(), other, bad];
-        assert_eq!(listing_or_recent(Some(read.clone()), "oep", &unit), read);
-        assert_eq!(listing_or_recent(None, "oep", &unit), vec![mine]);
-        // Another scheme is another listing.
-        assert!(listing_or_recent(None, "oep-net", &unit).is_empty());
+        assert_eq!(listing_or_recent(Some(read.clone()), &unit), read);
+        assert_eq!(listing_or_recent(None, &unit), vec![mine]);
         let _ = std::fs::remove_file(crate::broker::listing_cache(&format!("oep-{unit}")));
     }
 }

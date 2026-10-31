@@ -1,6 +1,6 @@
 //! en: `ch32rv flash` end to end on an OEP probe: the spec side's fake probe (oep-client-python
 //! `virtual_bench_serve`) with ch32rv's loader played by `crates/oep/tests/virtual_bench/loader_hook.py`, over TCP
-//! (`--probe tcp:`) and over its pty (`--probe port:<pty>`, the serial path with the single-serial
+//! (`--probe oep://<unit>?via=tcp:<host>:<port>`) and over its pty (`--probe <pty>`, the serial path with the single-serial
 //! lock rule). The locked virtual backend is required.
 //! ja: OEP の probe での `ch32rv flash` を端から端まで(偽の probe、TCP と pty)。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -15,6 +15,7 @@ use std::process::{Child, Command, Stdio};
 struct Fake {
     child: Child,
     at: String,
+    unit: String,
 }
 
 impl Drop for Fake {
@@ -57,6 +58,7 @@ fn fake(args: &[&str]) -> Option<Fake> {
     Some(Fake {
         child,
         at: line.trim().to_owned(),
+        unit,
     })
 }
 
@@ -88,7 +90,7 @@ fn flash_over_tcp() {
         return;
     };
     let port = f.at.strip_prefix("PORT ").unwrap();
-    let v = flash(&format!("tcp:127.0.0.1:{port}"));
+    let v = flash(&format!("oep://{}/x035?via=tcp:127.0.0.1:{port}", f.unit));
     let fl = &v["result"]["flash"];
     assert_eq!(fl["programmer"], "oep-loader");
     assert_eq!(fl["family"], "CH32V20x");
@@ -104,7 +106,33 @@ fn flash_over_the_serial_path() {
         return;
     };
     let pty = f.at.strip_prefix("PTY ").unwrap();
-    let v = flash(&format!("port:{pty}"));
+    let v = flash(pty);
+    assert_eq!(v["result"]["flash"]["family"], "CH32V20x");
+}
+
+#[test]
+fn every_route_checks_the_unit_id_the_address_names() {
+    // via=tty:<path> and via=tcp:<host>:<port> reach the place the address names, and only it
+    // (host guide §5.3): a probe of another unit id there is not used.
+    let Some(pty) = fake(&["--pty", "--profile", "esp32-v003", "--target-id", V203]) else {
+        return;
+    };
+    let Some(tcp) = fake(&["--tcp", "0", "--framing", "length", "--target-id", V203]) else {
+        return;
+    };
+    let path = pty.at.strip_prefix("PTY ").unwrap();
+    let port = tcp.at.strip_prefix("PORT ").unwrap();
+    // The wrong ones first: a broker that lingers after the right one holds the port.
+    for wrong in [
+        format!("oep://0000ffff0000?via=tty:{path}"),
+        format!("oep://0000ffff0001?via=tcp:127.0.0.1:{port}"),
+    ] {
+        let (ok, v) = flash_raw(&wrong, None);
+        assert!(!ok, "{wrong}: {v}");
+        let msg = v["error"]["msg"].as_str().unwrap_or_default();
+        assert!(msg.contains("not 0000ffff000"), "{wrong}: {v}");
+    }
+    let v = flash(&format!("oep://{}/v003?via=tty:{path}", pty.unit));
     assert_eq!(v["result"]["flash"]["family"], "CH32V20x");
 }
 
@@ -149,7 +177,7 @@ fn the_one_named_port_is_used() {
     ]) else {
         return;
     };
-    let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
+    let probe = f.at.strip_prefix("PTY ").unwrap().to_owned();
     let (ok, v) = flash_raw(&probe, Some("CH32V203C8T6"));
     assert!(ok, "{v}");
     assert_eq!(v["result"]["flash"]["family"], "CH32V20x");
@@ -175,7 +203,7 @@ fn several_ports_unnamed_stop_with_the_list() {
     ]) else {
         return;
     };
-    let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
+    let probe = f.at.strip_prefix("PTY ").unwrap().to_owned();
     let (ok, v) = flash_raw(&probe, Some("CH32V20x"));
     assert!(!ok);
     let msg = v["error"]["msg"].as_str().unwrap_or_default();
@@ -201,7 +229,7 @@ fn verify_read_reset_and_target_info_on_an_oep_probe() {
     let Some(f) = fake(&["--pty", "--profile", "esp32-v003", "--target-id", V203]) else {
         return;
     };
-    let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
+    let probe = f.at.strip_prefix("PTY ").unwrap().to_owned();
     let img = root().join("tests/fixtures/runtest-ch32v203.bin");
     let img = img.to_str().unwrap();
     let (ok, v) = run(&["flash", img, "--probe", &probe, "--progress", "none"]);
@@ -245,7 +273,7 @@ fn a_raw_upload_to_a_probe_not_on_usb_is_not_sent_to_its_oep_address() {
         return;
     };
     let pty = f.at.strip_prefix("PTY ").unwrap();
-    let (_, v) = flash_raw(&format!("port:{pty}"), None);
+    let (_, v) = flash_raw(pty, None);
     assert!(
         !v["error"]["msg"]
             .as_str()
@@ -267,7 +295,7 @@ fn pins_given_by_role_flash_a_probe_that_names_no_ports() {
         .arg(root().join("tests/fixtures/runtest-ch32v203.bin"))
         .args([
             "--probe",
-            &format!("port:{pty}"),
+            pty,
             "--pins",
             "swdio=0,swclk=1",
             "--chip",
@@ -293,7 +321,7 @@ fn a_wire_the_host_picks_pins_for_without_labels_asks_for_them() {
     let Some(f) = fake(&["--pty", "--profile", "rp2350-pins", "--target-id", V203]) else {
         return;
     };
-    let probe = format!("port:{}", f.at.strip_prefix("PTY ").unwrap());
+    let probe = f.at.strip_prefix("PTY ").unwrap().to_owned();
     let (ok, v) = flash_raw(&probe, None);
     assert!(!ok);
     let msg = v["error"]["msg"].as_str().unwrap_or_default();

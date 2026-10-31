@@ -13,7 +13,7 @@ uv run --project tests/hardware --locked --env-file tests/hardware/.env \
   pytest -c tests/hardware/pyproject.toml tests/hardware/test_oep_tool.py -vv
 ```
 
-設定TOMLはこのCLIの単一slot検査用です。OEPの共有設備graphを直接読むadapterではありません。`example = false`、stable serial path、完全なOEP個体ID、`port:oep://<unit-id>/<slot>`、期待するDUT SKU/chip IDと、明示的な空でない `.bin` を設定します。`chip_id` は部品を識別する値で、物理個体のUIDではありません。DUT UIDを返す経路では `target.uid` も指定できます。UIDなしの配置は作業者が確認した割当てとして記録します。
+設定TOMLはこのCLIの単一slot検査用です。OEPの共有設備graphを直接読むadapterではありません。`example = false`、stable serial path、完全なOEP個体ID、`oep://<unit-id>/<slot>`、期待するDUT SKU/chip IDと、明示的な空でない `.bin` を設定します。`chip_id` は部品を識別する値で、物理個体のUIDではありません。DUT UIDを返す経路では `target.uid` も指定できます。UIDなしの配置は作業者が確認した割当てとして記録します。
 
 `.env` は明示的な `--env-file` で読み込みます。TOMLのpathは `CH32RV_HW_CONFIG`、検査するCLI binaryは `CH32RV_TEST_TOOL`、結果の親ディレクトリは `OEP_HW_RESULTS` です。TOML内のimage相対pathはTOMLの所在から、環境変数の相対pathは実行ディレクトリから解決します。`.env` と `*.local.toml` はGit管理外、雛形とuv.lockはGit管理します。
 

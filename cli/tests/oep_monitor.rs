@@ -130,13 +130,7 @@ fn a_debug_source_streams_the_oep_console_through_the_broker() {
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
         let out = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
-            .args([
-                "broker",
-                "endpoint",
-                "--probe",
-                &format!("port:{pty}"),
-                "--json",
-            ])
+            .args(["broker", "endpoint", "--probe", pty.as_str(), "--json"])
             .output()
             .unwrap();
         let v: serde_json::Value = common::envelope(&out.stdout);
@@ -211,7 +205,7 @@ fn the_cli_monitor_streams_an_oep_console() {
             "--source",
             "dmseq",
             "--probe",
-            &format!("port:{pty}"),
+            pty.as_str(),
             "--duration",
             "1",
         ])
@@ -237,7 +231,7 @@ fn uart_on_an_oep_probe_says_so_and_rtt_looks_for_the_block() {
     let run = |source: &str| {
         let out = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
             .args(["monitor", "--source", source, "--duration", "1"])
-            .args(["--probe", &format!("port:{pty}"), "--json"])
+            .args(["--probe", pty.as_str(), "--json"])
             .output()
             .unwrap();
         let v: serde_json::Value = common::envelope(&out.stdout);
@@ -342,13 +336,7 @@ fn plain_monitor_on_an_oep_probe_reads_the_targets_console() {
         return;
     };
     let out = uv::with_runtime(std::process::Command::new(env!("CARGO_BIN_EXE_ch32rv")))
-        .args([
-            "monitor",
-            "--probe",
-            &format!("port:{pty}"),
-            "--duration",
-            "2",
-        ])
+        .args(["monitor", "--probe", pty.as_str(), "--duration", "2"])
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -361,7 +349,7 @@ fn plain_monitor_on_an_oep_probe_reads_the_targets_console() {
 
 #[test]
 fn the_arduino_monitor_opens_a_tcp_port() {
-    // An IDE's port address `tcp:<host>:<port>` (a probe on Wi-Fi): OPEN resolves it as --probe
+    // An address `oep://<unit>?via=tcp:<host>:<port>` (a probe on Wi-Fi): OPEN resolves it as --probe
     // does and meets the probe's broker (keyed by the unit id the probe describes), and the
     // console streams. The bench saw OPEN wait for a broker under another key (2026-10-07).
     let Some(dir) = uv::client_dir() else {
@@ -390,8 +378,11 @@ fn the_arduino_monitor_opens_a_tcp_port() {
     let _bench = Kill(child);
     let port = line.trim().strip_prefix("PORT ").unwrap().to_owned();
     for address in [
-        format!("tcp:127.0.0.1:{port}"),
-        format!("tcp://127.0.0.1:{port}"),
+        format!("oep://{unit}/x035?via=tcp:127.0.0.1:{port}"),
+        format!(
+            "oep://{}/X035?via=tcp:127.0.0.1:{port}",
+            unit.to_ascii_uppercase()
+        ),
     ] {
         let mut m = Monitor::start();
         m.cmd("HELLO 1 \"test\"");

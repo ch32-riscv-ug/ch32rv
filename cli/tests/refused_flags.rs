@@ -1,5 +1,5 @@
 //! en: Flags a path cannot honour are refused (exit 24) before any device is opened, not ignored.
-//! `tcp:127.0.0.1:1` is an OEP address that is known without connecting; `serial:NO-SUCH-PROBE`
+//! `oep://0123456789ab?via=tcp:127.0.0.1:1` is an OEP address that is known without connecting; `serial:NO-SUCH-PROBE`
 //! is a WCH-Link selector that finds nothing.
 //! ja: その経路で守れないフラグは、device を開く前に断る(exit 24)。無視しない。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -29,7 +29,7 @@ fn refused(args: &[&str], names: &str) {
     assert!(msg.contains(names), "{args:?}: {msg}");
 }
 
-const OEP: &str = "tcp:127.0.0.1:1";
+const OEP: &str = "oep://0123456789ab?via=tcp:127.0.0.1:1";
 const WCH: &str = "serial:NO-SUCH-PROBE";
 
 #[test]
@@ -111,5 +111,40 @@ fn values_no_path_implements_are_usage_errors() {
             .output()
             .unwrap();
         assert_eq!(out.status.code(), Some(2), "{args:?}");
+    }
+}
+
+#[test]
+fn removed_address_forms_say_what_to_write() {
+    for (gone, instead) in [
+        ("port:/dev/ttyACM0", "/dev/ttyACM0"),
+        (
+            "tcp:127.0.0.1:4242",
+            "oep://<unit_id>?via=tcp:127.0.0.1:4242",
+        ),
+        (
+            "tcp://127.0.0.1:4242",
+            "oep://<unit_id>?via=tcp:127.0.0.1:4242",
+        ),
+        ("tcp:0123456789ab", "oep://0123456789ab?via=net"),
+        ("usb:3-1.4.2", "topology:3-1.4.2"),
+        (
+            "oep-net://0123456789ab/weact",
+            "oep://0123456789ab/weact?via=net",
+        ),
+    ] {
+        let (code, v) = run(&["target", "info", "--probe", gone]);
+        assert_eq!(code, 2, "{gone}: {v}");
+        let msg = v["error"]["msg"].as_str().unwrap();
+        assert!(msg.contains(instead), "{gone}: {msg}");
+    }
+    // A query other than via, or a route that is none, is refused before anything is opened.
+    for bad in [
+        "oep://0123456789ab?via=wifi",
+        "oep://0123456789ab?route=usb",
+        "oep://0123456789ab?via=usb&x=1",
+    ] {
+        let (code, v) = run(&["target", "info", "--probe", bad]);
+        assert_eq!(code, 2, "{bad}: {v}");
     }
 }

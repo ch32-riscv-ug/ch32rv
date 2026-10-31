@@ -5,12 +5,14 @@
 //! VID:PID[:SERIAL]      canonical (probe-rs compatible), e.g. 1a86:8010:434A124C5596
 //! serial:<sn>           select by serial only
 //! name:<alias>          alias from the config file
-//! usb:<bus>-<ports>     USB topology (physical port on a fixed hub; for HIL lanes)
-//! tcp:<host:port>       an OEP endpoint over TCP (a probe's TCP transport, a ch32rv broker)
-//! <address>             an IDE port address as it is (also behind `port:`): a probe's serial
-//!                       port (/dev/ttyACM0, COM3), wchlink://<serial>, oep://..., oep-net://...,
+//! topology:<bus>-<ports>  USB position (physical port on a fixed hub; for HIL lanes)
+//! <address>             an IDE port address as it is: a probe's serial port (/dev/ttyACM0,
+//!                       COM3), wchlink://<serial>, oep://<probe>[/<port>[/<target>]][?via=<route>],
 //!                       hid://<topology>, ch32rv-app://..., ch32rv-isp://...
 //! ```
+//!
+//! en: The forms that are gone (`port:`, `tcp:`, `usb:`, `oep-net://`) are refused with the form
+//! to write instead. ja: 無くなった形は、代わりの書き方を添えて断る。
 
 use std::str::FromStr;
 
@@ -28,14 +30,12 @@ pub enum Selector {
     Serial(String),
     /// `name:<alias>` (resolved through the config file)
     Name(String),
-    /// `usb:<bus>-<ports>` (e.g. `3-1.4.2`)
+    /// `topology:<bus>-<ports>` (e.g. `3-1.4.2`)
     Topology(String),
-    /// `tcp:<host:port>`: an OEP endpoint over TCP (a probe's TCP transport or a ch32rv broker).
-    /// Never a USB device, so it matches none here; the OEP layer opens it.
-    Tcp(String),
-    /// An IDE port address, as it is or behind `port:` - the probe that owns this serial port
-    /// (`/dev/ttyACM0`, `COM3`), or discovery's `oep://...` / `hid://<topology>` /
-    /// `ch32rv-app://...` (`wchlink://<serial>` is [`Selector::Serial`]).
+    /// An IDE port address as it is - the probe that owns this serial port (`/dev/ttyACM0`,
+    /// `COM3`), or discovery's `oep://...` / `hid://<topology>` / `ch32rv-app://...`
+    /// (`wchlink://<serial>` is [`Selector::Serial`]). An `oep://` address is never a USB device
+    /// here; the OEP layer resolves it.
     Port(String),
 }
 
@@ -57,9 +57,12 @@ pub enum SelectorParseError {
     #[error("empty value after `{0}:`")]
     EmptyValue(&'static str),
     #[error(
-        "`{0}` is not a probe selector: use VID:PID[:SERIAL] (hex, e.g. 1a86:8010), serial:<sn>, name:<alias>, usb:<bus>-<ports>, tcp:<host:port>, or an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>], hid://<bus>-<ports>)"
+        "`{0}` is not a probe selector: use VID:PID[:SERIAL] (hex, e.g. 1a86:8010), serial:<sn>, name:<alias>, topology:<bus>-<ports>, or an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>], hid://<bus>-<ports>)"
     )]
     Unrecognized(String),
+    /// A form that is gone, with what to write instead.
+    #[error("`{0}`: this form is gone; write {1}")]
+    Removed(String, String),
 }
 
 impl FromStr for Selector {
@@ -75,21 +78,14 @@ impl FromStr for Selector {
         if let Some(v) = s.strip_prefix("name:") {
             return keyword_value(v, "name").map(Selector::Name);
         }
-        if let Some(v) = s.strip_prefix("usb:") {
-            return keyword_value(v, "usb").map(Selector::Topology);
+        if let Some(v) = s.strip_prefix("topology:") {
+            return keyword_value(v, "topology").map(Selector::Topology);
         }
-        if let Some(v) = s.strip_prefix("tcp:") {
-            return keyword_value(v, "tcp").map(Selector::Tcp);
+        if let Some(instead) = removed(s) {
+            return Err(SelectorParseError::Removed(s.to_owned(), instead));
         }
-        // en: An IDE port address is a selector as it is; `port:` in front of one is accepted too
-        // (the form ArduinoCore-CH32RV's recipes have sent, to be dropped).
-        // ja: IDE の port の住所はそのまま selector。前に `port:` が付いていても受ける(廃止予定)。
-        if let Some(v) = s.strip_prefix("port:") {
-            return match address(v) {
-                Some(r) => r,
-                None => keyword_value(v, "port").map(Selector::Port),
-            };
-        }
+        // en: An IDE port address is a selector as it is.
+        // ja: IDE の port の住所はそのまま selector。
         if let Some(r) = address(s) {
             return r;
         }
@@ -118,6 +114,36 @@ impl FromStr for Selector {
     }
 }
 
+/// en: What to write instead of a form that is gone (`port:`, `tcp:`, `usb:`, `oep-net://`), or
+/// None. ja: 無くなった形なら、代わりの書き方。
+pub fn removed(s: &str) -> Option<String> {
+    if let Some(v) = s.strip_prefix("oep-net://") {
+        let (place, _) = v.split_once('?').unwrap_or((v, ""));
+        return Some(format!("oep://{place}?via=net"));
+    }
+    if let Some(v) = s.strip_prefix("port:") {
+        return Some(if v.is_empty() {
+            "the IDE port's address as it is (no port is selected)".to_owned()
+        } else {
+            format!("the address as it is: {v}")
+        });
+    }
+    if let Some(v) = s.strip_prefix("tcp:") {
+        let v = v.strip_prefix("//").unwrap_or(v);
+        return Some(if v.contains(':') {
+            format!("oep://<unit_id>?via=tcp:{v}")
+        } else {
+            format!("oep://{v}?via=net")
+        });
+    }
+    if let Some(v) = s.strip_prefix("usb:") {
+        return Some(format!(
+            "topology:{v} for a USB position, or oep://<unit_id>?via=usb for an OEP probe on USB"
+        ));
+    }
+    None
+}
+
 /// en: An IDE port address, told apart from the keyword and VID:PID forms by its shape: a URL of
 /// a scheme discovery lists (`wchlink://<serial>`, `wchlink://usb-<bus>-<ports>`, `oep://...`,
 /// `hid://...`, `ch32rv-app://...`, `ch32rv-isp://...`; another scheme is no form), or a serial
@@ -127,7 +153,7 @@ impl FromStr for Selector {
 fn address(a: &str) -> Option<Result<Selector, SelectorParseError>> {
     if let Some(v) = a.strip_prefix("wchlink://") {
         return Some(match v.strip_prefix("usb-") {
-            Some(t) => keyword_value(t, "usb").map(Selector::Topology),
+            Some(t) => keyword_value(t, "topology").map(Selector::Topology),
             None => keyword_value(v, "wchlink").map(Selector::Serial),
         });
     }
@@ -140,13 +166,7 @@ fn address(a: &str) -> Option<Result<Selector, SelectorParseError>> {
 }
 
 /// The URL forms of the addresses discovery lists (besides `wchlink://`, a serial).
-pub const ADDRESS_SCHEMES: [&str; 5] = [
-    "oep://",
-    "oep-net://",
-    "hid://",
-    "ch32rv-app://",
-    "ch32rv-isp://",
-];
+pub const ADDRESS_SCHEMES: [&str; 4] = ["oep://", "hid://", "ch32rv-app://", "ch32rv-isp://"];
 
 fn keyword_value(v: &str, kw: &'static str) -> Result<String, SelectorParseError> {
     if v.is_empty() {
@@ -178,10 +198,10 @@ impl Selector {
             // and serial the same way).
             Selector::Serial(sn) => dev.serial().is_some_and(|d| d.eq_ignore_ascii_case(sn)),
             Selector::Topology(t) => dev.topology() == *t,
-            // en: The IDE's port addresses, so a recipe can pass `port:{upload.port.address}`
-            // whatever the user picked: `wchlink://<serial>` and `hid://<topology>` (discovery's
-            // own addresses) name the device directly; anything else is a serial port path.
-            // ja: IDE の port address。recipe が何を選ばれても `port:{upload.port.address}` を渡せる
+            // en: The IDE's port addresses, so a recipe can pass `{upload.port.address}` whatever
+            // the user picked: `wchlink://<serial>` and `hid://<topology>` (discovery's own
+            // addresses) name the device directly; anything else is a serial port path.
+            // ja: IDE の port address。recipe が何を選ばれても `{upload.port.address}` を渡せる
             // ように、discovery 自身の address(`wchlink://<serial>` / `hid://<topology>`)は device を
             // 直接指し、それ以外は serial port の path。
             Selector::Port(p) => {
@@ -194,7 +214,7 @@ impl Selector {
                 let want = normalize_port(p);
                 dev.serial_ports().iter().any(|q| normalize_port(q) == want)
             }
-            Selector::Name(_) | Selector::Tcp(_) => false,
+            Selector::Name(_) => false,
         }
     }
 }
@@ -255,7 +275,7 @@ where
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -266,10 +286,6 @@ mod tests {
             Selector::Serial("49808F06CE30".to_owned())
         );
         assert_eq!(
-            "port:wchlink://49808F06CE30".parse::<Selector>().unwrap(),
-            Selector::Serial("49808F06CE30".to_owned())
-        );
-        assert_eq!(
             "wchlink://usb-3-2.2.1".parse::<Selector>().unwrap(),
             Selector::Topology("3-2.2.1".to_owned())
         );
@@ -277,24 +293,17 @@ mod tests {
             "oep://30eda0e34a0e/weact".parse::<Selector>().unwrap(),
             Selector::Port("oep://30eda0e34a0e/weact".to_owned())
         );
-        assert_eq!(
-            "port:oep://30eda0e34a0e/weact".parse::<Selector>().unwrap(),
-            Selector::Port("oep://30eda0e34a0e/weact".to_owned())
-        );
         for a in [
             "/dev/ttyACM0",
             "COM3",
-            "oep-net://50029191fe34/any",
+            "oep://50029191fe34/weact?via=net",
+            "oep://50029191fe34?via=tty:/dev/ttyUSB0",
             "com12",
             "hid://3-2.4",
             "ch32rv-app://3-2.4.3",
             "ch32rv-isp://3-2.4.3",
         ] {
             assert_eq!(a.parse::<Selector>().unwrap(), Selector::Port(a.to_owned()));
-            assert_eq!(
-                format!("port:{a}").parse::<Selector>().unwrap(),
-                Selector::Port(a.to_owned())
-            );
         }
         // Not an address: still VID:PID.
         assert!(matches!(
@@ -368,17 +377,39 @@ mod tests {
             Selector::Name("bench-01".into())
         );
         assert_eq!(
-            "usb:3-1.4.2".parse::<Selector>().unwrap(),
+            "topology:3-1.4.2".parse::<Selector>().unwrap(),
             Selector::Topology("3-1.4.2".into())
         );
-        assert_eq!(
-            "port:/dev/ttyACM0".parse::<Selector>().unwrap(),
-            Selector::Port("/dev/ttyACM0".into())
-        );
-        assert_eq!(
-            "port:COM3".parse::<Selector>().unwrap(),
-            Selector::Port("COM3".into())
-        );
+    }
+
+    #[test]
+    fn removed_forms_say_what_to_write() {
+        for (gone, instead) in [
+            ("port:/dev/ttyACM0", "/dev/ttyACM0"),
+            ("port:", "no port is selected"),
+            (
+                "tcp:192.168.1.5:4242",
+                "oep://<unit_id>?via=tcp:192.168.1.5:4242",
+            ),
+            (
+                "tcp://192.168.1.5:4242",
+                "oep://<unit_id>?via=tcp:192.168.1.5:4242",
+            ),
+            ("tcp:50029191fe34", "oep://50029191fe34?via=net"),
+            ("usb:3-1.4.2", "topology:3-1.4.2"),
+            (
+                "oep-net://50029191fe34/weact",
+                "oep://50029191fe34/weact?via=net",
+            ),
+        ] {
+            match gone.parse::<Selector>() {
+                Err(SelectorParseError::Removed(g, i)) => {
+                    assert_eq!(g, gone);
+                    assert!(i.contains(instead), "{gone}: {i}");
+                }
+                other => panic!("{gone}: {other:?}"),
+            }
+        }
     }
 
     #[test]

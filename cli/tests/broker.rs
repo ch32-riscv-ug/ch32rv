@@ -53,13 +53,7 @@ fn ch32rv(args: &[&str]) -> std::process::Output {
 
 /// `broker endpoint --json`'s endpoint, or None.
 fn endpoint(pty: &str) -> Option<String> {
-    let out = ch32rv(&[
-        "broker",
-        "endpoint",
-        "--probe",
-        &format!("port:{pty}"),
-        "--json",
-    ]);
+    let out = ch32rv(&["broker", "endpoint", "--probe", pty, "--json"]);
     let v: serde_json::Value = common::envelope(&out.stdout);
     v["result"]["endpoint"].as_str().map(str::to_owned)
 }
@@ -89,7 +83,7 @@ fn two_clients_share_one_broker_and_it_ends_with_the_last() {
     // Start the broker the way a client does, and wait for its endpoint.
     let _broker = Kill(
         uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
-            .args(["broker", "serve", "--probe", &format!("port:{pty}")])
+            .args(["broker", "serve", "--probe", pty.as_str()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .spawn()
@@ -174,7 +168,7 @@ fn the_broker_opens_a_new_session_after_the_probe_restarts() {
     let _fake = Kill(child);
     let _broker = Kill(
         uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
-            .args(["broker", "serve", "--probe", &format!("port:{pty}")])
+            .args(["broker", "serve", "--probe", pty.as_str()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .spawn()
@@ -252,7 +246,7 @@ fn a_client_restarts_the_probe_through_the_broker() {
     let start = || {
         Kill(
             uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
-                .args(["broker", "serve", "--probe", &format!("port:{pty}")])
+                .args(["broker", "serve", "--probe", pty.as_str()])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .spawn()
@@ -303,8 +297,8 @@ fn a_client_restarts_the_probe_through_the_broker() {
 #[test]
 fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
     // virtual_bench_serve --tcp --announce answers `_oep._tcp` DNS-SD on this host (oep-spec
-    // transports §3). `probe list` lists it under `network`, and `--probe tcp:<unit_id>` finds it,
-    // opens it over TCP and checks describe's unit_id.
+    // transports §3). `probe list` lists it under `network` as `oep://<unit_id>`, and that address
+    // finds it (no `via`, `via=net`, `via=tcp:`), opens it over TCP and checks describe's unit_id.
     let Some(dir) = uv::client_dir() else {
         return;
     };
@@ -346,15 +340,13 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
         "{found}"
     );
 
-    // The unit id, and the URL forms the other OEP clients take (also behind `port:`, an IDE's
-    // port address).
-    // By address first (a broker keyed by the address), then by unit id (one keyed by it, as a USB
-    // probe of that unit id would be), whose broker `broker endpoint` names below.
+    assert_eq!(found["address"], format!("oep://{unit}"), "{found}");
+    // Every route to the one place meets one broker, keyed by the unit id (as a USB probe of that
+    // unit id would be), whose endpoint `broker endpoint` names below.
     for probe in [
-        format!("tcp://127.0.0.1:{port}"),
-        format!("port:tcp://127.0.0.1:{port}"),
-        format!("tcp:{unit}"),
-        format!("tcp://{unit}"),
+        format!("oep://{unit}/v003?via=tcp:127.0.0.1:{port}"),
+        format!("oep://{unit}/v003?via=net"),
+        format!("oep://{unit}/v003"),
     ] {
         let out = ch32rv(&["target", "info", "--probe", &probe, "--json"]);
         let v: serde_json::Value = common::envelope(&out.stdout);
@@ -370,19 +362,18 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
         "broker",
         "endpoint",
         "--probe",
-        &format!("tcp:{unit}"),
+        &format!("oep://{unit}?via=net"),
         "--json",
     ]);
     let v: serde_json::Value = common::envelope(&out.stdout);
     let by_unit = v["result"]["endpoint"].as_str().map(str::to_owned);
     assert!(by_unit.is_some(), "{v}");
-    // Named by address it is the same broker: the address's probe says its unit id, and the
-    // broker is keyed by it (one owner per probe on this host, also where mDNS does not reach).
+    // Named with another route it is the same broker (a lock key ignores `via`).
     let out = ch32rv(&[
         "broker",
         "endpoint",
         "--probe",
-        &format!("tcp:127.0.0.1:{port}"),
+        &format!("oep://{unit}?via=tcp:127.0.0.1:{port}"),
         "--json",
     ]);
     let v: serde_json::Value = common::envelope(&out.stdout);
@@ -435,7 +426,7 @@ fn a_probe_another_host_holds_is_waited_for_lock_timeout_then_busy() {
         "target",
         "info",
         "--probe",
-        &format!("tcp:127.0.0.1:{port}"),
+        &format!("oep://{unit}?via=tcp:127.0.0.1:{port}"),
         "--lock-timeout",
         "1",
         "--json",
@@ -461,7 +452,7 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
     };
     let mut broker = Kill(
         uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
-            .args(["broker", "serve", "--probe", &format!("port:{pty}")])
+            .args(["broker", "serve", "--probe", pty.as_str()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .spawn()
@@ -479,13 +470,7 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
         );
         std::thread::sleep(Duration::from_millis(50));
     };
-    let out = ch32rv(&[
-        "broker",
-        "endpoint",
-        "--probe",
-        &format!("port:{pty}"),
-        "--json",
-    ]);
+    let out = ch32rv(&["broker", "endpoint", "--probe", pty.as_str(), "--json"]);
     let v: serde_json::Value = common::envelope(&out.stdout);
     assert_eq!(v["result"]["version"], env!("CARGO_PKG_VERSION"), "{v}");
     assert_eq!(v["result"]["pid"], pid, "{v}");
@@ -514,7 +499,7 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
         "target",
         "info",
         "--probe",
-        &format!("port:{pty}"),
+        pty.as_str(),
         "--lock-timeout",
         "1",
         "--json",
@@ -542,7 +527,7 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
                 "target",
                 "info",
                 "--probe",
-                &format!("port:{pty}"),
+                pty.as_str(),
                 "--lock-timeout",
                 "15",
                 "--json",

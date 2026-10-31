@@ -273,7 +273,7 @@
             "required": ["kind", "unit_id", "tcp"],
             "properties": {
               "kind": {"type": "string", "enum": ["oep"]},
-              "address": {"type": "string", "description": "oep-net://<unit_id>"},
+              "address": {"type": "string", "description": "oep://<unit_id>"},
               "firmware": {"type": ["string", "null"]},
               "unit_id": {"type": "string", "description": "TXT の unit_id"},
               "tcp": {"type": "string", "description": "<address>:<port>"},

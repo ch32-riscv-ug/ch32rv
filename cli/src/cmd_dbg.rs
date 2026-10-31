@@ -273,7 +273,7 @@ fn simple_ok(
 }
 
 pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
-    // An OEP probe (`tcp:`, `oep://`, or a serial port no WCH-Link owns) takes the OEP path.
+    // An OEP probe (`oep://`, or a serial port no WCH-Link owns) takes the OEP path.
     match crate::oep::addr(cli, "read") {
         Ok(Some(_)) if cli.core != 0 => {
             return fail(

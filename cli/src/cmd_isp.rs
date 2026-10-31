@@ -46,15 +46,15 @@ struct Opened {
     /// USB ID and position; `None` over a UART.
     usb: Option<String>,
     topology: Option<String>,
-    /// Where it was reached: `usb:<bus>-<ports>` or `uart:<port>`.
+    /// Where it was reached: `topology:<bus>-<ports>` or `uart:<port>`.
     at: String,
     id: Identity,
     cfg: IspConfig,
 }
 
-/// en: Pick the one ISP device (`--device usb:<bus>-<ports>`, or the only one present), waiting
+/// en: Pick the one ISP device (`--device topology:<bus>-<ports>`, or the only one present), waiting
 /// up to `--wait` for it to appear, then Identify and ReadConfig it.
-/// ja: ISP device を 1 台選び(`--device usb:<位置>` か唯一の 1 台)、`--wait` まで待ち、Identify と
+/// ja: ISP device を 1 台選び(`--device topology:<位置>` か唯一の 1 台)、`--wait` まで待ち、Identify と
 /// ReadConfig をする。
 fn open(cli: &Cli, cmd: &str, args: &IspArgs) -> Result<Opened, ExitCode> {
     open_with(cli, cmd, args, args.entry)
@@ -66,7 +66,7 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
     }
     let mut want = match args.device.as_deref() {
         None => None,
-        Some(d) => match d.strip_prefix("usb:") {
+        Some(d) => match d.strip_prefix("topology:") {
             Some(t) => Some(t.to_owned()),
             None => {
                 return Err(fail(
@@ -74,7 +74,7 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
                     cmd,
                     ErrorKind::Usage,
                     format!("invalid --device `{d}`"),
-                    Some("ISP devices carry no serial: use --device usb:<bus>-<ports>"),
+                    Some("ISP devices carry no serial: use --device topology:<bus>-<ports>"),
                 ));
             }
         },
@@ -139,14 +139,14 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
         if found.len() > 1 {
             let at: Vec<serde_json::Value> = found
                 .iter()
-                .map(|d| serde_json::json!(format!("usb:{}", d.topology())))
+                .map(|d| serde_json::json!(format!("topology:{}", d.topology())))
                 .collect();
             return Err(crate::cmd_probe::fail_with_candidates(
                 cli,
                 cmd,
                 ErrorKind::DeviceAmbiguous,
                 format!("{} ISP devices are connected", found.len()),
-                Some("pick one with --device usb:<bus>-<ports>"),
+                Some("pick one with --device topology:<bus>-<ports>"),
                 at,
             ));
         }
@@ -162,11 +162,11 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
                     (_, true) => format!(
                         "the chip was sent to its bootloader, but no ISP device appeared{} within {} s",
                         want.as_deref()
-                            .map(|t| format!(" at usb:{t}"))
+                            .map(|t| format!(" at topology:{t}"))
                             .unwrap_or_default(),
                         wait.as_secs()
                     ),
-                    (Some(t), false) => format!("no ISP device at usb:{t}"),
+                    (Some(t), false) => format!("no ISP device at topology:{t}"),
                     (None, false) => "no ISP device (1a86:55e0 / 4348:55e0) was found".to_owned(),
                 },
                 Some(if entered {
@@ -190,7 +190,7 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
         std::thread::sleep(Duration::from_millis(200));
     };
     if told {
-        eprintln!("ISP device found at usb:{}", dev.topology());
+        eprintln!("ISP device found at topology:{}", dev.topology());
     }
     let usb = dev.usb_id();
     let topology = dev.topology();
@@ -203,7 +203,7 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
     Ok(Opened {
         dev: isp,
         usb: Some(usb),
-        at: format!("usb:{topology}"),
+        at: format!("topology:{topology}"),
         topology: Some(topology),
         id,
         cfg,
@@ -367,7 +367,7 @@ fn list(cli: &Cli) -> ExitCode {
         let s = |k: &str| r[k].as_str().unwrap_or("-").to_owned();
         if s("kind") == "factory-isp" {
             println!(
-                "usb:{:<14} {}  {} chip 0x{} type {}",
+                "topology:{:<14} {}  {} chip 0x{} type {}",
                 s("topology"),
                 s("usb"),
                 s("series"),
@@ -376,7 +376,7 @@ fn list(cli: &Cli) -> ExitCode {
             );
         } else {
             println!(
-                "usb:{:<14} {}  not a factory bootloader ({})",
+                "topology:{:<14} {}  not a factory bootloader ({})",
                 s("topology"),
                 s("usb"),
                 s("error")
@@ -891,13 +891,9 @@ pub(crate) struct AppDevice {
 }
 
 /// en: An IDE port address in `--app-device`, told apart by its shape (a URL such as
-/// `ch32rv-app://...`, or a serial port's path such as `/dev/ttyACM0` / `COM3`), as it is or
-/// behind `port:` (the form ArduinoCore-CH32RV's recipes have sent, to be dropped).
-/// ja: `--app-device` の IDE の port の住所(形で見分ける)。`port:` 付きも受ける(廃止予定)。
+/// `ch32rv-app://...`, or a serial port's path such as `/dev/ttyACM0` / `COM3`).
+/// ja: `--app-device` の IDE の port の住所(形で見分ける)。
 fn ide_address(s: &str) -> Option<&str> {
-    if let Some(a) = s.strip_prefix("port:") {
-        return Some(a);
-    }
     let com = s.len() > 3
         && s[..3].eq_ignore_ascii_case("com")
         && s[3..].chars().all(|c| c.is_ascii_digit());
@@ -907,16 +903,25 @@ fn ide_address(s: &str) -> Option<&str> {
     (url || s.starts_with('/') || s.starts_with("\\\\.\\") || com).then_some(s)
 }
 
-/// en: Resolve `--app-device`: `port:<path>` (the serial port an IDE passes; the USB device behind
-/// it), `usb:<bus>-<ports>`, or `VID:PID[:SERIAL]`. Exactly one device or an error.
-/// ja: `--app-device` を解く。ちょうど 1 台か、エラー。
+/// en: Resolve `--app-device`: an IDE port address (a serial port's path - the USB device behind
+/// it - or `ch32rv-app://<id>`), `topology:<bus>-<ports>`, or `VID:PID[:SERIAL]`. Exactly one
+/// device or an error. ja: `--app-device` を解く。ちょうど 1 台か、エラー。
 pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
+    if let Some(instead) = ch32rv_usb::selector::removed(sel) {
+        return Err(fail(
+            cli,
+            cmd,
+            ErrorKind::Usage,
+            format!("--app-device `{sel}`: this form is gone; write {instead}"),
+            None,
+        ));
+    }
     // The discovery's own address (`ch32rv-app://<id>`): found again by its id, then by position.
     let usb_sel;
     let sel = match ide_address(sel).and_then(|a| a.strip_prefix(APP_SCHEME)) {
         Some(id) => {
             let dev = find_app(id).map_err(|(kind, m)| fail(cli, cmd, kind, m, None))?;
-            usb_sel = format!("usb:{}", dev.topology());
+            usb_sel = format!("topology:{}", dev.topology());
             usb_sel.as_str()
         }
         None => sel,
@@ -946,7 +951,7 @@ pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
                     .any(|o| o.len() > t.len() && o.starts_with(&format!("{t}.")))
             });
             (found, Some(path.to_owned()))
-        } else if let Some(t) = sel.strip_prefix("usb:") {
+        } else if let Some(t) = sel.strip_prefix("topology:") {
             (
                 all.into_iter().filter(|d| d.topology() == t).collect(),
                 None,
@@ -962,7 +967,7 @@ pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
                     cmd,
                     ErrorKind::Usage,
                     format!("invalid --app-device `{sel}`"),
-                    Some("use port:<serial port>, usb:<bus>-<ports> or VID:PID[:SERIAL]"),
+                    Some("use the serial port's path, topology:<bus>-<ports> or VID:PID[:SERIAL]"),
                 ));
             };
             let serial = parts.next().filter(|s| !s.is_empty());
@@ -992,10 +997,10 @@ pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
             cmd,
             ErrorKind::DeviceAmbiguous,
             format!("{n} USB devices match --app-device `{sel}`"),
-            Some("name it by position: --app-device usb:<bus>-<ports>"),
+            Some("name it by position: --app-device topology:<bus>-<ports>"),
             found
                 .iter()
-                .map(|d| serde_json::json!(format!("usb:{}", d.topology())))
+                .map(|d| serde_json::json!(format!("topology:{}", d.topology())))
                 .collect(),
         )),
     }
@@ -1058,9 +1063,9 @@ fn enter_via_app(
                         format!(
                             "{n} USB devices offer a DFU run-time interface named `{APP_ENTRY_NAME}`"
                         ),
-                        Some("name the application with --app-device usb:<bus>-<ports>"),
+                        Some("name the application with --app-device topology:<bus>-<ports>"),
                         dfu.iter()
-                            .map(|d| serde_json::json!(format!("usb:{}", d.topology())))
+                            .map(|d| serde_json::json!(format!("topology:{}", d.topology())))
                             .collect(),
                     ));
                 }
@@ -1072,7 +1077,7 @@ fn enter_via_app(
                 cmd,
                 ErrorKind::Usage,
                 "--entry touch1200 needs the application's serial port",
-                Some("--app-device port:<serial port>"),
+                Some("--app-device <serial port>"),
             ));
         }
         None => None,
@@ -1093,7 +1098,7 @@ fn enter_via_app(
                 cli,
                 cmd,
                 ErrorKind::CapabilityUnsupported,
-                format!("the device at usb:{at} has no DFU run-time interface"),
+                format!("the device at topology:{at} has no DFU run-time interface"),
                 Some("use --entry touch1200 for an application with a serial port"),
             ));
         };
@@ -1107,7 +1112,7 @@ fn enter_via_app(
             );
         }
         if !cli.json {
-            eprintln!("sent DFU_DETACH to usb:{at} (interface {intf})");
+            eprintln!("sent DFU_DETACH to topology:{at} (interface {intf})");
         }
         return Ok(Some(at));
     }
@@ -1118,7 +1123,7 @@ fn enter_via_app(
                 cli,
                 cmd,
                 ErrorKind::CapabilityUnsupported,
-                format!("the device at usb:{at} has no serial port to touch"),
+                format!("the device at topology:{at} has no serial port to touch"),
                 None,
             )),
         };
@@ -1133,7 +1138,7 @@ fn enter_via_app(
         )
     })?;
     if !cli.json {
-        eprintln!("1200 bps touch on {port} (usb:{at})");
+        eprintln!("1200 bps touch on {port} (topology:{at})");
     }
     Ok(Some(at))
 }

@@ -58,9 +58,9 @@ pub fn hid_flash(
         return ExitCode::SUCCESS;
     }
 
-    // en: `--probe usb:<topology>`, or the IDE's `port:hid://<topology>`, picks one bootloader
+    // en: `--probe topology:<bus>-<ports>`, or the IDE's `hid://<topology>`, picks one bootloader
     // by position; without it the first one found is used.
-    // ja: `--probe usb:<topology>` か IDE の `port:hid://<topology>` で位置の bootloader を選ぶ。
+    // ja: `--probe topology:<位置>` か IDE の `hid://<topology>` で位置の bootloader を選ぶ。
     // 無ければ最初の 1 台。
     let topology = match crate::cmd_probe::parse_selector(cli, CMD) {
         Ok(None) => None,
@@ -74,7 +74,7 @@ pub fn hid_flash(
                 CMD,
                 ErrorKind::Usage,
                 "a HID bootloader is selected by position only",
-                Some("use --probe usb:<bus>-<ports> or port:hid://<bus>-<ports>"),
+                Some("use --probe topology:<bus>-<ports> or hid://<bus>-<ports>"),
             );
         }
         Err(c) => return c,
@@ -230,11 +230,11 @@ fn dfu_device(cli: &Cli, cmd: &str) -> Result<ch32rv_usb::UsbDeviceInfo, ExitCod
             format!(
                 "{n} USB devices have a DFU interface: {}",
                 dfu.iter()
-                    .map(|d| format!("usb:{} ({})", d.topology(), d.usb_id()))
+                    .map(|d| format!("topology:{} ({})", d.topology(), d.usb_id()))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Some("name one with --probe usb:<bus>-<ports> or VID:PID:SERIAL"),
+            Some("name one with --probe topology:<bus>-<ports> or VID:PID:SERIAL"),
         )),
     }
 }
@@ -256,14 +256,14 @@ fn enter_dfu_mode(
         let Some(intf) = dev.dfu_runtime_interface() else {
             return Err(err(
                 ErrorKind::CapabilityUnsupported,
-                format!("usb:{} has no DFU interface", dev.topology()),
+                format!("topology:{} has no DFU interface", dev.topology()),
             ));
         };
         // The device may leave before the status stage: an error here is not a failure.
         let _ = dev.dfu_detach(intf, 1000);
         if !cli.json {
             eprintln!(
-                "sent DFU_DETACH to usb:{} (interface {intf})",
+                "sent DFU_DETACH to topology:{} (interface {intf})",
                 dev.topology()
             );
         }
@@ -443,7 +443,7 @@ pub fn dfu_info(cli: &Cli) -> ExitCode {
         }));
         return crate::print_envelope(&env);
     }
-    println!("usb:      {} at usb:{}", dev.usb_id(), dev.topology());
+    println!("usb:      {} at topology:{}", dev.usb_id(), dev.topology());
     println!("serial:   {}", dev.serial().unwrap_or("-"));
     match (runtime, mode) {
         (_, Some(i)) => println!("dfu:      DFU mode (interface {i})"),

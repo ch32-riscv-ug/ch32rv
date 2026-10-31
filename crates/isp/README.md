@@ -16,7 +16,7 @@ bytes), the XOR key, Erase, Program, Verify and IspEnd. It is bench-verified on 
 Most users should use the CLI:
 
 ```text
-ch32rv isp flash firmware.elf --entry auto --app-device port:<serial port>
+ch32rv isp flash firmware.elf --entry auto --app-device <serial port>
 ```
 
 The protocol is implemented in-house; wchisp (GPL-2.0) is not vendored. The UART transport is

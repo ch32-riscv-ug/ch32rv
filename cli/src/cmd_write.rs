@@ -57,7 +57,7 @@ pub fn write(cli: &Cli, args: &WriteArgs) -> ExitCode {
     };
     let len = bytes.len() as u32;
 
-    // An OEP probe (`tcp:`, `oep://`, or a serial port no WCH-Link owns) takes the OEP path.
+    // An OEP probe (`oep://`, or a serial port no WCH-Link owns) takes the OEP path.
     match crate::oep::addr(cli, CMD) {
         Ok(Some(a)) => return crate::oep::write(cli, addr, &bytes, &a),
         Ok(None) => {}

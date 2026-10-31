@@ -25,7 +25,7 @@ pub struct Cli {
 
     // en: Global options (docs/cli.ja.md §3.1).
     // ja: グローバルオプション(docs/cli.ja.md §3.1)。
-    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | usb:<bus>-<ports> | an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>/<port>, oep-net://<probe>/<port>, hid://<bus>-<ports>, ch32rv-app://<id>)
+    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | topology:<bus>-<ports> | an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>], hid://<bus>-<ports>, ch32rv-app://<id>)
     #[arg(long, global = true, env = "CH32RV_PROBE")]
     pub probe: Option<String>,
     /// Target SKU or family (auto-detected when omitted; fail-closed on ambiguity)
@@ -556,7 +556,7 @@ pub struct IspArgs {
     pub port: Option<String>,
     #[arg(long, global = true)]
     pub baud: Option<u32>,
-    /// ISP device selector: usb:<bus>-<ports> (fail-closed by default; ISP devices carry no serial)
+    /// ISP device selector: topology:<bus>-<ports> (fail-closed by default; ISP devices carry no serial)
     #[arg(long, global = true)]
     pub device: Option<String>,
     /// Seconds to wait for the ISP device to appear, with an entry hint on stderr (0: fail at once)
@@ -570,7 +570,7 @@ pub struct IspArgs {
     #[arg(long, global = true, value_enum, default_value = "none")]
     pub entry: IspEntry,
     /// The running application's USB device, for `--entry auto|dfu-detach|touch1200`:
-    /// a serial port / ch32rv-app://<id> as the IDE names it | usb:<bus>-<ports> | VID:PID[:SERIAL]
+    /// a serial port / ch32rv-app://<id> as the IDE names it | topology:<bus>-<ports> | VID:PID[:SERIAL]
     #[arg(long, global = true, value_name = "SEL")]
     pub app_device: Option<String>,
 }
@@ -664,7 +664,7 @@ pub enum IspConfigCmd {
 pub enum BootCmd {
     /// USB DFU 1.1 download into an application that reflashes itself (DFU_DETACH first when it
     /// runs its DFU run-time interface). Select it with --probe <serial port> |
-    /// ch32rv-app://<id> | usb:<bus>-<ports> | VID:PID[:SERIAL]; the only DFU device when
+    /// ch32rv-app://<id> | topology:<bus>-<ports> | VID:PID[:SERIAL]; the only DFU device when
     /// omitted
     #[command(subcommand)]
     Dfu(DfuCmd),

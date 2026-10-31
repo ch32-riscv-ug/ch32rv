@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use ch32rv_contract::{ErrorKind, ResultEnvelope};
 use ch32rv_dmi::{ResetMode, TargetAccess};
+use ch32rv_oep::address::{Address, Via};
 use ch32rv_oep::registry::core as oep_core;
 use ch32rv_oep::session::{OepError, Probe, random_session_id};
 use ch32rv_oep::target::{AttachOptions, OepDtm, WireKind, attach, detach};
@@ -22,59 +23,112 @@ use crate::parse;
 /// Where an OEP probe is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum OepAddr {
-    /// A serial port no WCH-Link owns (COBS).
+    /// en: A serial port given as it is, with no unit named (a tool convenience): COBS on that
+    /// port, or the transports of the OEP device that owns it. ja: そのまま渡した serial port
+    /// (unit を名指さない、道具の便利機能)。
     Serial(String),
-    /// `oep://<probe>[/<port>[/<target>]]` (host guide §5.3): an OEP probe reached on its
-    /// serial port `path`, the port named by its labels' `S`, and the target by its individual
-    /// name (`<family>-<unique id hex>`, checked on the connection before any side effect).
-    Probe {
-        path: String,
-        port: Option<String>,
-        target: Option<String>,
-        /// Written as `oep://<probe>` alone: the probe itself, no port (§5.3).
-        whole: bool,
-    },
-    /// `tcp:<host:port>`: a probe's TCP transport, or a ch32rv broker.
-    Tcp(String),
-    /// A probe found by DNS-SD on the local network (`_oep._tcp`, transports §3), named by its
-    /// unit id (`tcp:<unit_id>`, or `oep://<unit_id>[/<port>[/<target>]]` when it is not on USB):
-    /// its endpoint, the unit id describe must answer, and the port / target the address names.
-    Net {
-        addr: String,
-        unit: String,
-        port: Option<String>,
-        target: Option<String>,
-        /// Written as `oep://<unit_id>` alone (not `tcp:`): the probe itself, no port.
-        whole: bool,
-    },
+    /// `oep://<probe>[/<port>[/<target>]][?via=<route>]` (host guide §5.3): the place, and the
+    /// route it was resolved to.
+    Named { place: AddrPlace, route: Route },
     /// A WCH-Link, reached through its broker (which maps OEP onto the Link).
     Wch(crate::broker::BrokerTarget),
 }
 
+/// en: The place an `oep://` address names: the probe's unit id, the port named by its labels'
+/// `S`, and the target by its individual name (`<family>-<unique id hex>`, checked on the
+/// connection before any side effect). ja: アドレスの場所(probe、口、target)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AddrPlace {
+    pub(crate) unit: String,
+    pub(crate) port: Option<String>,
+    pub(crate) target: Option<String>,
+}
+
+/// en: How an `oep://` address reaches its probe. Every route checks, once open, that confirm /
+/// describe answer the unit id the address names (host guide §5.3). ja: アドレスの probe への
+/// 経路。どの経路も、開いたら unit id が名指したものかを確かめる。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Route {
+    /// On USB (no `via`, or `via=usb|bulk|hid|cdc`): the device's serial port (which finds the
+    /// device) and the `via` given.
+    Usb { path: String, via: Option<Via> },
+    /// `via=tty:<path>`: that OS serial port.
+    Tty(String),
+    /// TCP: the endpoint DNS-SD announced (no `via` and not on USB, or `via=net`), or the one
+    /// `via=tcp:<host>:<port>` names; `via` as given.
+    Net { addr: String, via: Option<Via> },
+    /// `via=tcp:127.0.0.1:<port>` naming a ch32rv broker on this host: opened directly (a broker
+    /// is never put in front of a broker).
+    Broker(String),
+}
+
 impl OepAddr {
-    /// The port the address names (`oep://<probe>/<port>`), if it does.
-    pub(crate) fn port(&self) -> Option<&str> {
+    /// The place, when an `oep://` address named one.
+    pub(crate) fn place(&self) -> Option<&AddrPlace> {
         match self {
-            OepAddr::Probe { port, .. } | OepAddr::Net { port, .. } => port.as_deref(),
+            OepAddr::Named { place, .. } => Some(place),
             _ => None,
         }
+    }
+
+    /// The port the address names (`oep://<probe>/<port>`), if it does.
+    pub(crate) fn port(&self) -> Option<&str> {
+        self.place().and_then(|p| p.port.as_deref())
     }
 
     /// en: The address is `oep://<probe>` alone, which names the probe itself (host guide §5.3:
     /// a segment left out is not "unspecified"), so no port is chosen for it - not even the only
     /// one. ja: `oep://<probe>` だけは probe 自身。口は選ばない。
     pub(crate) fn whole_probe(&self) -> bool {
-        matches!(
-            self,
-            OepAddr::Probe { whole: true, .. } | OepAddr::Net { whole: true, .. }
-        )
+        self.place().is_some_and(|p| p.port.is_none())
     }
 
     /// The target the address names (`oep://<probe>/<port>/<target>`), if it does.
     pub(crate) fn target(&self) -> Option<&str> {
+        self.place().and_then(|p| p.target.as_deref())
+    }
+
+    /// en: Reached on a serial port as such (a bare path, or `via=tty:`): its lock may be taken
+    /// at once when that port is the probe's only transport (oep-workflow §4.3).
+    /// ja: serial port そのもので届く(path か `via=tty:`)。
+    pub(crate) fn raw_serial(&self) -> bool {
+        matches!(
+            self,
+            OepAddr::Serial(_)
+                | OepAddr::Named {
+                    route: Route::Tty(_),
+                    ..
+                }
+        )
+    }
+
+    /// en: The broker that serves this address (`None`: the address is a ch32rv broker itself,
+    /// opened directly). Every OEP probe is used through its broker, whatever the route (the
+    /// user's decision, 2026-10-07: the same behaviour everywhere).
+    /// ja: このアドレスを受け持つブローカー。ブローカー自身のアドレスなら None(直接つなぐ)。
+    pub(crate) fn broker_target(&self) -> Option<crate::broker::BrokerTarget> {
+        use crate::broker::BrokerTarget;
         match self {
-            OepAddr::Probe { target, .. } | OepAddr::Net { target, .. } => target.as_deref(),
-            _ => None,
+            OepAddr::Serial(p) => Some(BrokerTarget::Serial(p.clone())),
+            OepAddr::Named { place, route } => match route {
+                Route::Usb { path, via } => Some(BrokerTarget::Oep {
+                    unit: place.unit.clone(),
+                    path: path.clone(),
+                    via: via.clone(),
+                }),
+                Route::Tty(path) => Some(BrokerTarget::Oep {
+                    unit: place.unit.clone(),
+                    path: path.clone(),
+                    via: Some(Via::Tty(path.clone())),
+                }),
+                Route::Net { addr, via } => Some(BrokerTarget::Net {
+                    addr: addr.clone(),
+                    unit: place.unit.clone(),
+                    via: via.clone(),
+                }),
+                Route::Broker(_) => None,
+            },
+            OepAddr::Wch(t) => Some(t.clone()),
         }
     }
 }
@@ -82,38 +136,6 @@ impl OepAddr {
 /// How long a lookup by unit id browses DNS-SD (a probe answers its query at once; this covers a
 /// slow Wi-Fi).
 const BROWSE_WAIT: Duration = Duration::from_millis(1500);
-
-/// en: The broker target of a TCP address: the probe's endpoint and unit id (`None`: the address
-/// is a ch32rv broker on this host, opened directly). Every OEP probe is used through its broker,
-/// whatever the transport (the user's decision, 2026-10-07: the same behaviour everywhere).
-/// ja: TCP のアドレスのブローカーの対象。この PC のブローカー自身なら None(直接つなぐ)。
-pub(crate) fn net_target(a: &OepAddr) -> Option<crate::broker::BrokerTarget> {
-    match a {
-        OepAddr::Tcp(t) if crate::broker::is_broker_endpoint(t) => None,
-        // Named by address: read the unit id from the probe itself (confirm and describe, both
-        // lock-free), so the address meets the broker its unit id has.
-        OepAddr::Tcp(t) => {
-            let unit = unit_at(t);
-            if unit.is_none() {
-                crate::warn(
-                    "oep-unit-unknown",
-                    format!("{t} did not say its unit id; its broker is keyed by the address"),
-                );
-            }
-            Some(crate::broker::BrokerTarget::Net {
-                addr: t.clone(),
-                unit,
-                by_unit: false,
-            })
-        }
-        OepAddr::Net { addr, unit, .. } => Some(crate::broker::BrokerTarget::Net {
-            addr: addr.clone(),
-            unit: Some(unit.clone()),
-            by_unit: true,
-        }),
-        _ => None,
-    }
-}
 
 /// en: The unit id the probe at `addr` describes, from a short direct look (connect, confirm,
 /// describe; a few seconds at most). `None` when it cannot be reached or does not say.
@@ -131,8 +153,8 @@ pub(crate) fn unit_at(addr: &str) -> Option<String> {
     {
         let t = crate::broker::BrokerTarget::Net {
             addr: addr.to_owned(),
-            unit: Some(u.clone()),
-            by_unit: false,
+            unit: u.clone(),
+            via: None,
         };
         if crate::broker::existing_link_for(&t).is_some() {
             return Some(u);
@@ -216,20 +238,29 @@ fn read_identity(addr: &str) -> Option<(String, Option<String>, Option<String>)>
 pub(crate) fn open_net(addr: &str, unit: &str) -> Result<Probe, String> {
     let link = ch32rv_oep::link::open_tcp(addr).map_err(|e| format!("{addr}: {e}"))?;
     let mut p = Probe::connect(link).map_err(|e| format!("{addr}: {e}"))?;
+    verify_unit(&mut p, unit).map_err(|e| format!("{addr}: {e}"))?;
+    Ok(p)
+}
+
+/// en: Whether the probe just opened (confirmed) is the unit an address named: fn 0 describe's
+/// unit_id, case aside (oep-core §3.3). Every route checks this before the probe is used (host
+/// guide §5.3: a route never makes another probe acceptable). ja: 開いた probe が名指した unit か
+/// (fn 0 describe の unit_id、大小は区別しない)。どの経路でも使う前に確かめる。
+pub(crate) fn verify_unit(p: &mut Probe, unit: &str) -> Result<(), String> {
     let said = p
-        .describe(ch32rv_oep::registry::core::FN)
+        .describe(oep_core::FN)
         .ok()
         .and_then(|t| {
             t.into_iter()
-                .find(|t| t.tag == ch32rv_oep::registry::core::tlvs::describe::UNIT_ID)
+                .find(|t| t.tag == oep_core::tlvs::describe::UNIT_ID)
         })
         .map(|t| String::from_utf8_lossy(&t.value).into_owned());
     match said {
-        Some(u) if u.eq_ignore_ascii_case(unit) => Ok(p),
-        Some(u) => Err(format!(
-            "{addr} announced unit {unit} but describes itself as {u}: not used"
+        Some(u) if u.eq_ignore_ascii_case(unit) => Ok(()),
+        Some(u) => Err(format!("the probe there is unit {u}, not {unit}: not used")),
+        None => Err(format!(
+            "the probe there does not say its unit_id (wanted {unit}): not used"
         )),
-        None => Err(format!("{addr} does not say its unit_id: not used")),
     }
 }
 
@@ -417,16 +448,17 @@ impl ch32rv_oep::link::ByteStream for OepHid {
 
 /// en: Connect (confirm) to the probe behind the serial port `path` by the transports in the order
 /// oep-core §3.3 gives: the vendor bulk pair of the OEP device that owns the port, its vendor HID,
-/// then the port itself. `timeout` shortens each reply wait (discovery). `CH32RV_OEP_TRANSPORT`
-/// (`vendor-bulk` / `hid` / `serial`) starts the order at that transport. Returns the probe and the
-/// transport's name.
+/// then the port itself. `via` keeps to the route an address picked (`bulk`, `hid`, `cdc` /
+/// `tty:` the port itself; none or `usb` any). `timeout` shortens each reply wait (discovery).
+/// Returns the probe and the transport's name.
 /// ja: serial port `path` の裏の probe に、§3.3 の順(その port を持つ OEP の device の vendor bulk、
-/// vendor の HID、port そのもの)でつなぐ(confirm まで)。`CH32RV_OEP_TRANSPORT` はその経路から始める。
+/// vendor の HID、port そのもの)でつなぐ(confirm まで)。`via` はアドレスが選んだ経路だけを使う。
 pub(crate) fn connect_upstream(
     path: &str,
+    via: Option<&Via>,
     timeout: Option<Duration>,
 ) -> Result<(Probe, &'static str), String> {
-    connect_ordered(path, timeout, false)
+    connect_ordered(path, via, timeout, false)
 }
 
 /// en: For discovery's lock-free reads (oep-workflow §3.3): the probe's HID first, which no other
@@ -438,21 +470,31 @@ pub(crate) fn connect_for_listing(
     path: &str,
     timeout: Duration,
 ) -> Result<(Probe, &'static str), String> {
-    connect_ordered(path, Some(timeout), true)
+    connect_ordered(path, None, Some(timeout), true)
 }
 
 fn connect_ordered(
     path: &str,
+    via: Option<&Via>,
     timeout: Option<Duration>,
     hid_first: bool,
 ) -> Result<(Probe, &'static str), String> {
-    let start = std::env::var("CH32RV_OEP_TRANSPORT").unwrap_or_default();
+    let (bulk, hid, serial) = match via {
+        None | Some(Via::Usb) => (true, true, true),
+        Some(Via::Bulk) => (true, false, false),
+        Some(Via::Hid) => (false, true, false),
+        Some(_) => (false, false, true),
+    };
     let sel = Selector::Port(path.to_owned());
-    let dev = oep_devices()
-        .into_iter()
-        .enumerate()
-        .find(|(i, d)| sel.matches(d, *i))
-        .map(|(_, d)| d);
+    let dev = (bulk || hid)
+        .then(|| {
+            oep_devices()
+                .into_iter()
+                .enumerate()
+                .find(|(i, d)| sel.matches(d, *i))
+                .map(|(_, d)| d)
+        })
+        .flatten();
     let try_link = |stream: Box<dyn ch32rv_oep::link::ByteStream>| {
         let mut link = ch32rv_oep::link::Link::new(stream, ch32rv_oep::link::Framing::Length);
         if let Some(t) = timeout {
@@ -462,12 +504,12 @@ fn connect_ordered(
     };
     if let Some(d) = &dev {
         if hid_first
-            && matches!(start.as_str(), "" | "hid")
+            && hid
             && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
         {
             return Ok((p, "hid"));
         }
-        if !matches!(start.as_str(), "hid" | "serial")
+        if bulk
             && let Some(p) = d
                 // class 0xFF, subclass 'O', protocol 'E' (oep-core §3.3)
                 .open_vendor_bulk(
@@ -481,11 +523,17 @@ fn connect_ordered(
             return Ok((p, "vendor-bulk"));
         }
         if !hid_first
-            && start != "serial"
+            && hid
             && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
         {
             return Ok((p, "hid"));
         }
+    }
+    if !serial {
+        let what = if bulk { "vendor bulk" } else { "vendor HID" };
+        return Err(format!(
+            "the OEP device behind {path} did not answer on its {what} interface"
+        ));
     }
     let mut link = ch32rv_oep::link::open_serial(path).map_err(|e| e.to_string())?;
     if let Some(t) = timeout {
@@ -496,129 +544,82 @@ fn connect_ordered(
         .map_err(|e| e.to_string())
 }
 
-/// Resolve `oep://<probe>[/<port>[/<target>]]` to the probe's serial port.
-pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
-    // oep://<probe>[/<port>[/<target>]] (host guide §5.3): segments of letters, digits, - and .
-    // only, compared ignoring ASCII case; written in full (no wildcard). `oep-net://` names the
-    // same, reached over the network only (the unit id found by DNS-SD, whatever the IP; `oep://`
-    // prefers USB).
-    let (rest, net_only) = match url.strip_prefix("oep-net://") {
-        Some(r) => (r, true),
-        None => (url.strip_prefix("oep://").unwrap_or(url), false),
+/// en: Resolve an `oep://` address (host guide §5.3) to its route. The probe segment is looked up
+/// by unit id - on USB against the serial (case aside, transports §3), on the network by DNS-SD's
+/// TXT - and nothing else stands in when it is not found. Without `via`: USB, else DNS-SD.
+/// ja: `oep://` のアドレスを経路まで解く。probe の段は unit id で引き(USB は serial、ネットワークは
+/// DNS-SD の TXT)、見つからなければ止める。`via` が無ければ USB、無ければ DNS-SD。
+pub(crate) fn resolve_oep(a: &Address) -> Result<OepAddr, String> {
+    let id = a.probe.as_str();
+    let place = AddrPlace {
+        unit: id.to_owned(),
+        port: a.port.clone(),
+        target: a.target.clone(),
     };
-    let segs: Vec<&str> = rest.split('/').collect();
-    let ok = |s: &str| {
-        !s.is_empty()
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
-    };
-    if segs.len() > 3 || !segs.iter().all(|s| ok(s)) {
-        return Err(format!(
-            "`{url}` is not oep://<probe>[/<port>[/<target>]] (letters, digits, - and . only)"
-        ));
-    }
-    if segs.iter().any(|s| s.eq_ignore_ascii_case("any")) {
-        return Err(format!(
-            "`{url}`: an address is written in full (`any` is gone, host guide §5.3); `ch32rv target list` lists the ports"
-        ));
-    }
-    let id = segs[0];
-    let whole = segs.len() == 1;
-    let port = segs.get(1).map(|s| (*s).to_owned());
-    let target = segs.get(2).map(|s| (*s).to_ascii_lowercase());
-    let devs = if net_only { Vec::new() } else { oep_devices() };
-    let dev = if net_only {
-        None
-    } else {
-        // unit_id against the USB serial, case aside (transports §3).
-        devs.into_iter()
+    let on_usb = || {
+        oep_devices()
+            .into_iter()
             .find(|d| probe_id(d).eq_ignore_ascii_case(id))
     };
-    // Not on USB: a probe announcing that unit id on the local network (DNS-SD).
-    let Some(dev) = dev else {
-        let f = crate::mdns::find_unit(id, BROWSE_WAIT).ok_or_else(|| {
-            format!(
-                "no OEP probe {id} is connected over USB or announced on the local network \
-                 (mDNS: name it tcp:<host>:<port> where mDNS does not reach)"
-            )
-        })?;
-        let addr = f
-            .endpoint()
-            .ok_or_else(|| format!("OEP probe {id} announces no reachable endpoint"))?;
-        return Ok(OepAddr::Net {
-            addr,
-            unit: id.to_owned(),
-            port,
-            target,
-            whole,
-        });
+    let usb = |dev: ch32rv_usb::UsbDeviceInfo, via: Option<Via>| {
+        oep_port(&dev)
+            .map(|path| Route::Usb { path, via })
+            .ok_or_else(|| format!("OEP probe {id} has no serial port"))
     };
-    let path = oep_port(&dev).ok_or_else(|| format!("OEP probe {id} has no serial port"))?;
-    Ok(OepAddr::Probe {
-        path,
-        port,
-        target,
-        whole,
-    })
+    let route = match &a.via {
+        None => match on_usb() {
+            Some(dev) => usb(dev, None)?,
+            None => by_dns_sd(id, None)?,
+        },
+        Some(v @ (Via::Usb | Via::Bulk | Via::Hid | Via::Cdc)) => match on_usb() {
+            Some(dev) => usb(dev, Some(v.clone()))?,
+            None => return Err(format!("no OEP probe {id} is connected over USB (via={v})")),
+        },
+        Some(Via::Net) => by_dns_sd(id, Some(Via::Net))?,
+        Some(Via::Tcp(t)) if crate::broker::is_broker_endpoint(t) => Route::Broker(t.clone()),
+        Some(v @ Via::Tcp(t)) => Route::Net {
+            addr: t.clone(),
+            via: Some(v.clone()),
+        },
+        Some(Via::Tty(p)) => Route::Tty(p.clone()),
+    };
+    Ok(OepAddr::Named { place, route })
 }
 
-/// en: A TCP address as written after `tcp:` (a leading `//` of `tcp://` already gone or not):
-/// `<host>:<port>` as given; `<unit_id>` or `<host>` (no port) found by DNS-SD (the unit id in
-/// TXT, or the host's SRV name or address). The one place every path - `--probe`, an IDE's port
-/// address, `port:tcp:` - reads one, so each meets the same broker. Err: the message and a hint.
-/// ja: `tcp:` の後ろのアドレスを解く。`--probe`、IDE の port、`port:tcp:` のどれもここを通る。
-pub(crate) fn tcp_addr(name: &str) -> Result<OepAddr, (String, Option<&'static str>)> {
-    let name = name.strip_prefix("//").unwrap_or(name);
-    if name.contains(':') {
-        return Ok(OepAddr::Tcp(name.to_owned()));
-    }
-    let Some(f) = crate::mdns::find_named(name, BROWSE_WAIT) else {
-        return Err((
-            format!("no OEP probe {name} is announced on the local network (DNS-SD _oep._tcp)"),
-            Some("mDNS stays on the local link: name it tcp:<host>:<port> where it does not reach"),
-        ));
-    };
-    match (f.endpoint(), f.unit_id) {
-        (Some(addr), Some(unit)) => Ok(OepAddr::Net {
-            addr,
-            unit,
-            port: None,
-            target: None,
-            whole: false,
-        }),
-        (Some(addr), None) => Ok(OepAddr::Tcp(addr)),
-        (None, _) => Err((
-            format!("OEP probe {name} announces no reachable endpoint"),
-            None,
-        )),
-    }
+/// en: Parse and resolve an `oep://` address (the IDE monitor's OPEN, which reports a string).
+/// ja: `oep://` のアドレスをパースして解く(IDE の monitor の OPEN 用)。
+pub(crate) fn resolve_oep_url(url: &str) -> Result<OepAddr, String> {
+    resolve_oep(&Address::parse(url)?)
 }
 
-/// en: Whether `--probe` names an OEP probe: `tcp:`, `port:oep://<probe>[/<port>]`, or
-/// `port:<path>` for a serial port that no WCH-Link owns. `None` leaves the command on the
-/// WCH-Link path.
-/// ja: `--probe` が OEP の probe を指すか(`tcp:`、`port:oep://…`、WCH-Link のものでない serial port)。
+/// A probe announcing unit id `id` on the local network (DNS-SD `_oep._tcp`).
+fn by_dns_sd(id: &str, via: Option<Via>) -> Result<Route, String> {
+    let f = crate::mdns::find_unit(id, BROWSE_WAIT).ok_or_else(|| {
+        let usb = if via.is_none() {
+            "connected over USB or "
+        } else {
+            ""
+        };
+        format!(
+            "no OEP probe {id} is {usb}announced on the local network \
+             (mDNS: name it oep://{id}?via=tcp:<host>:<port> where mDNS does not reach)"
+        )
+    })?;
+    let addr = f
+        .endpoint()
+        .ok_or_else(|| format!("OEP probe {id} announces no reachable endpoint"))?;
+    Ok(Route::Net { addr, via })
+}
+
+/// en: Whether `--probe` names an OEP probe: an `oep://` address, or a serial port that no
+/// WCH-Link owns. `None` leaves the command on the WCH-Link path.
+/// ja: `--probe` が OEP の probe を指すか(`oep://…`、WCH-Link のものでない serial port)。
 pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
-    let sel = match crate::cmd_probe::parse_selector(cli, cmd)? {
-        // `tcp://host[:port]` as the other OEP clients write it, also behind `port:` (an IDE's
-        // port address).
-        Some(Selector::Tcp(a)) => {
-            Some(Selector::Tcp(a.strip_prefix("//").unwrap_or(&a).to_owned()))
-        }
-        Some(Selector::Port(p)) if p.starts_with("tcp:") => {
-            let rest = &p["tcp:".len()..];
-            Some(Selector::Tcp(
-                rest.strip_prefix("//").unwrap_or(rest).to_owned(),
-            ))
-        }
-        other => other,
-    };
-    match sel {
-        Some(Selector::Tcp(name)) => tcp_addr(&name)
-            .map(Some)
-            .map_err(|(m, hint)| fail(cli, cmd, ErrorKind::DeviceNotFound, m, hint)),
-        Some(Selector::Port(p)) if p.starts_with("oep://") || p.starts_with("oep-net://") => {
-            resolve_oep_url(&p)
+    match crate::cmd_probe::parse_selector(cli, cmd)? {
+        Some(Selector::Port(p)) if p.starts_with("oep://") => {
+            let a = Address::parse(&p)
+                .map_err(|m| fail(cli, cmd, ErrorKind::Usage, format!("--probe: {m}"), None))?;
+            resolve_oep(&a)
                 .map(Some)
                 .map_err(|m| fail(cli, cmd, ErrorKind::DeviceNotFound, m, None))
         }
@@ -729,16 +730,11 @@ pub(crate) fn broker_fail(cli: &Cli, cmd: &str, e: crate::broker::ClientLinkErro
     }
 }
 
-/// en: Connect and confirm, through the probe's broker whatever the transport (started if it is
-/// not running, docs/oep-host.ja.md §7.2): the broker holds the probe and its session, and this
-/// command is one of its clients. Only a `tcp:` address that is a ch32rv broker itself is
-/// connected to directly. ja: 接続して confirm。経路によらずブローカー経由(無ければ起動)。
-/// この PC のブローカー自身を指す `tcp:` だけ直接つなぐ。
 /// en: The hint for a broker of another ch32rv. ja: 別の版の ch32rv のブローカーのときの案内。
 const OTHER_VERSION_HINT: &str = "another ch32rv (an IDE's bundled one, or one on PATH) uses the probe through its broker; close what it runs (monitor, gdb), or use that ch32rv";
 
-/// en: A `tcp:` address that is a broker itself, opened directly: refused (exit 13) when the broker
-/// is of another ch32rv. ja: ブローカー自身の `tcp:` を直接開く。別の版なら断る(exit 13)。
+/// en: A `via=tcp:` endpoint that is a broker itself, opened directly: refused (exit 13) when the
+/// broker is of another ch32rv. ja: ブローカー自身の `via=tcp:` を直接開く。別の版なら断る(exit 13)。
 fn open_broker_directly(t: &str) -> Result<ch32rv_oep::link::Link, (ErrorKind, String)> {
     let mut l =
         ch32rv_oep::link::open_tcp(t).map_err(|e| (ErrorKind::DeviceOpenFailed, e.to_string()))?;
@@ -754,29 +750,34 @@ fn open_broker_directly(t: &str) -> Result<ch32rv_oep::link::Link, (ErrorKind, S
     }
 }
 
+/// en: Connect and confirm, through the probe's broker whatever the route (started if it is not
+/// running, docs/oep-host.ja.md §7.2): the broker holds the probe and its session, and this
+/// command is one of its clients. Only a `via=tcp:` endpoint that is a ch32rv broker itself is
+/// connected to directly. An `oep://` address's unit id is checked on the connection.
+/// ja: 接続して confirm。経路によらずブローカー経由(無ければ起動)。この PC のブローカー自身を指す
+/// `via=tcp:` だけ直接つなぐ。`oep://` の unit id はつないだ先で確かめる。
 fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
-    let mut link = match a {
-        OepAddr::Serial(p) | OepAddr::Probe { path: p, .. } => {
-            crate::broker::client_link(p).map_err(|e| broker_fail(cli, cmd, e))?
-        }
-        OepAddr::Tcp(_) | OepAddr::Net { .. } => match net_target(a) {
-            Some(t) => crate::broker::client_link_for(&t).map_err(|e| broker_fail(cli, cmd, e))?,
-            None => {
-                let OepAddr::Tcp(t) = a else {
-                    return Err(fail(cli, cmd, ErrorKind::Usage, "no tcp address", None));
-                };
-                open_broker_directly(t).map_err(|(kind, m)| {
-                    let hint = (kind == ErrorKind::DeviceBusy).then_some(OTHER_VERSION_HINT);
-                    fail(cli, cmd, kind, m, hint)
-                })?
-            }
-        },
-        OepAddr::Wch(t) => {
-            crate::broker::client_link_for(t).map_err(|e| broker_fail(cli, cmd, e))?
-        }
+    let mut link = match (a.broker_target(), a) {
+        (Some(t), _) => crate::broker::client_link_for(&t).map_err(|e| broker_fail(cli, cmd, e))?,
+        (
+            None,
+            OepAddr::Named {
+                route: Route::Broker(t),
+                ..
+            },
+        ) => open_broker_directly(t).map_err(|(kind, m)| {
+            let hint = (kind == ErrorKind::DeviceBusy).then_some(OTHER_VERSION_HINT);
+            fail(cli, cmd, kind, m, hint)
+        })?,
+        (None, _) => return Err(fail(cli, cmd, ErrorKind::Usage, "no route", None)),
     };
     apply_timeout(&mut link);
-    Probe::connect(link).map_err(|e| oep_fail(cli, cmd, e))
+    let mut p = Probe::connect(link).map_err(|e| oep_fail(cli, cmd, e))?;
+    if let Some(place) = a.place() {
+        verify_unit(&mut p, &place.unit)
+            .map_err(|m| fail(cli, cmd, ErrorKind::DeviceNotFound, m, None))?;
+    }
+    Ok(p)
 }
 
 /// en: The probe's only transport is one serial port (fn 0 describe `transport` lists a single
@@ -1000,7 +1001,7 @@ fn chip_idles_low(chip: Option<&str>) -> bool {
 /// en: Choose the port without attaching (host guide §5.3: resolving an address narrows probe and
 /// port by names only and stops unless one is left; an attach to search could wake and reset a
 /// target on rvswd). The port the address names (ASCII case aside, used as its labels write it);
-/// an address with no port (a serial port, `tcp:`) takes the probe's one named port, as a
+/// an address with no port (a serial port as it is) takes the probe's one named port, as a
 /// convenience of this tool. No port named by the labels: nothing to choose. The wire comes from
 /// the port's labels (`S.swio`: one wire, `S.swclk`: two), else from `--chip`.
 /// ja: attach せずに口を選ぶ。アドレスの口(大小文字を区別しない)、口の無いアドレスなら名前つきの
@@ -1312,7 +1313,7 @@ pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> E
             CMD,
             ErrorKind::Usage,
             format!("{p} is an OEP probe's serial port; flash it by its oep:// address instead"),
-            Some("use port:oep://<probe>[/<port>] (`ch32rv arduino discovery` lists them)"),
+            Some("use oep://<probe>[/<port>] (`ch32rv arduino discovery` lists them)"),
         );
     }
     let mut p = match connect(cli, CMD, a) {
@@ -1327,10 +1328,10 @@ pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> E
             CMD,
             ErrorKind::Usage,
             "this serial port belongs to an OEP probe that is also on USB as an OEP device; flash it by its oep:// address instead",
-            Some("use port:oep://<probe>[/<port>] (`ch32rv arduino discovery` lists them)"),
+            Some("use oep://<probe>[/<port>] (`ch32rv arduino discovery` lists them)"),
         );
     }
-    let serial = matches!(a, OepAddr::Serial(_)) && single_serial(&mut p);
+    let serial = a.raw_serial() && single_serial(&mut p);
     if let Err(c) = open_session(cli, CMD, &mut p, serial) {
         return c;
     }
@@ -1370,14 +1371,12 @@ fn flash_in_session(
         Err(e) => return oep_fail(cli, CMD, e),
     };
     // A broker that went away says why in its log (its stderr goes nowhere).
-    let log_hint = match a {
-        OepAddr::Serial(path) | OepAddr::Probe { path, .. } => Some(format!(
+    let log_hint = a.broker_target().map(|t| {
+        format!(
             "the probe's broker keeps a log: {}",
-            crate::broker::log_path(&crate::broker::BrokerTarget::Serial(path.clone()).key())
-                .display()
-        )),
-        _ => None,
-    };
+            crate::broker::log_path(&t.key()).display()
+        )
+    });
     let r = flash_attached(cli, args, bytes, p, at.connection, at.wch_chip_id, log_hint);
     let _ = detach(p, wire, at.connection);
     r
@@ -1697,19 +1696,22 @@ impl ConsoleSession {
         wanted: StreamWanted,
         chip: Option<&str>,
     ) -> Result<Self, String> {
-        let mut link = match a {
-            OepAddr::Serial(p) | OepAddr::Probe { path: p, .. } => crate::broker::client_link(p)?,
-            OepAddr::Tcp(_) | OepAddr::Net { .. } => match net_target(a) {
-                Some(t) => crate::broker::client_link_for(&t)?,
-                None => match a {
-                    OepAddr::Tcp(t) => open_broker_directly(t).map_err(|(_, m)| m)?,
-                    _ => return Err("no tcp address".into()),
+        let mut link = match (a.broker_target(), a) {
+            (Some(t), _) => crate::broker::client_link_for(&t)?,
+            (
+                None,
+                OepAddr::Named {
+                    route: Route::Broker(t),
+                    ..
                 },
-            },
-            OepAddr::Wch(t) => crate::broker::client_link_for(t)?,
+            ) => open_broker_directly(t).map_err(|(_, m)| m)?,
+            (None, _) => return Err("no route".into()),
         };
         apply_timeout(&mut link);
         let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
+        if let Some(place) = a.place() {
+            verify_unit(&mut probe, &place.unit)?;
+        }
         if a.whole_probe() {
             let labels = ch32rv_oep::config::labels(&mut probe).unwrap_or_default();
             return Err(whole_probe_msg(&ch32rv_oep::config::ports_named(&labels)));
@@ -1966,7 +1968,7 @@ pub(crate) fn with_attached(
 }
 
 /// en: The port an address names among the probe's named ports (ASCII case aside), or its one
-/// named port when the address names none (a serial port, `tcp:`). ja: アドレスの口、または唯一の口。
+/// named port when the address names none (a serial port as it is). ja: アドレスの口、または唯一の口。
 fn port_of(ports: &[String], a: &OepAddr) -> Option<String> {
     match a.port() {
         Some(name) => ports.iter().find(|p| p.eq_ignore_ascii_case(name)).cloned(),
@@ -2033,7 +2035,7 @@ pub(crate) fn with_attached_reset(
         Ok(p) => p,
         Err(c) => return c,
     };
-    let serial = matches!(a, OepAddr::Serial(_)) && single_serial(&mut p);
+    let serial = a.raw_serial() && single_serial(&mut p);
     if let Err(c) = open_session(cli, cmd, &mut p, serial) {
         return c;
     }

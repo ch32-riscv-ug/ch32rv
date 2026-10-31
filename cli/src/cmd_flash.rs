@@ -330,7 +330,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
         }
     };
 
-    // An OEP probe (`tcp:`, `oep://`, a serial port no WCH-Link owns) takes the OEP path. A
+    // An OEP probe (`oep://`, a serial port no WCH-Link owns) takes the OEP path. A
     // WCH-Link whose broker runs (an open monitor) is borrowed from it for the direct path below -
     // WCH's stub stays - and handed back when this returns.
     let _lend = match addr {
@@ -1641,7 +1641,7 @@ fn erase_range(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
 }
 
 pub fn reset(cli: &Cli, args: &crate::args::ResetArgs) -> ExitCode {
-    // An OEP probe (`tcp:`, `oep://`, or a serial port no WCH-Link owns) takes the OEP path.
+    // An OEP probe (`oep://`, or a serial port no WCH-Link owns) takes the OEP path.
     match crate::oep::addr(cli, "reset") {
         Ok(Some(a)) => return crate::oep::reset(cli, args, &a),
         Ok(None) => {}
