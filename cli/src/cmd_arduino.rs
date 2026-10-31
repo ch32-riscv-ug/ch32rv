@@ -252,12 +252,13 @@ fn wchlink_ports() -> Vec<Value> {
         .collect()
 }
 
-/// en: rv003usb / UIAPduino HID bootloaders (`1209:b803`, `1209:b003`) as `hid://<topology>`: a
-/// bootloader has no serial number, and the position is what `boot hid flash --probe
-/// hid://…` finds it by again. `vid` / `pid` let boards.txt's `upload_port.N.vid/pid` name
-/// the board.
-/// ja: rv003usb / UIAPduino の HID bootloader を `hid://<topology>` で出す(serial 番号が無く、
-/// `boot hid flash --probe hid://…` も位置で引く)。`vid` / `pid` で boards.txt が板名を出す。
+/// en: rv003usb / UIAPduino HID bootloaders (`1209:b803`, `1209:b003`) as
+/// `ch32rv-hid://<topology>`, protocol `ch32rv-hid`: a bootloader has no serial number, and the
+/// position is what `boot hid flash --device ch32rv-hid://…` finds it by again. `vid` / `pid`
+/// let boards.txt's `upload_port.N.vid/pid` name the board.
+/// ja: rv003usb / UIAPduino の HID bootloader を `ch32rv-hid://<topology>`(protocol `ch32rv-hid`)で
+/// 出す(serial 番号が無く、`boot hid flash --device ch32rv-hid://…` も位置で引く)。`vid` / `pid` で
+/// boards.txt が板名を出す。
 fn hid_ports() -> Vec<Value> {
     let devs = ch32rv_usb::enumerate().unwrap_or_default();
     devs.iter()
@@ -265,9 +266,9 @@ fn hid_ports() -> Vec<Value> {
         .map(|d| {
             let topology = d.topology();
             json!({
-                "address": format!("hid://{topology}"),
+                "address": format!("{}{topology}", crate::cmd_boot::HID_SCHEME),
                 "label": format!("HID bootloader {topology}"),
-                "protocol": "hid",
+                "protocol": "ch32rv-hid",
                 "protocolLabel": "USB HID bootloader (rv003usb)",
                 "hardwareId": topology,
                 "properties": {
@@ -431,7 +432,7 @@ impl Settings {
         let sources: &'static [MonitorSource] = match protocol {
             "wchlink" => &WCHLINK_SOURCES,
             "oep" => &OEP_SOURCES,
-            // serial / ch32rv-app (its CDC) / ch32rv-isp: the UART source only.
+            // serial / ch32rv-app (its CDC) / ch32rv-isp / ch32rv-hid: the UART source only.
             _ => &SERIAL_SOURCES,
         };
         // Line settings default to the builtin serial-monitor's.
@@ -730,6 +731,9 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
     }
     if address.starts_with(crate::cmd_isp::ISP_SCHEME) {
         return Err("the ISP bootloader has no console to monitor".to_owned());
+    }
+    if address.starts_with(crate::cmd_boot::HID_SCHEME) {
+        return Err("the HID bootloader has no console to monitor".to_owned());
     }
     // `oep://` with any `via`: the same resolution as `--probe`, so the monitor meets the broker
     // the upload used.

@@ -113,10 +113,10 @@ impl HidBoot {
         Self::open_at(usb_id, None)
     }
 
-    /// en: Open the bootloader at USB position `topology` (`<bus>-<ports>`, the `hid://` address
+    /// en: Open the bootloader at USB position `topology` (`<bus>-<ports>`, the `ch32rv-hid://` address
     /// discovery gives), or the first one found when `None`. Linux matches the position through
     /// the device's hidraw nodes; elsewhere HID paths carry no position, so the ID must be unique.
-    /// ja: USB の位置 `topology`(discovery の `hid://` の値)の bootloader を開く。`None` なら最初の
+    /// ja: USB の位置 `topology`(discovery の `ch32rv-hid://` の値)の bootloader を開く。`None` なら最初の
     /// 1 台。Linux は hidraw ノードで位置を照合、他 OS は位置が取れないので ID が一意であること。
     pub fn open_at(
         usb_id: Option<(u16, u16)>,

@@ -7,12 +7,13 @@
 //! name:<alias>          alias from the config file
 //! topology:<bus>-<ports>  USB position (physical port on a fixed hub; for HIL lanes)
 //! <address>             an IDE port address as it is: a probe's serial port (/dev/ttyACM0,
-//!                       COM3), wchlink://<serial>, oep://<probe>[/<port>[/<target>]][?via=<route>],
-//!                       hid://<topology>, ch32rv-app://..., ch32rv-isp://...
+//!                       COM3), wchlink://<serial>, oep://<probe>[/<port>[/<target>]][?via=<route>]
 //! ```
 //!
-//! en: The forms that are gone (`port:`, `tcp:`, `usb:`, `oep-net://`) are refused with the form
-//! to write instead. ja: 無くなった形は、代わりの書き方を添えて断る。
+//! en: The forms that are gone (`port:`, `tcp:`, `usb:`, `oep-net://`, `hid://`) are refused with
+//! the form to write instead. A write target's address (`ch32rv-hid://`, `ch32rv-app://`,
+//! `ch32rv-isp://`) is not a probe: it goes to `--device`.
+//! ja: 無くなった形は、代わりの書き方を添えて断る。書き込み先の住所は probe ではない(`--device`)。
 
 use std::str::FromStr;
 
@@ -33,8 +34,7 @@ pub enum Selector {
     /// `topology:<bus>-<ports>` (e.g. `3-1.4.2`)
     Topology(String),
     /// An IDE port address as it is - the probe that owns this serial port (`/dev/ttyACM0`,
-    /// `COM3`), or discovery's `oep://...` / `hid://<topology>` / `ch32rv-app://...`
-    /// (`wchlink://<serial>` is [`Selector::Serial`]). An `oep://` address is never a USB device
+    /// `COM3`), or discovery's `oep://...` (`wchlink://<serial>` is [`Selector::Serial`]). An `oep://` address is never a USB device
     /// here; the OEP layer resolves it.
     Port(String),
 }
@@ -57,9 +57,14 @@ pub enum SelectorParseError {
     #[error("empty value after `{0}:`")]
     EmptyValue(&'static str),
     #[error(
-        "`{0}` is not a probe selector: use VID:PID[:SERIAL] (hex, e.g. 1a86:8010), serial:<sn>, name:<alias>, topology:<bus>-<ports>, or an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>], hid://<bus>-<ports>)"
+        "`{0}` is not a probe selector: use VID:PID[:SERIAL] (hex, e.g. 1a86:8010), serial:<sn>, name:<alias>, topology:<bus>-<ports>, or an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>])"
     )]
     Unrecognized(String),
+    /// A write target's address (a bootloader or an application), not a debug probe.
+    #[error(
+        "`{0}` names a write target, not a debug probe: pass it as --device (isp, boot dfu, boot hid)"
+    )]
+    NotAProbe(String),
     /// A form that is gone, with what to write instead.
     #[error("`{0}`: this form is gone; write {1}")]
     Removed(String, String),
@@ -114,9 +119,12 @@ impl FromStr for Selector {
     }
 }
 
-/// en: What to write instead of a form that is gone (`port:`, `tcp:`, `usb:`, `oep-net://`), or
-/// None. ja: 無くなった形なら、代わりの書き方。
+/// en: What to write instead of a form that is gone (`port:`, `tcp:`, `usb:`, `oep-net://`,
+/// `hid://`), or None. ja: 無くなった形なら、代わりの書き方。
 pub fn removed(s: &str) -> Option<String> {
+    if let Some(v) = s.strip_prefix("hid://") {
+        return Some(format!("ch32rv-hid://{v}"));
+    }
     if let Some(v) = s.strip_prefix("oep-net://") {
         let (place, _) = v.split_once('?').unwrap_or((v, ""));
         return Some(format!("oep://{place}?via=net"));
@@ -144,11 +152,11 @@ pub fn removed(s: &str) -> Option<String> {
     None
 }
 
-/// en: An IDE port address, told apart from the keyword and VID:PID forms by its shape: a URL of
-/// a scheme discovery lists (`wchlink://<serial>`, `wchlink://usb-<bus>-<ports>`, `oep://...`,
-/// `hid://...`, `ch32rv-app://...`, `ch32rv-isp://...`; another scheme is no form), or a serial
-/// port's path (`/dev/ttyACM0`, `COM3`,
-/// `\\.\COM12`). None for anything else.
+/// en: An IDE port address of a probe, told apart from the keyword and VID:PID forms by its
+/// shape: a URL of a probe scheme discovery lists (`wchlink://<serial>`,
+/// `wchlink://usb-<bus>-<ports>`, `oep://...`; a write target's scheme is refused, another scheme
+/// is no form), or a serial port's path (`/dev/ttyACM0`, `COM3`, `\\.\COM12`). None for anything
+/// else.
 /// ja: IDE の port の住所(URL か serial port の path)。形で見分ける。
 fn address(a: &str) -> Option<Result<Selector, SelectorParseError>> {
     if let Some(v) = a.strip_prefix("wchlink://") {
@@ -160,13 +168,21 @@ fn address(a: &str) -> Option<Result<Selector, SelectorParseError>> {
     let com = a.len() > 3
         && a[..3].eq_ignore_ascii_case("com")
         && a[3..].chars().all(|c| c.is_ascii_digit());
-    let url = ADDRESS_SCHEMES.iter().any(|scheme| a.starts_with(scheme));
+    if DEVICE_SCHEMES.iter().any(|scheme| a.starts_with(scheme)) {
+        return Some(Err(SelectorParseError::NotAProbe(a.to_owned())));
+    }
+    let url = a.starts_with("oep://");
     (url || a.starts_with('/') || a.starts_with("\\\\.\\") || com)
         .then(|| Ok(Selector::Port(a.to_owned())))
 }
 
 /// The URL forms of the addresses discovery lists (besides `wchlink://`, a serial).
-pub const ADDRESS_SCHEMES: [&str; 4] = ["oep://", "hid://", "ch32rv-app://", "ch32rv-isp://"];
+pub const ADDRESS_SCHEMES: [&str; 4] =
+    ["oep://", "ch32rv-hid://", "ch32rv-app://", "ch32rv-isp://"];
+
+/// en: The URL forms that name a write target - a bootloader or a running application - which
+/// `--device` takes and `--probe` refuses. ja: 書き込み先の URL(`--device` で渡す)。
+pub const DEVICE_SCHEMES: [&str; 3] = ["ch32rv-hid://", "ch32rv-app://", "ch32rv-isp://"];
 
 fn keyword_value(v: &str, kw: &'static str) -> Result<String, SelectorParseError> {
     if v.is_empty() {
@@ -199,17 +215,13 @@ impl Selector {
             Selector::Serial(sn) => dev.serial().is_some_and(|d| d.eq_ignore_ascii_case(sn)),
             Selector::Topology(t) => dev.topology() == *t,
             // en: The IDE's port addresses, so a recipe can pass `{upload.port.address}` whatever
-            // the user picked: `wchlink://<serial>` and `hid://<topology>` (discovery's own
-            // addresses) name the device directly; anything else is a serial port path.
-            // ja: IDE の port address。recipe が何を選ばれても `{upload.port.address}` を渡せる
-            // ように、discovery 自身の address(`wchlink://<serial>` / `hid://<topology>`)は device を
+            // the user picked: `wchlink://<serial>` (discovery's own address) names the device
+            // directly; anything else is a serial port path.
+            // ja: IDE の port address。discovery 自身の address(`wchlink://<serial>`)は device を
             // 直接指し、それ以外は serial port の path。
             Selector::Port(p) => {
                 if let Some(id) = p.strip_prefix("wchlink://") {
                     return dev.port_id().as_deref() == Some(id);
-                }
-                if let Some(t) = p.strip_prefix("hid://") {
-                    return dev.topology() == t;
                 }
                 let want = normalize_port(p);
                 dev.serial_ports().iter().any(|q| normalize_port(q) == want)
@@ -299,11 +311,19 @@ mod tests {
             "oep://50029191fe34/weact?via=net",
             "oep://50029191fe34?via=tty:/dev/ttyUSB0",
             "com12",
-            "hid://3-2.4",
+        ] {
+            assert_eq!(a.parse::<Selector>().unwrap(), Selector::Port(a.to_owned()));
+        }
+        // A write target's address is not a probe.
+        for a in [
+            "ch32rv-hid://3-2.4",
             "ch32rv-app://3-2.4.3",
             "ch32rv-isp://3-2.4.3",
         ] {
-            assert_eq!(a.parse::<Selector>().unwrap(), Selector::Port(a.to_owned()));
+            assert_eq!(
+                a.parse::<Selector>(),
+                Err(SelectorParseError::NotAProbe(a.to_owned()))
+            );
         }
         // Not an address: still VID:PID.
         assert!(matches!(
@@ -397,6 +417,7 @@ mod tests {
             ),
             ("tcp:50029191fe34", "oep://50029191fe34?via=net"),
             ("usb:3-1.4.2", "topology:3-1.4.2"),
+            ("hid://3-2.4", "ch32rv-hid://3-2.4"),
             (
                 "oep-net://50029191fe34/weact",
                 "oep://50029191fe34/weact?via=net",

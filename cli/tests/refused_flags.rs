@@ -128,6 +128,7 @@ fn removed_address_forms_say_what_to_write() {
         ),
         ("tcp:0123456789ab", "oep://0123456789ab?via=net"),
         ("usb:3-1.4.2", "topology:3-1.4.2"),
+        ("hid://3-2.4", "ch32rv-hid://3-2.4"),
         (
             "oep-net://0123456789ab/weact",
             "oep://0123456789ab/weact?via=net",
@@ -147,4 +148,84 @@ fn removed_address_forms_say_what_to_write() {
         let (code, v) = run(&["target", "info", "--probe", bad]);
         assert_eq!(code, 2, "{bad}: {v}");
     }
+}
+
+fn usage(args: &[&str]) -> (String, String) {
+    let (code, v) = run(args);
+    assert_eq!(code, 2, "{args:?}: {v}");
+    (
+        v["error"]["msg"].as_str().unwrap_or("").to_owned(),
+        v["error"]["hint"].as_str().unwrap_or("").to_owned(),
+    )
+}
+
+fn image() -> String {
+    format!(
+        "{}/../tests/fixtures/runtest-ch32v003.bin",
+        env!("CARGO_MANIFEST_DIR")
+    )
+}
+
+#[test]
+fn a_write_target_is_a_device_not_a_probe() {
+    // --probe names a debug probe only; a bootloader's or application's address goes to --device.
+    for a in [
+        "ch32rv-hid://3-2.4",
+        "ch32rv-app://C016ABCD283FBC5C",
+        "ch32rv-isp://3-2.4",
+    ] {
+        let (msg, _) = usage(&["target", "info", "--probe", a]);
+        assert!(msg.contains("--device"), "{a}: {msg}");
+    }
+    // boot dfu / boot hid write through no probe: --probe is refused with the --device to write.
+    let img = image();
+    for args in [
+        vec![
+            "boot",
+            "hid",
+            "flash",
+            &img,
+            "--probe",
+            "ch32rv-hid://3-2.4",
+        ],
+        vec!["boot", "dfu", "flash", &img, "--probe", "/dev/ttyACM0"],
+        vec!["boot", "dfu", "info", "--probe", "/dev/ttyACM0"],
+    ] {
+        let (msg, hint) = usage(&args);
+        assert!(msg.contains("--probe"), "{args:?}: {msg}");
+        assert!(
+            hint.contains(&format!("--device {}", args[args.len() - 1])),
+            "{args:?}: {hint}"
+        );
+    }
+    // CH32RV_PROBE names the other commands' probe; it is not a mistake on boot.
+    let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        .args(["boot", "hid", "flash", &img, "--dry-run"])
+        .env("CH32RV_PROBE", "serial:NO-SUCH-PROBE")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{out:?}");
+    // isp --app-device is gone: --device takes the application too.
+    let (msg, hint) = usage(&["isp", "info", "--app-device", "/dev/ttyACM0"]);
+    assert!(msg.contains("--app-device"), "{msg}");
+    assert!(hint.contains("--device /dev/ttyACM0"), "{hint}");
+}
+
+#[test]
+fn device_forms_are_checked_before_anything_is_opened() {
+    let img = image();
+    // boot hid: a position only; the old scheme says what to write.
+    let (_, hint) = usage(&["boot", "hid", "flash", &img, "--device", "hid://3-2.4"]);
+    assert!(hint.contains("ch32rv-hid://3-2.4"), "{hint}");
+    let (msg, _) = usage(&["boot", "hid", "flash", &img, "--device", "1209:b803"]);
+    assert!(msg.contains("position"), "{msg}");
+    // isp: removed forms and another route's bootloader are refused.
+    let (msg, _) = usage(&["isp", "info", "--device", "usb:3-1.4"]);
+    assert!(msg.contains("topology:3-1.4"), "{msg}");
+    let (msg, _) = usage(&["isp", "info", "--device", "hid://3-2.4"]);
+    assert!(msg.contains("ch32rv-hid://3-2.4"), "{msg}");
+    let (_, hint) = usage(&["isp", "info", "--device", "ch32rv-hid://3-2.4"]);
+    assert!(hint.contains("boot hid flash"), "{hint}");
+    let (_, hint) = usage(&["boot", "dfu", "info", "--device", "ch32rv-isp://3-2.4"]);
+    assert!(hint.contains("isp --device"), "{hint}");
 }

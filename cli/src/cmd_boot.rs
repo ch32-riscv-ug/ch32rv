@@ -14,6 +14,7 @@ pub fn hid_flash(
     file: &std::path::Path,
     usb_id: Option<&str>,
     wait_secs: u64,
+    device: Option<&str>,
 ) -> ExitCode {
     const CMD: &str = "boot.hid.flash";
     let id = match usb_id.map(parse_usb_id).transpose() {
@@ -58,26 +59,16 @@ pub fn hid_flash(
         return ExitCode::SUCCESS;
     }
 
-    // en: `--probe topology:<bus>-<ports>`, or the IDE's `hid://<topology>`, picks one bootloader
-    // by position; without it the first one found is used.
-    // ja: `--probe topology:<位置>` か IDE の `hid://<topology>` で位置の bootloader を選ぶ。
+    // en: `--device topology:<bus>-<ports>`, or the IDE's `ch32rv-hid://<topology>`, picks one
+    // bootloader by position; without it the first one found is used.
+    // ja: `--device topology:<位置>` か IDE の `ch32rv-hid://<topology>` で位置の bootloader を選ぶ。
     // 無ければ最初の 1 台。
-    let topology = match crate::cmd_probe::parse_selector(cli, CMD) {
-        Ok(None) => None,
-        Ok(Some(ch32rv_usb::Selector::Topology(t))) => Some(t),
-        Ok(Some(ch32rv_usb::Selector::Port(p))) if p.starts_with("hid://") => {
-            p.strip_prefix("hid://").map(str::to_owned)
-        }
-        Ok(Some(_)) => {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::Usage,
-                "a HID bootloader is selected by position only",
-                Some("use --probe topology:<bus>-<ports> or hid://<bus>-<ports>"),
-            );
-        }
-        Err(c) => return c,
+    let topology = match device {
+        None => None,
+        Some(d) => match hid_position(d) {
+            Ok(t) => Some(t.to_owned()),
+            Err((m, hint)) => return fail(cli, CMD, ErrorKind::Usage, m, Some(&hint)),
+        },
     };
     let wait = Duration::from_secs(wait_secs);
     let boot = match open_waiting(id, topology.as_deref(), wait) {
@@ -113,6 +104,31 @@ pub fn hid_flash(
             report.bytes, report.vid, report.pid, report.sectors_written
         );
         ExitCode::SUCCESS
+    }
+}
+
+/// The HID bootloader's discovery address: `ch32rv-hid://<bus>-<ports>`.
+pub(crate) const HID_SCHEME: &str = "ch32rv-hid://";
+
+/// en: The USB position `boot hid flash --device` names: `ch32rv-hid://<topology>` or
+/// `topology:<topology>` (a bootloader has no serial). Else the message and the hint.
+/// ja: `--device` の位置。bootloader は serial を持たないので位置だけ。
+fn hid_position(d: &str) -> Result<&str, (String, String)> {
+    if let Some(instead) = ch32rv_usb::selector::removed(d) {
+        return Err((
+            format!("--device `{d}`: this form is gone"),
+            format!("write {instead}"),
+        ));
+    }
+    match d
+        .strip_prefix(HID_SCHEME)
+        .or_else(|| d.strip_prefix("topology:"))
+    {
+        Some(t) if !t.is_empty() => Ok(t),
+        _ => Err((
+            format!("--device `{d}`: a HID bootloader is selected by position only"),
+            "use --device ch32rv-hid://<bus>-<ports> or topology:<bus>-<ports>".to_owned(),
+        )),
     }
 }
 
@@ -201,12 +217,16 @@ fn hid_error(cli: &Cli, cmd: &str, error: HidBootError) -> ExitCode {
 
 // ---- USB DFU 1.1 download ----
 
-/// en: The DFU device `--probe` names (any of `isp --app-device`'s forms), else the only one
-/// present with a DFU run-time or DFU-mode interface.
-/// ja: `--probe` が名指す DFU の device(`isp --app-device` と同じ書き方)。無ければ唯一の DFU device。
-fn dfu_device(cli: &Cli, cmd: &str) -> Result<ch32rv_usb::UsbDeviceInfo, ExitCode> {
-    if let Some(sel) = cli.probe.as_deref() {
-        return crate::cmd_isp::app_device(cli, cmd, sel).map(|a| a.dev);
+/// en: The DFU device `--device` names (an application's forms of `isp --device`), else the only
+/// one present with a DFU run-time or DFU-mode interface.
+/// ja: `--device` が名指す DFU の device(`isp --device` のアプリの書き方)。無ければ唯一の DFU device。
+fn dfu_device(
+    cli: &Cli,
+    cmd: &str,
+    device: Option<&str>,
+) -> Result<ch32rv_usb::UsbDeviceInfo, ExitCode> {
+    if let Some(sel) = device {
+        return crate::cmd_isp::usb_device(cli, cmd, sel).map(|a| a.dev);
     }
     let all = ch32rv_usb::enumerate()
         .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
@@ -234,7 +254,7 @@ fn dfu_device(cli: &Cli, cmd: &str) -> Result<ch32rv_usb::UsbDeviceInfo, ExitCod
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
-            Some("name one with --probe topology:<bus>-<ports> or VID:PID:SERIAL"),
+            Some("name one with --device topology:<bus>-<ports> or VID:PID:SERIAL"),
         )),
     }
 }
@@ -316,6 +336,7 @@ pub fn dfu_flash(
     file: &std::path::Path,
     format: ch32rv_contract::policy::ImageFormat,
     at: Option<&str>,
+    device: Option<&str>,
 ) -> ExitCode {
     const CMD: &str = "boot.dfu.flash";
     const BASE: u32 = ch32rv_flash::CODE_FLASH_START;
@@ -364,7 +385,7 @@ pub fn dfu_flash(
         println!("would write {} byte(s) through DFU", flat.len());
         return ExitCode::SUCCESS;
     }
-    let dev = match dfu_device(cli, CMD) {
+    let dev = match dfu_device(cli, CMD, device) {
         Ok(d) => d,
         Err(c) => return c,
     };
@@ -418,9 +439,9 @@ pub fn dfu_flash(
 }
 
 /// `boot dfu info`: the DFU device, its interfaces and (in DFU mode) its state.
-pub fn dfu_info(cli: &Cli) -> ExitCode {
+pub fn dfu_info(cli: &Cli, device: Option<&str>) -> ExitCode {
     const CMD: &str = "boot.dfu.info";
-    let dev = match dfu_device(cli, CMD) {
+    let dev = match dfu_device(cli, CMD, device) {
         Ok(d) => d,
         Err(c) => return c,
     };
@@ -462,6 +483,7 @@ pub fn dfu_info(cli: &Cli) -> ExitCode {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -471,5 +493,23 @@ mod tests {
         assert_eq!(parse_usb_id("0x1209:0xb003"), Ok((0x1209, 0xb003)));
         assert!(parse_usb_id("1209").is_err());
         assert!(parse_usb_id("1209:b803:x").is_err());
+    }
+
+    #[test]
+    fn hid_device_is_a_position() {
+        assert_eq!(hid_position("ch32rv-hid://3-2.4"), Ok("3-2.4"));
+        assert_eq!(hid_position("topology:3-2.4"), Ok("3-2.4"));
+        // The old scheme says what to write instead.
+        let (m, hint) = hid_position("hid://3-2.4").unwrap_err();
+        assert!(m.contains("gone"), "{m}");
+        assert_eq!(hint, "write ch32rv-hid://3-2.4");
+        for bad in [
+            "1209:b803",
+            "/dev/ttyACM0",
+            "ch32rv-hid://",
+            "ch32rv-app://3-2.4",
+        ] {
+            assert!(hid_position(bad).is_err(), "{bad}");
+        }
     }
 }

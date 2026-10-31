@@ -146,9 +146,10 @@ chip = "CH32V203C8T6"
   name:<alias>          設定ファイルの別名(値は下のどの形でもよい。?via= 付きの住所も書ける)
   topology:<bus>-<ports>  USB の位置(固定 hub の物理 port。HIL lane 用)
   <IDE の住所>          IDE の port の住所をそのまま: probe の serial port(/dev/ttyACM0、COM3。symlink 可)、
-                        wchlink://<serial>、oep://<probe>[/<port>[/<target>]][?via=<経路>]、hid://<bus>-<ports>、
-                        ch32rv-app://<id>
+                        wchlink://<serial>、oep://<probe>[/<port>[/<target>]][?via=<経路>]
 ```
+
+`--probe` は debug probe(WCH-Link、OEP の probe)だけを名指す。書き込み先の住所(`ch32rv-hid://`、`ch32rv-app://`、`ch32rv-isp://`)は probe ではないので、`--probe` では exit 2 で断り、`isp` / `boot dfu` / `boot hid` の `--device` に渡す(§4.7、§4.8)。
 
 `oep://` の住所(oep-spec host ガイド §5.3)は、場所(probe の unit_id、口、target)と、そこへ届く経路 `via` からなる。`via` は場所の一部ではない。
 
@@ -166,13 +167,13 @@ chip = "CH32V203C8T6"
 - ブローカーの key(この PC での probe の持ち主)は unit_id で決まり、`via` によらない(docs/oep-host.ja.md §7.2)。すでに動いているブローカーが別の経路で probe を持っているとき、`via` を付けた住所はその経路を守れないので exit 13 で断る(`via` 無しならそのブローカーを使う)。
 - `probe list` / `target list` / discovery は、`via` の無い形を 1 つの場所につき 1 行出す。
 - unit_id を知らないときは、serial port の path をそのまま `--probe` に渡してよい(道具の便利機能)。WCH-Link のものでない serial port は OEP の probe として開く(unit_id は確かめない)。
-- 無くなった形は、代わりの書き方を添えて exit 2 で断る: `port:<住所>` → 住所をそのまま、`tcp:<host>:<port>` / `tcp://<host>:<port>` → `oep://<unit_id>?via=tcp:<host>:<port>`、`tcp:<unit_id>` → `oep://<unit_id>?via=net`、`oep-net://<probe>[/<port>]` → `oep://<probe>[/<port>]?via=net`、`usb:<bus>-<ports>` → `topology:<bus>-<ports>`。環境変数 `CH32RV_OEP_TRANSPORT` も無い(`via=bulk|hid|cdc` で選ぶ)。
+- 無くなった形は、代わりの書き方を添えて exit 2 で断る: `port:<住所>` → 住所をそのまま、`tcp:<host>:<port>` / `tcp://<host>:<port>` → `oep://<unit_id>?via=tcp:<host>:<port>`、`tcp:<unit_id>` → `oep://<unit_id>?via=net`、`oep-net://<probe>[/<port>]` → `oep://<probe>[/<port>]?via=net`、`usb:<bus>-<ports>` → `topology:<bus>-<ports>`、`hid://<bus>-<ports>` → `ch32rv-hid://<bus>-<ports>`(`--device` でも)。環境変数 `CH32RV_OEP_TRANSPORT` も無い(`via=bulk|hid|cdc` で選ぶ)。
 
 - **`index:` は廃止(2026-10-23)**: 一覧の順番で選ぶ書き方は、機器の増減で別の probe を指しうるので外した。`probe list` / `target list` の ADDRESS をそのまま渡す。
 - **OEP の復旧(2026-10-23)**: `--connect-under-reset` は、リセットを押さえたままの attach を最大 4 回やり直し、族が分からない rvswd では SWCLK の休ませ方を probe の自動と low の両方で試す(CH32L103 は high で休ませると DM がリセットされる。離した直後に止められるかは firmware との競争で、1 回では通らないことがあった)。`recover --method nrst [--image <FILE>]`(OEP)は、NRST を押さえて止めたあと、リセットベクタのページを先に DMI で消し(壊れた firmware がもう起動しない)、残りを RAM loader で書く: `--image` を渡せばそのイメージ、無ければ消去済みの値(DB の erased_word)で code flash 全体。読み出し保護があれば、従来どおり外して全消去する。実機: L103(RP2350、`--pins swdio=0,swclk=1,nrst=2`)で `--connect-under-reset target info` 3 回とも通り、`recover --method nrst --image` も 1 回で書けた。
 - **OEP の口と `--pins`(2026-10-23、oep-spec cc82b5e)**: 口は `channel.{}.label` の `S.N` だけが名付ける(`S` は英字で始まる英字・数字・`-` の 1〜16 文字、`N` は英字・数字・`-`・`_`)。ラベルは書いたとおりの大小文字で表示し、比べるときは ASCII の大小文字を区別しない。名前の無い口と `any` は無くなった(住所はいつも全部を書く)。名前つきの口が無い probe は `target list` と discovery に出ない。住所でないシリアルポートの path を渡したときは、名前つきの口がちょうど 1 つならそれを使う(道具の便利機能)。ラベルの無い probe には `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]`(1 線は `swio=<pin>`、UART は `rx` / `tx`)でピンを直接指定する。ピンは probe の channel の名前(fn 0 の describe の `channel_name`、`GPIO0` など)か番号。`--pins` を付けるとラベルは読まず、`oep://<probe>`(probe 自身)とも組み合わせられる。
 - **OEP の一覧**: `probe list` / `target list` / discovery は、USB に無い OEP の probe も `oep://<unit id>[/<port>]` で出し、TOPOLOGY は `network`、MODEL は describe の model(`OEP probe (esp32)`)。両方から届く probe は `oep://` と USB の位置の 1 行で、JSON の `tcp` にネットワークの経路も出す。
-- **IDE の住所はそのまま**: IDE の port の住所は、形で見分けられる(`://` を含む URL、`/` で始まる path、`COM<n>`、`\\.\…`)ので、前置き無しでそのまま `--probe` / `--app-device` に渡す(recipe は `--probe "{upload.port.address}"`)。`wchlink://<serial>` は `serial:`、`wchlink://usb-<bus>-<ports>` は `topology:` と同じ。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial、`hid://` は位置で device を直接指す(`boot hid flash` は `topology:` と `hid://` だけを受ける)。どの probe の port でもなければ exit 10。
+- **IDE の住所はそのまま**: IDE の port の住所は、形で見分けられる(`://` を含む URL、`/` で始まる path、`COM<n>`、`\\.\…`)ので、前置き無しでそのまま `--probe`(debug probe)/ `--device`(書き込み先)に渡す(recipe は `--probe "{upload.port.address}"` か `--device "{upload.port.address}"`)。`wchlink://<serial>` は `serial:`、`wchlink://usb-<bus>-<ports>` は `topology:` と同じ。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial で device を直接指す。どの probe の port でもなければ exit 10。
 
 - serial を持たない device(ISP mode 等)は `VID:PID:` (空 serial)と topology で選ぶ。
 - 解決結果が 0 台なら exit 10、2 台以上なら exit 14 で候補一覧を出す。
@@ -486,8 +487,9 @@ ch32rv gdb [--listen 127.0.0.1:3333] [--reset-halt] [--no-flash]
 ### 4.7 isp(factory ISP 経路)
 
 ```text
-ch32rv isp [--transport usb|uart] [--device topology:<bus>-<ports>] [--port <serial port>] [--baud <bps>] [--wait <SECS>]
-           [--entry none|auto|probe|dfu-detach|touch1200] [--app-device <serial port>|ch32rv-app://<id>|topology:<bus>-<ports>|VID:PID[:SN]]
+ch32rv isp [--transport usb|uart] [--device <住所>] [--port <serial port>] [--baud <bps>] [--wait <SECS>]
+           [--entry none|auto|probe|dfu-detach|touch1200]
+           --device: ch32rv-isp://<bus>-<ports> | topology:<bus>-<ports> | <serial port> | ch32rv-app://<id> | VID:PID[:SN]
 ch32rv isp list                                     ISP mode device の列挙。Identify に答えない device(LinkE IAP 等)は区別して表示
 ch32rv isp info                                     chip/BTVER/UID/保護状態/config 12 B
 ch32rv isp enter [--via probe]                      --probe の debug 線で boot mode を立てて reset(CH32X03x)
@@ -501,22 +503,26 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
 
 - **USB transport は実装済み(2026-10-13)**。CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で info / flash / verify / erase / reset を実機確認し、書いた内容は RVSWD の読み出しで照合した。byte の記録は wch-protocols `protocols/pc-to-device-isp.ja.md#x035-bytes`、replay fixture は `tests/fixtures/replay/isp-*-x035.ndjson`。
 - **UART transport(2026-10-22 実装、実機未確認)**: `--transport uart --port <serial port>`(`--baud` 既定 115200、8N1)。frame は USB と同じで、request を `57 ab` + frame + byte 和、reply を `55 aa` + frame + byte 和で包む(先行実装からの転記)。reply の前の余計な byte は読み飛ばし、和が合わなければ transfer-failed。UART には「現れる」が無いので、`--wait`(entry をしたなら最低 5 s)の間 Identify を繰り返し、答えなければ exit 10。`--entry` は USB と同じ入り方をしてから port を開く。出力の位置は `uart:<port>`(JSON は `at`、`usb` / `topology` は null)。auto-baud と `0xC5` SetBaud は使わない(`--baud` は port の速さだけ)。疑似 bootloader(pty)で info を通した。
-- ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed(2 台以上は exit 14 で位置の候補を出す)。複数台は `--device topology:<bus>-<ports>` で選ぶ。
+- ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed(2 台以上は exit 14 で位置の候補を出す)。複数台は `--device` で選ぶ。
+- `--device <住所>`: 書く device を 1 つの option で名指す。`--probe` は `--entry probe` の debug probe だけ。
+  - `ch32rv-isp://<bus>-<ports>`(discovery の bootloader の住所): その位置の ISP device。アプリには頼まない。
+  - `topology:<bus>-<ports>`: その位置の ISP device。居なくて `--entry` があれば、その位置の device をアプリとして頼む(bootloader はアプリと同じ位置に現れる)。`auto` でその位置に何も無ければ頼まない。
+  - アプリ: serial port の path(IDE が渡す serial port。裏の USB device を引く。Linux では上流の hub も同じ tty を持つので、他の一致の下に居ないものを本体とする)、`ch32rv-app://<id>`、`VID:PID[:SERIAL]`。先にその device を引き(ちょうど 1 台でなければ exit 10 / 14)、**その USB の位置の ISP device だけ** を使う。居なければ `--entry` で頼む。
+  - 別の経路の bootloader(`ch32rv-hid://`)と無くなった形(`usb:`、`hid://`、`port:`)は exit 2。`--app-device` は受けない(exit 2、hint に `--device <その値>`)。
 - `--wait <SECS>`(既定 0): device が無ければその秒数だけ待つ。最初に、入り方(Boot キーを押したまま USB を接続、または `--entry probe`)を stderr に 1 回出す。期限切れは exit 10。
 - `--entry probe`: ISP device が無ければ、`--probe` の debug 線で hart を reset vector で止め、`FLASH_KEYR` と `FLASH_BOOT_MODEKEYR` を外し、`FLASH_STATR.BOOT_MODE` を立てて reset してから、最大 5 s 待つ。flash の中身を先に走らせないので、壊れた image が入っていても入れる。OEP の probe と WCH-Link の両方で使える(WCH-Link は DMI の reset-halt で捕まえ、最後は probe の system reset)。family は CH32X033 / X035 だけ(他は exit 24)。WCH-LinkE(fw 2.22)+ CH32X035C8T6 でも、reset 後に `FLASH_STATR` = `0xF000`・PC が BOOT 領域になることを確認した(この板の USB は PC に未接続)。入れたのに ISP device が現れないときは、チップの USB の接続を疑うよう hint を出す。読み出し保護中のチップ(`FLASH_OBR.RDPRT`)には入れず exit 21(bootloader が走らないため。`recover --method unprotect` を hint に出す)。`isp enter` は `--entry probe` で開いて Identify / ReadConfig までして終わる。
 - `--entry` は ISP device が居ないときの入り方(既定 `none`)。どれも、入れた後は最大 5 s(`--wait` が長ければそれ)待つ。
   - **DFU について**: ここで使う DFU は、DFU 1.1 の **run-time interface と DFU_DETACH 要求だけ**(アプリに「bootloader へ再起動して」と頼む標準の合図)。その後に現れるのは WCH の factory ISP(`1a86:55e0`、独自 protocol)で、DFU mode の device ではない。**DFU の download(DNLOAD)は使わず、dfu-util では書けない**。DFU mode で書く DFU の device は別の経路(`boot dfu`)。
-  - `dfu-detach`: アプリの DFU 1.1 run-time interface(class `0xfe`/`0x01`/`0x01`)へ DFU_DETACH(`21 00`、`wValue` 1000、`wIndex` = interface)。`--app-device` が無ければ、run-time interface を持つ device がちょうど 1 台のときだけそれを使う(0 台 exit 10、2 台以上 exit 14)。アプリは status stage の前に切れることがあり(Linux では stall)、それでも detach するので、エラーは `warning[dfu-detach]` にとどめて待つ。
-  - `touch1200`: アプリの serial port を 1200 bps で開き、DTR を落として閉じる(Arduino の約束)。**`--app-device` で名指しした device にだけ送る**(無関係な板を reset しないため。無ければ exit 2)。
-  - `auto`: 名指しされたアプリが DFU run-time interface を持てば `dfu-detach`、無くて serial port があれば `touch1200`。アプリの指定が無く `--probe` があれば `probe`。どれも無ければ何もせず、`--wait` の間、入り方を出して待つ。Arduino の upload recipe はこれを使う(`--entry auto --app-device "{upload.port.address}"`)。
-  - `--app-device`: serial port の path(IDE が渡す serial port。裏の USB device を引く。Linux では上流の hub も同じ tty を持つので、他の一致の下に居ないものを本体とする)、`topology:<bus>-<ports>`、`VID:PID[:SERIAL]`。ちょうど 1 台でなければ exit 10 / 14。
-  - アプリ経由で入れたとき、`--device` が無ければ **アプリと同じ USB の位置に現れた ISP device だけ** を使う(X035 で一致を確認)。
-  - 実機確認(2026-10-14、CH32X035F8U6、ArduinoCore-CH32RV の CH32RVUsbDevice で CDC + DFU run-time interface + HID のスケッチ): `dfu-detach`(`--app-device` 無し / VID:PID / serial port / USB の位置)、`touch1200`、`auto`、アプリ指定無しの `auto` + `--probe` のどれも、書込・照合・アプリ再起動まで通った。DFU_DETACH はほぼ毎回 stall で返った。
-- **discovery(2026-10-14、ArduinoCore-CH32RV と合意)**: アプリの VID:PID はスケッチ次第(既定は pid.codes のテスト用 PID)で serial も自由なので、外から CH32RV のアプリだと分かる印は **DFU run-time interface の iInterface `CH32RV`**(ArduinoCore-CH32RV の `CH32RV_USB_DFU_RUNTIME_NAME` の既定)だけ。名前を変えたスケッチは discovery に出ない(`--app-device` で名指せば DFU_DETACH は動く)。
+  - `dfu-detach`: アプリの DFU 1.1 run-time interface(class `0xfe`/`0x01`/`0x01`)へ DFU_DETACH(`21 00`、`wValue` 1000、`wIndex` = interface)。`--device` が無ければ、run-time interface を持つ device がちょうど 1 台のときだけそれを使う(0 台 exit 10、2 台以上 exit 14)。アプリは status stage の前に切れることがあり(Linux では stall)、それでも detach するので、エラーは `warning[dfu-detach]` にとどめて待つ。
+  - `touch1200`: アプリの serial port を 1200 bps で開き、DTR を落として閉じる(Arduino の約束)。**`--device` で名指しした device にだけ送る**(無関係な板を reset しないため。無ければ exit 2)。
+  - `auto`: 名指しされたアプリが DFU run-time interface を持てば `dfu-detach`、無くて serial port があれば `touch1200`。アプリの指定が無く `--probe` があれば `probe`。どれも無ければ何もせず、`--wait` の間、入り方を出して待つ。Arduino の upload recipe はこれを使う(`--entry auto --device "{upload.port.address}"`)。
+  - アプリ経由で入れたときは **アプリと同じ USB の位置に現れた ISP device だけ** を使う(X035 で一致を確認)。
+  - 実機確認(2026-10-14、CH32X035F8U6、ArduinoCore-CH32RV の CH32RVUsbDevice で CDC + DFU run-time interface + HID のスケッチ): `dfu-detach`(アプリの指定無し / VID:PID / serial port / USB の位置)、`touch1200`、`auto`、アプリ指定無しの `auto` + `--probe` のどれも、書込・照合・アプリ再起動まで通った。DFU_DETACH はほぼ毎回 stall で返った。
+- **discovery(2026-10-14、ArduinoCore-CH32RV と合意)**: アプリの VID:PID はスケッチ次第(既定は pid.codes のテスト用 PID)で serial も自由なので、外から CH32RV のアプリだと分かる印は **DFU run-time interface の iInterface `CH32RV`**(ArduinoCore-CH32RV の `CH32RV_USB_DFU_RUNTIME_NAME` の既定)だけ。名前を変えたスケッチは discovery に出ない(`--device` で名指せば DFU_DETACH は動く)。
   - `ch32rv-app://<id>`: 名前 `CH32RV` の DFU run-time を持つ device。id は USB serial(ArduinoCore-CH32RV の既定はチップの UID 由来なので、別の USB port に挿し直しても同じ名前になる)。serial が無いか、つながっている他のアプリと重なるとき(スケッチは serial を自由に決められる)だけ `usb-<bus>-<ports>`。`wchlink://` と同じ規則。CDC があっても出す(serial port だけでは CH32RV と分からないので、書込はこちらを選ぶ)。label は `<product 文字列> (CH32RV, USB)`、properties は `vid` / `pid` / `serialNumber` / `topology`、hardwareId は serial(無ければ位置)。monitor はその device の CDC port を開く(CDC の無いアプリは「monitor する CDC が無い」で断る)。
   - `ch32rv-isp://<bus>-<ports>`: `1a86:55e0`(Boot キーなどで入った bootloader。約 10 s で app へ戻るので一時的)。`4348:55e0` は WCH-Link の IAP と同じなので出さない。monitor は無い(断る)。
-  - `--app-device` は `ch32rv-app://<id>`(その id のアプリを今の位置で探す。serial が 2 台で重なれば exit 14)と `ch32rv-isp://…`(頼まずにその位置の ISP へ書く)も受ける。upload recipe は `--entry auto --app-device "{upload.port.address}"` で、tty / ch32rv-app / ch32rv-isp のどれを選んでも動く。
-  - `--entry dfu-detach` で `--app-device` が無いときも、名前 `CH32RV` の DFU run-time を持つ device だけを候補にする(他社の本物の DFU 機器を再起動させないため)。
+  - `--device` は `ch32rv-app://<id>`(その id のアプリを今の位置で探す。serial が 2 台で重なれば exit 14)と `ch32rv-isp://…`(頼まずにその位置の ISP へ書く)を受ける。upload recipe は `--entry auto --device "{upload.port.address}"` で、tty / ch32rv-app / ch32rv-isp のどれを選んでも動く。
+  - `--entry dfu-detach` で `--device` が無いときも、名前 `CH32RV` の DFU run-time を持つ device だけを候補にする(他社の本物の DFU 機器を再起動させないため)。
   - 実機確認(CH32X035F8U6、CDC の無い DFU run-time のみのスケッチ): discovery の LIST に `ch32rv-app://3-2.4.3` が出て、その port から書込・照合・起動まで通った。ISP に入れた後は `ch32rv-isp://3-2.4.3` が出て、その port からも書けた。CDC のあるアプリでは、`ch32rv-app://<serial>` の monitor がその CDC の出力を流すことも確認した。
 - `isp flash` は ELF / HEX / bin を code flash 先頭からの 1 塊にし(隙間は `0xff`)、`--erase auto` は image の長さ分の 1 KiB sector(最小 8)を消す。書いた後の `IspEnd` は応答を読んでから終える(読まないと bootloader に残る。wch-protocols `protocols/pc-to-device-isp.ja.md#x035-entry`)。
 - `isp config set` / `get` の語彙と `get` の形は `target option set` / `get` と同じ(§4.3)。bootloader の series から family を引く(CH32V10x / F10x → V103、V30x → V307、V20x / F20x → V20x、X03x → X035、L10x → L103)。CH32V00x は部品で DB の field が違うので `user.<field>` は使えず(`db_family` は null)、意味名は V003 / V006 共通のもの。補数 byte は計算し直し、知らない USER の bit は読んだ値のまま。書いた後に ReadConfig で読み直し、違えば exit 30。`read-protect` を変えるときは確認する(`--non-interactive` では `--yes` が要る。off にするとチップが code flash を全消去する)。CH32X035F8U6 で全キーを書いて戻し、option bytes(`0x1FFFF800`)を RVSWD で照合した。`read-protect=on` は `00 ff` を書き、reset 後は RVSWD の flash 読み出しが fault になる。**保護中は factory bootloader が走らない**(X035 BTVER 2.60 の実測。debug 線から入れても、debugger 無しの電源投入後にアプリから DFU_DETACH で入れても、PC 0 で止まり ISP device は現れない)。したがって ISP の `read-protect=off` は使えず、解除は debug 線の `recover --method unprotect`(code flash 全消去)だけ。`read-protect=on` の確認文にもそう書く。BOOT キー(電源投入時の PC17)で入った場合は未確認。
@@ -526,10 +532,15 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
 ### 4.8 boot(custom bootloader 経路)
 
 ```text
-ch32rv boot dfu flash <FILE> [--format auto|elf|hex|bin] [--at <addr>]   DFU 1.1 の download
-ch32rv boot dfu info
-ch32rv boot hid flash <FILE> [--usb-id <VID:PID>] [--wait <SECS>]  rv003usb / b003fun 系(UIAPduino 等)
+ch32rv boot dfu flash <FILE> [--format auto|elf|hex|bin] [--at <addr>] [--device <住所>]   DFU 1.1 の download
+ch32rv boot dfu info [--device <住所>]
+ch32rv boot hid flash <FILE> [--usb-id <VID:PID>] [--wait <SECS>] [--device <住所>]  rv003usb / b003fun 系(UIAPduino 等)
 ```
+
+書く device は `--device` で名指す。boot は debug probe を通らないので、`--probe` を付けると exit 2 で断り、hint に `--device <その値>` を出す(環境変数 `CH32RV_PROBE` は他のコマンドの probe なので、boot では見ない)。
+
+- `boot dfu` の `--device`: serial port の path、`ch32rv-app://<id>`、`topology:<bus>-<ports>`、`VID:PID[:SERIAL]`(`isp --device` のアプリの書き方と同じ)。無ければ DFU の interface を持つ唯一の device(0 台 exit 10、2 台以上 exit 14)。bootloader の住所(`ch32rv-isp://`、`ch32rv-hid://`)は exit 2。
+- `boot hid flash` の `--device`: 位置だけ。`ch32rv-hid://<bus>-<ports>`(discovery の住所)か `topology:<bus>-<ports>`。無ければ最初に見つかった 1 台。`hid://<bus>-<ports>` は `ch32rv-hid://<bus>-<ports>` を添えて exit 2。
 
 HID flashは実装済み。既定で`1209:b803`（UIAPduino）→`1209:b003`（rv003usb）の順に探索し、
 64 byte page単位でpreverify・erase・program・read-back verifyを行ってuser appを起動する。
@@ -577,12 +588,12 @@ ch32rv complete <bash|zsh|fish|powershell>          補完スクリプトを std
 ```text
 ch32rv arduino discovery       Pluggable Discovery protocol(stdio JSON)。WCH-Link を wchlink://<serial>、
                                OEP の probe の口を oep://<probe>/<port>(名前の無い口は oep://<probe>/any)、
-                               rv003usb / UIAPduino の HID bootloader を hid://<bus>-<ports>、
+                               rv003usb / UIAPduino の HID bootloader を ch32rv-hid://<bus>-<ports>、
                                CH32RV のアプリを ch32rv-app://<serial>(無い・重なるなら usb-<bus>-<ports>)、
                                factory ISP bootloader(1a86:55e0)を ch32rv-isp://<bus>-<ports> で出す
 ch32rv arduino monitor [--protocol <p>]
                                Pluggable Monitor protocol(stdio JSON)。--protocol は serial / wchlink / oep /
-                               ch32rv-app / ch32rv-isp。serial port・wchlink://・oep://・ch32rv-app:// の port を受け、
+                               ch32rv-app / ch32rv-isp / ch32rv-hid。serial port・wchlink://・oep://・ch32rv-app:// の port を受け、
                                source を双方向に wrap する
 ```
 
@@ -591,7 +602,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
 - **discovery**: HELLO/START/LIST/START_SYNC/STOP/QUIT。**USB descriptor だけから列挙**し AttachChip しない(同一 probe への upload/monitor 中でも乱さない。LinkE の attach は target のクロックを組み替える)。**普通の serial port は開かない**(組み込みの serial discovery が出す)。START_SYNC は現在の port を `add` で一度出す(hotplug 監視は後続、IDE の再 LIST に委ねる)。
   - `wchlink://<serial>`: protocol `wchlink`、properties に serial / vid / pid / mode。Windows で device に ch32rv が開けない driver が付いている Link(usbipd の stub など)は、label を `WCH-Link <serial> (cannot open: driver <name>)` にし、properties に `driver` を足す(2026-09-29。一覧からは消さない)。実機確認(0.12.1 のリリースの zip、Windows): usbipd で WSL に attach 中の LinkE 7 台がすべて `WCH-Link <sn> (cannot open: driver VBoxUSB)`(usbipd-win の stub は `VBoxUSB` の名で見える)。
   - `oep://<probe>/<port>`(2026-10-16、oep-spec host ガイド §5.3。それまでのスロットは廃止): OEP の probe(`is_oep_device` = USB ID 1209:4F45 の device。oep-core §3.3)の口ごとに 1 つ。口は probe に保存した label `S.N`(`S.swdio` / `S.swclk` / `S.swio` / `S.nrst` / `S.rx` / `S.tx`)の `S` で、名前つきの口が無い probe は名前の無い口 1 つとして `oep://<probe>/any` で出す(`oep://<probe>` だけは probe 自身を指し、口を選ばない)。`<probe>` は USB の serial(= OEP の unit_id、oep-spec v1-freeze #3。serial の無い device だけ位置)。attach しないので target は出さない。label は lock 無しで読む(その port のブローカーが動いていればブローカー経由、ここでは起動しない。無ければ HID、vendor bulk、CDC の順に短く開く(HID は他の道具と取り合わない)。応答待ちは 0.3 秒)。読めなければ前回の一覧(runtime dir の `<key>.ports.json`)。properties に vid / pid / port_name(名前の無い口は null)/ port。普通の serial port は開かない。
-  - `hid://<topology>`(2026-09-29): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --probe hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology。
+  - `ch32rv-hid://<topology>`(protocol `ch32rv-hid`): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --device ch32rv-hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology。monitor は無い(断る)。
 - **monitor(2026-09-29 に組み直し、ArduinoCore-CH32RV `docs/oep-workflow.ja.md` §6)**: platform.txt の `pluggable_monitor.pattern.<protocol>` に登録し、protocol を `--protocol` で渡す(既定 `serial`)。arduino-cli 1.3.1 は DESCRIBE の `protocol` を port の protocol と照合し、違うと OPEN の前に止まる(ArduinoCore-CH32RV の実測)。
   - **DESCRIBE**: キーは `port_description`、列挙の値は `value`(arduino-cli が読むキー。0.10.1 までの `port_descriptor` / `values` は arduino-cli に読まれなかった)。設定は `source` / `baudrate` / `dtr` / `rts` / `chip`。
     - `source`(2026-10-01 に凍結する表、docs/freeze-decisions.ja.md §3。先頭が既定):
@@ -613,7 +624,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
   - **終わり方**: **stdin の EOF で必ず終わる**(arduino-cli は CLOSE / QUIT を送らずに死ぬことがあり、tool は別のプロセスグループなので killpg も届かない)。開いた後に続けられなくなったとき(読み書きの失敗、切り替え先の source が開けない)は `\r\n[ch32rv monitor] stopped: <理由>\r\n` を data として送ってからプロセスごと終わる(arduino-cli は tool の stderr を見せず、落ちても exit 0 で終わるため)。
   - **attach のクロックの注意**(2026-09-29): attach する source(uart 以外)を開いたとき(OPEN と、開いたままの切り替え)に、`[ch32rv monitor] attaching may have changed the target clock (UART baud rate, millis, timers); reset the board to run at its own clock` を data の行で流す。`monitor` の warning `attach-reclocks-target` と同じく、全 target に「可能性」として出す(IDE の利用者が読むのはモニタの窓だけのため)。reset して離す設定(on-close)は入れない(要望が出たら)。
   - **lock**: attach する source(sdi / dmdata / dmseq / rtt)は probe 単位の lock を持つ(開いている間の flash は待つか exit 13)。`uart` は lock を取らない(CDC だけを使い、tty は排他)。
-  - 実機検証(2026-09-29、WCH-LinkE fw 2.22、arduino-cli の代わりに protocol を話す試験 script): V006(K8U6)の SerialEcho を `uart` 115200 で往復、V203 の HelloSDI を `sdi`(serial port 経由・`wchlink://` 経由とも)、L103 の HelloDMDATA を `dmdata` で往復(小文字が大文字で戻る)、開いたままの `dmdata` → `uart` の切り替え、素の serial port(CH343)で `sdi` へ切り替えて理由の行を送って終わる、`chip` の不一致で OPEN が error、stdin の EOF で 0.1 秒以内に exit 0、開いている間は 2 つ目の open が EBUSY。`hid://` は UIAPduino が無く未検証。
+  - 実機検証(2026-09-29、WCH-LinkE fw 2.22、arduino-cli の代わりに protocol を話す試験 script): V006(K8U6)の SerialEcho を `uart` 115200 で往復、V203 の HelloSDI を `sdi`(serial port 経由・`wchlink://` 経由とも)、L103 の HelloDMDATA を `dmdata` で往復(小文字が大文字で戻る)、開いたままの `dmdata` → `uart` の切り替え、素の serial port(CH343)で `sdi` へ切り替えて理由の行を送って終わる、`chip` の不一致で OPEN が error、stdin の EOF で 0.1 秒以内に exit 0、開いている間は 2 つ目の open が EBUSY。`ch32rv-hid://` は UIAPduino が無く未検証。
 
 ### 4.12 broker と OEP の probe
 
@@ -642,10 +653,13 @@ ch32rv broker serve --probe <sel>               ブローカー本体(利用者�
 
 ## 5. 呼び出し例
 
-Arduino recipe(platform.txt、ArduinoCore-CH32RV の upload)。port は discovery の address を `--probe` にそのまま渡し、ch32rv が自分で解く(`wchlink://` / `oep://` / serial port)。`{build.ch32rv_chip}` は板ごとに SKU か family、ch32rv に名前の無い series の板は series 名(DB に無ければ exit 20 で書く前に止まる)。`auto` は使わない(つながっている別の chip に書いてしまう。docs/freeze-decisions.ja.md §1):
+Arduino recipe(platform.txt、ArduinoCore-CH32RV の upload)。port は discovery の address をそのまま渡し、ch32rv が自分で解く。debug probe の経路(`wchlink://` / `oep://` / serial port)は `--probe`、書き込み先の経路(`ch32rv-app://` / `ch32rv-isp://` / `ch32rv-hid://`)は `isp` / `boot` の `--device`。`{build.ch32rv_chip}` は板ごとに SKU か family、ch32rv に名前の無い series の板は series 名(DB に無ければ exit 20 で書く前に止まる)。`auto` は使わない(つながっている別の chip に書いてしまう。docs/freeze-decisions.ja.md §1):
 
 ```text
 "{path}/{cmd}" flash "{build.path}/{build.project_name}.elf" --format elf --chip {build.ch32rv_chip} --reset run --confirm-run --non-interactive --progress none {upload.verbose} --probe "{upload.port.address}"
+"{path}/{cmd}" --non-interactive --progress none isp flash "{build.path}/{build.project_name}.elf" --chip {build.ch32rv_chip} --entry auto --device "{upload.port.address}" {upload.verbose}
+"{path}/{cmd}" --non-interactive --progress none boot dfu flash "{build.path}/{build.project_name}.bin" --format bin --device "{upload.port.address}" {upload.verbose}
+"{path}/{cmd}" --non-interactive --progress none boot hid flash "{build.path}/{build.project_name}.bin" --device "{upload.port.address}" {upload.verbose}
 ```
 
 CI / HIL:

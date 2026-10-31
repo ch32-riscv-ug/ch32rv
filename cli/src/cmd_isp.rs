@@ -52,9 +52,9 @@ struct Opened {
     cfg: IspConfig,
 }
 
-/// en: Pick the one ISP device (`--device topology:<bus>-<ports>`, or the only one present), waiting
+/// en: Pick the one ISP device (at the position `--device` names, or the only one present), waiting
 /// up to `--wait` for it to appear, then Identify and ReadConfig it.
-/// ja: ISP device を 1 台選び(`--device topology:<位置>` か唯一の 1 台)、`--wait` まで待ち、Identify と
+/// ja: ISP device を 1 台選び(`--device` の位置か唯一の 1 台)、`--wait` まで待ち、Identify と
 /// ReadConfig をする。
 fn open(cli: &Cli, cmd: &str, args: &IspArgs) -> Result<Opened, ExitCode> {
     open_with(cli, cmd, args, args.entry)
@@ -64,30 +64,34 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
     if args.transport == IspTransport::Uart {
         return open_uart(cli, cmd, args, entry);
     }
+    // en: `--device` names a position - the bootloader's (`ch32rv-isp://`, discovery's), or either
+    // the bootloader's or the application's (`topology:`; the bootloader comes up where the
+    // application was) - or the running application (its serial port, `ch32rv-app://`,
+    // `VID:PID`), found now so that only the ISP device at its position is taken.
+    // ja: `--device` は位置(bootloader の `ch32rv-isp://`、どちらでもよい `topology:`)か、走っている
+    // アプリ。アプリは今引いて、その位置の ISP device だけを使う。
+    let mut app = None;
     let mut want = match args.device.as_deref() {
         None => None,
-        Some(d) => match d.strip_prefix("topology:") {
-            Some(t) => Some(t.to_owned()),
-            None => {
+        Some(d) => match position(d) {
+            Some(Ok(t)) => Some(t.to_owned()),
+            Some(Err(())) => {
                 return Err(fail(
                     cli,
                     cmd,
                     ErrorKind::Usage,
-                    format!("invalid --device `{d}`"),
-                    Some("ISP devices carry no serial: use --device topology:<bus>-<ports>"),
+                    format!("--device `{d}`: no position"),
+                    Some("--device topology:<bus>-<ports> or ch32rv-isp://<bus>-<ports>"),
                 ));
+            }
+            None => {
+                let a = usb_device(cli, cmd, d)?;
+                let t = a.dev.topology();
+                app = Some(a);
+                Some(t)
             }
         },
     };
-    // The IDE's port may name the bootloader itself (discovery's `ch32rv-isp://<position>`).
-    if want.is_none() {
-        want = args
-            .app_device
-            .as_deref()
-            .and_then(ide_address)
-            .and_then(|a| a.strip_prefix(ISP_SCHEME))
-            .map(str::to_owned);
-    }
     let present = |want: &Option<String>| {
         ch32rv_isp::list().is_ok_and(|v| {
             v.iter()
@@ -99,7 +103,7 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
     if entry != IspEntry::None && !ch32rv_usb::replay::active() && !present(&want) {
         let via = match entry {
             IspEntry::Probe => Via::Probe,
-            _ => match enter_via_app(cli, cmd, args, entry)? {
+            _ => match enter_via_app(cli, cmd, args, entry, app)? {
                 Some(at) => {
                     // The bootloader comes up where the application was (same USB port).
                     want.get_or_insert(at);
@@ -234,7 +238,7 @@ fn open_uart(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
             wait = wait.max(ENTER_WAIT);
         }
         _ => {
-            let via_app = enter_via_app(cli, cmd, args, entry)?.is_some();
+            let via_app = enter_via_app(cli, cmd, args, entry, None)?.is_some();
             if !via_app && entry == IspEntry::Auto && cli.probe.is_some() {
                 enter_via_probe(cli, cmd)?;
             }
@@ -884,15 +888,24 @@ enum Via {
     Nothing,
 }
 
-/// The application's USB device named by `--app-device`, and the serial port it was named by.
+/// en: The position in a `--device` that names one: `ch32rv-isp://<t>` or `topology:<t>` (`Err`
+/// when `<t>` is empty). None for a form that names a device another way.
+/// ja: `--device` の位置(`ch32rv-isp://` か `topology:`)。ほかの形は None。
+fn position(d: &str) -> Option<Result<&str, ()>> {
+    d.strip_prefix(ISP_SCHEME)
+        .or_else(|| d.strip_prefix("topology:"))
+        .map(|t| if t.is_empty() { Err(()) } else { Ok(t) })
+}
+
+/// The application's USB device named by `--device`, and the serial port it was named by.
 pub(crate) struct AppDevice {
     pub(crate) dev: UsbDeviceInfo,
     pub(crate) port: Option<String>,
 }
 
-/// en: An IDE port address in `--app-device`, told apart by its shape (a URL such as
+/// en: An IDE port address in `--device`, told apart by its shape (a URL such as
 /// `ch32rv-app://...`, or a serial port's path such as `/dev/ttyACM0` / `COM3`).
-/// ja: `--app-device` の IDE の port の住所(形で見分ける)。
+/// ja: `--device` の IDE の port の住所(形で見分ける)。
 fn ide_address(s: &str) -> Option<&str> {
     let com = s.len() > 3
         && s[..3].eq_ignore_ascii_case("com")
@@ -903,18 +916,34 @@ fn ide_address(s: &str) -> Option<&str> {
     (url || s.starts_with('/') || s.starts_with("\\\\.\\") || com).then_some(s)
 }
 
-/// en: Resolve `--app-device`: an IDE port address (a serial port's path - the USB device behind
-/// it - or `ch32rv-app://<id>`), `topology:<bus>-<ports>`, or `VID:PID[:SERIAL]`. Exactly one
-/// device or an error. ja: `--app-device` を解く。ちょうど 1 台か、エラー。
-pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
+/// en: Resolve a `--device` that names a USB device (`isp`'s application, `boot dfu`'s device):
+/// an IDE port address (a serial port's path - the USB device behind it - or
+/// `ch32rv-app://<id>`), `topology:<bus>-<ports>`, or `VID:PID[:SERIAL]`. Exactly one device or an
+/// error. A bootloader's own address that the caller does not write (`ch32rv-hid://`,
+/// `ch32rv-isp://`) is a usage error. ja: `--device` の USB device を解く。ちょうど 1 台か、エラー。
+pub(crate) fn usb_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
     if let Some(instead) = ch32rv_usb::selector::removed(sel) {
         return Err(fail(
             cli,
             cmd,
             ErrorKind::Usage,
-            format!("--app-device `{sel}`: this form is gone; write {instead}"),
+            format!("--device `{sel}`: this form is gone; write {instead}"),
             None,
         ));
+    }
+    for (scheme, what) in [
+        (crate::cmd_boot::HID_SCHEME, "boot hid flash"),
+        (ISP_SCHEME, "isp"),
+    ] {
+        if sel.starts_with(scheme) {
+            return Err(fail(
+                cli,
+                cmd,
+                ErrorKind::Usage,
+                format!("--device `{sel}` names a bootloader this command does not write"),
+                Some(&format!("`{what} --device {sel}` writes it")),
+            ));
+        }
     }
     // The discovery's own address (`ch32rv-app://<id>`): found again by its id, then by position.
     let usb_sel;
@@ -966,7 +995,7 @@ pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
                     cli,
                     cmd,
                     ErrorKind::Usage,
-                    format!("invalid --app-device `{sel}`"),
+                    format!("invalid --device `{sel}`"),
                     Some("use the serial port's path, topology:<bus>-<ports> or VID:PID[:SERIAL]"),
                 ));
             };
@@ -984,7 +1013,7 @@ pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
             cli,
             cmd,
             ErrorKind::DeviceNotFound,
-            format!("no USB device matches --app-device `{sel}`"),
+            format!("no USB device matches --device `{sel}`"),
             None,
         )),
         1 => {
@@ -996,8 +1025,8 @@ pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
             cli,
             cmd,
             ErrorKind::DeviceAmbiguous,
-            format!("{n} USB devices match --app-device `{sel}`"),
-            Some("name it by position: --app-device topology:<bus>-<ports>"),
+            format!("{n} USB devices match --device `{sel}`"),
+            Some("name it by position: --device topology:<bus>-<ports>"),
             found
                 .iter()
                 .map(|d| serde_json::json!(format!("topology:{}", d.topology())))
@@ -1009,33 +1038,58 @@ pub(crate) fn app_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
 /// en: Ask the running application to reboot into the bootloader: DFU_DETACH to its DFU run-time
 /// interface, or the 1200 bps touch on its serial port (`auto` tries them in that order).
 /// Returns the application's USB position (where the bootloader will appear), or `None` when
-/// `auto` found nothing to ask. A touch goes only to a device named by `--app-device`, so another
+/// `auto` found nothing to ask. A touch goes only to a device named by `--device`, so another
 /// board's serial port is never reset; `dfu-detach` alone may pick the one DFU run-time device
 /// present, since that interface is the device's own offer to detach. Only the request is DFU:
 /// nothing is downloaded over DFU, the bootloader that comes up is WCH's factory ISP.
 /// ja: DFU なのは再起動の依頼だけで、DFU では何も書かない。現れるのは WCH の factory ISP。
 /// ja: 走っている app に bootloader への再起動を頼む。DFU run-time への DFU_DETACH か、serial
 /// port への 1200 bps touch(`auto` はこの順)。app の USB の位置(bootloader が現れる所)を返す。
-/// touch は `--app-device` で名指しされた device にだけ送る(他の板の serial を reset しない)。
+/// touch は `--device` で名指しされた device にだけ送る(他の板の serial を reset しない)。
+/// `resolved` is the application `--device` already named, if the caller looked it up.
 fn enter_via_app(
     cli: &Cli,
     cmd: &str,
     args: &IspArgs,
     entry: IspEntry,
+    resolved: Option<AppDevice>,
 ) -> Result<Option<String>, ExitCode> {
     // en: The IDE's port may be the bootloader itself (discovery's `ch32rv-isp://`): nothing to
     // ask, just use the ISP device there. ja: IDE の port が bootloader そのものなら頼む相手は無い。
     if let Some(t) = args
-        .app_device
+        .device
         .as_deref()
-        .and_then(ide_address)
-        .and_then(|a| a.strip_prefix(ISP_SCHEME))
+        .and_then(|d| d.strip_prefix(ISP_SCHEME))
     {
         return Ok(Some(t.to_owned()));
     }
-    let app = match args.app_device.as_deref() {
-        Some(sel) => Some(app_device(cli, cmd, sel)?),
-        None if entry == IspEntry::DfuDetach => {
+    let app = match (resolved, args.device.as_deref()) {
+        (Some(a), _) => Some(a),
+        // en: A position: whatever is there is asked; nothing there is for `auto` nothing to ask.
+        // ja: 位置: そこに居るものに頼む。居なければ `auto` では頼む相手が無い。
+        (None, Some(d)) if d.starts_with("topology:") => {
+            let t = &d["topology:".len()..];
+            let all = ch32rv_usb::enumerate()
+                .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
+            match all.into_iter().find(|dev| dev.topology() == t) {
+                Some(dev) => {
+                    let port = dev.serial_ports().into_iter().next();
+                    Some(AppDevice { dev, port })
+                }
+                None if entry == IspEntry::Auto => None,
+                None => {
+                    return Err(fail(
+                        cli,
+                        cmd,
+                        ErrorKind::DeviceNotFound,
+                        format!("no USB device at topology:{t}"),
+                        None,
+                    ));
+                }
+            }
+        }
+        (None, Some(sel)) => Some(usb_device(cli, cmd, sel)?),
+        (None, None) if entry == IspEntry::DfuDetach => {
             let all = ch32rv_usb::enumerate()
                 .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
             let mut dfu: Vec<UsbDeviceInfo> = all.into_iter().filter(is_ch32rv_app).collect();
@@ -1048,7 +1102,7 @@ fn enter_via_app(
                         format!(
                             "no USB device offers a DFU run-time interface named `{APP_ENTRY_NAME}`"
                         ),
-                        Some("name the application with --app-device"),
+                        Some("name the application with --device"),
                     ));
                 }
                 1 => Some(AppDevice {
@@ -1063,7 +1117,7 @@ fn enter_via_app(
                         format!(
                             "{n} USB devices offer a DFU run-time interface named `{APP_ENTRY_NAME}`"
                         ),
-                        Some("name the application with --app-device topology:<bus>-<ports>"),
+                        Some("name the application with --device topology:<bus>-<ports>"),
                         dfu.iter()
                             .map(|d| serde_json::json!(format!("topology:{}", d.topology())))
                             .collect(),
@@ -1071,16 +1125,16 @@ fn enter_via_app(
                 }
             }
         }
-        None if entry == IspEntry::Touch1200 => {
+        (None, None) if entry == IspEntry::Touch1200 => {
             return Err(fail(
                 cli,
                 cmd,
                 ErrorKind::Usage,
                 "--entry touch1200 needs the application's serial port",
-                Some("--app-device <serial port>"),
+                Some("--device <serial port>"),
             ));
         }
-        None => None,
+        (None, None) => None,
     };
     let Some(app) = app else {
         return Ok(None);
@@ -1311,7 +1365,7 @@ fn config_set(cli: &Cli, args: &IspArgs, kv: &[String]) -> ExitCode {
 /// (`CH32RV_USB_DFU_RUNTIME_NAME`). The application's VID:PID is the sketch's (by default
 /// pid.codes' test PID) and its serial is free too, so this name is what marks a running CH32RV
 /// application that can be sent to its bootloader; a sketch that renames it is not discovered,
-/// and is not picked by `--entry dfu-detach` without `--app-device` (DFU_DETACH still works when
+/// and is not picked by `--entry dfu-detach` without `--device` (DFU_DETACH still works when
 /// it is named). ja: ArduinoCore-CH32RV が DFU run-time interface に既定で付ける名前。VID:PID も
 /// serial も自由なので、CH32RV のアプリだと分かる印はこれだけ。変えたスケッチは discovery に出ない。
 pub(crate) const APP_ENTRY_NAME: &str = "CH32RV";

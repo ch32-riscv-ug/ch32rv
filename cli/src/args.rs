@@ -25,9 +25,13 @@ pub struct Cli {
 
     // en: Global options (docs/cli.ja.md §3.1).
     // ja: グローバルオプション(docs/cli.ja.md §3.1)。
-    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | topology:<bus>-<ports> | an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>], hid://<bus>-<ports>, ch32rv-app://<id>)
+    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | topology:<bus>-<ports> | an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>]). A debug probe only: isp / boot take the device they write with --device
     #[arg(long, global = true, env = "CH32RV_PROBE")]
     pub probe: Option<String>,
+    /// en: Whether `--probe` was on the command line (not from `CH32RV_PROBE`). Set by main.
+    /// ja: `--probe` がコマンド行にあったか(環境変数でなく)。main が入れる。
+    #[arg(skip)]
+    pub probe_on_command_line: bool,
     /// Target SKU or family (auto-detected when omitted; fail-closed on ambiguity)
     #[arg(long, global = true, env = "CH32RV_CHIP")]
     pub chip: Option<String>,
@@ -558,22 +562,25 @@ pub struct IspArgs {
     pub port: Option<String>,
     #[arg(long, global = true)]
     pub baud: Option<u32>,
-    /// ISP device selector: topology:<bus>-<ports> (fail-closed by default; ISP devices carry no serial)
-    #[arg(long, global = true)]
+    /// The device to write: the ISP bootloader (ch32rv-isp://<bus>-<ports>), or the running
+    /// application that `--entry auto|dfu-detach|touch1200` asks to reboot into it (a serial port
+    /// / ch32rv-app://<id> as the IDE names it | VID:PID[:SERIAL]); topology:<bus>-<ports> names
+    /// either by position (the bootloader comes up where the application was). Without it, the
+    /// only ISP device present (fail-closed; ISP devices carry no serial)
+    #[arg(long, global = true, value_name = "ADDRESS")]
     pub device: Option<String>,
     /// Seconds to wait for the ISP device to appear, with an entry hint on stderr (0: fail at once)
     #[arg(long, global = true, value_name = "SECS", default_value_t = 0)]
     pub wait: u64,
     /// How to put the chip in its bootloader when no ISP device is present: `auto` = what the
-    /// application device offers (DFU_DETACH to its DFU run-time interface, else the 1200 bps
+    /// application `--device` names offers (DFU_DETACH to its DFU run-time interface, else the 1200 bps
     /// touch), else `--probe`'s debug wire; `dfu-detach` / `touch1200` / `probe` = that one only;
     /// `none` = it already is (default). Only the request to reboot is DFU: the image goes through
     /// WCH's ISP protocol, not DFU download
     #[arg(long, global = true, value_enum, default_value = "none")]
     pub entry: IspEntry,
-    /// The running application's USB device, for `--entry auto|dfu-detach|touch1200`:
-    /// a serial port / ch32rv-app://<id> as the IDE names it | topology:<bus>-<ports> | VID:PID[:SERIAL]
-    #[arg(long, global = true, value_name = "SEL")]
+    /// en: Gone (now `--device`); kept hidden only to say so. ja: 廃止(`--device`)。断るためだけに残す。
+    #[arg(long, global = true, hide = true, value_name = "ADDRESS")]
     pub app_device: Option<String>,
 }
 
@@ -667,7 +674,7 @@ pub enum IspConfigCmd {
 #[derive(Subcommand)]
 pub enum BootCmd {
     /// USB DFU 1.1 download into an application that reflashes itself (DFU_DETACH first when it
-    /// runs its DFU run-time interface). Select it with --probe <serial port> |
+    /// runs its DFU run-time interface). Select it with --device <serial port> |
     /// ch32rv-app://<id> | topology:<bus>-<ports> | VID:PID[:SERIAL]; the only DFU device when
     /// omitted
     #[command(subcommand)]
@@ -686,9 +693,17 @@ pub enum DfuCmd {
         /// Load address for bin input (default: start of the code region)
         #[arg(long)]
         at: Option<String>,
+        /// The DFU device: a serial port / ch32rv-app://<id> as the IDE names it |
+        /// topology:<bus>-<ports> | VID:PID[:SERIAL] (the only DFU device when omitted)
+        #[arg(long, value_name = "ADDRESS")]
+        device: Option<String>,
     },
     /// Show the DFU device and its state
-    Info,
+    Info {
+        /// The DFU device, as for `boot dfu flash --device`
+        #[arg(long, value_name = "ADDRESS")]
+        device: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -701,6 +716,10 @@ pub enum HidBootCmd {
         /// Seconds to wait for the bootloader to appear, with an entry hint on stderr (0: fail at once)
         #[arg(long, value_name = "SECS", default_value_t = 30)]
         wait: u64,
+        /// The bootloader, by position: ch32rv-hid://<bus>-<ports> as the IDE names it |
+        /// topology:<bus>-<ports> (the first one found when omitted)
+        #[arg(long, value_name = "ADDRESS")]
+        device: Option<String>,
     },
 }
 
@@ -756,7 +775,7 @@ pub enum ArduinoCmd {
     /// Pluggable Monitor protocol (stdio JSON)
     Monitor {
         /// The `protocol` DESCRIBE reports (the platform's `pluggable_monitor.pattern.<protocol>`)
-        #[arg(long, default_value = "serial", value_parser = ["serial", "wchlink", "oep", "ch32rv-app", "ch32rv-isp"])]
+        #[arg(long, default_value = "serial", value_parser = ["serial", "wchlink", "oep", "ch32rv-app", "ch32rv-isp", "ch32rv-hid"])]
         protocol: String,
     },
 }

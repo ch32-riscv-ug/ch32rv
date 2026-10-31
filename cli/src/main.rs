@@ -37,13 +37,15 @@ mod source;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches};
 
 use args::*;
 use ch32rv_contract::{self as contract, ErrorKind, ResultEnvelope};
 
 fn main() -> std::process::ExitCode {
-    let mut cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let mut cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    cli.probe_on_command_line = probe_on_command_line(&matches);
     JSON.store(cli.json, Ordering::Relaxed);
     // `--chip` > CH32RV_CHIP (clap reads both) > the config's `[defaults] chip`.
     if cli.chip.is_none() {
@@ -156,6 +158,34 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             ch32rv_contract::ErrorKind::Usage,
             format!("`{name}` does not support --dry-run yet; nothing was done"),
             Some("--dry-run works with `probe firmware update` and `boot hid flash`"),
+        );
+    }
+    // en: `--probe` names a debug probe; `boot dfu` / `boot hid` write through none, and take the
+    // device they write with `--device` (`CH32RV_PROBE` is not a mistake here: it names the
+    // probe of the other commands). `isp --app-device` is now `isp --device`.
+    // ja: `--probe` は debug probe だけ。boot は書く device を `--device` で受ける。
+    if let Command::Boot(_) = &cli.command
+        && cli.probe_on_command_line
+    {
+        let name = canonical_name(&cli.command);
+        let addr = cli.probe.as_deref().unwrap_or("<address>");
+        return cmd_probe::fail(
+            cli,
+            name,
+            ch32rv_contract::ErrorKind::Usage,
+            format!("`{name}` writes through no debug probe; --probe names one"),
+            Some(&format!("name the device to write with --device {addr}")),
+        );
+    }
+    if let Command::Isp(a) = &cli.command
+        && let Some(addr) = a.app_device.as_deref()
+    {
+        return cmd_probe::fail(
+            cli,
+            canonical_name(&cli.command),
+            ch32rv_contract::ErrorKind::Usage,
+            "--app-device is gone; --device names the application as well as the bootloader",
+            Some(&format!("write --device {addr}")),
         );
     }
     // en: Global flags that are accepted but not implemented are refused, not ignored
@@ -334,22 +364,41 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Run(args) => cmd_run::run(cli, args),
         Command::Broker(BrokerCmd::Serve) => broker::serve(cli),
         Command::Broker(BrokerCmd::Endpoint) => broker::endpoint(cli),
-        Command::Boot(BootCmd::Hid(HidBootCmd::Flash { file, usb_id, wait })) => {
-            cmd_boot::hid_flash(cli, file, usb_id.as_deref(), *wait)
+        Command::Boot(BootCmd::Hid(HidBootCmd::Flash {
+            file,
+            usb_id,
+            wait,
+            device,
+        })) => cmd_boot::hid_flash(cli, file, usb_id.as_deref(), *wait, device.as_deref()),
+        Command::Boot(BootCmd::Dfu(DfuCmd::Flash {
+            file,
+            format,
+            at,
+            device,
+        })) => cmd_boot::dfu_flash(cli, file, *format, at.as_deref(), device.as_deref()),
+        Command::Boot(BootCmd::Dfu(DfuCmd::Info { device })) => {
+            cmd_boot::dfu_info(cli, device.as_deref())
         }
-        Command::Boot(BootCmd::Dfu(DfuCmd::Flash { file, format, at })) => {
-            cmd_boot::dfu_flash(cli, file, *format, at.as_deref())
-        }
-        Command::Boot(BootCmd::Dfu(DfuCmd::Info)) => cmd_boot::dfu_info(cli),
         Command::Isp(a) => cmd_isp::isp(cli, a),
         Command::Complete(a) => cmd_complete(a.shell),
     }
 }
 
+/// en: Whether `--probe` was given on the command line at any level (a global arg is recorded
+/// where it was written), as opposed to `CH32RV_PROBE`, which names the debug probe for every
+/// command and is not a mistake on a command that has none.
+/// ja: `--probe` がコマンド行で渡されたか(環境変数 `CH32RV_PROBE` と区別する)。
+fn probe_on_command_line(m: &clap::ArgMatches) -> bool {
+    if m.value_source("probe") == Some(clap::parser::ValueSource::CommandLine) {
+        return true;
+    }
+    m.subcommand()
+        .is_some_and(|(_, sub)| probe_on_command_line(sub))
+}
+
 /// `complete <shell>`: print a shell completion script to stdout (redirect it into your shell's
 /// completion dir). Generated from the clap command tree, so it always matches the CLI.
 fn cmd_complete(shell: Shell) -> std::process::ExitCode {
-    use clap::CommandFactory;
     let target = match shell {
         Shell::Bash => clap_complete::Shell::Bash,
         Shell::Zsh => clap_complete::Shell::Zsh,
@@ -523,7 +572,7 @@ pub(crate) fn canonical_name(cmd: &Command) -> &'static str {
         },
         Command::Boot(b) => match b {
             BootCmd::Dfu(DfuCmd::Flash { .. }) => "boot.dfu.flash",
-            BootCmd::Dfu(DfuCmd::Info) => "boot.dfu.info",
+            BootCmd::Dfu(DfuCmd::Info { .. }) => "boot.dfu.info",
             BootCmd::Hid(HidBootCmd::Flash { .. }) => "boot.hid.flash",
         },
         Command::Db(d) => match d {

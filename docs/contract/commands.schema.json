@@ -457,7 +457,7 @@
             "type": "object",
             "required": ["address", "mode"],
             "properties": {
-              "address": {"type": "string", "description": "--probe に渡せる住所"},
+              "address": {"type": "string", "description": "住所。debug probe(mode が app / isp / hid 以外)は --probe に、書き込み先(app、isp、hid)は isp / boot dfu / boot hid の --device に渡す"},
               "mode": {"type": "string"},
               "topology": {"type": "string"},
               "model": {"type": "string"},

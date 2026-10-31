@@ -623,7 +623,7 @@ pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
                 .map(Some)
                 .map_err(|m| fail(cli, cmd, ErrorKind::DeviceNotFound, m, None))
         }
-        Some(Selector::Port(p)) if !p.starts_with("wchlink://") && !p.starts_with("hid://") => {
+        Some(Selector::Port(p)) if !p.starts_with("wchlink://") => {
             let sel = Selector::Port(p.clone());
             let owned = crate::cmd_probe::wch_devices()
                 .unwrap_or_default()

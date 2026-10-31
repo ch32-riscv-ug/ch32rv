@@ -988,7 +988,7 @@ pub fn list(cli: &Cli, identify: Option<crate::args::IdentifyScope>) -> ExitCode
                 }
                 "ch32rv-app" => "app",
                 "ch32rv-isp" => "isp",
-                "hid" => "hid",
+                "ch32rv-hid" => "hid",
                 _ => return None,
             };
             // An OEP probe reached over the network says `network` (its IP is in the JSON).
