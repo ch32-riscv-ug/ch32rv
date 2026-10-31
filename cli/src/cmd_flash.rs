@@ -336,7 +336,8 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
     let _lend = match addr {
         Some(crate::oep::OepAddr::Wch(t)) => match crate::broker::lend(&t) {
             Ok(l) => Some(crate::broker::LendScope::new(l)),
-            Err(m) => return fail(cli, CMD, ErrorKind::DeviceBusy, m, None),
+            Err(e) if e.other_version => return crate::oep::broker_fail(cli, CMD, e),
+            Err(e) => return fail(cli, CMD, ErrorKind::DeviceBusy, e.msg, None),
         },
         Some(a) => return crate::oep::flash(cli, args, &bytes, &a),
         None => None,

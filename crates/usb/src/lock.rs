@@ -47,8 +47,7 @@ impl DeviceLock {
         if crate::replay::active() {
             return Ok(DeviceLock { _file: None });
         }
-        let dir = lock_dir();
-        std::fs::create_dir_all(&dir)?;
+        let dir = create_runtime_dir()?;
         let path = dir.join(format!("{}.lock", sanitize(key)));
         let file = OpenOptions::new()
             .create(true)
@@ -72,21 +71,74 @@ impl DeviceLock {
     }
 }
 
-/// en: The per-user runtime directory ch32rv keeps its lock files (and the broker's endpoint
-/// files) in. ja: ch32rv が lock ファイル(とブローカーの endpoint ファイル)を置く利用者ごとの dir。
-/// The directory that holds the lock files: `$XDG_RUNTIME_DIR/ch32rv` when set (per-user, tmpfs,
-/// cleared on logout), else a stable subdir of the system temp dir.
+/// en: The per-user runtime directory ch32rv keeps its lock files and the broker's files in
+/// (internal: their names and contents are no interface, docs/cli.ja.md §4.12):
+/// `$XDG_RUNTIME_DIR/ch32rv` when set (per-user, tmpfs, cleared on logout), else
+/// `<temp>/ch32rv-<uid>` (0700) on unix - one per user, so users of one machine never meet each
+/// other's files - and `<temp>/ch32rv-locks` elsewhere (the temp dir is the user's own there).
+/// ja: ch32rv が lock ファイルとブローカーのファイルを置く利用者ごとの dir(内部のもの)。
+/// `$XDG_RUNTIME_DIR/ch32rv`、無ければ unix では `<temp>/ch32rv-<uid>`(0700。利用者どうしで
+/// 共有しない)、ほかでは `<temp>/ch32rv-locks`(temp がもともと利用者ごと)。
 pub fn runtime_dir() -> PathBuf {
-    lock_dir()
+    dir_for(
+        std::env::var_os("XDG_RUNTIME_DIR"),
+        std::env::temp_dir(),
+        user_id(),
+    )
 }
 
-fn lock_dir() -> PathBuf {
-    if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR")
-        && !rt.is_empty()
-    {
+fn dir_for(xdg: Option<std::ffi::OsString>, temp: PathBuf, uid: Option<u32>) -> PathBuf {
+    if let Some(rt) = xdg.filter(|r| !r.is_empty()) {
         return PathBuf::from(rt).join("ch32rv");
     }
-    std::env::temp_dir().join("ch32rv-locks")
+    match uid {
+        Some(u) => temp.join(format!("ch32rv-{u}")),
+        None => temp.join("ch32rv-locks"),
+    }
+}
+
+#[cfg(unix)]
+fn user_id() -> Option<u32> {
+    Some(rustix::process::getuid().as_raw())
+}
+
+#[cfg(not(unix))]
+fn user_id() -> Option<u32> {
+    None
+}
+
+/// en: [`runtime_dir`], created when missing (0700 on unix). On unix it must be a directory of
+/// this user's: one another user made in the shared temp dir (or a symlink there) is refused
+/// rather than used, and one of ours that others can read is made 0700.
+/// ja: [`runtime_dir`] を(無ければ 0700 で)作って返す。unix では自分の dir でなければ使わない
+/// (共有の temp に他の利用者が作った dir や symlink は断る)。他人が読める自分の dir は 0700 にする。
+pub fn create_runtime_dir() -> std::io::Result<PathBuf> {
+    let dir = runtime_dir();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)?;
+        let m = std::fs::symlink_metadata(&dir)?;
+        if !m.is_dir() || Some(m.uid()) != user_id() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!(
+                    "{} is not a directory of this user's (uid {}); remove it or set XDG_RUNTIME_DIR",
+                    dir.display(),
+                    m.uid()
+                ),
+            ));
+        }
+        if m.mode() & 0o077 != 0 {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
 }
 
 /// Make `key` a safe single path component: keep `[A-Za-z0-9._-]`, replace the rest with `_`.
@@ -119,6 +171,24 @@ mod tests {
         assert_eq!(sanitize("bus1-port2.3"), "bus1-port2.3");
         assert_eq!(sanitize(""), "unknown");
         assert_eq!(sanitize("../evil"), ".._evil");
+    }
+
+    #[test]
+    fn the_runtime_dir_is_per_user_without_xdg_runtime_dir() {
+        let tmp = PathBuf::from("/tmp");
+        assert_eq!(
+            dir_for(Some("/run/user/1000".into()), tmp.clone(), Some(1000)),
+            PathBuf::from("/run/user/1000/ch32rv")
+        );
+        assert_eq!(
+            dir_for(Some("".into()), tmp.clone(), Some(1000)),
+            PathBuf::from("/tmp/ch32rv-1000")
+        );
+        assert_eq!(
+            dir_for(None, tmp.clone(), Some(1001)),
+            PathBuf::from("/tmp/ch32rv-1001")
+        );
+        assert_eq!(dir_for(None, tmp, None), PathBuf::from("/tmp/ch32rv-locks"));
     }
 
     #[test]

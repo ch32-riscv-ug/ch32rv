@@ -20,6 +20,11 @@ serde_json = { workspace = true }
 
 # en: Windows fallback backend — WCH stock vendor driver (docs/windows-wch-driver.ja.md §4)
 # ja: Windows フォールバック backend — WCH 純正ドライバ経路
+# en: the user id for the per-user runtime dir when XDG_RUNTIME_DIR is not set
+# ja: XDG_RUNTIME_DIR が無いときの利用者ごとの runtime dir の uid
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true, features = ["process"] }
+
 [target.'cfg(windows)'.dependencies]
 ch32rv-usb-wch-win = { workspace = true }
 

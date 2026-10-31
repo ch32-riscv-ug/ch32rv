@@ -738,7 +738,7 @@ pub enum Shell {
 
 #[derive(Subcommand)]
 pub enum BrokerCmd {
-    /// Where the probe's broker listens (`--json`: result {endpoint: "127.0.0.1:<port>" | null, pid, transport})
+    /// Where the probe's broker listens (`--json`: result {endpoint: "127.0.0.1:<port>" | null, pid, transport, version})
     Endpoint,
     /// Run the broker (started by the commands that use the probe; not for users)
     #[command(hide = true)]

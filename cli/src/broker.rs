@@ -55,6 +55,86 @@ const KEEPALIVE_EVERY: Duration = Duration::from_millis(1000);
 const RAISE_AGAIN_AFTER: Duration = Duration::from_secs(20);
 const RAISES_AGAIN: u32 = 3;
 
+// ---- which ch32rv a broker is ----
+
+/// en: The client-broker protocol: what a ch32rv client and its broker expect of each other beyond
+/// OEP (the endpoint record, the session answers, the ledger, the extensions). Raised when any of
+/// that changes. ja: client とブローカーの間の取り決め(OEP の外の部分)の番号。変えたら上げる。
+const BROKER_PROTOCOL: u64 = 1;
+/// The ch32rv a broker of this build is.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// en: The named extension the broker's confirm answer carries: `protocol(u8) version(utf8)`.
+/// ja: ブローカーの confirm の答えに付ける名前つき拡張(`protocol(u8) version(utf8)`)。
+const BROKER_EXTENSION: &str = "io.github.ch32-riscv-ug.broker";
+
+/// en: Which other ch32rv wrote endpoint record `v` (`ch32rv 0.24.0 (pid 123)`), or `None` when
+/// it is a broker of this ch32rv. A client talks only to a broker of its own protocol and
+/// version: one of another version may answer differently, and that is not found out until it
+/// does (docs/cli.ja.md §4.12). A record with no version is from a ch32rv before this check.
+/// ja: endpoint の記録 `v` を書いたのが別の ch32rv ならその名前、この ch32rv のブローカーなら
+/// None。client は同じ取り決めと版のブローカーとだけ話す。
+fn other_version(v: &Value) -> Option<String> {
+    let protocol = v.get("protocol").and_then(Value::as_u64);
+    let version = v.get("version").and_then(Value::as_str);
+    if protocol == Some(BROKER_PROTOCOL) && version == Some(VERSION) {
+        return None;
+    }
+    let pid = v.get("pid").and_then(Value::as_u64).unwrap_or(0);
+    Some(match version {
+        Some(ver) => format!("ch32rv {ver} (pid {pid})"),
+        None => format!("a ch32rv older than the broker version check (pid {pid})"),
+    })
+}
+
+/// en: The version a broker's confirm answer `payload` names, as [`other_version`] reads an
+/// endpoint record: `None` for a broker of this ch32rv.
+/// ja: ブローカーの confirm の答えが名乗る版。この ch32rv のブローカーなら None。
+fn other_version_in_confirm(payload: &[u8]) -> Option<String> {
+    let named = payload
+        .get(16..)
+        .and_then(|b| parse_tlvs(b).ok())
+        .unwrap_or_default()
+        .into_iter()
+        .find_map(|t| {
+            let v = t.value;
+            let n = usize::from(*v.first()?);
+            (t.tag & 0x7F == registry::constants::TAG_NAMED_EXTENSION
+                && v.get(1..1 + n) == Some(BROKER_EXTENSION.as_bytes()))
+            .then(|| v[1 + n..].to_vec())
+        });
+    let Some(data) = named else {
+        return Some("a ch32rv older than the broker version check".to_owned());
+    };
+    let protocol = data.first().copied().map(u64::from);
+    let version = data
+        .get(1..)
+        .map(String::from_utf8_lossy)
+        .unwrap_or_default();
+    (protocol != Some(BROKER_PROTOCOL) || version != VERSION).then(|| format!("ch32rv {version}"))
+}
+
+/// en: Ask the broker behind `l` which ch32rv it is (a confirm, which the broker answers itself):
+/// `Some` names another one. A link that does not answer is left to the client's own confirm.
+/// ja: `l` の先のブローカーに版を聞く(confirm。ブローカーが自分で答える)。別の版なら Some。
+pub(crate) fn other_broker(l: &mut Link) -> Option<String> {
+    let mut payload = registry::constants::CONFIRM_REQUEST_MAGIC
+        .as_bytes()
+        .to_vec();
+    payload.extend_from_slice(&[registry::PROTOCOL_REVISION, registry::PROTOCOL_REVISION]);
+    let r = l
+        .call(Call {
+            func: oep_core::FN,
+            op: oep_core::op::CONFIRM,
+            session: None,
+            payload,
+        })
+        .ok()?;
+    if !r.succeeded() {
+        return None;
+    }
+    other_version_in_confirm(&r.payload)
+}
+
 // ---- where a broker is ----
 
 /// en: The key a probe's broker files are named by: the probe's identity, so every way to reach
@@ -220,10 +300,15 @@ fn read_endpoint(key: &str) -> Option<Value> {
     serde_json::from_str(&text).ok()
 }
 
-/// Write the endpoint file atomically (0600 on unix).
+/// en: Write the endpoint file atomically (0600 on unix), with this broker's protocol and version.
+/// ja: endpoint の file を書く(0600、rename で置き換え)。このブローカーの取り決めの番号と版を入れる。
 fn write_endpoint(key: &str, v: &Value) -> std::io::Result<()> {
-    let dir = ch32rv_usb::runtime_dir();
-    std::fs::create_dir_all(&dir)?;
+    let mut v = v.clone();
+    if let Some(o) = v.as_object_mut() {
+        o.insert("protocol".to_owned(), json!(BROKER_PROTOCOL));
+        o.insert("version".to_owned(), json!(VERSION));
+    }
+    let dir = ch32rv_usb::create_runtime_dir()?;
     let tmp = dir.join(format!("{key}.oep.{}", std::process::id()));
     {
         let mut o = std::fs::OpenOptions::new();
@@ -344,17 +429,30 @@ fn spawn_broker(target: &BrokerTarget) -> Result<(), String> {
 }
 
 /// en: Why no link to a broker came: `busy` when the broker found the probe held by another host
-/// through `--lock-timeout` (exit 13). ja: ブローカーへの link が来なかった理由。`busy` は、
-/// ブローカーが `--lock-timeout` の間 probe を他の host に持たれていたとき(exit 13)。
+/// through `--lock-timeout`, or when a broker of another ch32rv kept the probe that long
+/// (`other_version`); both exit 13. ja: ブローカーへの link が来なかった理由。`busy` は、ブローカーが
+/// `--lock-timeout` の間 probe を他の host に持たれていたとき、または別の版の ch32rv のブローカーが
+/// その間 probe を持ち続けたとき(`other_version`)。どちらも exit 13。
 #[derive(Debug)]
 pub(crate) struct ClientLinkError {
     pub(crate) msg: String,
     pub(crate) busy: bool,
+    pub(crate) other_version: bool,
 }
 
 impl From<String> for ClientLinkError {
     fn from(msg: String) -> Self {
-        Self { msg, busy: false }
+        Self {
+            msg,
+            busy: false,
+            other_version: false,
+        }
+    }
+}
+
+impl From<&str> for ClientLinkError {
+    fn from(msg: &str) -> Self {
+        msg.to_owned().into()
     }
 }
 
@@ -364,49 +462,137 @@ impl From<ClientLinkError> for String {
     }
 }
 
+/// en: A broker of another ch32rv (`who`) still held the probe after `--lock-timeout`.
+/// ja: 別の版の ch32rv のブローカー(`who`)が `--lock-timeout` の後も probe を持っていた。
+fn other_version_busy(who: &str) -> ClientLinkError {
+    ClientLinkError {
+        msg: format!(
+            "the probe's broker is {who}, not ch32rv {VERSION}, and it was still running after --lock-timeout ({} s)",
+            crate::oep::lock_wait().as_secs()
+        ),
+        busy: true,
+        other_version: true,
+    }
+}
+
+/// What an endpoint record leads to.
+enum Found {
+    /// A connection to a broker of this ch32rv.
+    Link(Box<Link>),
+    /// A running broker of another ch32rv (who it is).
+    Other(String),
+    /// Nothing to use: an error record, a broker that is gone or on its way out.
+    Nothing,
+}
+
+/// en: Connect to the broker endpoint record `v` names. A connection counts only if the endpoint
+/// still names the same broker once connected: a broker about to end takes its endpoint down
+/// first and then still accepts for a moment, so a client that read the file just before would
+/// otherwise talk to a process on its way out. A broker of another ch32rv counts while it holds
+/// its flock (the record of one that died is no one's), named by its record or, when the record
+/// names this ch32rv, by its confirm answer.
+/// ja: endpoint の記録 `v` のブローカーにつなぐ。つないだ後も endpoint が同じブローカーを指すときだけ
+/// 有効(終わりかけのブローカーは先に endpoint を下ろしてからも少し受け付ける)。別の版の ch32rv の
+/// ブローカーは flock を持っている間だけ数える。版は記録で、記録がこの版なら confirm の答えでも確かめる。
+fn connect_endpoint(key: &str, v: &Value) -> Found {
+    let (Some(port), Some(pid)) = (
+        v.get("port").and_then(Value::as_u64),
+        v.get("pid").and_then(Value::as_u64),
+    ) else {
+        return Found::Nothing;
+    };
+    if let Some(who) = other_version(v) {
+        let alive =
+            ch32rv_usb::DeviceLock::acquire(&format!("{key}.broker"), Duration::ZERO).is_err();
+        return if alive {
+            Found::Other(who)
+        } else {
+            Found::Nothing
+        };
+    }
+    let Ok(mut l) = ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")) else {
+        return Found::Nothing;
+    };
+    if read_endpoint(key).and_then(|w| w.get("pid")?.as_u64()) != Some(pid) {
+        return Found::Nothing;
+    }
+    match other_broker(&mut l) {
+        Some(who) => Found::Other(format!("{who} (pid {pid})")),
+        None => Found::Link(Box::new(l)),
+    }
+}
+
 /// en: A link to the broker of `target`, starting the broker when none answers. An endpoint the
 /// broker wrote before this call counts only if it answers; an error it wrote counts only if it
-/// is newer than our start.
-/// ja: `target` のブローカーへの link。答えるブローカーが無ければ起動する。
+/// is newer than our start. A broker of another ch32rv is waited for up to `--lock-timeout` (it
+/// ends when its last client leaves; then this one starts its own), then exit 13 naming it.
+/// ja: `target` のブローカーへの link。答えるブローカーが無ければ起動する。別の版の ch32rv の
+/// ブローカーは `--lock-timeout` まで待ち(最後の client が抜けると終わるので、そのあと自分のを
+/// 起動する)、終わらなければ相手の版と PID を出して exit 13。
 pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, ClientLinkError> {
     let key = target.key();
-    // en: A connection counts only if the endpoint still names the same broker once connected: a
-    // broker about to end takes its endpoint down first and then still accepts for a moment, so a
-    // client that read the file just before would otherwise talk to a process on its way out.
-    // ja: つないだ後も endpoint が同じブローカーを指すときだけ有効。終わりかけのブローカーは先に
-    // endpoint を下ろしてからも少し受け付けるので、その直前に読んだ client が消えるプロセスと話さないように。
-    let try_connect = |v: &Value| -> Option<Link> {
-        let port = v.get("port")?.as_u64()?;
-        let pid = v.get("pid")?.as_u64()?;
-        let l = ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")).ok()?;
-        let still = read_endpoint(&key).and_then(|w| w.get("pid")?.as_u64()) == Some(pid);
-        still.then_some(l)
-    };
-    if let Some(v) = read_endpoint(&key)
-        && let Some(l) = try_connect(&v)
-    {
-        return Ok(l);
+    let lock_wait = crate::oep::lock_wait();
+    // The other ch32rv's broker in the way, and since when.
+    let mut other: Option<(String, Instant)> = None;
+    if let Some(v) = read_endpoint(&key) {
+        match connect_endpoint(&key, &v) {
+            Found::Link(l) => return Ok(*l),
+            Found::Other(who) => other = Some((who, Instant::now())),
+            Found::Nothing => {}
+        }
     }
     let t0 = now_ms();
     spawn_broker(target)?;
     let mut spawned = Instant::now();
     // The broker may wait `--lock-timeout` for a probe another host holds before it answers.
-    let deadline = Instant::now() + START_WAIT + crate::oep::lock_wait();
-    while Instant::now() < deadline {
+    let mut deadline = Instant::now() + START_WAIT + lock_wait;
+    loop {
+        if let Some((who, since)) = &other
+            && since.elapsed() >= lock_wait
+        {
+            return Err(other_version_busy(who));
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        let mut respawn = spawned.elapsed() >= RESPAWN_EVERY;
         if let Some(v) = read_endpoint(&key) {
             let fresh = v.get("time").and_then(Value::as_u64).unwrap_or(0) + 50 >= t0;
-            if let Some(l) = try_connect(&v) {
-                return Ok(l);
+            match connect_endpoint(&key, &v) {
+                Found::Link(l) => return Ok(*l),
+                Found::Other(who) => {
+                    let since = other.as_ref().map_or_else(Instant::now, |o| o.1);
+                    other = Some((who, since));
+                    respawn = false;
+                }
+                Found::Nothing => {
+                    if fresh
+                        && other_version(&v).is_none()
+                        && let Some(e) = v.get("error").and_then(Value::as_str)
+                    {
+                        return Err(ClientLinkError {
+                            msg: e.to_owned(),
+                            busy: v.get("busy").and_then(Value::as_bool).unwrap_or(false),
+                            other_version: false,
+                        });
+                    }
+                    // en: A record left by a broker that died (of any version): the one we
+                    // started may have met its flock still held a moment ago, so start again.
+                    // ja: 死んだブローカーの記録。起動したものが直前の flock に当たったかもしれない。
+                    respawn &= other_version(&v).is_some();
+                }
             }
-            if fresh && let Some(e) = v.get("error").and_then(Value::as_str) {
-                return Err(ClientLinkError {
-                    msg: e.to_owned(),
-                    busy: v.get("busy").and_then(Value::as_bool).unwrap_or(false),
-                });
-            }
-        } else if spawned.elapsed() >= RESPAWN_EVERY {
-            // The one we started may have found the old broker still holding the probe (its lock)
-            // and left; start another now that the old one may be gone.
+        } else if other.take().is_some() {
+            // en: Another ch32rv's broker went: ours starts now, with its full start time.
+            // ja: 別の版のブローカーが終わった。今から自分のを起動し、起動の待ちを取り直す。
+            deadline = deadline.max(Instant::now() + START_WAIT + lock_wait);
+            respawn = true;
+        }
+        // en: The one we started may have found the old broker still holding the probe (its lock)
+        // and left; start another now that the old one may be gone (a second one leaves at once
+        // while the first runs: the flock). ja: 起動したものが古いブローカーの lock に当たって
+        // 終わったかもしれないので、もう一度起動する(動いていれば flock で 2 つ目はすぐ終わる)。
+        if respawn {
             spawn_broker(target)?;
             spawned = Instant::now();
         }
@@ -415,7 +601,7 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, ClientLinkE
     Err(format!(
         "the broker for {} did not start within {} s",
         target.selector(),
-        (START_WAIT + crate::oep::lock_wait()).as_secs()
+        (START_WAIT + lock_wait).as_secs()
     )
     .into())
 }
@@ -456,11 +642,25 @@ pub(crate) fn is_broker_endpoint(addr: &str) -> bool {
         })
 }
 
-/// A link to `target`'s broker if one runs; never starts one.
+/// en: A link to `target`'s broker if one of this ch32rv runs; never starts one (a broker of
+/// another ch32rv is not talked to). ja: この版のブローカーが動いていればその link(起動しない)。
 pub(crate) fn existing_link_for(target: &BrokerTarget) -> Option<Link> {
     let v = read_endpoint(&target.key())?;
+    if other_version(&v).is_some() {
+        return None;
+    }
     let port = v.get("port")?.as_u64()?;
     ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")).ok()
+}
+
+/// en: Whether a broker of any ch32rv answers for `target` (to send a command through the broker,
+/// where a broker of another version is waited for and refused, not gone around).
+/// ja: どの版でも `target` のブローカーが答えるか(コマンドをブローカーに回すかの判断用。別の版は
+/// 回した先で待って断る。避けて直接開くことはしない)。
+pub(crate) fn broker_runs(target: &BrokerTarget) -> bool {
+    read_endpoint(&target.key())
+        .and_then(|v| v.get("port")?.as_u64())
+        .is_some_and(|port| TcpStream::connect(("127.0.0.1", port as u16)).is_ok())
 }
 
 /// A link to the OEP probe's broker if one runs; never starts one (discovery only looks).
@@ -503,12 +703,20 @@ pub(crate) fn endpoint(cli: &Cli) -> ExitCode {
         TcpStream::connect(("127.0.0.1", port as u16)).ok()?;
         Some(format!("127.0.0.1:{port}"))
     });
+    // en: The running broker's field, null when none runs (or, for `version`, when the broker is
+    // of a ch32rv before the field). ja: 動いているブローカーの field。無ければ null。
+    let field = |name: &str| {
+        live.as_ref()
+            .and(v.as_ref().and_then(|v| v.get(name).cloned()))
+            .unwrap_or(Value::Null)
+    };
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(json!({
             "endpoint": live,
-            "pid": live.as_ref().and(v.as_ref().and_then(|v| v.get("pid").cloned())),
-            "transport": live.as_ref().and(v.as_ref().and_then(|v| v.get("transport").cloned())),
+            "pid": field("pid"),
+            "transport": field("transport"),
+            "version": field("version"),
         }));
         crate::print_envelope(&env)
     } else {
@@ -1558,6 +1766,18 @@ impl Broker {
                         false,
                         &[0],
                     );
+                    // Which ch32rv this broker is: a client of another version stops here.
+                    let name = BROKER_EXTENSION.as_bytes();
+                    let mut v = vec![name.len() as u8];
+                    v.extend_from_slice(name);
+                    v.push(BROKER_PROTOCOL as u8);
+                    v.extend_from_slice(VERSION.as_bytes());
+                    ch32rv_oep::codec::put_tlv(
+                        &mut p,
+                        registry::constants::TAG_NAMED_EXTENSION,
+                        false,
+                        &v,
+                    );
                     Some(ok(&p))
                 }
                 // lease_ms(u32) force(u8) [TLV owner]; the session id is the header's (core §6.4).
@@ -1836,9 +2056,29 @@ pub(crate) struct Lend {
     func: u16,
 }
 
-/// Borrow the Link from its running broker.
-pub(crate) fn lend(target: &BrokerTarget) -> Result<Lend, String> {
-    let link = existing_link_for(target).ok_or("the Link's broker is not running")?;
+/// en: Borrow the Link from its running broker. A broker of another ch32rv is waited for up to
+/// `--lock-timeout`, then refused (`busy`, exit 13), as [`client_link_for`] does.
+/// ja: 動いているブローカーから Link を借りる。別の版のブローカーは `--lock-timeout` 待って断る。
+pub(crate) fn lend(target: &BrokerTarget) -> Result<Lend, ClientLinkError> {
+    let key = target.key();
+    let since = Instant::now();
+    let link = loop {
+        let Some(v) = read_endpoint(&key) else {
+            return Err("the Link's broker is not running".into());
+        };
+        match connect_endpoint(&key, &v) {
+            Found::Link(l) => break *l,
+            Found::Other(who) if since.elapsed() >= crate::oep::lock_wait() => {
+                return Err(other_version_busy(&who));
+            }
+            Found::Other(_) => std::thread::sleep(Duration::from_millis(100)),
+            Found::Nothing => return Err("the Link's broker is not running".into()),
+        }
+    };
+    Ok(lend_from(link)?)
+}
+
+fn lend_from(link: Link) -> Result<Lend, String> {
     let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
     let owner = format!("ch32rv flash pid {}", std::process::id());
     probe
@@ -1926,4 +2166,65 @@ pub(crate) fn lend_active() -> bool {
 /// broker did not answer.
 pub(crate) fn hand_back_with_reset() -> Option<bool> {
     LENT.with(|c| c.borrow_mut().take())?.hand_back_with_reset()
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+
+    #[test]
+    fn only_a_broker_of_this_protocol_and_version_is_ours() {
+        let ours = json!({"port": 1, "pid": 7, "protocol": BROKER_PROTOCOL, "version": VERSION});
+        assert_eq!(other_version(&ours), None);
+        let newer = json!({"port": 1, "pid": 7, "protocol": BROKER_PROTOCOL, "version": "9.9.9"});
+        assert_eq!(
+            other_version(&newer).as_deref(),
+            Some("ch32rv 9.9.9 (pid 7)")
+        );
+        let protocol = json!({"port": 1, "pid": 7, "protocol": 99, "version": VERSION});
+        assert!(other_version(&protocol).is_some());
+        // A broker from before the check wrote neither field.
+        let old = json!({"port": 1, "pid": 7, "time": 0, "transport": "serial"});
+        assert!(other_version(&old).unwrap().contains("older"));
+    }
+
+    fn confirm_answer(ext: Option<(u8, &str)>) -> Vec<u8> {
+        let mut p = registry::constants::CONFIRM_RESULT_MAGIC
+            .as_bytes()
+            .to_vec();
+        p.extend_from_slice(&[1; 12]);
+        ch32rv_oep::codec::put_tlv(
+            &mut p,
+            oep_core::tlvs::confirm_answer::TRANSPORT,
+            false,
+            &[0],
+        );
+        if let Some((protocol, version)) = ext {
+            let mut v = vec![BROKER_EXTENSION.len() as u8];
+            v.extend_from_slice(BROKER_EXTENSION.as_bytes());
+            v.push(protocol);
+            v.extend_from_slice(version.as_bytes());
+            ch32rv_oep::codec::put_tlv(&mut p, registry::constants::TAG_NAMED_EXTENSION, false, &v);
+        }
+        p
+    }
+
+    #[test]
+    fn the_confirm_answer_names_the_brokers_version() {
+        let ours = confirm_answer(Some((BROKER_PROTOCOL as u8, VERSION)));
+        assert_eq!(other_version_in_confirm(&ours), None);
+        let other = confirm_answer(Some((BROKER_PROTOCOL as u8, "0.0.1")));
+        assert_eq!(
+            other_version_in_confirm(&other).as_deref(),
+            Some("ch32rv 0.0.1")
+        );
+        let protocol = confirm_answer(Some((BROKER_PROTOCOL as u8 + 1, VERSION)));
+        assert!(other_version_in_confirm(&protocol).is_some());
+        assert!(
+            other_version_in_confirm(&confirm_answer(None))
+                .unwrap()
+                .contains("older")
+        );
+    }
 }

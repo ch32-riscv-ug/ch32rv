@@ -449,3 +449,114 @@ fn a_probe_another_host_holds_is_waited_for_lock_timeout_then_busy() {
     );
     let _ = holder.end();
 }
+
+#[test]
+fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pid() {
+    // A broker of another ch32rv holds the probe (here: ours, its endpoint record rewritten to
+    // another version): a client waits `--lock-timeout` for it and exits 13 naming it; when it
+    // ends meanwhile (its last client leaves), the client starts its own and goes on (§3.7).
+    let Some((_fake, pty)) = fake_pty() else {
+        return;
+    };
+    let mut broker = Kill(
+        uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
+            .args(["broker", "serve", "--probe", &format!("port:{pty}")])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let pid = broker.0.id();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let ep = loop {
+        if let Some(ep) = endpoint(&pty) {
+            break ep;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the broker published no endpoint"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let out = ch32rv(&[
+        "broker",
+        "endpoint",
+        "--probe",
+        &format!("port:{pty}"),
+        "--json",
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["result"]["version"], env!("CARGO_PKG_VERSION"), "{v}");
+    assert_eq!(v["result"]["pid"], pid, "{v}");
+    // A client keeps it up.
+    let holder = client(&ep);
+
+    let file = std::fs::read_dir(uv::test_runtime_dir().join("ch32rv"))
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.extension().is_some_and(|x| x == "oep")
+                && std::fs::read_to_string(p)
+                    .ok()
+                    .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                    .is_some_and(|v| v["pid"] == pid)
+        })
+        .expect("the broker's endpoint file");
+    let mut rec: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    rec["version"] = "0.0.0-other".into();
+    std::fs::write(&file, rec.to_string()).unwrap();
+
+    let started = Instant::now();
+    let out = ch32rv(&[
+        "target",
+        "info",
+        "--probe",
+        &format!("port:{pty}"),
+        "--lock-timeout",
+        "1",
+        "--json",
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(13), "{v}");
+    assert_eq!(v["error"]["kind"], "device-busy", "{v}");
+    let msg = v["error"]["msg"].as_str().unwrap();
+    assert!(
+        msg.contains("ch32rv 0.0.0-other") && msg.contains(&format!("pid {pid}")),
+        "{msg}"
+    );
+    let took = started.elapsed();
+    assert!(
+        took >= Duration::from_secs(1) && took < Duration::from_secs(5),
+        "{took:?}"
+    );
+
+    // Its last client leaves while the next command waits: that broker ends (after its 3 s
+    // linger), and the command starts its own broker and goes on.
+    let cmd = std::thread::spawn({
+        let pty = pty.clone();
+        move || {
+            ch32rv(&[
+                "target",
+                "info",
+                "--probe",
+                &format!("port:{pty}"),
+                "--lock-timeout",
+                "15",
+                "--json",
+            ])
+        }
+    });
+    std::thread::sleep(Duration::from_millis(500));
+    drop(holder);
+    let out = cmd.join().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(0), "{v}");
+    assert!(
+        broker.0.try_wait().unwrap().is_some() || {
+            std::thread::sleep(Duration::from_secs(1));
+            broker.0.try_wait().unwrap().is_some()
+        }
+    );
+}

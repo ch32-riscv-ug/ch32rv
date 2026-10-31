@@ -79,6 +79,10 @@
         "transport": {
           "type": ["string", "null"],
           "description": "broker endpoint: ブローカーが probe を開いた道(動いていなければ null)"
+        },
+        "version": {
+          "type": ["string", "null"],
+          "description": "broker endpoint: ブローカーの ch32rv の版(動いていない、または版を持たない古いブローカーなら null)"
         }
       }
     },

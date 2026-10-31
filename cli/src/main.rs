@@ -93,11 +93,13 @@ fn main() -> std::process::ExitCode {
 /// (a monitor holds the Link through it), and hands it back when it returns. The commands that go
 /// through the broker on their own (flash, verify, read, reset, target info, the dmdata / dmseq /
 /// fixture-uart monitors) are not among them.
+/// A broker of another ch32rv that keeps the Link through `--lock-timeout` is `Err` (exit 13).
 /// ja: WCH-Link を自分で開くコマンドは、その Link のブローカーが動いていれば Link を借り、終わったら
-/// 返す。自分でブローカーを通るコマンドは対象外。
-fn borrow_link(cli: &Cli) -> Option<broker::Lend> {
+/// 返す。自分でブローカーを通るコマンドは対象外。別の版のブローカーが `--lock-timeout` の後も
+/// Link を持っていれば Err(exit 13)。
+fn borrow_link(cli: &Cli) -> Result<Option<broker::Lend>, broker::ClientLinkError> {
     if cli.core != 0 {
-        return None;
+        return Ok(None);
     }
     use ch32rv_contract::policy::MonitorSource;
     let direct = match &cli.command {
@@ -115,11 +117,15 @@ fn borrow_link(cli: &Cli) -> Option<broker::Lend> {
         _ => false,
     };
     if !direct {
-        return None;
+        return Ok(None);
     }
     match oep::running_wch_broker(cli, "broker") {
-        Some(oep::OepAddr::Wch(t)) => broker::lend(&t).ok(),
-        _ => None,
+        Some(oep::OepAddr::Wch(t)) => match broker::lend(&t) {
+            Ok(l) => Ok(Some(l)),
+            Err(e) if e.other_version => Err(e),
+            Err(_) => Ok(None),
+        },
+        _ => Ok(None),
     }
 }
 
@@ -263,7 +269,10 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             ),
         );
     }
-    let _lend = borrow_link(cli);
+    let _lend = match borrow_link(cli) {
+        Ok(l) => l,
+        Err(e) => return oep::broker_fail(cli, canonical_name(&cli.command), e),
+    };
     match &cli.command {
         Command::Version => cmd_version(cli),
         Command::Probe(ProbeCmd::List { watch }) => cmd_probe::list(cli, *watch),

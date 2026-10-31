@@ -138,7 +138,7 @@ pub(crate) fn unit_at(addr: &str) -> Option<String> {
         }
     }
     let (u, firmware, model) = read_identity(addr)?;
-    let _ = std::fs::create_dir_all(ch32rv_usb::runtime_dir());
+    let _ = ch32rv_usb::create_runtime_dir();
     let _ = std::fs::write(
         &memo,
         format!(
@@ -676,7 +676,7 @@ pub(crate) fn running_wch_broker(cli: &Cli, cmd: &str) -> Option<OepAddr> {
     let entries = crate::cmd_probe::wch_devices().ok()?;
     let i = ch32rv_usb::resolve(sel.as_ref(), entries.iter().map(|e| &e.dev)).ok()?;
     let t = crate::broker::BrokerTarget::wch(&entries[i]);
-    crate::broker::existing_link_for(&t).map(|_| OepAddr::Wch(t))
+    crate::broker::broker_runs(&t).then_some(OepAddr::Wch(t))
 }
 
 fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
@@ -700,8 +700,16 @@ fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
 /// en: A broker that could not be reached, or whose probe another host kept holding through
 /// `--lock-timeout` (exit 13, §3.7). ja: ブローカーに届かない、または `--lock-timeout` の間 probe を
 /// 他の host が持ち続けた(exit 13)。
-fn broker_fail(cli: &Cli, cmd: &str, e: crate::broker::ClientLinkError) -> ExitCode {
-    if e.busy {
+pub(crate) fn broker_fail(cli: &Cli, cmd: &str, e: crate::broker::ClientLinkError) -> ExitCode {
+    if e.other_version {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceBusy,
+            e.msg,
+            Some(OTHER_VERSION_HINT),
+        )
+    } else if e.busy {
         fail(
             cli,
             cmd,
@@ -725,6 +733,26 @@ fn broker_fail(cli: &Cli, cmd: &str, e: crate::broker::ClientLinkError) -> ExitC
 /// command is one of its clients. Only a `tcp:` address that is a ch32rv broker itself is
 /// connected to directly. ja: 接続して confirm。経路によらずブローカー経由(無ければ起動)。
 /// この PC のブローカー自身を指す `tcp:` だけ直接つなぐ。
+/// en: The hint for a broker of another ch32rv. ja: 別の版の ch32rv のブローカーのときの案内。
+const OTHER_VERSION_HINT: &str = "another ch32rv (an IDE's bundled one, or one on PATH) uses the probe through its broker; close what it runs (monitor, gdb), or use that ch32rv";
+
+/// en: A `tcp:` address that is a broker itself, opened directly: refused (exit 13) when the broker
+/// is of another ch32rv. ja: ブローカー自身の `tcp:` を直接開く。別の版なら断る(exit 13)。
+fn open_broker_directly(t: &str) -> Result<ch32rv_oep::link::Link, (ErrorKind, String)> {
+    let mut l =
+        ch32rv_oep::link::open_tcp(t).map_err(|e| (ErrorKind::DeviceOpenFailed, e.to_string()))?;
+    match crate::broker::other_broker(&mut l) {
+        Some(who) => Err((
+            ErrorKind::DeviceBusy,
+            format!(
+                "{t} is the broker of {who}, not of ch32rv {}",
+                env!("CARGO_PKG_VERSION")
+            ),
+        )),
+        None => Ok(l),
+    }
+}
+
 fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
     let mut link = match a {
         OepAddr::Serial(p) | OepAddr::Probe { path: p, .. } => {
@@ -736,8 +764,10 @@ fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
                 let OepAddr::Tcp(t) = a else {
                     return Err(fail(cli, cmd, ErrorKind::Usage, "no tcp address", None));
                 };
-                ch32rv_oep::link::open_tcp(t)
-                    .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?
+                open_broker_directly(t).map_err(|(kind, m)| {
+                    let hint = (kind == ErrorKind::DeviceBusy).then_some(OTHER_VERSION_HINT);
+                    fail(cli, cmd, kind, m, hint)
+                })?
             }
         },
         OepAddr::Wch(t) => {
@@ -1671,7 +1701,7 @@ impl ConsoleSession {
             OepAddr::Tcp(_) | OepAddr::Net { .. } => match net_target(a) {
                 Some(t) => crate::broker::client_link_for(&t)?,
                 None => match a {
-                    OepAddr::Tcp(t) => ch32rv_oep::link::open_tcp(t).map_err(|e| e.to_string())?,
+                    OepAddr::Tcp(t) => open_broker_directly(t).map_err(|(_, m)| m)?,
                     _ => return Err("no tcp address".into()),
                 },
             },
