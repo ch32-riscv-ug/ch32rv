@@ -17,7 +17,7 @@ uv run --project tests/hardware --locked --env-file tests/hardware/.env \
 
 `.env` は明示的な `--env-file` で読み込みます。TOMLのpathは `CH32RV_HW_CONFIG`、検査するCLI binaryは `CH32RV_TEST_TOOL`、既存の共通lockは `OEP_HW_LOCK`、結果の親ディレクトリは `OEP_HW_RESULTS` です。TOML内のimage相対pathはTOMLの所在から、環境変数の相対pathは実行ディレクトリから解決します。`.env` と `*.local.toml` はGit管理外、雛形とuv.lockはGit管理します。
 
-`CH32RV_HW_CONFIG` がない場合だけ任意の実機検査としてskipします。設定がある場合の不足・個体不一致・設備使用中・操作失敗はFAILです。共通lockを検査の全期間保持し、lockファイルを作成・交換しません。CLI brokerのruntimeは実行ごとに隔離します。他の設備利用者も同じlockを使う必要があります。
+`CH32RV_HW_CONFIG` がない場合だけ任意の実機検査としてskipします。設定がある場合の不足・個体不一致・設備使用中・操作失敗はFAILです。共通lockを検査の全期間保持し、lockファイルを作成・交換しません。CLI brokerのruntimeは実行ごとに隔離します。OEPの共有ベンチの `oep-bench/locks/bench.lock` はOEPプロジェクトの道具専用なので、`OEP_HW_LOCK` に指定しないでください（oep-bench ad9bc77）。共有ベンチの排他は、WCH-LinkはLinkのUARTのttyの機器ロック、OEPプローブはプローブのlease（take）で行います。この検査をそちらへ移すまでは、このPC専用のlockファイルを指定してください。
 
 プローブ個体とdescribe宣言を照合してからDUTを操作します。実際のfirmware、interface宣言、Python client版、CLI版・DB/stub digest・binary hash、設定hash、image hash、コマンドと結果JSONを新しい結果ディレクトリへ保存します。書込み後はimageの長さだけ読み戻して比較し、DUT識別に成功した後のflash/read失敗でもreset/runを試みます。復帰の失敗は別途FAILとして記録します。
 
