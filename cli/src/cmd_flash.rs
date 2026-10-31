@@ -202,11 +202,65 @@ pub(crate) fn overlay_page(page_addr: u32, content: &mut [u8], segments: &[Segme
     ch32rv_flash::overlay(page_addr, content, segments);
 }
 
+/// en: The flash flags ch32rv's RAM loader cannot honour, on either path that uses it (an OEP
+/// probe, a WCH-Link family with no WCH stub). The loader erases the pages the image touches,
+/// keeps the bytes around the image in them, and reads every page back, so `--erase auto|sector`,
+/// `--verify readback` and `--restore-unwritten` say what it does; the rest would be ignored.
+/// ja: ch32rv の RAM loader(OEP の probe、WCH の stub が無い WCH-Link の family)が守れない flash の
+/// フラグ。loader は image が触れる page を消し、その中の image の外の byte を残し、全 page を読み
+/// 戻すので、`--erase auto|sector`、`--verify readback`、`--restore-unwritten` はそのとおり。残りは
+/// 無視されることになる。
+pub(crate) fn loader_refusals(args: &FlashArgs) -> Vec<String> {
+    let mut v = Vec::new();
+    if matches!(args.erase, EraseMode::Chip | EraseMode::None) {
+        v.push(format!("--erase {}", args.erase.as_str()));
+    }
+    if args.verify == VerifyMode::None {
+        v.push("--verify none".to_owned());
+    }
+    if args.sdi.is_some() {
+        v.push("--sdi".to_owned());
+    }
+    if args.monitor.is_some() {
+        v.push("--monitor".to_owned());
+    }
+    v
+}
+
+/// en: Refuse (exit 24) the flags a flash path cannot honour, before anything is written.
+/// ja: その経路で守れないフラグを、何か書く前に断る(exit 24)。
+pub(crate) fn refuse_flags(cli: &Cli, path: &str, flags: &[String]) -> Option<ExitCode> {
+    (!flags.is_empty()).then(|| {
+        fail(
+            cli,
+            "flash",
+            ErrorKind::CapabilityUnsupported,
+            format!("{path} cannot honour {}", flags.join(", ")),
+            Some("leave them out (docs/cli.ja.md §4.1 lists what each path does)"),
+        )
+    })
+}
+
 pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
+    // en: An OEP probe's path is known from the address alone: refuse what it cannot do before
+    // connecting (`--repeat` too, whose wait for the next target only looks through a WCH-Link).
+    // ja: OEP の経路はアドレスだけで分かるので、つなぐ前に断る(`--repeat` も。次の target を待つ
+    // のは WCH-Link 越しだけ)。
+    let addr = match crate::oep::addr(cli, "flash") {
+        Ok(a) => a,
+        Err(c) => return c,
+    };
+    if addr
+        .as_ref()
+        .is_some_and(|a| !matches!(a, crate::oep::OepAddr::Wch(_)))
+        && let Some(c) = refuse_flags(cli, "an OEP probe", &crate::oep::flash_refusals(cli, args))
+    {
+        return c;
+    }
     if args.repeat {
         flash_repeat(cli, args)
     } else {
-        flash_once(cli, args)
+        flash_once(cli, args, addr)
     }
 }
 
@@ -220,7 +274,11 @@ fn flash_repeat(cli: &Cli, args: &FlashArgs) -> ExitCode {
     loop {
         count += 1;
         eprintln!("repeat: programming target #{count} (Ctrl-C to stop)");
-        let _ = flash_once(cli, args);
+        // A WCH-Link's broker may have started or ended since the last board: look again.
+        let _ = match crate::oep::addr(cli, "flash") {
+            Ok(a) => flash_once(cli, args, a),
+            Err(c) => c,
+        };
         eprintln!("repeat: remove the programmed target ...");
         wait_for_chip(cli, false);
         eprintln!("repeat: insert the next target ...");
@@ -256,7 +314,8 @@ fn chip_present(cli: &Cli) -> bool {
     present
 }
 
-fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
+/// `flash` once, at `addr` (`crate::oep::addr`: an OEP probe, a WCH-Link's broker, or None).
+fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) -> ExitCode {
     const CMD: &str = "flash";
     let bytes = match std::fs::read(&args.file) {
         Ok(d) => d,
@@ -274,14 +333,13 @@ fn flash_once(cli: &Cli, args: &FlashArgs) -> ExitCode {
     // An OEP probe (`tcp:`, `oep://`, a serial port no WCH-Link owns) takes the OEP path. A
     // WCH-Link whose broker runs (an open monitor) is borrowed from it for the direct path below -
     // WCH's stub stays - and handed back when this returns.
-    let _lend = match crate::oep::addr(cli, CMD) {
-        Ok(Some(crate::oep::OepAddr::Wch(t))) => match crate::broker::lend(&t) {
+    let _lend = match addr {
+        Some(crate::oep::OepAddr::Wch(t)) => match crate::broker::lend(&t) {
             Ok(l) => Some(crate::broker::LendScope::new(l)),
             Err(m) => return fail(cli, CMD, ErrorKind::DeviceBusy, m, None),
         },
-        Ok(Some(a)) => return crate::oep::flash(cli, args, &bytes, &a),
-        Ok(None) => None,
-        Err(c) => return c,
+        Some(a) => return crate::oep::flash(cli, args, &bytes, &a),
+        None => None,
     };
 
     let entry = match select_entry(cli, CMD) {
@@ -1016,6 +1074,17 @@ fn flash_via_loader(
     warnings: Vec<Warning>,
 ) -> ExitCode {
     const CMD: &str = "flash";
+    // en: `--confirm-run` is not refused although nothing checks it here: the Arduino recipes
+    // always pass it, and a check that halts would fail a CH32H417 whose sketch takes the debug
+    // pins (PB8 / PB9) for USB. ja: `--confirm-run` は断らない(Arduino の recipe が常に渡す。止めて
+    // 確かめると、debug の pin を USB に取る H417 の sketch で失敗する)。
+    let mut refused = loader_refusals(args);
+    if args.preverify {
+        refused.push("--preverify".to_owned());
+    }
+    if let Some(c) = refuse_flags(cli, "the ch32rv loader path (no WCH stub)", &refused) {
+        return c;
+    }
     let family = crate::cmd_target::db_family_of(&mut session);
     let Some(plan) = ch32rv_flash::loader::plan_for_family(&family) else {
         return fail(
@@ -1758,6 +1827,24 @@ pub fn recover(cli: &Cli, args: &RecoverArgs) -> ExitCode {
     // an OEP probe has neither, and says so rather than looking for a WCH-Link. The diagnosis,
     // auto and unprotect work through the Debug Module on either.
     // ja: power-off / nrst / unbrick は WCH-Link の命令(特殊消去、電源)なので OEP では断る。
+    // en: `--image` is written only by an OEP probe's `--method nrst`; anywhere else it is refused.
+    // ja: `--image` を書くのは OEP の `--method nrst` だけ。ほかでは断る。
+    if args.image.is_some() {
+        let oep_nrst = args.method == Some(RecoverMethod::Nrst)
+            && match crate::oep::addr(cli, "recover") {
+                Ok(a) => a.is_some_and(|a| !matches!(a, crate::oep::OepAddr::Wch(_))),
+                Err(c) => return c,
+            };
+        if !oep_nrst {
+            return fail(
+                cli,
+                "recover",
+                ErrorKind::CapabilityUnsupported,
+                "--image is written only by `--method nrst` on an OEP probe",
+                Some("flash the image after the recovery: `ch32rv flash <FILE>`"),
+            );
+        }
+    }
     if matches!(
         args.method,
         Some(RecoverMethod::PowerOff | RecoverMethod::Nrst | RecoverMethod::Unbrick)
@@ -2492,6 +2579,88 @@ mod tests {
         assert_eq!(super::family_byte_from_name("CH32X315MCU6"), Some(0xe6));
         assert_eq!(super::family_byte_from_name("CH32X305RCT6"), Some(0xe6));
     }
+    /// en: What the RAM-loader paths do is accepted (what the Arduino recipes pass, the erase and
+    /// verify that match the loader); what they would ignore is listed for refusal.
+    /// ja: loader の経路がすることは受け、無視することになるものは断る一覧に入る。
+    #[test]
+    #[allow(clippy::expect_used, clippy::unreachable)]
+    fn loader_paths_refuse_only_what_they_would_ignore() {
+        use clap::Parser;
+        let parse = |extra: &[&str]| {
+            let mut argv = vec!["ch32rv", "flash", "a.elf"];
+            argv.extend_from_slice(extra);
+            crate::args::Cli::try_parse_from(argv).expect("parses")
+        };
+        let flash_of = |cli: &crate::args::Cli| match &cli.command {
+            crate::args::Command::Flash(a) => (super::loader_refusals(a), {
+                crate::oep::flash_refusals(cli, a)
+            }),
+            _ => unreachable!(),
+        };
+        // The Arduino recipe's flags, and the values that say what the loader does.
+        for ok in [
+            &[
+                "--format",
+                "elf",
+                "--reset",
+                "run",
+                "--confirm-run",
+                "--progress",
+                "none",
+            ][..],
+            &[
+                "--erase",
+                "sector",
+                "--verify",
+                "readback",
+                "--restore-unwritten",
+            ][..],
+            &["--erase", "auto", "--preverify", "--reset", "none"][..],
+        ] {
+            let cli = parse(ok);
+            let (loader, oep) = flash_of(&cli);
+            assert!(loader.is_empty(), "{ok:?}: {loader:?}");
+            assert!(oep.is_empty(), "{ok:?}: {oep:?}");
+        }
+        let cli = parse(&["--erase", "chip", "--verify", "none", "--sdi", "on"]);
+        assert_eq!(flash_of(&cli).0, ["--erase chip", "--verify none", "--sdi"]);
+        let cli = parse(&["--erase", "none", "--monitor", "dmdata"]);
+        assert_eq!(flash_of(&cli).0, ["--erase none", "--monitor"]);
+        let cli = crate::args::Cli::try_parse_from([
+            "ch32rv",
+            "--connect-under-reset",
+            "--attach-wait",
+            "5",
+            "flash",
+            "a.elf",
+            "--reset",
+            "halt",
+            "--repeat",
+        ])
+        .expect("parses");
+        assert_eq!(
+            flash_of(&cli).1,
+            [
+                "--connect-under-reset",
+                "--attach-wait",
+                "--reset halt",
+                "--repeat"
+            ]
+        );
+        // Values no path implements are not accepted at all.
+        for gone in [&["--verify", "crc"][..], &["--region", "system"][..]] {
+            assert!(
+                crate::args::Cli::try_parse_from(["ch32rv", "flash", "a.elf"].iter().chain(gone))
+                    .is_err(),
+                "{gone:?}"
+            );
+        }
+        assert!(
+            crate::args::Cli::try_parse_from(["ch32rv", "verify", "a.elf", "--region", "code"])
+                .is_err()
+        );
+    }
+
     use super::{Segment, covered_pages, overlay_page, resolve_erase};
     use ch32rv_contract::policy::EraseMode;
 

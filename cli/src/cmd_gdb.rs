@@ -90,6 +90,17 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
         Ok(s) => s,
         Err(c) => return c,
     };
+    if args.reset_halt
+        && let Err(e) = ch32rv_dmi::DebugModule::new(&mut link).reset_halt()
+    {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::AttachFailed,
+            format!("--reset-halt: {e}"),
+            None,
+        );
+    }
 
     // Flash software breakpoints need a verified controller profile (reset-after-attach already
     // handled above for families whose attach corrupts registers).
@@ -114,8 +125,10 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
     code
 }
 
-/// en: Bind `--listen`, say where, and wait for the one GDB connection.
-/// ja: `--listen` で待ち受け、場所を出し、GDB の接続を 1 つ待つ。
+/// en: Bind `--listen`, say where, and wait for the one GDB connection. With `--reset-halt` the
+/// caller then resets the target and holds it at its reset vector before serving GDB.
+/// ja: `--listen` で待ち受け、場所を出し、GDB の接続を 1 つ待つ。`--reset-halt` なら呼び出し側が
+/// その後 target を reset してリセットベクタで止めてから GDB の相手をする。
 pub(crate) fn listen(cli: &Cli, args: &GdbArgs) -> Result<TcpStream, ExitCode> {
     const CMD: &str = "gdb";
     let listener = TcpListener::bind(&args.listen).map_err(|e| {

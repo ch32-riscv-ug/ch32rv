@@ -311,7 +311,17 @@ fn spawn_broker(target: &BrokerTarget) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current exe: {e}"))?;
     let mut cmd = std::process::Command::new(exe);
     cmd.args(["broker", "serve", "--probe", &target.selector()])
-        .stdin(std::process::Stdio::null())
+        // How long it waits for a probe another host holds, and one transfer's limit: the
+        // command's that started it.
+        .args([
+            "--lock-timeout".to_owned(),
+            crate::oep::lock_wait().as_secs().to_string(),
+        ]);
+    let timeout = crate::oep::LINK_TIMEOUT_S.load(std::sync::atomic::Ordering::Relaxed);
+    if timeout != 0 {
+        cmd.args(["--timeout".to_owned(), timeout.to_string()]);
+    }
+    cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
     #[cfg(unix)]
@@ -333,11 +343,32 @@ fn spawn_broker(target: &BrokerTarget) -> Result<(), String> {
         .map_err(|e| format!("start the broker: {e}"))
 }
 
+/// en: Why no link to a broker came: `busy` when the broker found the probe held by another host
+/// through `--lock-timeout` (exit 13). ja: ブローカーへの link が来なかった理由。`busy` は、
+/// ブローカーが `--lock-timeout` の間 probe を他の host に持たれていたとき(exit 13)。
+#[derive(Debug)]
+pub(crate) struct ClientLinkError {
+    pub(crate) msg: String,
+    pub(crate) busy: bool,
+}
+
+impl From<String> for ClientLinkError {
+    fn from(msg: String) -> Self {
+        Self { msg, busy: false }
+    }
+}
+
+impl From<ClientLinkError> for String {
+    fn from(e: ClientLinkError) -> Self {
+        e.msg
+    }
+}
+
 /// en: A link to the broker of `target`, starting the broker when none answers. An endpoint the
 /// broker wrote before this call counts only if it answers; an error it wrote counts only if it
 /// is newer than our start.
 /// ja: `target` のブローカーへの link。答えるブローカーが無ければ起動する。
-pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, String> {
+pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, ClientLinkError> {
     let key = target.key();
     // en: A connection counts only if the endpoint still names the same broker once connected: a
     // broker about to end takes its endpoint down first and then still accepts for a moment, so a
@@ -359,7 +390,8 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, String> {
     let t0 = now_ms();
     spawn_broker(target)?;
     let mut spawned = Instant::now();
-    let deadline = Instant::now() + START_WAIT;
+    // The broker may wait `--lock-timeout` for a probe another host holds before it answers.
+    let deadline = Instant::now() + START_WAIT + crate::oep::lock_wait();
     while Instant::now() < deadline {
         if let Some(v) = read_endpoint(&key) {
             let fresh = v.get("time").and_then(Value::as_u64).unwrap_or(0) + 50 >= t0;
@@ -367,7 +399,10 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, String> {
                 return Ok(l);
             }
             if fresh && let Some(e) = v.get("error").and_then(Value::as_str) {
-                return Err(e.to_owned());
+                return Err(ClientLinkError {
+                    msg: e.to_owned(),
+                    busy: v.get("busy").and_then(Value::as_bool).unwrap_or(false),
+                });
             }
         } else if spawned.elapsed() >= RESPAWN_EVERY {
             // The one we started may have found the old broker still holding the probe (its lock)
@@ -380,12 +415,13 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, String> {
     Err(format!(
         "the broker for {} did not start within {} s",
         target.selector(),
-        START_WAIT.as_secs()
-    ))
+        (START_WAIT + crate::oep::lock_wait()).as_secs()
+    )
+    .into())
 }
 
 /// The broker of the OEP probe on serial port `path` (started if needed).
-pub(crate) fn client_link(path: &str) -> Result<Link, String> {
+pub(crate) fn client_link(path: &str) -> Result<Link, ClientLinkError> {
     client_link_for(&BrokerTarget::Serial(path.to_owned()))
 }
 
@@ -559,6 +595,21 @@ fn serve_target(
         );
         ExitCode::from(ErrorKind::DeviceOpenFailed.exit_code())
     };
+    // en: The probe's lock, held by another host through `--lock-timeout`: its clients exit 13.
+    // ja: probe の lock を `--lock-timeout` の間 他の host が持っていた。client は exit 13。
+    let report_lock = |e: ch32rv_oep::session::OepError| {
+        let busy = matches!(e, ch32rv_oep::session::OepError::Locked { .. });
+        let _ = write_endpoint(
+            &key,
+            &json!({"error": e.to_string(), "busy": busy, "pid": std::process::id(), "time": now_ms()}),
+        );
+        let kind = if busy {
+            ErrorKind::DeviceBusy
+        } else {
+            ErrorKind::DeviceOpenFailed
+        };
+        ExitCode::from(kind.exit_code())
+    };
     let mut transport = "wchlink";
     // The UART bridge port_speed raised, while it stays raised.
     let mut speed_port: Option<u8> = None;
@@ -572,6 +623,7 @@ fn serve_target(
                 }
                 Err(m) => return report_error(format!("{path}: {m}")),
             };
+            crate::oep::apply_timeout(probe.link());
             let serial = crate::oep::single_serial(&mut probe);
             let owner = format!("ch32rv broker pid {}", std::process::id());
             // The previous broker's session, if the probe still keeps it: take it back and end it
@@ -584,7 +636,7 @@ fn serve_target(
             }
             let sid = match crate::oep::open_with_lock_rule(&mut probe, serial, &owner, LEASE_MS) {
                 Ok(s) => s,
-                Err(e) => return report_error(e.to_string()),
+                Err(e) => return report_lock(e),
             };
             save_sid(&key, sid);
             (Upstream::Oep(Box::new(probe)), sid)
@@ -601,6 +653,7 @@ fn serve_target(
                 Ok(p) => p,
                 Err(m) => return report_error(format!("{addr}: {m}")),
             };
+            crate::oep::apply_timeout(probe.link());
             let owner = format!("ch32rv broker pid {}", std::process::id());
             if let Some(old) = saved_sid(&key)
                 && probe.open(old, LEASE_MS, false, Some(&owner)).is_ok()
@@ -610,7 +663,7 @@ fn serve_target(
             }
             let sid = match crate::oep::open_with_lock_rule(&mut probe, false, &owner, LEASE_MS) {
                 Ok(s) => s,
-                Err(e) => return report_error(e.to_string()),
+                Err(e) => return report_lock(e),
             };
             save_sid(&key, sid);
             (Upstream::Oep(Box::new(probe)), sid)

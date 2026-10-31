@@ -391,3 +391,61 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
         "{v}"
     );
 }
+
+#[test]
+fn a_probe_another_host_holds_is_waited_for_lock_timeout_then_busy() {
+    // Another host's session holds the probe (a long lease): the broker ch32rv starts waits
+    // `--lock-timeout` for it and gives up, and the command exits 13 (device-busy, §3.7).
+    let Some(dir) = uv::client_dir() else {
+        return;
+    };
+    let unit = format!("{:012x}", u64::from(std::process::id()) << 8 | 0xcd);
+    let mut child = uv::uv_run(&dir)
+        .args([
+            "python",
+            "-m",
+            "oep_client.virtual_bench_serve",
+            "--tcp",
+            "0",
+        ])
+        .args(["--unit-id", &unit, "--target-id", "0x20310500"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let _bench = Kill(child);
+    let port = line.trim().strip_prefix("PORT ").unwrap().to_owned();
+    let mut holder = Probe::connect(open_tcp(&format!("127.0.0.1:{port}")).unwrap()).unwrap();
+    holder
+        .open(
+            ch32rv_oep::session::random_session_id(),
+            30_000,
+            false,
+            Some("other host"),
+        )
+        .unwrap();
+
+    let started = Instant::now();
+    let out = ch32rv(&[
+        "target",
+        "info",
+        "--probe",
+        &format!("tcp:127.0.0.1:{port}"),
+        "--lock-timeout",
+        "1",
+        "--json",
+    ]);
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(out.status.code(), Some(13), "{v}");
+    assert_eq!(v["error"]["kind"], "device-busy", "{v}");
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
+    let _ = holder.end();
+}

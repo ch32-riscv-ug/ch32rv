@@ -173,6 +173,38 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             None,
         );
     }
+    // en: `--pins` names an OEP probe's pins, and `--release-dm` is the WCH-Link session's last
+    // step: each is refused on a path where it would do nothing. The Arduino monitor learns its
+    // address later, from the IDE. ja: `--pins` は OEP の probe のピン、`--release-dm` は WCH-Link の
+    // session の後始末。効かない経路では断る。Arduino の monitor はアドレスを後で IDE から受ける。
+    if (cli.pins.is_some() || cli.release_dm) && !matches!(cli.command, Command::Arduino(_)) {
+        let name = canonical_name(&cli.command);
+        let oep = match oep::oep_route(cli, name) {
+            Ok(v) => v,
+            Err(c) => return c,
+        };
+        let refused = if cli.pins.is_some() && !oep {
+            Some("--pins names an OEP probe's pins; this command does not go to an OEP probe")
+        } else if cli.release_dm && oep {
+            Some("--release-dm is a WCH-Link session's last step; an OEP probe has no such step")
+        } else {
+            None
+        };
+        if let Some(m) = refused {
+            return cmd_probe::fail(
+                cli,
+                name,
+                ch32rv_contract::ErrorKind::CapabilityUnsupported,
+                m,
+                None,
+            );
+        }
+    }
+    oep::LOCK_WAIT_S.store(cli.lock_timeout, std::sync::atomic::Ordering::Relaxed);
+    oep::LINK_TIMEOUT_S.store(
+        cli.timeout.unwrap_or(0),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     session::CONNECT_UNDER_RESET.store(
         cli.connect_under_reset,
         std::sync::atomic::Ordering::Relaxed,

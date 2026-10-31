@@ -39,11 +39,10 @@ policy_enum! {
 
 policy_enum! {
     /// en: Verify policy after programming. Readback is the default; none is an explicit
-    /// opt-out (docs/cli.ja.md §4.1).
-    /// ja: 書き込み後の検証方針。readback が既定。none は明示選択。
+    /// opt-out (docs/cli.ja.md §4.1). A CRC on the target is added when one is implemented.
+    /// ja: 書き込み後の検証方針。readback が既定。none は明示選択。target の上の CRC は実装したときに足す。
     VerifyMode {
         Readback => "readback",
-        Crc => "crc",
         None => "none",
     }
 }

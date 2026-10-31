@@ -637,6 +637,34 @@ pub(crate) fn addr(cli: &Cli, cmd: &str) -> Result<Option<OepAddr>, ExitCode> {
     }
 }
 
+/// en: Whether the command goes to an OEP probe (not a WCH-Link, directly or through its broker).
+/// ja: コマンドが OEP の probe へ行くか(WCH-Link でない。直接でもブローカー経由でも)。
+pub(crate) fn oep_route(cli: &Cli, cmd: &str) -> Result<bool, ExitCode> {
+    addr(cli, cmd).map(|a| a.is_some_and(|a| !matches!(a, OepAddr::Wch(_))))
+}
+
+/// en: `--lock-timeout` (seconds): how long a session waits for a probe another host holds, and a
+/// broker for the probe's lock. Set from the command line in `main`.
+/// ja: `--lock-timeout`(秒)。他の host が持つ probe を session が待つ時間、ブローカーが probe の
+/// lock を待つ時間。`main` がコマンドラインから入れる。
+pub(crate) static LOCK_WAIT_S: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10);
+/// en: `--timeout` (seconds, 0: the link's default): how long one transfer to the probe may take.
+/// ja: `--timeout`(秒、0 は link の既定)。probe との転送 1 回の上限。
+pub(crate) static LINK_TIMEOUT_S: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn lock_wait() -> Duration {
+    Duration::from_secs(LOCK_WAIT_S.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// `--timeout` on `link`, when it was given.
+pub(crate) fn apply_timeout(link: &mut ch32rv_oep::link::Link) {
+    match LINK_TIMEOUT_S.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => {}
+        s => link.set_timeout(Duration::from_secs(s)),
+    }
+}
+
 /// en: The WCH-Link `--probe` names, when its broker is running (a monitor or another client holds
 /// the Link through it): the command then goes through the broker too, since the broker holds the
 /// Link. Otherwise None, and the command opens the Link directly as always.
@@ -669,33 +697,41 @@ fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
     fail(cli, cmd, kind, e.to_string(), hint)
 }
 
+/// en: A broker that could not be reached, or whose probe another host kept holding through
+/// `--lock-timeout` (exit 13, §3.7). ja: ブローカーに届かない、または `--lock-timeout` の間 probe を
+/// 他の host が持ち続けた(exit 13)。
+fn broker_fail(cli: &Cli, cmd: &str, e: crate::broker::ClientLinkError) -> ExitCode {
+    if e.busy {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceBusy,
+            e.msg,
+            Some("another host holds the probe; wait for it, or raise --lock-timeout"),
+        )
+    } else {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::DeviceOpenFailed,
+            e.msg,
+            Some("the probe's broker could not start or be reached"),
+        )
+    }
+}
+
 /// en: Connect and confirm, through the probe's broker whatever the transport (started if it is
 /// not running, docs/oep-host.ja.md §7.2): the broker holds the probe and its session, and this
 /// command is one of its clients. Only a `tcp:` address that is a ch32rv broker itself is
 /// connected to directly. ja: 接続して confirm。経路によらずブローカー経由(無ければ起動)。
 /// この PC のブローカー自身を指す `tcp:` だけ直接つなぐ。
 fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
-    let link = match a {
-        OepAddr::Serial(p) | OepAddr::Probe { path: p, .. } => crate::broker::client_link(p)
-            .map_err(|m| {
-                fail(
-                    cli,
-                    cmd,
-                    ErrorKind::DeviceOpenFailed,
-                    m,
-                    Some("the probe's broker could not start or be reached"),
-                )
-            })?,
+    let mut link = match a {
+        OepAddr::Serial(p) | OepAddr::Probe { path: p, .. } => {
+            crate::broker::client_link(p).map_err(|e| broker_fail(cli, cmd, e))?
+        }
         OepAddr::Tcp(_) | OepAddr::Net { .. } => match net_target(a) {
-            Some(t) => crate::broker::client_link_for(&t).map_err(|m| {
-                fail(
-                    cli,
-                    cmd,
-                    ErrorKind::DeviceOpenFailed,
-                    m,
-                    Some("the probe's broker could not start or be reached"),
-                )
-            })?,
+            Some(t) => crate::broker::client_link_for(&t).map_err(|e| broker_fail(cli, cmd, e))?,
             None => {
                 let OepAddr::Tcp(t) = a else {
                     return Err(fail(cli, cmd, ErrorKind::Usage, "no tcp address", None));
@@ -704,9 +740,11 @@ fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
                     .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?
             }
         },
-        OepAddr::Wch(t) => crate::broker::client_link_for(t)
-            .map_err(|m| fail(cli, cmd, ErrorKind::DeviceOpenFailed, m, None))?,
+        OepAddr::Wch(t) => {
+            crate::broker::client_link_for(t).map_err(|e| broker_fail(cli, cmd, e))?
+        }
     };
+    apply_timeout(&mut link);
     Probe::connect(link).map_err(|e| oep_fail(cli, cmd, e))
 }
 
@@ -731,10 +769,10 @@ pub(crate) fn single_serial(p: &mut Probe) -> bool {
 }
 
 /// en: Open a session named `owner` with the oep-workflow §4.3 lock rule: a lock held elsewhere is
-/// taken at once on a single-serial probe; otherwise the remaining lease is waited out (up to 5 s)
-/// and a holder that keeps renewing comes back as `Locked` (with its owner name).
+/// taken at once on a single-serial probe; otherwise the remaining lease is waited out (up to
+/// `--lock-timeout`) and a holder that keeps renewing comes back as `Locked` (with its owner name).
 /// ja: `owner` の名で session を開く。serial 1 本の probe ならすぐ奪い、それ以外は残りの lease を
-/// 待ち(最大 5 秒)、更新し続ける持ち主は `Locked`(owner の名前つき)で返す。
+/// 待ち(最長 `--lock-timeout`)、更新し続ける持ち主は `Locked`(owner の名前つき)で返す。
 pub(crate) fn open_with_lock_rule(
     p: &mut Probe,
     serial: bool,
@@ -742,7 +780,7 @@ pub(crate) fn open_with_lock_rule(
     lease_ms: u32,
 ) -> Result<u32, OepError> {
     let sid = random_session_id();
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + lock_wait();
     let mut force = false;
     loop {
         match p.open(sid, lease_ms, force, Some(owner)) {
@@ -1208,6 +1246,28 @@ fn family(cli: &Cli, cmd: &str, chip_id: Option<u32>) -> Result<String, ExitCode
     }
 }
 
+/// en: The `flash` flags an OEP probe's path cannot honour (refused with exit 24 before it
+/// connects): the loader's ([`crate::cmd_flash::loader_refusals`]), an attach that holds NRST or
+/// waits (the flash attaches with a halt of its own), `--reset halt`, and `--repeat` (its wait
+/// for the next target looks through a WCH-Link only).
+/// ja: OEP の経路で守れない `flash` のフラグ(つなぐ前に exit 24 で断る)。
+pub(crate) fn flash_refusals(cli: &Cli, args: &FlashArgs) -> Vec<String> {
+    let mut v = crate::cmd_flash::loader_refusals(args);
+    if cli.connect_under_reset {
+        v.push("--connect-under-reset".to_owned());
+    }
+    if cli.attach_wait.is_some() {
+        v.push("--attach-wait".to_owned());
+    }
+    if args.reset == ch32rv_contract::policy::ResetPolicy::Halt {
+        v.push("--reset halt".to_owned());
+    }
+    if args.repeat {
+        v.push("--repeat".to_owned());
+    }
+    v
+}
+
 /// `flash` on an OEP probe.
 pub(crate) fn flash(cli: &Cli, args: &FlashArgs, bytes: &[u8], a: &OepAddr) -> ExitCode {
     const CMD: &str = "flash";
@@ -1606,7 +1666,7 @@ impl ConsoleSession {
         wanted: StreamWanted,
         chip: Option<&str>,
     ) -> Result<Self, String> {
-        let link = match a {
+        let mut link = match a {
             OepAddr::Serial(p) | OepAddr::Probe { path: p, .. } => crate::broker::client_link(p)?,
             OepAddr::Tcp(_) | OepAddr::Net { .. } => match net_target(a) {
                 Some(t) => crate::broker::client_link_for(&t)?,
@@ -1617,6 +1677,7 @@ impl ConsoleSession {
             },
             OepAddr::Wch(t) => crate::broker::client_link_for(t)?,
         };
+        apply_timeout(&mut link);
         let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
         if a.whole_probe() {
             let labels = ch32rv_oep::config::labels(&mut probe).unwrap_or_default();
@@ -2056,6 +2117,17 @@ pub(crate) fn gdb(cli: &Cli, args: &crate::args::GdbArgs, a: &OepAddr) -> ExitCo
             Ok(s) => s,
             Err(c) => return c,
         };
+        if args.reset_halt
+            && let Err(e) = x.t.reset(ResetMode::HaltAtReset)
+        {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::AttachFailed,
+                format!("--reset-halt: {e}"),
+                None,
+            );
+        }
         let flash = profile
             .filter(|p| p.gdb_breakpoints)
             .map(|p| (p.page_size, p.mode));

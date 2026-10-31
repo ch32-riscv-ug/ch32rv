@@ -46,7 +46,7 @@ pub fn overlay(page_addr: u32, content: &mut [u8], segments: &[Segment]) {
     }
 }
 
-use ch32rv_contract::policy::{ConfirmRunMode, EraseMode, Region, ResetPolicy, VerifyMode};
+use ch32rv_contract::policy::{ConfirmRunMode, EraseMode, ResetPolicy, VerifyMode};
 use ch32rv_dmi::FlashProgMode;
 
 /// en: Start of code flash on every CH32 RISC-V part (the bin default load address). Universal, so
@@ -251,7 +251,6 @@ pub fn flash_controller_profile_for(family: &str) -> Option<FlashCtrlProfile> {
 /// ja: `flash` 1 回分の方針。既定値は docs/cli.ja.md §4.1 と一致させる。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FlashOptions {
-    pub region: Region,
     pub erase: EraseMode,
     pub verify: VerifyMode,
     pub reset: ResetPolicy,
@@ -261,7 +260,6 @@ pub struct FlashOptions {
 impl Default for FlashOptions {
     fn default() -> Self {
         Self {
-            region: Region::Code,
             erase: EraseMode::Auto,
             verify: VerifyMode::Readback,
             reset: ResetPolicy::Run,

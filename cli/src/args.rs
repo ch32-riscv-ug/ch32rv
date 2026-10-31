@@ -9,8 +9,7 @@ use std::path::PathBuf;
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 
 use ch32rv_contract::policy::{
-    ConfirmRunMode, EraseMode, ImageFormat, MonitorSource, RecoverMethod, Region, ResetPolicy,
-    VerifyMode,
+    ConfirmRunMode, EraseMode, ImageFormat, MonitorSource, RecoverMethod, ResetPolicy, VerifyMode,
 };
 
 #[derive(Parser)]
@@ -173,11 +172,11 @@ pub struct FlashArgs {
     /// Load address for bin input (default: start of the code region)
     #[arg(long)]
     pub at: Option<String>,
-    /// Destination region (code|system; system only where the family supports it)
-    #[arg(long, value_enum, default_value = "code")]
-    pub region: Region,
+    /// Erase before programming. The RAM-loader paths (an OEP probe, a WCH-Link family with no
+    /// WCH stub) erase the pages the image touches: auto|sector only
     #[arg(long, value_enum, default_value = "auto")]
     pub erase: EraseMode,
+    /// Verify after programming. The RAM-loader paths always read back: readback only
     #[arg(long, value_enum, default_value = "readback")]
     pub verify: VerifyMode,
     /// Skip programming when the contents already match
@@ -220,8 +219,6 @@ pub struct VerifyArgs {
     /// Load address for bin input (default: start of the code region)
     #[arg(long)]
     pub at: Option<String>,
-    #[arg(long, value_enum, default_value = "code")]
-    pub region: Region,
 }
 
 #[derive(Args)]
@@ -326,7 +323,7 @@ pub struct RecoverArgs {
     #[arg(long, value_enum)]
     pub method: Option<RecoverMethod>,
     /// An OEP probe's `--method nrst`: write this image (ELF / HEX / bin) instead of leaving the
-    /// code flash erased
+    /// code flash erased (refused anywhere else)
     #[arg(long, value_name = "FILE")]
     pub image: Option<std::path::PathBuf>,
 }
@@ -538,6 +535,7 @@ pub enum MonitorCmd {
 pub struct GdbArgs {
     #[arg(long, default_value = "127.0.0.1:3333")]
     pub listen: String,
+    /// Reset the target and hold it at its reset vector when GDB connects
     #[arg(long)]
     pub reset_halt: bool,
     /// Refuse vFlash (load)
