@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) Fix: RstOut sent `81 0d 02 01 13`, which the Link reads as GetProbeInfo (sub `01`): it answered with its probe info, drove no RST, and left the next DMI reads busy. It now sends WCH's `81 0d 01 13` / `14`. The LinkE (fw 2.22) answers `00`; the CH549 Link (fw 2.12) answers `ff`, so `--connect-under-reset` on it now fails with "the probe does not support RstOut" instead of going on as if NRST were held. Whether the LinkE's RST line moves is not measured yet (no bench target has its NRST wired to a LinkE).
+- (JA) 修正: RstOut が `81 0d 02 01 13` を送っていた。Link はこれを GetProbeInfo(sub `01`)と読み、probe の情報を返して RST を動かさず、続く DMI の読みを busy にしていた。WCH の `81 0d 01 13` / `14` を送るようにした。LinkE(fw 2.22)は `00` を返す。CH549 の Link(fw 2.12)は `ff` を返すので、そこでの `--connect-under-reset` は NRST を押さえたつもりで進まず「the probe does not support RstOut」で止まる。LinkE の RST の線が動くかは未測定(ベンチに LinkE の RST を NRST につないだ target が無い)。
 - (EN) `target list --identify` ties a CH32RV application to the chip it runs on: an application's USB serial is its chip's UID (UNIID1 then UNIID2, ArduinoCore-CH32RV 0edef113), so when a debug place read the same UID, the application's row shows that chip and its JSON place carries `runs_on` with the debug place's address. An application built with an older core (the two words swapped) is left unmatched.
 - (JA) `target list --identify` が、CH32RV のアプリとそれが動くチップを結びつける。アプリの USB serial はチップの UID(UNIID1、UNIID2 の順。ArduinoCore-CH32RV 0edef113)なので、同じ UID をデバッグの場所で読めたら、アプリの行にそのチップを出し、JSON の場所に `runs_on`(デバッグの場所の ADDRESS)を付ける。古い core で作ったアプリ(2 語が逆)は結びつかない。
 ## 0.24.0 - 2026-10-30

@@ -188,6 +188,9 @@ pub enum WchLinkError {
     ShortWrite { written: usize, expected: usize },
     #[error("payload too long: {0} bytes")]
     PayloadTooLong(usize),
+    /// The probe answered a command it does not implement (`0xff`).
+    #[error("the probe does not support {0}")]
+    Unsupported(&'static str),
 }
 
 /// WCH-Link hardware variant, reported by GetProbeInfo (byte 2 of the payload).
@@ -771,12 +774,18 @@ impl WchLink {
         Ok(())
     }
 
-    /// en: RstOut (`0x81 0x0d 0x02 0x01 0x13` on / `0x14` off): drive the RST pin (the target's
+    /// en: RstOut (`0x81 0x0d 0x01 0x13` on / `0x14` off): drive the RST pin (the target's
     /// NRST, when wired) low, or release it. From WCH's own OpenOCD (`wlinke.c`
-    /// `wlink_rstout`), wch-protocols pc-to-link §4.
-    /// ja: RstOut。RST の線(配線していれば target の NRST)を low に駆動する / 離す。
+    /// `wlink_rstout`), wch-protocols pc-to-link §4. The LinkE (fw 2.22) answers `00`; the CH549
+    /// Link (fw 2.12) answers `ff` and does nothing, which is [`WchLinkError::Unsupported`].
+    /// The sub byte must be the payload's first byte: `0x01 0x13` would be GetProbeInfo.
+    /// ja: RstOut。RST の線(配線していれば target の NRST)を low に駆動する / 離す。CH549 の
+    /// Link(fw 2.12)は `ff` を返して何もしないので Unsupported。
     pub fn rst_out(&mut self, asserted: bool) -> Result<(), WchLinkError> {
-        let _ = self.command(CMD_CONTROL, &[0x01, if asserted { 0x13 } else { 0x14 }])?;
+        let reply = self.command(CMD_CONTROL, &[if asserted { 0x13 } else { 0x14 }])?;
+        if reply == [0xff] {
+            return Err(WchLinkError::Unsupported("RstOut"));
+        }
         Ok(())
     }
 

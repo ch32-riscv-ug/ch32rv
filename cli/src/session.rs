@@ -266,12 +266,13 @@ impl Drop for Session {
             let _ = self.link.dmi_write(DMCONTROL, 0);
             if self.reset_run {
                 // en: Reset once more with the DM off, through NRST (the LinkE's RstOut; nothing
-                // happens where RST is not wired), and send nothing after it: after the LinkE's
-                // soft reset the DM was active again and core 0 was found halted, while DMCONTROL
-                // = 0 and then a system reset left both H417 cores running and core 1 back in its
-                // deep sleep (ArduinoCore-CH32RV, 2026-10-22).
+                // happens where RST is not wired, and the CH549 Link refuses it), and send nothing
+                // after it: after the LinkE's soft reset the DM was active again and core 0 was
+                // found halted, while DMCONTROL = 0 left both H417 cores running and core 1 back
+                // in its deep sleep (ArduinoCore-CH32RV, 2026-10-22, when the RstOut frame was
+                // still malformed, so the NRST pulse itself is not measured on the H417).
                 // ja: DM を止めたまま NRST でもう一度 reset し、その後は何も送らない(LinkE の
-                // soft reset の後は DM が戻り core 0 が止まっていた)。
+                // soft reset の後は DM が戻り core 0 が止まっていた)。H417 で NRST の効果は未測定。
                 if self.link.rst_out(true).is_ok() {
                     std::thread::sleep(Duration::from_millis(20));
                     let _ = self.link.rst_out(false);
@@ -419,7 +420,9 @@ const DMCONTROL_HALT: u32 = 0x8000_0001; // haltreq | dmactive
 /// wire needs AttachChip after the reset - with haltreq set, so the hart stops before firmware
 /// that turns the debug pins into something else can run. Measured on a CH32H417 whose firmware
 /// hands PB8 / PB9 to USB a few ms after boot (2026-10-20): the second AttachChip came back in
-/// about 95 ms with the hart halted, and the flash could be erased from there.
+/// about 95 ms with the hart halted, and the flash could be erased from there. That run sent a
+/// malformed RstOut (read as GetProbeInfo), so the halt came from haltreq and the re-attach;
+/// the NRST hold is not measured yet.
 /// ja: NRST を押さえて接続する。押さえたまま attach して haltreq を立て、離してすぐ attach し直す
 /// (reset の後は AttachChip が要る)。起動直後にデバッグのピンを取る firmware が走る前に止める。
 fn attach_under_reset(link: &mut WchLink) -> Result<AttachInfo, SessionError> {
