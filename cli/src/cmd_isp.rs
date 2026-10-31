@@ -6,7 +6,7 @@
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use ch32rv_contract::policy::ImageFormat;
+use ch32rv_contract::policy::{EraseMode, ImageFormat};
 use ch32rv_contract::{ErrorKind, ResultEnvelope, Warning};
 use ch32rv_isp::{Identity, IspConfig, IspDevice, IspError, OptionFields};
 use ch32rv_usb::UsbDeviceInfo;
@@ -14,8 +14,7 @@ use ch32rv_usb::UsbDeviceInfo;
 use ch32rv_dmi::{DmiError, ResetMode, TargetAccess};
 
 use crate::args::{
-    Cli, IspArgs, IspCmd, IspConfigCmd, IspEntry, IspErase, IspReset, IspTransport, IspVerify,
-    IspVia,
+    Cli, IspArgs, IspCmd, IspConfigCmd, IspEntry, IspReset, IspTransport, IspVerify, IspVia,
 };
 use crate::cmd_probe::fail;
 
@@ -516,7 +515,7 @@ fn flash(
     cli: &Cli,
     args: &IspArgs,
     file: &std::path::Path,
-    erase: IspErase,
+    erase: EraseMode,
     verify: IspVerify,
     reset: IspReset,
 ) -> ExitCode {
@@ -525,6 +524,9 @@ fn flash(
         Ok(i) => i,
         Err(c) => return c,
     };
+    let store = std::fs::read(file)
+        .ok()
+        .and_then(|b| ch32rv_flash::store_region(&b, CODE_FLASH_START));
     let mut o = match open(cli, CMD, args) {
         Ok(o) => o,
         Err(c) => return c,
@@ -536,8 +538,20 @@ fn flash(
     if let Err(e) = o.dev.set_key(&cfg) {
         return isp_fail(cli, CMD, e);
     }
-    if erase == IspErase::Auto
-        && let Err(e) = o.dev.erase(ch32rv_isp::sectors_for(image.len()))
+    let erased = match isp_erase_plan(erase, image.len(), store, ch32rv_isp::flash_size(o.id)) {
+        Ok(p) => p,
+        Err(m) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::CapabilityUnsupported,
+                m,
+                Some("use --erase sector or keep-store, or erase first with `isp erase`"),
+            );
+        }
+    };
+    if let Some(n) = erased
+        && let Err(e) = o.dev.erase_exact(n)
     {
         return isp_fail(cli, CMD, e);
     }
@@ -562,16 +576,22 @@ fn flash(
                 "family": summary["series"],
                 "usb": summary["usb"],
                 "chip_id": summary["chip_id"],
-                "erased_sectors": (erase == IspErase::Auto).then(|| ch32rv_isp::sectors_for(image.len()).max(8)),
+                "erased_sectors": erased,
                 // Not verified (`--verify off`) is null; a mismatch fails the command.
                 "verified": verified.then_some(true),
                 // Left in the bootloader: the application does not run.
                 "running": running,
                 "skipped": false,
-                "scope": if erase == IspErase::Auto { "sectors" } else { "none" },
+                "scope": erase.as_str(),
             },
             "device": summary,
         }));
+        if erase == EraseMode::KeepStore
+            && let Some(r) = env.result.as_mut()
+        {
+            // The sectors erased stop below the STORE (isp_erase_plan): it is never touched.
+            r["flash"]["store"] = crate::cmd_flash::store_json(store, "untouched");
+        }
         crate::print_envelope(&env)
     } else {
         println!(
@@ -588,6 +608,41 @@ fn flash(
         );
         ExitCode::SUCCESS
     }
+}
+
+/// en: The 1 KiB sectors `isp flash` has the bootloader erase from the start of code flash
+/// (`None`: no erase) for `--erase`. `chip`: all of code flash (`flash_size` must be known).
+/// `sector`: the image's sectors, at least the bootloader's minimum of 8. `keep-store`: the same,
+/// but when the minimum would reach into the STORE, only the image's own sectors. `none`: none.
+/// ja: `isp flash` が消す sector の数。keep-store は最小の 8 が STORE に届くとき、image の分だけ。
+fn isp_erase_plan(
+    erase: EraseMode,
+    image_len: usize,
+    store: Option<ch32rv_flash::StoreRegion>,
+    flash_size: Option<usize>,
+) -> Result<Option<u32>, String> {
+    let covered = ch32rv_isp::sectors_for(image_len);
+    Ok(match erase {
+        EraseMode::None => None,
+        EraseMode::Chip => match flash_size {
+            Some(size) => Some(ch32rv_isp::sectors_for(size)),
+            None => {
+                return Err(
+                    "the code flash size of this chip is not known, so --erase chip cannot be sized"
+                        .to_owned(),
+                );
+            }
+        },
+        EraseMode::Sector => Some(ch32rv_isp::erase_count(covered)),
+        EraseMode::KeepStore => {
+            let n = ch32rv_isp::erase_count(covered);
+            let reaches = store.is_some_and(|s| {
+                let store_off = u64::from(s.addr.saturating_sub(CODE_FLASH_START));
+                u64::from(n) * ch32rv_isp::SECTOR as u64 > store_off
+            });
+            Some(if reaches { covered } else { n })
+        }
+    })
 }
 
 fn verify_only(cli: &Cli, args: &IspArgs, file: &std::path::Path) -> ExitCode {
@@ -1484,4 +1539,48 @@ pub(crate) fn is_ch32rv_app(d: &UsbDeviceInfo) -> bool {
             .iter()
             .any(|(i, name)| *i == n && name == APP_ENTRY_NAME)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ch32rv_flash::StoreRegion;
+
+    #[test]
+    fn isp_erase_plan_per_mode() {
+        let k = 1024;
+        assert_eq!(isp_erase_plan(EraseMode::None, 4 * k, None, None), Ok(None));
+        assert_eq!(
+            isp_erase_plan(EraseMode::Sector, 4 * k, None, None),
+            Ok(Some(8))
+        );
+        assert_eq!(
+            isp_erase_plan(EraseMode::Chip, 4 * k, None, Some(62 * k)),
+            Ok(Some(62))
+        );
+        assert!(isp_erase_plan(EraseMode::Chip, 4 * k, None, None).is_err());
+        // keep-store with no STORE: the same as sector.
+        assert_eq!(
+            isp_erase_plan(EraseMode::KeepStore, 4 * k, None, None),
+            Ok(Some(8))
+        );
+        // A STORE well above the minimum: the minimum stays.
+        let high = StoreRegion {
+            addr: CODE_FLASH_START + 61 * k as u32,
+            len: k as u32,
+        };
+        assert_eq!(
+            isp_erase_plan(EraseMode::KeepStore, 4 * k, Some(high), None),
+            Ok(Some(8))
+        );
+        // A STORE the minimum of 8 sectors would reach: only the image's own sectors.
+        let low = StoreRegion {
+            addr: CODE_FLASH_START + 7 * k as u32,
+            len: k as u32,
+        };
+        assert_eq!(
+            isp_erase_plan(EraseMode::KeepStore, 4 * k, Some(low), None),
+            Ok(Some(4))
+        );
+    }
 }

@@ -79,6 +79,8 @@ fn cases() -> Vec<(Vec<String>, &'static str, bool)> {
             s(&[
                 "flash",
                 &input("runtest-ch32v307.bin"),
+                "--erase",
+                "chip",
                 "--confirm-run",
                 "pc",
                 "--replay",

@@ -310,6 +310,83 @@ fn parse_elf(bytes: &[u8], code_flash_start: u32) -> Result<Image, ImageError> {
     Ok(flash_only(segs, code_flash_start))
 }
 
+/// en: The STORE region an ArduinoCore-CH32RV ELF keeps against the end of flash: the
+/// `.ch32rv_store` section (NOLOAD, so it is in no PT_LOAD segment), else the
+/// `_ch32rv_store_start` / `_ch32rv_store_end` symbols. `addr` is normalized into the flash window
+/// like the segments. ja: ArduinoCore-CH32RV の ELF が flash の末尾に置く STORE の範囲。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StoreRegion {
+    pub addr: u32,
+    pub len: u32,
+}
+
+impl StoreRegion {
+    /// One past the last byte.
+    pub fn end(&self) -> u32 {
+        self.addr.saturating_add(self.len)
+    }
+}
+
+/// en: The STORE region of an ELF image (see [`StoreRegion`]). `None` for anything else - a
+/// bin / hex / UF2 carries no section table - and for an ELF without the section or symbols, or
+/// whose STORE is 0 bytes (the core links it only when something uses it).
+/// ja: ELF の STORE。bin / hex / UF2、section も記号も無い ELF、0 byte の STORE は `None`。
+pub fn store_region(bytes: &[u8], code_flash_start: u32) -> Option<StoreRegion> {
+    if !bytes.starts_with(b"\x7fELF") || bytes.get(4) != Some(&1) || bytes.get(5) != Some(&1) {
+        return None;
+    }
+    let shoff = u32le(bytes, 0x20)? as usize;
+    let shentsize = u16le(bytes, 0x2e)? as usize;
+    let shnum = u16le(bytes, 0x30)? as usize;
+    let shstrndx = u16le(bytes, 0x32)? as usize;
+    if shentsize < 40 || shoff == 0 {
+        return None;
+    }
+    let sh = |i: usize| -> Option<usize> { shoff.checked_add(i.checked_mul(shentsize)?) };
+    let cstr = |off: usize| -> Option<&[u8]> {
+        let tail = bytes.get(off..)?;
+        Some(&tail[..tail.iter().position(|&b| b == 0)?])
+    };
+    let region = |addr: u32, len: u32| {
+        (len > 0).then(|| StoreRegion {
+            addr: fix_flash_addr(addr, code_flash_start),
+            len,
+        })
+    };
+    // The section, by name.
+    let strtab_off = u32le(bytes, sh(shstrndx)? + 16)? as usize;
+    for i in 0..shnum {
+        let h = sh(i)?;
+        let name = u32le(bytes, h)? as usize;
+        if cstr(strtab_off.checked_add(name)?)? == b".ch32rv_store" {
+            return region(u32le(bytes, h + 12)?, u32le(bytes, h + 20)?);
+        }
+    }
+    // The symbols (a linker script that names the bounds without the section).
+    let (mut start, mut end) = (None, None);
+    for i in 0..shnum {
+        let h = sh(i)?;
+        if u32le(bytes, h + 4)? != 2 {
+            continue; // SHT_SYMTAB only
+        }
+        let off = u32le(bytes, h + 16)? as usize;
+        let size = u32le(bytes, h + 20)? as usize;
+        let link = u32le(bytes, h + 24)? as usize;
+        let str_off = u32le(bytes, sh(link)? + 16)? as usize;
+        for s in (off..off.checked_add(size)?).step_by(16) {
+            let name = cstr(str_off.checked_add(u32le(bytes, s)? as usize)?)?;
+            let value = u32le(bytes, s + 4)?;
+            match name {
+                b"_ch32rv_store_start" => start = Some(value),
+                b"_ch32rv_store_end" => end = Some(value),
+                _ => {}
+            }
+        }
+    }
+    let (s, e) = (start?, end?);
+    region(s, e.checked_sub(s)?)
+}
+
 // ---- Intel HEX ----
 
 fn parse_ihex(bytes: &[u8], code_flash_start: u32) -> Result<Image, ImageError> {
@@ -684,5 +761,95 @@ mod tests {
         assert!(img.check_within_flash(0x0800_0000, 4096).is_ok());
         // A 8-byte flash is too small for the 16-byte image.
         assert!(img.check_within_flash(0x0800_0000, 8).is_err());
+    }
+
+    /// en: A minimal ELF32 LE with a section table: `sections` are (name, type, addr, size,
+    /// link, payload); the name string table is appended as the last section.
+    type Section<'a> = (&'a str, u32, u32, u32, u32, Vec<u8>);
+
+    fn tiny_elf(sections: &[Section<'_>]) -> Vec<u8> {
+        let mut shstr = vec![0u8];
+        let mut names = Vec::new();
+        for (n, ..) in sections {
+            names.push(shstr.len() as u32);
+            shstr.extend_from_slice(n.as_bytes());
+            shstr.push(0);
+        }
+        let shstr_name = shstr.len() as u32;
+        shstr.extend_from_slice(b".shstrtab\0");
+        let mut body = vec![0u8; 52];
+        body[..6].copy_from_slice(b"\x7fELF\x01\x01");
+        let mut offs = Vec::new();
+        for (.., data) in sections {
+            offs.push(body.len() as u32);
+            body.extend_from_slice(data);
+        }
+        let shstr_off = body.len() as u32;
+        body.extend_from_slice(&shstr);
+        let shoff = body.len() as u32;
+        let mut sh = |name: u32, ty: u32, addr: u32, off: u32, size: u32, link: u32| {
+            for v in [name, ty, 0, addr, off, size, link, 0, 0, 0] {
+                body.extend_from_slice(&v.to_le_bytes());
+            }
+        };
+        sh(0, 0, 0, 0, 0, 0);
+        for (i, (_, ty, addr, size, link, data)) in sections.iter().enumerate() {
+            let size = if *ty == 8 { *size } else { data.len() as u32 };
+            sh(names[i], *ty, *addr, offs[i], size, *link);
+        }
+        sh(shstr_name, 3, 0, shstr_off, shstr.len() as u32, 0);
+        let n = sections.len() as u16 + 2;
+        body[0x20..0x24].copy_from_slice(&shoff.to_le_bytes());
+        body[0x2e..0x30].copy_from_slice(&40u16.to_le_bytes());
+        body[0x30..0x32].copy_from_slice(&n.to_le_bytes());
+        body[0x32..0x34].copy_from_slice(&(n - 1).to_le_bytes());
+        body
+    }
+
+    #[test]
+    fn store_region_from_the_section() {
+        let elf = tiny_elf(&[
+            (".text", 1, 0, 0, 0, vec![0x13; 8]),
+            (".ch32rv_store", 8, 0x0003_fc00, 0x400, 0, vec![]),
+        ]);
+        // The 0-based link address lands in the flash window, like the segments.
+        assert_eq!(
+            store_region(&elf, 0x0800_0000),
+            Some(StoreRegion {
+                addr: 0x0803_fc00,
+                len: 0x400
+            })
+        );
+        // A 0-byte STORE (nothing uses it) is no STORE.
+        let empty = tiny_elf(&[(".ch32rv_store", 8, 0x0800_4000, 0, 0, vec![])]);
+        assert_eq!(store_region(&empty, 0x0800_0000), None);
+        // No section, no symbols; and a bin is never one.
+        let none = tiny_elf(&[(".text", 1, 0, 0, 0, vec![0x13; 8])]);
+        assert_eq!(store_region(&none, 0x0800_0000), None);
+        assert_eq!(store_region(&[0xffu8; 64], 0x0800_0000), None);
+    }
+
+    #[test]
+    fn store_region_from_the_symbols() {
+        let strtab = b"\0_ch32rv_store_start\0_ch32rv_store_end\0".to_vec();
+        let mut symtab = vec![0u8; 16];
+        for (name, value) in [(1u32, 0x0800_3c00u32), (21, 0x0800_4000)] {
+            let mut e = [0u8; 16];
+            e[..4].copy_from_slice(&name.to_le_bytes());
+            e[4..8].copy_from_slice(&value.to_le_bytes());
+            symtab.extend_from_slice(&e);
+        }
+        // Section 1 = .symtab (link 2 = .strtab).
+        let elf = tiny_elf(&[
+            (".symtab", 2, 0, 0, 2, symtab),
+            (".strtab", 3, 0, 0, 0, strtab),
+        ]);
+        assert_eq!(
+            store_region(&elf, 0x0800_0000),
+            Some(StoreRegion {
+                addr: 0x0800_3c00,
+                len: 0x400
+            })
+        );
     }
 }

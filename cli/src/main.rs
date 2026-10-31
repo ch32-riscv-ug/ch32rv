@@ -369,13 +369,22 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             usb_id,
             wait,
             device,
-        })) => cmd_boot::hid_flash(cli, file, usb_id.as_deref(), *wait, device.as_deref()),
+            erase,
+        })) => cmd_boot::hid_flash(
+            cli,
+            file,
+            usb_id.as_deref(),
+            *wait,
+            device.as_deref(),
+            *erase,
+        ),
         Command::Boot(BootCmd::Dfu(DfuCmd::Flash {
             file,
             format,
             at,
             device,
-        })) => cmd_boot::dfu_flash(cli, file, *format, at.as_deref(), device.as_deref()),
+            erase,
+        })) => cmd_boot::dfu_flash(cli, file, *format, at.as_deref(), device.as_deref(), *erase),
         Command::Boot(BootCmd::Dfu(DfuCmd::Info { device })) => {
             cmd_boot::dfu_info(cli, device.as_deref())
         }

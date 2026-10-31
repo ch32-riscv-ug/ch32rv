@@ -126,7 +126,7 @@ protocol の事実(byte 列・応答・status・実測)は **wch-protocols** の
 - **復旧**: ChipInfo が同じ word の繰り返しなら RedetectChip + detach + 再 attach。`recover --method power-off|nrst` は `0x00` の間は 3 回まで繰り返し、`0x0f` が無ければ warning `special-erase-unconfirmed`。
 - **版**: 比較は正規化した `major*10+minor` で行う。既知不良は `ch32-device-data` の `index/link_firmware_issues.csv`(実測で不良の版)から生成した `link_firmware_issues.csv` を variant・mode・版で引き、hash は使わない。probe が mode を返さないときは mode を問わず当てる。
 - **IAP 更新**: ack の timeout は 3 s。`00 00` 以外の応答は即中断する。再列挙は消失と再出現を検出して待ち、戻った直後の open 失敗は retry する。
-- **factory ISP**: IspKey の seed は全 0。IspEnd は応答を読んでから終える。`--erase auto` は image の長さ分の sector(最小 8)。`isp enter --via probe` は reset vector で止めてから 1 回の attach で `BOOT_MODE` を立てる。
+- **factory ISP**: IspKey の seed は全 0。IspEnd は応答を読んでから終える。`--erase` は `flash` と同じ値。keep-store / sector は image の長さ分の sector(最小 8。keep-store は最小が STORE に届くとき image の分だけ)、chip は全 sector。`isp enter --via probe` は reset vector で止めてから 1 回の attach で `BOOT_MODE` を立てる。
 
 ## 3. target DB 生成
 

@@ -179,10 +179,10 @@ binary の扱い:
 9. `--reset run`: reset(mode 0 = run。probe が走ったことを確かめる)を最大 3 回。`--confirm-run` は既存の規則。
 10. detach → end。JSON は WCH-Link と同じ形。`flash.programmer = "oep-loader"` と `rewritten` / `retries` を足す。
 
-**`--erase`**:
-- `sector`(既定)は、書く page だけを loader の中で消す。
-- `chip` は全 page の消去を loader で回す(OEP には mass erase の部品が無い。loader に mass erase の flag を足すかは実測の速さで決める)。
-- `auto` は、書く範囲が flash の半分を超えたら chip、それ以外は sector。
+**`--erase`**(値と経路ごとの表は [cli](cli.ja.md) §4.1):
+- `keep-store`(既定)と `sector` は、書く page だけを loader の中で消す。STORE は image の外なので触れない。
+- `chip` は、loader を置く前に DM で FLASH_CTLR の MER + STRT を回して code flash 全体を消す(`DebugModule::flash_mass_erase`)。MER の無い CH32H417 は断る(exit 24)。
+- `none` は断る(loader は書く page を必ず消す)。
 
 ## 6. 口の選び方(monitor と共通。2026-10-16、oep-spec host ガイド §5.3)
 

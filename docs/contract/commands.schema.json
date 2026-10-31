@@ -29,7 +29,21 @@
         "skipped": {"type": "boolean", "description": "--preverify で一致したので消去も書き込みもしなかった"},
         "scope": {
           "type": "string",
-          "description": "消した範囲。既知の値: chip、sector(image が覆う page)、pages(loader が page ごと)、sectors(bootloader の sector)、image(device が自分で消す。dfu)、none。値は足すことがある"
+          "description": "実際の消去の範囲(--erase の値): chip(code flash 全体)、sector(image が覆う page / sector だけ)、keep-store(STORE を残す。store を見る)、none(消さなかった。--erase none、または --preverify で一致して書かなかった)。値は足すことがある"
+        },
+        "store": {
+          "type": "object",
+          "description": "scope が keep-store のときだけ。STORE(ELF の .ch32rv_store)をどう残したか",
+          "required": ["address", "bytes", "method"],
+          "properties": {
+            "address": {"type": ["string", "null"], "description": "STORE の先頭番地(0x 付きの hex)。image に STORE が無ければ null"},
+            "bytes": {"type": "integer", "description": "STORE の byte 数(無ければ 0)"},
+            "method": {
+              "type": "string",
+              "enum": ["untouched", "restored", "none-present"],
+              "description": "untouched: どの消去も STORE に届かなかった。restored: chip erase の後で書き戻して照合した(全部が消去済みの値なら書き戻しは省く)。none-present: image に STORE が無い(sector と同じ動き)"
+            }
+          }
         },
         "seconds": {"type": "number", "description": "書き込みにかかった秒(経路が測るもの)"},
         "pages": {"type": "integer", "description": "loader: 書いた page 数"},
@@ -44,7 +58,7 @@
         "sector_size": {"type": "integer", "description": "hid: sector の byte 数"},
         "erased_sectors": {
           "type": ["integer", "null"],
-          "description": "isp: 消した sector 数(消さなければ null)"
+          "description": "isp: 消した 1 KiB sector の数(消さなければ null)"
         },
         "blocks": {"type": "integer", "description": "dfu: 送った block 数"},
         "transfer_size": {"type": "integer", "description": "dfu: 1 block の byte 数"}

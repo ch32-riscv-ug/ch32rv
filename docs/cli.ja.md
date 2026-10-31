@@ -257,24 +257,41 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 ch32rv flash <FILE>
   --format auto|elf|hex|bin|uf2      既定 auto(magic 判別)
   --at <addr>                        bin 用ロード先(既定: code 領域先頭)
-  --erase auto|sector|chip|none      既定 auto。chip=全 chip 消去(1発・高速)。sector=image が覆う page のみ消去(image 外を消さない)。auto=flash 先頭開始の image は chip・部分/offset image は sector。none=消去しない
+  --erase chip|sector|keep-store|none 既定 keep-store。chip=code flash 全体を先に消す。sector=image が覆う page / sector だけ(image 外を残す)。keep-store=STORE を残し、経路ごとに速い方法を選ぶ(STORE が無ければ sector と同じ)。none=消さない(書くものを必ず消す経路では断る)
   --verify readback|none             既定 readback。none は明示選択
   --preverify                        既に一致していれば erase/program を省略(flash 摩耗回避)
   --reset run|halt|none              既定 run
   --confirm-run[=status|pc]          reset run 後の走行確認(既定 pc)。失敗で exit 50
   --sdi on|off                       書込後に SDI print を設定(capability 判定込み)
   --monitor uart|sdi|dmdata|rtt      書込後そのまま monitor へ移行
-  --restore-unwritten                sector 消去で image が埋めない byte を保存(page 単位 erase 必須)
+  --restore-unwritten                image が覆う page の中の image の外の byte を残す(--erase sector|keep-store)
   --repeat                           target の再接続を検知して連続書込(量産)P2
 ```
 
-- **経路ごとに守れないフラグは断る**(exit 24 `capability-unsupported`。何も書く前): ch32rv の RAM loader で書く経路(OEP の probe と、WCH の stub が無い WCH-Link の family: CH32H417 / V407 / X315 など)は、image が触れる page を消し、その page の image の外の byte を残し、全 page を読み戻す。そのため `--erase auto|sector`、`--verify readback`、`--restore-unwritten` は受け、`--erase chip|none`、`--verify none`、`--sdi`、`--monitor` は断る。WCH-Link の loader の経路は `--preverify` も断る(OEP は守る)。OEP の probe はさらに `--reset halt`、`--repeat`(次の target を待つのは WCH-Link 越しだけ)、`--connect-under-reset`、`--attach-wait`(flash は自分の止める attach を使う)を、つなぐ前に断る。WCH-Link の loader の経路の `--confirm-run` は確かめないが断らない(Arduino の recipe が常に渡す。止めて確かめると、debug の pin を USB に取る H417 の sketch で失敗する)。結果の `running` は null。
+- **経路ごとに守れないフラグは断る**(exit 24 `capability-unsupported`。何も書く前): ch32rv の RAM loader で書く経路(OEP の probe と、WCH の stub が無い WCH-Link の family: CH32H417 / V407 / X315 など)は、image が触れる page を消し、その page の image の外の byte を残し、全 page を読み戻す。そのため `--erase sector|keep-store`、`--verify readback`、`--restore-unwritten` は受け、`--erase chip` は loader の前に DM で全消去する(下の表)。`--erase none`(loader は書く page を必ず消す)、`--verify none`、`--sdi`、`--monitor` は断る。WCH-Link の loader の経路は `--preverify` も断る(OEP は守る)。OEP の probe はさらに `--reset halt`、`--repeat`(次の target を待つのは WCH-Link 越しだけ)、`--connect-under-reset`、`--attach-wait`(flash は自分の止める attach を使う)を、つなぐ前に断る。WCH-Link の loader の経路の `--confirm-run` は確かめないが断らない(Arduino の recipe が常に渡す。止めて確かめると、debug の pin を USB に取る H417 の sketch で失敗する)。結果の `running` は null。
 - 書き込み先は code flash だけ。system 領域(bootloader)への書き込みと target の上の CRC での照合は、実装したときに `--region` と `--verify crc` として足す。
 - ELF/ihex はセグメントの物理アドレスを使い、`--at` は無視して warn(bin のみ有効)。セグメントが DB 上の書込可能領域に収まらなければ実行前に exit 2。
 - `--confirm-run=status` は DM の running 状態のみ確認。`=pc` はさらに瞬間 halt→dpc 読取→resume で PC を採取し、flash 領域内かを判定する。SRAM 先頭(`0x2000_0018` 型)で止まっていれば「BOOT ピン疑い」を hint に出す。
 - 対応 SKU でも **DB 上 verified でない場合は warn を出して続行**する(「実装済み」と「実機確認済み」の区別)。
-- **`--erase` のモード別挙動(2026-09-01 修正)**: `chip` は WCH-Link の全 chip 消去(`erase_flash` = `Program 0x01`。stub ではなく LinkE が FLASH controller の MER を直接叩く。protocol §7a。1発で速い)。`sector` は **image が実際に覆う flash page だけ**を §4.2.1 の直接 FLASH controller(`flash_page_erase`)で消してから stub で program する — image 外の flash(高位の bootloader・校正データ等)を消さない。`auto` は **image の最小番地が flash 先頭(`code_flash_start`)なら chip、そうでなければ(部分/offset 書込)sector** を選ぶ。`none` は消去なし。**選ばれた scope は必ず出力する**(通常出力の `erase:` 行 / JSON の `erase` フィールド)ので auto の挙動が不透明にならない。**修正の背景**: 修正前は `sector`/`auto` とも無条件で全 chip 消去していた(=部分 image を焼くと chip 全体が飛ぶ silent な data-loss footgun)。auto を「全 image=chip・部分=sector」に賢くすることで footgun を潰しつつ、フル書込(=blink 等の常道)の速度も維持する。**sector が全 image 既定でない理由(実測)**: page 単位消去は ~100ms/page(直接 FLASH controller の DMI 往復)で、chip 消去 0.15s に対し 32KB(128 page)= 12.8s、64KB= ~25s、V307 の 288KB なら数分。フル書込を毎回 sector にすると Arduino ビルドループ等が致命的に遅くなるため、フル image は chip を選ぶ。sector は検証済み FLASH-controller profile を持つ family のみ(無ければ fail-closed。`--erase chip` を案内)。同一 page を共有するセグメントは 1 回に畳んで program 前に一括消去。実機検証(L103): フル image + `--erase auto` → `erase: chip`(0.78s で 64KB 書込+program)、`flash <256B> --offset 0x0800FF00 --erase auto/sector` → `erase: sector` で 0x08000000 の firmware・未対象域を無傷のまま対象 page だけ書換え(page 計算は単体テスト `covered_pages`)。program 後に stub が page-erase 済み(chip-erase でない)flash へ書けることも実機確認済み。
-- **`--restore-unwritten`(2026-09-01 実装)**: sector 消去は覆う page 全体を消すため、image が page の一部しか埋めない場合その page の残りは blank になる。このフラグを付けると、**消去前に対象 page を read → image を上書き合成 → page 全体を program** することで、image が触れない byte の元値を保つ。**page 単位 erase 必須**なので `--erase chip`/`none` と併用は fail-closed(usage error)、`--erase auto` は自動で sector に倒す。**family 制限**: 消去済みセルが `0xff` を返す family(RM の消去系統 A = profile の `erased_reads_ff`)のみ。V20x/V30x は系統 B で消去済みが `0xe339e339` を返し(**link でなくシリコンの特性**)、blank と実データを区別できず消去パターンを焼き込むため fail-closed(capability-unsupported、消去前に判定=非破壊)。実機検証(L103): page に pattern を置き先頭16Bだけ 0xAA を `--restore-unwritten` で書くと 16–255B目の pattern が保存、verify OK。V307 では消去せずに拒否・firmware 無傷を確認。
+- **`--erase` の経路ごとの動き**(`result.flash.scope` は実際の範囲 chip / sector / keep-store / none。keep-store では `result.flash.store` に `address` / `bytes` / `method` を出す):
+
+  | 経路 | chip | sector | keep-store(既定) | none |
+  |---|---|---|---|---|
+  | WCH-Link + WCH の stub(V003 / V103 / V20x / V30x / X035 / L103) | Link の全消去(`Program 0x01`。LinkE が MER を叩く) | ch32rv は消さない。stub が書く page を自分で消す。stub は 1 つの連続した範囲を書くので、image の先頭の page から最後の page までの隙間も書かれる | 下の規則で (a) sector と同じ、か (b) 退避 → 全消去 → 書き戻し | 断る(exit 24。stub は書く page を必ず消す) |
+  | WCH-Link + FLASH controller(stub も loader も無い family) | Link の全消去 | 覆う page を DMI で消してから書く | sector と同じ | 消さずに書く |
+  | WCH-Link + ch32rv の loader(V006 / V205 / X315 / V407 / H417、`--programmer loader`) | DM で FLASH_CTLR の MER + STRT(`flash_mass_erase`)の後、loader が書く。H417 は MER が無いので断る(exit 24) | loader が書く page を消す | sector と同じ(STORE は image の外なので触れない) | 断る(loader は書く page を必ず消す) |
+  | OEP の probe(loader) | 同上(DM の MER。H417 は断る) | 同上 | 同上 | 断る |
+  | 工場 ISP(`isp flash`) | `isp erase` と同じ全 sector の消去の後に書く(flash の大きさが分からない chip は exit 24) | image の長さ分の 1 KiB sector(最小 8) | sector と同じ。ただし最小の 8 sector が STORE に届くときは image の分だけ消す | 消さない |
+  | HID(`boot hid flash`)/ DFU(`boot dfu flash`) | 断る(exit 24。全体を消す手段が無い) | bootloader / device が書く page / block だけを消す | sector と同じ | 断る(必ず消す) |
+
+- **STORE**: ArduinoCore-CH32RV が flash の末尾に置く、リセットをまたいで残す領域。ELF の section `.ch32rv_store`(NOLOAD なので image には入らない)、無ければ記号 `_ch32rv_store_start` / `_ch32rv_store_end` で範囲を知る。**bin / hex / UF2、section も記号も無い ELF、大きさ 0 の STORE は「STORE 無し」**で、keep-store は sector とまったく同じに動く(image の外はすべて残る。`store.method` は `none-present`)。
+- **WCH の stub の経路の keep-store の選び方**: stub は書く page を自分で消し、全消去の直後の flash でだけ速く書く(2026-11-01 実測: V307 の 97 KB で全消去 4.0 s、ch32rv が消さないと 14.4 s。V003 の 16 KB で 2.2 s と 3.0 s)。STORE があれば次の 2 つの見積もりを比べ、(a) が大きければ (b) を選ぶ。`--restore-unwritten` のとき、STORE の範囲が書く範囲に重なるとき、family の数字が無いときは (a)。
+  - (a) ch32rv は消さない(sector と同じ。`method` は `untouched`)。見積もり = 書く page 数 × page の自己消去の時間。
+  - (b) STORE を(stub の page に広げた範囲で)高速読み出しで退避 → 全消去 → image を stub で書く → STORE を 2 回目の stub(STORE の範囲だけ。間に attach をやり直す)で書き戻す → image と STORE の両方を読み戻して照合する(`--verify none` でも STORE は照合する)。退避した中身がすべて消去済みの値(0xff、または family の消去済み word。V20x / V30x は 0xe339)なら書き戻しは省く。`method` は `restored`。見積もり = 1.8 s + STORE 1 KiB あたり 50 ms。
+  - page の自己消去の時間: V003 / CH641 64 B で 3.1 ms(実測)、V30x 256 B で 27 ms(実測)、V20x 256 B で 27 ms(V30x と同じと仮定)、X035 / CH643 256 B で 3.0 ms、L103 256 B で 6.4 ms、V103 128 B で 3.1 ms(この 3 つはアプリ側の fast page 消去の時間。ArduinoCore-CH32RV docs/flash-raw.ja.md)。表は `ch32rv_flash::erase_plan`。V003 の 16 KB は (a)(0.8 s)、V307 の 97 KB は (b)(10 s 超)になる。
+  - (b) の途中(全消去から STORE の書き戻しまで)で失敗したときに備え、全消去の前に退避した中身を `$XDG_RUNTIME_DIR/ch32rv/store-<chip の UID、無ければ probe の serial>.bin` に置き、エラーの hint に置き場所と書き戻し方(`ch32rv flash --erase sector --at <番地> <ファイル>`)を出す。STORE を書き戻して照合できたら消す。
+- stub の経路の sector は、DMI で先に消さない(stub が自分で消すので、先に消すのは時間の無駄だった)。`--restore-unwritten` は、書く範囲の page を DMI で読み、image を重ねて page 全体を stub で書く(DMI で消さない)。
+- **`--restore-unwritten`**: 書く範囲の page を先に読み、image を上書きして page 全体を書くので、image が触れない byte の元の値が残る。page 単位の消去が要るので `--erase chip|none` とは使えない(usage error)。消去済みのセルが `0xff` を返す family(profile の `erased_reads_ff`)だけ。V20x / V30x は消去済みが `0xe339e339` で、空きと実データを区別できないので、消す前に断る(capability-unsupported)。
 - **`--reset none` の注意(2026-09-25)**: WCH-LinkE は書込の前後で RCC の周辺クロック enable と SysTick を 0 にし、**戻さない**(線上で確認。protocol §7a)。`--reset none` で終えた chip はその状態のままなので、アプリを reset せずに再開すると周辺が動かない。`--reset run`(既定)と `halt` は reset を通るので影響しない。
 - **`--preverify`(2026-09-01 実装)**: 破壊操作の前に image 領域を read して現在値と比較し、**全一致なら erase/program をまるごと省略**(flash cycle と摩耗を節約)。一致時は `preverify: target already matches - skipped`(JSON `skipped:true`・`scope:"none"`・`verified:true`)を出し、**reset 方針だけは適用**(reset run 済みの target をちゃんと走らせる)。不一致なら link 状態を戻して通常の flash に流れる。reset+finish の末尾は `reset_and_finish` に切り出して通常経路と skip 経路で共有。実機検証(L103): 同一 image を再 flash → skip、別 image → 通常書込に流れて反映を確認。
 - **`--sdi` / `--monitor` / `--repeat`(2026-09-01 実装)**: いずれも scaffold だったものを実装。**`--sdi on|off`**: 書込+reset 後に probe の SDI print forwarding を設定(`set_sdi_print_enabled`)。programming は成功済みなので失敗しても flash は失敗させず warning 止まり。**`--monitor uart|sdi|dmdata|rtt`**: 書込+reset 後にそのまま monitor session へ移行(Ctrl-C まで、`--duration` でバウンド可)。実装は reset+結果出力の末尾を `finish_flash`(session を値で受けて drop→USB 解放してから monitor が probe を開き直す)に集約し、通常経路・preverify skip 経路の両方から `--sdi`/`--monitor` が効く。**`--repeat`**: `flash` を dispatcher にして `flash_once` をループ。1 台焼く→operator が外す(AttachChip 失敗を poll)→次を挿す(AttachChip 成功を poll)→焼く、を Ctrl-C まで。失敗 board は報告して次へ。実機検証(L103): `--sdi on` が program+設定を完了、`--preverify --monitor dmdata --timeout 4` が skip→dmdata monitor 移行→bound 終了、`--repeat` が #1 を焼いて removal 待ちに入る(remove→insert→再焼きの完全周回は物理 target 交換が要るため未検証)。
@@ -518,7 +535,7 @@ ch32rv isp [--transport usb|uart] [--device <住所>] [--port <serial port>] [--
 ch32rv isp list                                     ISP mode device の列挙。Identify に答えない device(LinkE IAP 等)は区別して表示
 ch32rv isp info                                     chip/BTVER/UID/保護状態/config 12 B
 ch32rv isp enter [--via probe]                      --probe の debug 線で boot mode を立てて reset(CH32X03x)
-ch32rv isp flash <FILE> [--erase auto|none] [--verify on|none] [--reset run|none]
+ch32rv isp flash <FILE> [--erase chip|sector|keep-store|none] [--verify on|none] [--reset run|none]
 ch32rv isp verify <FILE>                            bootloader が照合(不一致 exit 30)
 ch32rv isp erase                                    code flash 全消去(確認あり、--yes で省略)
 ch32rv isp reset                                    bootloader を抜けて app を起動
@@ -549,7 +566,7 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
   - `--device` は `ch32rv-app://<id>`(その id のアプリを今の位置で探す。serial が 2 台で重なれば exit 14)と `ch32rv-isp://…`(頼まずにその位置の ISP へ書く)を受ける。upload recipe は `--entry auto --device "{upload.port.address}"` で、tty / ch32rv-app / ch32rv-isp のどれを選んでも動く。
   - `--entry dfu-detach` で `--device` が無いときも、名前 `CH32RV` の DFU run-time を持つ device だけを候補にする(他社の本物の DFU 機器を再起動させないため)。
   - 実機確認(CH32X035F8U6、CDC の無い DFU run-time のみのスケッチ): discovery の LIST に `ch32rv-app://3-2.4.3` が出て、その port から書込・照合・起動まで通った。ISP に入れた後は `ch32rv-isp://3-2.4.3` が出て、その port からも書けた。CDC のあるアプリでは、`ch32rv-app://<serial>` の monitor がその CDC の出力を流すことも確認した。
-- `isp flash` は ELF / HEX / bin を code flash 先頭からの 1 塊にし(隙間は `0xff`)、`--erase auto` は image の長さ分の 1 KiB sector(最小 8)を消す。書いた後の `IspEnd` は応答を読んでから終える(読まないと bootloader に残る。wch-protocols `protocols/pc-to-device-isp.ja.md#x035-entry`)。
+- `isp flash` は ELF / HEX / bin を code flash 先頭からの 1 塊にし(隙間は `0xff`)、`--erase` は `flash` と同じ値(§4.1 の表)。既定の keep-store と sector は image の長さ分の 1 KiB sector(最小 8)を消し、chip は全 sector を消す。書いた後の `IspEnd` は応答を読んでから終える(読まないと bootloader に残る。wch-protocols `protocols/pc-to-device-isp.ja.md#x035-entry`)。
 - `isp config set` / `get` の語彙と `get` の形は `target option set` / `get` と同じ(§4.3)。bootloader の series から family を引く(CH32V10x / F10x → V103、V30x → V307、V20x / F20x → V20x、X03x → X035、L10x → L103)。CH32V00x は部品で DB の field が違うので `user.<field>` は使えず(`db_family` は null)、意味名は V003 / V006 共通のもの。補数 byte は計算し直し、知らない USER の bit は読んだ値のまま。書いた後に ReadConfig で読み直し、違えば exit 30。`read-protect` を変えるときは確認する(`--non-interactive` では `--yes` が要る。off にするとチップが code flash を全消去する)。CH32X035F8U6 で全キーを書いて戻し、option bytes(`0x1FFFF800`)を RVSWD で照合した。`read-protect=on` は `00 ff` を書き、reset 後は RVSWD の flash 読み出しが fault になる。**保護中は factory bootloader が走らない**(X035 BTVER 2.60 の実測。debug 線から入れても、debugger 無しの電源投入後にアプリから DFU_DETACH で入れても、PC 0 で止まり ISP device は現れない)。したがって ISP の `read-protect=off` は使えず、解除は debug 線の `recover --method unprotect`(code flash 全消去)だけ。`read-protect=on` の確認文にもそう書く。BOOT キー(電源投入時の PC17)で入った場合は未確認。
 - bootloader は最後の通信から約 60 s で app へ抜ける。一度も話しかけられなければ約 9.3〜9.7 s で抜ける(ArduinoCore-CH32RV の観測)ので、ch32rv は現れ次第 Identify を送る。
 - protocol は自前実装(wchisp は GPL-2.0 のため取り込まない)。byte の事実は wch-protocols `protocols/pc-to-device-isp.ja.md#commands`。
@@ -557,9 +574,9 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
 ### 4.8 boot(custom bootloader 経路)
 
 ```text
-ch32rv boot dfu flash <FILE> [--format auto|elf|hex|bin] [--at <addr>] [--device <住所>]   DFU 1.1 の download
+ch32rv boot dfu flash <FILE> [--format auto|elf|hex|bin] [--at <addr>] [--device <住所>] [--erase sector|keep-store]   DFU 1.1 の download
 ch32rv boot dfu info [--device <住所>]
-ch32rv boot hid flash <FILE> [--usb-id <VID:PID>] [--wait <SECS>] [--device <住所>]  rv003usb / b003fun 系(UIAPduino 等)
+ch32rv boot hid flash <FILE> [--usb-id <VID:PID>] [--wait <SECS>] [--device <住所>] [--erase sector|keep-store]  rv003usb / b003fun 系(UIAPduino 等)
 ```
 
 書く device は `--device` で名指す。boot は debug probe を通らないので、`--probe` を付けると exit 2 で断り、hint に `--device <その値>` を出す(環境変数 `CH32RV_PROBE` は他のコマンドの probe なので、boot では見ない)。

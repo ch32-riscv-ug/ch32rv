@@ -28,11 +28,19 @@ macro_rules! policy_enum {
 }
 
 policy_enum! {
-    /// Erase policy applied before programming.
+    /// en: Erase policy applied before programming (docs/cli.ja.md §4.1). `keep-store` (the
+    /// default) keeps the image's STORE region (ELF `.ch32rv_store`) and lets each path pick its
+    /// fastest way; with no STORE it is `sector`.
+    /// ja: 書き込み前の消去方針。`keep-store`(既定)は image の STORE を残し、経路ごとに速い方法を
+    /// 選ぶ。STORE が無ければ `sector` と同じ。
     EraseMode {
-        Auto => "auto",
-        Sector => "sector",
+        /// Erase the whole code flash first.
         Chip => "chip",
+        /// Erase only the pages / sectors the image covers; flash outside the image is kept.
+        Sector => "sector",
+        /// Keep the STORE region; the path picks the fastest way (no STORE: `sector`).
+        KeepStore => "keep-store",
+        /// Do not erase (refused on paths that always erase what they write).
         None => "none",
     }
 }

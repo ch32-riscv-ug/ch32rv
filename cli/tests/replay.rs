@@ -97,10 +97,13 @@ fn replay_without_device_line_errors() {
 fn flash_round_trip_replays() {
     // The whole flash protocol (stub upload, chip erase, program, readback verify, reset,
     // confirm-run) replays offline from a CH32V307 capture - no probe, no writes to hardware.
+    // The capture erased the chip, so the replay asks for it (the default keep-store does not).
     let out = Command::new(bin())
         .args([
             "flash",
             &input("runtest-ch32v307.bin"),
+            "--erase",
+            "chip",
             "--confirm-run",
             "pc",
             "--replay",
@@ -117,6 +120,27 @@ fn flash_round_trip_replays() {
         !stderr.contains("diverged"),
         "unexpected divergence: {stderr}"
     );
+}
+
+#[test]
+fn flash_erase_none_is_refused_on_the_stub_path() {
+    // WCH's stub erases every page it writes: `--erase none` is refused (exit 24) once the attach
+    // shows a stub family, before anything is erased or written.
+    let out = Command::new(bin())
+        .args([
+            "--json",
+            "flash",
+            &input("runtest-ch32v307.bin"),
+            "--erase",
+            "none",
+            "--replay",
+            &fixture("flash-v307.ndjson"),
+        ])
+        .output()
+        .expect("run ch32rv");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(24), "stdout: {stdout}");
+    assert!(stdout.contains("--erase none"), "stdout: {stdout}");
 }
 
 #[test]

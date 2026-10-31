@@ -6,8 +6,32 @@ use std::time::{Duration, Instant};
 use ch32rv_boot::{HidBoot, HidBootError};
 use ch32rv_contract::{ErrorKind, ResultEnvelope};
 
+use ch32rv_contract::policy::EraseMode;
+
 use crate::args::Cli;
 use crate::cmd_probe::fail;
+
+/// en: `--erase` on a bootloader that erases the pages / blocks it writes and keeps the rest:
+/// sector and keep-store say what it does; chip (it has no whole-flash erase) and none (it always
+/// erases what it writes) are refused, exit 24, before any device is opened.
+/// ja: 書く page / block を自分で消し、残りを保つ bootloader。chip と none は断る(exit 24)。
+fn refuse_erase(cli: &Cli, cmd: &str, path: &str, erase: EraseMode) -> Option<ExitCode> {
+    matches!(erase, EraseMode::Chip | EraseMode::None).then(|| {
+        fail(
+            cli,
+            cmd,
+            ErrorKind::CapabilityUnsupported,
+            format!("{path} cannot honour --erase {}", erase.as_str()),
+            Some("it erases only what it writes: use --erase sector or keep-store (the default)"),
+        )
+    })
+}
+
+/// en: The `store` object of a writer that never touches flash outside the image.
+/// ja: image の外に触れない経路の `store`。
+pub(crate) fn store_untouched(store: Option<ch32rv_flash::StoreRegion>) -> serde_json::Value {
+    crate::cmd_flash::store_json(store, "untouched")
+}
 
 pub fn hid_flash(
     cli: &Cli,
@@ -15,8 +39,12 @@ pub fn hid_flash(
     usb_id: Option<&str>,
     wait_secs: u64,
     device: Option<&str>,
+    erase: EraseMode,
 ) -> ExitCode {
     const CMD: &str = "boot.hid.flash";
+    if let Some(c) = refuse_erase(cli, CMD, "the HID bootloader", erase) {
+        return c;
+    }
     let id = match usb_id.map(parse_usb_id).transpose() {
         Ok(id) => id,
         Err(message) => {
@@ -92,11 +120,17 @@ pub fn hid_flash(
                 "sectors_written": report.sectors_written,
                 "sector_size": 64,
                 "skipped": false,
-                "scope": "sectors",
+                "scope": erase.as_str(),
                 "verified": true,
                 "running": true,
             }
         }));
+        if erase == EraseMode::KeepStore
+            && let Some(r) = env.result.as_mut()
+        {
+            // The HID bootloader takes a raw bin: no STORE is ever named.
+            r["flash"]["store"] = store_untouched(None);
+        }
         crate::print_envelope(&env)
     } else {
         println!(
@@ -337,9 +371,13 @@ pub fn dfu_flash(
     format: ch32rv_contract::policy::ImageFormat,
     at: Option<&str>,
     device: Option<&str>,
+    erase: EraseMode,
 ) -> ExitCode {
     const CMD: &str = "boot.dfu.flash";
     const BASE: u32 = ch32rv_flash::CODE_FLASH_START;
+    if let Some(c) = refuse_erase(cli, CMD, "DFU", erase) {
+        return c;
+    }
     let bytes = match std::fs::read(file) {
         Ok(b) => b,
         Err(e) => {
@@ -420,7 +458,7 @@ pub fn dfu_flash(
                 // restarts the device on its own after manifestation.
                 "family": null,
                 "skipped": false,
-                "scope": "image",
+                "scope": erase.as_str(),
                 "verified": null,
                 "running": null,
                 "blocks": block,
@@ -428,6 +466,11 @@ pub fn dfu_flash(
                 "seconds": secs,
             }
         }));
+        if erase == EraseMode::KeepStore
+            && let Some(r) = env.result.as_mut()
+        {
+            r["flash"]["store"] = store_untouched(ch32rv_flash::store_region(&bytes, BASE));
+        }
         crate::print_envelope(&env)
     } else {
         println!(

@@ -985,6 +985,65 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         Ok(())
     }
 
+    /// en: Erase the whole code flash with the controller's mass erase (CTLR.MER + STRT), as the
+    /// family's EVT `FLASH_EraseAllPages` does: PER / OPTER cleared first (X035 / L103 / V006 /
+    /// V205 do), MER, STRT, wait BUSY, MER cleared. No commit write after it - the V103 / M030
+    /// drivers do none for a mass erase. The V20x / V30x / X315 / V407 drivers spin a delay
+    /// afterwards (`FLASH_EraseAll_Delay`, up to 1e6 nops); 20 ms here covers it. The bus may
+    /// stall under the erase, so the wait goes by time and through read errors.
+    /// [`FlashProgMode::PgStartSectorErase8K`] (CH32H417: no MER in its RM-derived register data,
+    /// no FLASH_EraseAllPages in its EVT) is refused. The hart must be halted.
+    /// ja: controller の全消去(MER + STRT)。EVT の FLASH_EraseAllPages と同じ手順。V103 / M030 も
+    /// 全消去の後に commit はしない。V20x / V30x / X315 / V407 は後に待ちがあるので 20 ms 待つ。
+    /// H417 は MER が無いので断る。hart は halt 済みで。
+    pub fn flash_mass_erase(&mut self, mode: FlashProgMode) -> Result<(), DmiError> {
+        if mode == FlashProgMode::PgStartSectorErase8K {
+            return Err(DmiError::OperationFailed(
+                "this family has no mass erase (FLASH_CTLR.MER)".to_owned(),
+            ));
+        }
+        const PER: u32 = 1 << 1;
+        const MER: u32 = 1 << 2;
+        const OPTER: u32 = 1 << 5;
+        self.flash_unlock()?;
+        if self.read_mem32(FLASH_STATR)? & FLASH_BUSY != 0 {
+            return Err(DmiError::OperationFailed("flash busy".to_owned()));
+        }
+        let stale = self.read_mem32(FLASH_STATR)?;
+        if stale & (FLASH_WPRERR | FLASH_EOP) != 0 {
+            self.write_mem32(FLASH_STATR, stale)?;
+        }
+        let ctlr = self.read_mem32(FLASH_CTLR)? & !(PER | OPTER);
+        self.write_mem32(FLASH_CTLR, ctlr | MER)?;
+        // The store that sets STRT may not finish within the abstract command's poll (the bus
+        // stalls under the erase it starts): it was issued, so go on to the wait.
+        match self.write_mem32(FLASH_CTLR, ctlr | MER | FLASH_STRT) {
+            Ok(()) | Err(DmiError::Timeout | DmiError::OperationFailed(_)) => {}
+            Err(e) => return Err(e),
+        }
+        let statr = self.flash_wait_through(FLASH_BUSY, std::time::Duration::from_secs(10))?;
+        if matches!(
+            mode,
+            FlashProgMode::PgStart | FlashProgMode::PgStartPageErase
+        ) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let mut ctlr = 0;
+        self.retry_through(|dm| {
+            ctlr = dm.read_mem32(FLASH_CTLR)?;
+            Ok(())
+        })?;
+        self.write_mem32(FLASH_CTLR, ctlr & !MER)?;
+        self.write_mem32(FLASH_STATR, statr)?; // write 1s to clear EOP / WPRERR
+        self.flash_lock()?;
+        if statr & FLASH_WPRERR != 0 {
+            return Err(DmiError::OperationFailed(
+                "flash write-protected".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// en: Fast-page-program `data` at `addr` (page-aligned, `data.len()` == the page size, and
     /// the page already erased), using the family's programming `mode`. The hart must be halted.
     /// X315 splits one 4 KiB erase page into sixteen PGSTART commits. Other mechanisms are: [`FlashProgMode::PgStart`] (V20x/V30x - load words,
@@ -1350,6 +1409,17 @@ mod tests {
                 assert!(controls.iter().any(|(_, v)| *v == request | selection));
             }
         }
+    }
+
+    #[test]
+    fn mass_erase_is_refused_without_mer_before_any_access() {
+        let mut m = MockDtm::default();
+        assert!(
+            DebugModule::new(&mut m)
+                .flash_mass_erase(FlashProgMode::PgStartSectorErase8K)
+                .is_err()
+        );
+        assert!(m.writes.is_empty());
     }
 
     #[test]

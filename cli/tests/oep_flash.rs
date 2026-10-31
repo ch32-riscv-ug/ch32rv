@@ -97,6 +97,9 @@ fn flash_over_tcp() {
     assert_eq!(fl["chip_id"], V203);
     assert_eq!(fl["bytes"], 852);
     assert_eq!(fl["rewritten"], 0);
+    // The default keep-store; a bin names no STORE, so the loader's page erase is all there is.
+    assert_eq!(fl["scope"], "keep-store");
+    assert_eq!(fl["store"]["method"], "none-present");
 }
 
 #[test]

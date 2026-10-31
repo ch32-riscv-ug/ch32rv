@@ -166,29 +166,98 @@ pub(crate) fn covered_pages(
     pages
 }
 
-/// en: Resolve the effective erase scope. `auto` becomes `chip` for a program loaded from the
-/// flash base (a full flash - one fast whole-chip erase) and `sector` for a partial/offset image
-/// (never wipe outside it); `--restore-unwritten` forces `sector` since it needs a page-granular
-/// erase. Every other mode passes through unchanged.
-/// ja: 実効 erase scope を決める。`auto` は flash 先頭から始まる program(=フル)なら `chip`、
-/// 部分/offset image なら `sector`。`--restore-unwritten` は page 単位 erase が要るので `sector` に
-/// 倒す。他のモードはそのまま。
-fn resolve_erase(
-    requested: EraseMode,
-    base_addr: Option<u32>,
-    code_flash_start: u32,
-    restore_unwritten: bool,
-) -> EraseMode {
-    match requested {
-        EraseMode::Auto => {
-            if base_addr == Some(code_flash_start) && !restore_unwritten {
-                EraseMode::Chip
-            } else {
-                EraseMode::Sector
+/// en: The erase scope a flash reports: `result.flash.scope`, and with keep-store
+/// `result.flash.store`.
+/// ja: flash が報告する消去の範囲。keep-store では `store` も。
+pub(crate) struct EraseReport {
+    pub scope: &'static str,
+    pub store: Option<serde_json::Value>,
+}
+
+impl EraseReport {
+    /// The `erase:` line of the normal output.
+    fn human(&self) -> String {
+        let Some(st) = &self.store else {
+            return self.scope.to_owned();
+        };
+        match (st["method"].as_str(), st["address"].as_str()) {
+            (Some("none-present"), _) | (_, None) => {
+                format!("{} (no STORE in the image: as sector)", self.scope)
             }
+            (Some(m), Some(a)) => format!(
+                "{} (STORE {} B at {a} {m})",
+                self.scope,
+                st["bytes"].as_u64().unwrap_or(0)
+            ),
+            (None, Some(_)) => self.scope.to_owned(),
         }
-        other => other,
     }
+}
+
+/// en: `result.flash.store` under keep-store: the STORE's address and size (null / 0 when the
+/// image names none) and `method` - untouched (no erase reached it), restored (chip erase, then
+/// written back; an all-erased STORE needs no write) or none-present.
+/// ja: keep-store の `store`。address / bytes と method(untouched / restored / none-present)。
+pub(crate) fn store_json(
+    store: Option<ch32rv_flash::StoreRegion>,
+    method: &str,
+) -> serde_json::Value {
+    match store {
+        Some(s) => serde_json::json!({
+            "address": format!("0x{:08x}", s.addr),
+            "bytes": s.len,
+            "method": method,
+        }),
+        None => serde_json::json!({
+            "address": null,
+            "bytes": 0,
+            "method": "none-present",
+        }),
+    }
+}
+
+/// en: keep-store by chip erase on the stub path: the STORE range rounded out to the stub's
+/// pages, its backup, and where the backup sits on the host until the STORE is back.
+/// ja: chip erase で STORE を残すときの範囲・退避した中身・host に置いたファイル。
+struct StoreRestore {
+    lo: u32,
+    hi: u32,
+    backup: Vec<u8>,
+    saved: Option<std::path::PathBuf>,
+}
+
+impl StoreRestore {
+    /// The hint of a failure between the chip erase and the STORE written back.
+    fn hint(&self) -> Option<String> {
+        self.saved.as_ref().map(|p| {
+            format!(
+                "the STORE (0x{:08x}..0x{:08x}) was erased; its previous content is saved in {} - write it back with `ch32rv flash --erase sector --at 0x{:08x} {}`",
+                self.lo,
+                self.hi,
+                p.display(),
+                self.lo,
+                p.display()
+            )
+        })
+    }
+}
+
+/// en: Keep a STORE backup at `$XDG_RUNTIME_DIR/ch32rv/store-<id>.bin` (the runtime directory).
+/// ja: STORE の退避を runtime dir の `store-<id>.bin` に置く。
+fn save_store_backup(id: &str, data: &[u8]) -> std::io::Result<std::path::PathBuf> {
+    let safe: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let path = ch32rv_usb::create_runtime_dir()?.join(format!("store-{safe}.bin"));
+    std::fs::write(&path, data)?;
+    Ok(path)
 }
 
 /// en: Overlay `segments` onto one page's pre-read `content` (the page starts at `page_addr` and
@@ -204,16 +273,18 @@ pub(crate) fn overlay_page(page_addr: u32, content: &mut [u8], segments: &[Segme
 
 /// en: The flash flags ch32rv's RAM loader cannot honour, on either path that uses it (an OEP
 /// probe, a WCH-Link family with no WCH stub). The loader erases the pages the image touches,
-/// keeps the bytes around the image in them, and reads every page back, so `--erase auto|sector`,
-/// `--verify readback` and `--restore-unwritten` say what it does; the rest would be ignored.
+/// keeps the bytes around the image in them, and reads every page back, so `--erase
+/// sector|keep-store` (the STORE lies outside the image), `--verify readback` and
+/// `--restore-unwritten` say what it does, and `--erase chip` runs a mass erase over the DM first
+/// ([`loader_chip_erase`]); `--erase none` (the loader always erases what it writes) and the rest
+/// would be ignored.
 /// ja: ch32rv の RAM loader(OEP の probe、WCH の stub が無い WCH-Link の family)が守れない flash の
 /// フラグ。loader は image が触れる page を消し、その中の image の外の byte を残し、全 page を読み
-/// 戻すので、`--erase auto|sector`、`--verify readback`、`--restore-unwritten` はそのとおり。残りは
-/// 無視されることになる。
+/// 戻す。`--erase chip` は先に DM で全消去する。`--erase none` と残りは守れない。
 pub(crate) fn loader_refusals(args: &FlashArgs) -> Vec<String> {
     let mut v = Vec::new();
-    if matches!(args.erase, EraseMode::Chip | EraseMode::None) {
-        v.push(format!("--erase {}", args.erase.as_str()));
+    if args.erase == EraseMode::None {
+        v.push("--erase none".to_owned());
     }
     if args.verify == VerifyMode::None {
         v.push("--verify none".to_owned());
@@ -225,6 +296,45 @@ pub(crate) fn loader_refusals(args: &FlashArgs) -> Vec<String> {
         v.push("--monitor".to_owned());
     }
     v
+}
+
+/// en: `--erase chip` on the RAM-loader paths: the whole code flash erased through the DM's
+/// FLASH controller (MER) before the loader writes. A family with no mass erase ch32rv drives
+/// (CH32H417, or no verified controller profile) is refused, exit 24, before anything is erased.
+/// The hart must be halted. Err is the failure to report (kind, message).
+/// ja: RAM loader の経路の `--erase chip`。loader が書く前に DM で全消去(MER)。できない family は
+/// exit 24 で断る(何も消す前)。
+pub(crate) fn loader_chip_erase<T: ch32rv_dmi::DtmAccess>(
+    dtm: &mut T,
+    family: &str,
+) -> Result<(), (ErrorKind, String)> {
+    let Some(mode) = ch32rv_flash::erase_plan::mass_erase_mode(family) else {
+        return Err((
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "--erase chip: ch32rv has no mass erase for {family} (no FLASH_CTLR.MER it drives)"
+            ),
+        ));
+    };
+    ch32rv_dmi::DebugModule::new(dtm)
+        .flash_mass_erase(mode)
+        .map_err(|e| (ErrorKind::TransferFailed, format!("chip erase failed: {e}")))
+}
+
+/// en: The `scope` / `store` a RAM-loader flash reports: the loader never touches flash outside
+/// the image, so a STORE stays untouched.
+/// ja: loader の経路の報告。loader は image の外に触れないので STORE は untouched。
+pub(crate) fn loader_erase_report(
+    erase: EraseMode,
+    bytes: &[u8],
+) -> (&'static str, Option<serde_json::Value>) {
+    let store = (erase == EraseMode::KeepStore).then(|| {
+        store_json(
+            ch32rv_flash::store_region(bytes, CODE_FLASH_START),
+            "untouched",
+        )
+    });
+    (erase.as_str(), store)
 }
 
 /// en: Refuse (exit 24) the flags a flash path cannot honour, before anything is written.
@@ -445,6 +555,21 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
         );
     }
     let total = image.total_len() as u64;
+    // The STORE (ELF `.ch32rv_store`) `--erase keep-store` keeps, and the name its host backup
+    // takes (the chip's UID, else the probe's serial).
+    let store = ch32rv_flash::store_region(&bytes, CODE_FLASH_START);
+    let backup_id = match &session.chip {
+        Some(c) => c
+            .uuid
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+        None => entry
+            .dev
+            .serial()
+            .map(str::to_owned)
+            .unwrap_or_else(|| entry.dev.topology()),
+    };
 
     let sink = crate::progress::sink(cli);
 
@@ -500,7 +625,10 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                 CMD,
                 session,
                 total,
-                "none",
+                &EraseReport {
+                    scope: "none",
+                    store: None,
+                },
                 true,
                 Some(true),
                 warnings,
@@ -512,44 +640,80 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
         }
     }
 
-    // Erase per policy.
-    //   chip   - one fast whole-chip erase (~100x faster per area than page erase).
-    //   sector - erase only the flash pages the image covers, via the direct FLASH controller, so
-    //            nothing outside the image is touched (a bootloader / calibration data in high
-    //            flash survives). `sector` was previously a silent alias for chip erase - a
-    //            data-loss footgun - and now erases surgically.
-    //   auto   - chip for a program loaded from the flash base (a full flash, so the one fast
-    //            erase is right), sector for a partial/offset image (never wipe outside it).
-    //   none   - skip erase.
-    // The chosen scope is reported (JSON `erase`, and a line of normal output) so `auto` is never
-    // a mystery.
-    let erase = resolve_erase(
-        args.erase,
-        image.base_addr(),
-        CODE_FLASH_START,
-        args.restore_unwritten,
-    );
-    let erase_scope = match erase {
-        EraseMode::None => "none",
-        EraseMode::Chip => "chip",
-        EraseMode::Sector => "sector",
-        EraseMode::Auto => unreachable!("auto resolved above"),
+    // Erase per policy (docs/cli.ja.md §4.1).
+    //   chip       - one fast whole-chip erase (the Link's MER).
+    //   sector     - only the pages the image covers. WCH's stub erases every page it programs
+    //                itself, so on the stub path ch32rv erases nothing first; the controller path
+    //                erases the covered pages over DMI.
+    //   keep-store - the STORE (ELF `.ch32rv_store`) is kept. On the stub path, the cheaper of the
+    //                stub's own erase (= sector) and backup -> chip erase -> program -> STORE
+    //                written back ([`ch32rv_flash::erase_plan::choose_keep_store`]). No STORE:
+    //                the same as sector.
+    //   none       - no erase: the controller path only (the stub always erases what it writes).
+    let erase = args.erase;
+    let stub_packet = match &programmer {
+        Programmer::Stub(fp) => Some(fp.data_packet_size as u32),
+        Programmer::Controller(_) => None,
     };
-    // `--restore-unwritten` re-programs whole pages, so it needs a page-granular (sector) erase.
-    if args.restore_unwritten && erase != EraseMode::Sector {
+    if erase == EraseMode::None && stub_packet.is_some() {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::CapabilityUnsupported,
+            format!(
+                "WCH's flash stub for {} erases every page it writes, so it cannot honour --erase none",
+                session.family()
+            ),
+            Some("use --erase sector or keep-store (the default)"),
+        );
+    }
+    // `--restore-unwritten` re-programs whole pages, so it needs a page-granular erase.
+    if args.restore_unwritten && matches!(erase, EraseMode::Chip | EraseMode::None) {
         return fail(
             cli,
             CMD,
             ErrorKind::Usage,
-            format!("--restore-unwritten needs page-granular erase, but --erase is {erase_scope}"),
-            Some("use --erase sector (or --erase auto with a partial/offset image)"),
+            format!(
+                "--restore-unwritten needs page-granular erase, but --erase is {}",
+                erase.as_str()
+            ),
+            Some("use --erase sector or keep-store"),
         );
     }
+    let planned = planned_writes(&programmer, &image);
+    // keep-store on the stub path: which way, and the STORE range rounded out to the stub's pages.
+    let mut restore: Option<StoreRestore> = None;
+    if erase == EraseMode::KeepStore
+        && !args.restore_unwritten
+        && let (Some(packet), Some(st)) = (stub_packet, store)
+    {
+        let lo = st.addr - st.addr % packet;
+        let hi = st.end().div_ceil(packet).saturating_mul(packet);
+        let overlaps = planned
+            .iter()
+            .any(|s| s.addr < hi && s.addr.saturating_add(s.data.len() as u32) > lo);
+        let written: u32 = planned.iter().map(|s| s.data.len() as u32).sum();
+        let choice = ch32rv_flash::erase_plan::choose_keep_store(family, written, hi - lo);
+        if !overlaps && choice.way == ch32rv_flash::erase_plan::KeepStoreWay::ChipAndRestore {
+            restore = Some(StoreRestore {
+                lo,
+                hi,
+                backup: Vec::new(),
+                saved: None,
+            });
+        }
+    }
+    let store_method = match (erase, store, &restore) {
+        (EraseMode::KeepStore, None, _) => Some("none-present"),
+        (EraseMode::KeepStore, Some(_), Some(_)) => Some("restored"),
+        (EraseMode::KeepStore, Some(_), None) => Some("untouched"),
+        _ => None,
+    };
     // Full pages to program instead of the sparse image, populated only under --restore-unwritten
-    // (each covered page read pre-erase, with the image overlaid, so unwritten bytes survive).
+    // (each covered page read before it is erased, with the image overlaid, so unwritten bytes
+    // survive).
     let mut restored: Option<Vec<Segment>> = None;
     match erase {
-        EraseMode::Auto => unreachable!("auto resolved above"),
         EraseMode::None => {}
         EraseMode::Chip => {
             sink.event(&Event::Phase {
@@ -566,23 +730,98 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                 );
             }
         }
-        EraseMode::Sector => {
-            // Sector erase needs a verified FLASH-controller profile (page size + mechanism).
-            let Some(cprofile) = ch32rv_flash::flash_controller_profile(family) else {
+        EraseMode::KeepStore if restore.is_some() => {
+            let Some(r) = restore.as_mut() else {
+                unreachable!("checked above")
+            };
+            sink.event(&Event::Phase {
+                name: "erase".into(),
+                total: None,
+            });
+            if let Err(e) = session.dm().halt() {
                 return fail(
                     cli,
                     CMD,
-                    ErrorKind::CapabilityUnsupported,
-                    format!(
-                        "--erase sector is not supported for {} (0x{family:02x}) yet",
-                        session.family()
-                    ),
-                    Some("use --erase chip to erase the whole chip"),
+                    ErrorKind::AttachFailed,
+                    format!("halt for the STORE backup failed: {e}"),
+                    None,
                 );
+            }
+            let len = r.hi - r.lo;
+            r.backup = match session.link().read_mem(r.lo, len) {
+                Ok(d) if d.len() == len as usize => d,
+                _ => match session.dm().read_mem(r.lo, len) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        return fail(
+                            cli,
+                            CMD,
+                            ErrorKind::TransferFailed,
+                            format!("STORE backup read at 0x{:08x} failed: {e}", r.lo),
+                            None,
+                        );
+                    }
+                },
+            };
+            let erased_word =
+                ch32rv_target::flash_geometry(&crate::cmd_target::db_family_of(&mut session))
+                    .and_then(|g| g.erased_word);
+            if !ch32rv_flash::erase_plan::all_erased(&r.backup, erased_word) {
+                // Kept on the host until the STORE is back and verified, so a write that stops
+                // in between loses nothing.
+                match save_store_backup(&backup_id, &r.backup) {
+                    Ok(p) => r.saved = Some(p),
+                    Err(e) => {
+                        return fail(
+                            cli,
+                            CMD,
+                            ErrorKind::TransferFailed,
+                            format!(
+                                "could not keep the STORE backup on the host ({e}); nothing was erased"
+                            ),
+                            Some("use --erase sector to leave the STORE in place"),
+                        );
+                    }
+                }
+            }
+            session.link().detach_chip().ok();
+            let _ = session.link().attach_chip();
+            if let Err(e) = session.link().erase_flash() {
+                let hint = r.hint();
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TransferFailed,
+                    format!("erase failed: {e}"),
+                    hint.as_deref(),
+                );
+            }
+        }
+        EraseMode::Sector | EraseMode::KeepStore => {
+            let cprofile = ch32rv_flash::flash_controller_profile(family);
+            let controller = matches!(programmer, Programmer::Controller(_));
+            // The controller path erases the covered pages itself, and --restore-unwritten reads
+            // them first: both need the family's verified page size.
+            let cprofile = match cprofile {
+                Some(p) => Some(p),
+                None if controller || args.restore_unwritten => {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::CapabilityUnsupported,
+                        format!(
+                            "--erase {} is not supported for {} (0x{family:02x}) yet",
+                            erase.as_str(),
+                            session.family()
+                        ),
+                        Some("use --erase chip to erase the whole chip"),
+                    );
+                }
+                None => None,
             };
             // restore-unwritten needs a true 0xff readback for erased cells, so a blank byte in a
             // page is not confused with real data and re-programmed as a placeholder.
-            if args.restore_unwritten && !cprofile.erased_reads_ff {
+            if args.restore_unwritten && cprofile.is_some_and(|p| !p.erased_reads_ff) {
                 return fail(
                     cli,
                     CMD,
@@ -594,96 +833,102 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                     Some("omit --restore-unwritten; sector erase clears whole covered pages"),
                 );
             }
-            let page = cprofile.page_size;
-            // Every flash page any segment touches (dedup + sorted, page-aligned). Erase them all
-            // before programming so segments that share a page never wipe each other.
-            // The planned writes, not the raw segments: the stub path programs one contiguous
-            // region, so any gap inside it has to be erased too - otherwise it would program
-            // unerased pages. `--restore-unwritten` puts their previous content back below.
-            let planned = planned_writes(&programmer, &image);
-            let pages = covered_pages(planned.iter().map(|s| (s.addr, s.data.len() as u32)), page);
-            let total_pages = pages.len() as u64;
-            sink.event(&Event::Phase {
-                name: "erase".into(),
-                total: Some(total_pages),
-            });
-            if let Err(e) = session.dm().halt() {
-                return fail(
-                    cli,
-                    CMD,
-                    ErrorKind::AttachFailed,
-                    format!("halt for sector erase failed: {e}"),
-                    None,
-                );
-            }
-            // restore-unwritten: capture each page's current content (before erasing) and overlay
-            // the image on it, so the program step rewrites whole pages and unwritten bytes survive.
-            if args.restore_unwritten {
-                let mut dm = session.dm();
-                let mut merged = Vec::with_capacity(pages.len());
-                for &pg in &pages {
-                    let mut buf = match dm.read_mem(pg, page) {
-                        Ok(b) => b,
-                        Err(e) => {
+            if let Some(cprofile) = cprofile
+                && (controller || args.restore_unwritten)
+            {
+                let page = cprofile.page_size;
+                // The planned writes, not the raw segments: the stub path programs one contiguous
+                // region, so a gap inside it is programmed too (`--restore-unwritten` puts its
+                // previous content back).
+                let pages =
+                    covered_pages(planned.iter().map(|s| (s.addr, s.data.len() as u32)), page);
+                if let Err(e) = session.dm().halt() {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::AttachFailed,
+                        format!("halt for sector erase failed: {e}"),
+                        None,
+                    );
+                }
+                // restore-unwritten: capture each page's current content (before it is erased)
+                // and overlay the image on it, so the program step rewrites whole pages and
+                // unwritten bytes survive.
+                if args.restore_unwritten {
+                    let mut dm = session.dm();
+                    let mut merged = Vec::with_capacity(pages.len());
+                    for &pg in &pages {
+                        let mut buf = match dm.read_mem(pg, page) {
+                            Ok(b) => b,
+                            Err(e) => {
+                                return fail(
+                                    cli,
+                                    CMD,
+                                    ErrorKind::TransferFailed,
+                                    format!(
+                                        "restore-unwritten read of page 0x{pg:08x} failed: {e}"
+                                    ),
+                                    None,
+                                );
+                            }
+                        };
+                        buf.resize(page as usize, 0xff);
+                        overlay_page(pg, &mut buf, &image.segments);
+                        merged.push(Segment {
+                            addr: pg,
+                            data: buf,
+                        });
+                    }
+                    restored = Some(merged);
+                }
+                // Only the controller path erases first: WCH's stub erases every page it writes
+                // (a DMI pre-erase was pure overhead there).
+                if controller {
+                    let total_pages = pages.len() as u64;
+                    sink.event(&Event::Phase {
+                        name: "erase".into(),
+                        total: Some(total_pages),
+                    });
+                    let mode = cprofile.mode;
+                    let mut dm = session.dm();
+                    for (i, pg) in pages.iter().enumerate() {
+                        if let Err(e) = dm.flash_page_erase(*pg, mode) {
                             return fail(
                                 cli,
                                 CMD,
                                 ErrorKind::TransferFailed,
-                                format!("restore-unwritten read of page 0x{pg:08x} failed: {e}"),
+                                format!("sector erase failed at 0x{pg:08x}: {e}"),
                                 None,
                             );
                         }
-                    };
-                    buf.resize(page as usize, 0xff);
-                    overlay_page(pg, &mut buf, &image.segments);
-                    merged.push(Segment {
-                        addr: pg,
-                        data: buf,
-                    });
-                }
-                restored = Some(merged);
-            }
-            {
-                let mode = cprofile.mode;
-                let mut dm = session.dm();
-                for (i, pg) in pages.iter().enumerate() {
-                    if let Err(e) = dm.flash_page_erase(*pg, mode) {
-                        return fail(
-                            cli,
-                            CMD,
-                            ErrorKind::TransferFailed,
-                            format!("sector erase failed at 0x{pg:08x}: {e}"),
-                            None,
-                        );
+                        sink.event(&Event::Progress {
+                            phase: "erase".into(),
+                            done: (i + 1) as u64,
+                            total: Some(total_pages),
+                        });
                     }
-                    sink.event(&Event::Progress {
-                        phase: "erase".into(),
-                        done: (i + 1) as u64,
-                        total: Some(total_pages),
-                    });
+                } else {
+                    // The reads halted the core: give the stub a clean slate.
+                    session.link().detach_chip().ok();
+                    let _ = session.link().attach_chip();
                 }
-            }
-            // Reset the link/target debug state so the stub loader programs from a clean slate
-            // (mirrors the detach/reattach the verify step does below; verified to program
-            // correctly into page-erased - not chip-erased - flash). The controller path keeps
-            // driving the same halted core, so re-attaching there would only undo the halt.
-            if matches!(programmer, Programmer::Stub(_)) {
-                session.link().detach_chip().ok();
-                let _ = session.link().attach_chip();
             }
         }
     }
+    let store_hint = restore.as_ref().and_then(StoreRestore::hint);
 
     // Program each segment. Under --restore-unwritten we program the merged whole pages instead of
     // the sparse image (so unwritten bytes in a partially-filled page keep their original values).
     // Either way what goes out is `planned_writes`, not the raw segments.
-    let source_image = match &restored {
-        Some(segs) => Image {
-            segments: segs.clone(),
-        },
-        None => image.clone(),
+    let program_segments = match &restored {
+        Some(segs) => planned_writes(
+            &programmer,
+            &Image {
+                segments: segs.clone(),
+            },
+        ),
+        None => planned,
     };
-    let program_segments = planned_writes(&programmer, &source_image);
     let program_segments: &[Segment] = &program_segments;
     let program_total: u64 = program_segments.iter().map(|s| s.data.len() as u64).sum();
     sink.event(&Event::Phase {
@@ -708,10 +953,27 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                         CMD,
                         ErrorKind::TransferFailed,
                         format!("program failed at {:#010x}: {e}", seg.addr),
-                        None,
+                        store_hint.as_deref(),
                     );
                 }
                 base += seg_len;
+            }
+            // keep-store by chip erase: the STORE goes back with a second stub run restricted to
+            // it (the stub takes one contiguous region per session, hence the re-attach).
+            if let Some(r) = &restore
+                && r.saved.is_some()
+            {
+                session.link().detach_chip().ok();
+                let _ = session.link().attach_chip();
+                if let Err(e) = session.link().write_flash(r.lo, &r.backup, fp, |_| {}) {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("writing the STORE back at {:#010x} failed: {e}", r.lo),
+                        store_hint.as_deref(),
+                    );
+                }
             }
         }
         // No stub for this family: drive the target's own FLASH controller over DMI, page by page.
@@ -757,12 +1019,21 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
         }
     }
 
-    // Verify (readback), unless disabled.
+    // Verify (readback), unless disabled. A STORE written back is always checked.
     let mut verified = None;
+    let mut checks: Vec<(u32, &[u8])> = Vec::new();
     if !matches!(args.verify, VerifyMode::None) {
+        checks.extend(image.segments.iter().map(|s| (s.addr, s.data.as_slice())));
+    }
+    if let Some(r) = &restore
+        && r.saved.is_some()
+    {
+        checks.push((r.lo, r.backup.as_slice()));
+    }
+    if !checks.is_empty() {
         sink.event(&Event::Phase {
             name: "verify".into(),
-            total: Some(total),
+            total: Some(checks.iter().map(|(_, d)| d.len() as u64).sum()),
         });
         session.link().detach_chip().ok();
         let _ = session.link().attach_chip();
@@ -772,13 +1043,13 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                 CMD,
                 ErrorKind::AttachFailed,
                 format!("halt for verify failed: {e}"),
-                None,
+                store_hint.as_deref(),
             );
         }
-        for seg in &image.segments {
+        for (addr, data) in checks {
             // Fast bulk readback, re-checked via the authoritative DMI read on mismatch/error
             // (fast read can return stale data right after stub execution on the CH549 Link).
-            let readback = match verify_read(&mut session, seg.addr, &seg.data) {
+            let readback = match verify_read(&mut session, addr, data) {
                 Ok(d) => d,
                 Err(e) => {
                     return fail(
@@ -786,34 +1057,44 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                         CMD,
                         ErrorKind::TransferFailed,
                         format!("readback failed: {e}"),
-                        None,
+                        store_hint.as_deref(),
                     );
                 }
             };
-            if readback != seg.data {
+            if readback != data {
                 let at = readback
                     .iter()
-                    .zip(&seg.data)
+                    .zip(data)
                     .position(|(a, b)| a != b)
                     .unwrap_or(0);
                 return fail(
                     cli,
                     CMD,
                     ErrorKind::VerifyMismatch,
-                    format!("verify mismatch at {:#010x}", seg.addr as usize + at),
-                    None,
+                    format!("verify mismatch at {:#010x}", addr as usize + at),
+                    store_hint.as_deref(),
                 );
             }
         }
-        verified = Some(true);
+        if !matches!(args.verify, VerifyMode::None) {
+            verified = Some(true);
+        }
+    }
+    // The STORE is back and verified: the host copy is no longer needed.
+    if let Some(p) = restore.as_ref().and_then(|r| r.saved.as_ref()) {
+        let _ = std::fs::remove_file(p);
     }
 
+    let report = EraseReport {
+        scope: erase.as_str(),
+        store: store_method.map(|m| store_json(store, m)),
+    };
     finish_flash(
         cli,
         CMD,
         session,
         total,
-        erase_scope,
+        &report,
         false,
         verified,
         warnings,
@@ -838,7 +1119,7 @@ fn finish_flash(
     cmd: &str,
     mut session: Session,
     total: u64,
-    erase_scope: &str,
+    erase: &EraseReport,
     skipped: bool,
     verified: Option<bool>,
     warnings: Vec<Warning>,
@@ -864,29 +1145,11 @@ fn finish_flash(
         running = crate::broker::hand_back_with_reset();
         if confirm.is_some() && running != Some(true) {
             return finish_lent(
-                cli,
-                cmd,
-                &family,
-                programmer,
-                total,
-                erase_scope,
-                skipped,
-                verified,
-                running,
-                warnings,
+                cli, cmd, &family, programmer, total, erase, skipped, verified, running, warnings,
             );
         }
         return finish_lent_ok(
-            cli,
-            cmd,
-            &family,
-            programmer,
-            total,
-            erase_scope,
-            skipped,
-            verified,
-            running,
-            warnings,
+            cli, cmd, &family, programmer, total, erase, skipped, verified, running, warnings,
             monitor,
         );
     }
@@ -905,7 +1168,7 @@ fn finish_flash(
                         &session.family(),
                         programmer,
                         total,
-                        erase_scope,
+                        erase,
                         skipped,
                         verified,
                         running,
@@ -947,7 +1210,7 @@ fn finish_flash(
         &session.family(),
         programmer,
         total,
-        erase_scope,
+        erase,
         skipped,
         verified,
         running,
@@ -978,7 +1241,7 @@ fn finish_lent(
     family: &str,
     programmer: &str,
     total: u64,
-    erase_scope: &str,
+    erase: &EraseReport,
     skipped: bool,
     verified: Option<bool>,
     running: Option<bool>,
@@ -990,7 +1253,7 @@ fn finish_lent(
         family,
         programmer,
         total,
-        erase_scope,
+        erase,
         skipped,
         verified,
         running,
@@ -1010,7 +1273,7 @@ fn finish_lent_ok(
     family: &str,
     programmer: &str,
     total: u64,
-    erase_scope: &str,
+    erase: &EraseReport,
     skipped: bool,
     verified: Option<bool>,
     running: Option<bool>,
@@ -1018,17 +1281,7 @@ fn finish_lent_ok(
     monitor: Option<MonitorSource>,
 ) -> ExitCode {
     let exit = finish(
-        cli,
-        cmd,
-        family,
-        programmer,
-        total,
-        erase_scope,
-        skipped,
-        verified,
-        running,
-        warnings,
-        None,
+        cli, cmd, family, programmer, total, erase, skipped, verified, running, warnings, None,
     );
     if let Some(source) = monitor {
         let margs = crate::args::MonitorArgs {
@@ -1138,6 +1391,11 @@ fn flash_via_loader(
         );
     }
     let started = std::time::Instant::now();
+    if args.erase == EraseMode::Chip
+        && let Err((kind, msg)) = loader_chip_erase(session.link(), &family)
+    {
+        return fail(cli, CMD, kind, msg, None);
+    }
     let result = {
         let mut t = ch32rv_dmi::DmTarget::new(session.link());
         ch32rv_flash::loader::program(&mut t, plan, &image.segments, &mut |_, _| {})
@@ -1163,6 +1421,7 @@ fn flash_via_loader(
     // The Link's soft reset gives no word on whether the program runs.
     let running: Option<bool> = None;
     let total = image.total_len();
+    let (scope, store) = loader_erase_report(args.erase, bytes);
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
@@ -1176,11 +1435,14 @@ fn flash_via_loader(
                 // Every page is read back after it is written: verified, or the run failed.
                 "verified": true,
                 "skipped": false,
-                "scope": "pages",
+                "scope": scope,
                 "running": running,
                 "seconds": secs,
             }
         }));
+        if let (Some(st), Some(r)) = (store, env.result.as_mut()) {
+            r["flash"]["store"] = st;
+        }
         env.warnings = warnings;
         crate::print_envelope(&env)
     } else {
@@ -1257,7 +1519,7 @@ fn finish(
     family: &str,
     programmer: &str,
     total_bytes: u64,
-    erase_scope: &str,
+    erase: &EraseReport,
     skipped: bool,
     verified: Option<bool>,
     running: Option<bool>,
@@ -1277,11 +1539,14 @@ fn finish(
                 "family": family,
                 "programmer": programmer,
                 "skipped": skipped,
-                "scope": erase_scope,
+                "scope": erase.scope,
                 "verified": verified,
                 "running": running,
             }
         }));
+        if let (Some(store), Some(r)) = (&erase.store, env.result.as_mut()) {
+            r["flash"]["store"] = store.clone();
+        }
         env.warnings = warnings;
         crate::print_envelope(&env)
     } else {
@@ -1291,7 +1556,7 @@ fn finish(
                 println!("preverify: target already matches - skipped");
             } else {
                 println!("flashed {total_bytes} bytes to {family}");
-                println!("erase:   {erase_scope}");
+                println!("erase:   {}", erase.human());
                 if let Some(v) = verified {
                     println!(
                         "verify:  {}",
@@ -2623,15 +2888,22 @@ mod tests {
                 "readback",
                 "--restore-unwritten",
             ][..],
-            &["--erase", "auto", "--preverify", "--reset", "none"][..],
+            &["--erase", "keep-store", "--preverify", "--reset", "none"][..],
+            // chip: a mass erase over the DM first (a family without one is refused after attach).
+            &["--erase", "chip"][..],
         ] {
             let cli = parse(ok);
             let (loader, oep) = flash_of(&cli);
             assert!(loader.is_empty(), "{ok:?}: {loader:?}");
             assert!(oep.is_empty(), "{ok:?}: {oep:?}");
         }
-        let cli = parse(&["--erase", "chip", "--verify", "none", "--sdi", "on"]);
-        assert_eq!(flash_of(&cli).0, ["--erase chip", "--verify none", "--sdi"]);
+        let cli = parse(&["--erase", "none", "--verify", "none", "--sdi", "on"]);
+        assert_eq!(flash_of(&cli).0, ["--erase none", "--verify none", "--sdi"]);
+        // auto is gone.
+        assert!(
+            crate::args::Cli::try_parse_from(["ch32rv", "flash", "a.elf", "--erase", "auto"])
+                .is_err()
+        );
         let cli = parse(&["--erase", "none", "--monitor", "dmdata"]);
         assert_eq!(flash_of(&cli).0, ["--erase none", "--monitor"]);
         let cli = crate::args::Cli::try_parse_from([
@@ -2669,44 +2941,50 @@ mod tests {
         );
     }
 
-    use super::{Segment, covered_pages, overlay_page, resolve_erase};
+    use super::{
+        EraseReport, Segment, covered_pages, loader_erase_report, overlay_page, store_json,
+    };
     use ch32rv_contract::policy::EraseMode;
 
-    const BASE: u32 = 0x0800_0000;
-
     #[test]
-    fn auto_full_image_is_chip() {
-        // An image loaded from the flash base is a full program -> the one fast whole-chip erase.
+    fn keep_store_reports_the_store() {
+        let st = ch32rv_flash::StoreRegion {
+            addr: 0x0803_f000,
+            len: 4096,
+        };
+        let v = store_json(Some(st), "restored");
+        assert_eq!(v["address"], "0x0803f000");
+        assert_eq!(v["bytes"], 4096);
+        assert_eq!(v["method"], "restored");
+        // No STORE in the image: none-present, whatever the path did.
+        assert_eq!(store_json(None, "untouched")["method"], "none-present");
+        let r = EraseReport {
+            scope: "keep-store",
+            store: Some(v),
+        };
         assert_eq!(
-            resolve_erase(EraseMode::Auto, Some(BASE), BASE, false),
-            EraseMode::Chip
+            r.human(),
+            "keep-store (STORE 4096 B at 0x0803f000 restored)"
         );
     }
 
     #[test]
-    fn auto_partial_image_is_sector() {
-        // An image at an offset must not wipe flash below it.
+    fn loader_paths_report_the_requested_scope() {
+        // A bin names no STORE: keep-store reports none-present; other modes report no store.
+        let (scope, store) = loader_erase_report(EraseMode::KeepStore, &[0xff; 16]);
+        assert_eq!(scope, "keep-store");
         assert_eq!(
-            resolve_erase(EraseMode::Auto, Some(BASE + 0x8000), BASE, false),
-            EraseMode::Sector
+            store.map(|s| s["method"].clone()),
+            Some("none-present".into())
         );
-    }
-
-    #[test]
-    fn auto_with_restore_unwritten_is_sector_even_from_base() {
-        // restore-unwritten needs page-granular erase, so it overrides the full-image chip choice.
         assert_eq!(
-            resolve_erase(EraseMode::Auto, Some(BASE), BASE, true),
-            EraseMode::Sector
+            loader_erase_report(EraseMode::Chip, &[0xff; 16]),
+            ("chip", None)
         );
-    }
-
-    #[test]
-    fn explicit_modes_pass_through() {
-        for m in [EraseMode::Chip, EraseMode::Sector, EraseMode::None] {
-            assert_eq!(resolve_erase(m, Some(BASE), BASE, false), m);
-            assert_eq!(resolve_erase(m, Some(BASE + 0x100), BASE, true), m);
-        }
+        assert_eq!(
+            loader_erase_report(EraseMode::Sector, &[0xff; 16]),
+            ("sector", None)
+        );
     }
 
     // en: The pages a sector erase must clear for a given image layout.

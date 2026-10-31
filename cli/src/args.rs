@@ -176,9 +176,10 @@ pub struct FlashArgs {
     /// Load address for bin input (default: start of the code region)
     #[arg(long)]
     pub at: Option<String>,
-    /// Erase before programming. The RAM-loader paths (an OEP probe, a WCH-Link family with no
-    /// WCH stub) erase the pages the image touches: auto|sector only
-    #[arg(long, value_enum, default_value = "auto")]
+    /// Erase before programming: chip (all of code flash) | sector (only the pages the image
+    /// covers) | keep-store (keep the ELF's .ch32rv_store; with no STORE the same as sector) |
+    /// none (refused where the writer always erases what it writes)
+    #[arg(long, value_enum, default_value = "keep-store")]
     pub erase: EraseMode,
     /// Verify after programming. The RAM-loader paths always read back: readback only
     #[arg(long, value_enum, default_value = "readback")]
@@ -615,8 +616,10 @@ pub enum IspCmd {
     /// Program code flash (bin / hex / elf), verify, and start the application
     Flash {
         file: PathBuf,
-        #[arg(long, value_enum, default_value = "auto")]
-        erase: IspErase,
+        /// chip (all of code flash first) | sector (the image's sectors, at least 8) | keep-store
+        /// (as sector, but never into the ELF's .ch32rv_store) | none
+        #[arg(long, value_enum, default_value = "keep-store")]
+        erase: EraseMode,
         #[arg(long, value_enum, default_value = "on")]
         verify: IspVerify,
         #[arg(long, value_enum, default_value = "run")]
@@ -636,12 +639,6 @@ pub enum IspCmd {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum IspVia {
     Probe,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum IspErase {
-    Auto,
-    None,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -699,6 +696,10 @@ pub enum DfuCmd {
         /// topology:<bus>-<ports> | VID:PID[:SERIAL] (the only DFU device when omitted)
         #[arg(long, value_name = "ADDRESS")]
         device: Option<String>,
+        /// The device erases the blocks it is sent and keeps the rest: sector | keep-store
+        /// (chip and none are refused)
+        #[arg(long, value_enum, default_value = "keep-store")]
+        erase: EraseMode,
     },
     /// Show the DFU device and its state
     Info {
@@ -722,6 +723,10 @@ pub enum HidBootCmd {
         /// topology:<bus>-<ports> (the first one found when omitted)
         #[arg(long, value_name = "ADDRESS")]
         device: Option<String>,
+        /// The bootloader erases the pages it writes and keeps the rest: sector | keep-store
+        /// (chip and none are refused)
+        #[arg(long, value_enum, default_value = "keep-store")]
+        erase: EraseMode,
     },
 }
 

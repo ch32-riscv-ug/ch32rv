@@ -1449,6 +1449,12 @@ fn flash_attached(
                 b[at..at + seg.data.len()] == seg.data[..]
             })
         });
+    if !skipped
+        && args.erase == ch32rv_contract::policy::EraseMode::Chip
+        && let Err((kind, msg)) = crate::cmd_flash::loader_chip_erase(&mut t, &family)
+    {
+        return fail(cli, CMD, kind, msg, None);
+    }
     let report = if skipped {
         ch32rv_flash::loader::LoaderReport::default()
     } else {
@@ -1496,6 +1502,7 @@ fn flash_attached(
         }
     }
     let total = image.total_len();
+    let (scope, store) = crate::cmd_flash::loader_erase_report(args.erase, bytes);
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
@@ -1510,11 +1517,14 @@ fn flash_attached(
                 // Every page is read back after it is written: verified, or the run failed.
                 "verified": true,
                 "skipped": skipped,
-                "scope": if skipped { "none" } else { "pages" },
+                "scope": if skipped { "none" } else { scope },
                 "running": running,
                 "seconds": secs,
             }
         }));
+        if !skipped && let (Some(st), Some(r)) = (store, env.result.as_mut()) {
+            r["flash"]["store"] = st;
+        }
         crate::print_envelope(&env)
     } else if skipped {
         println!("preverify: target already matches - skipped");

@@ -35,7 +35,6 @@ const WCH: &str = "serial:NO-SUCH-PROBE";
 #[test]
 fn an_oep_flash_refuses_what_its_loader_path_would_ignore() {
     for (extra, names) in [
-        (&["--erase", "chip"][..], "--erase chip"),
         (&["--erase", "none"][..], "--erase none"),
         (&["--verify", "none"][..], "--verify none"),
         (&["--sdi", "on"][..], "--sdi"),
@@ -48,6 +47,32 @@ fn an_oep_flash_refuses_what_its_loader_path_would_ignore() {
         let mut args = vec!["flash", "Cargo.toml", "--probe", OEP];
         args.extend_from_slice(extra);
         refused(&args, names);
+    }
+}
+
+#[test]
+fn bootloaders_refuse_erase_chip_and_none() {
+    // HID and DFU erase only what they write: no whole-flash erase, no write without erase.
+    for erase in ["chip", "none"] {
+        refused(
+            &["boot", "hid", "flash", "Cargo.toml", "--erase", erase],
+            &format!("--erase {erase}"),
+        );
+        refused(
+            &["boot", "dfu", "flash", "Cargo.toml", "--erase", erase],
+            &format!("--erase {erase}"),
+        );
+    }
+    // auto is gone everywhere.
+    for args in [
+        &["flash", "Cargo.toml", "--erase", "auto"][..],
+        &["isp", "flash", "Cargo.toml", "--erase", "auto"][..],
+    ] {
+        let out = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(2), "{args:?}");
     }
 }
 

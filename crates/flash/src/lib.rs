@@ -26,11 +26,12 @@
 //! (直接 FLASH controller の page/mode)、[`stub`](loader blob。暫定: wlink 転記)、
 //! [`CODE_FLASH_START`](共通 flash 先頭 0x0800_0000)。
 
+pub mod erase_plan;
 pub mod image;
 pub mod loader;
 pub mod stub;
 
-pub use image::{Image, ImageError, Segment};
+pub use image::{Image, ImageError, Segment, StoreRegion, store_region};
 
 /// en: Lay the bytes of `segments` that fall inside the page at `page_addr` over `content` (the
 /// page's current bytes), so a page rewrite keeps what lies outside the image.
@@ -260,7 +261,7 @@ pub struct FlashOptions {
 impl Default for FlashOptions {
     fn default() -> Self {
         Self {
-            erase: EraseMode::Auto,
+            erase: EraseMode::KeepStore,
             verify: VerifyMode::Readback,
             reset: ResetPolicy::Run,
             confirm_run: None,

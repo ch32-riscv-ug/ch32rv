@@ -451,8 +451,14 @@ impl IspDevice {
 
     /// Erase `sectors` 1 KiB sectors from the start of code flash (at least the minimum).
     pub fn erase(&mut self, sectors: u32) -> Result<(), IspError> {
-        let n = sectors.max(MIN_ERASE_SECTORS);
-        self.status(CMD_ERASE, &n.to_le_bytes())
+        self.erase_exact(erase_count(sectors))
+    }
+
+    /// en: Erase exactly `sectors` 1 KiB sectors from the start of code flash, below the minimum
+    /// too (`flash --erase keep-store` when the minimum would reach the STORE).
+    /// ja: 最小を下回っても、ちょうど `sectors` 個の sector を消す。
+    pub fn erase_exact(&mut self, sectors: u32) -> Result<(), IspError> {
+        self.status(CMD_ERASE, &sectors.to_le_bytes())
     }
 
     /// One Program / Verify request: `addr(4 LE) pad(1) data ^ key`.
@@ -530,6 +536,11 @@ fn pad(image: &[u8]) -> Vec<u8> {
 /// Sectors to erase for an image of `len` bytes.
 pub fn sectors_for(len: usize) -> u32 {
     len.div_ceil(SECTOR) as u32
+}
+
+/// The sectors [`IspDevice::erase`] erases for a request of `sectors` (at least the minimum, 8).
+pub fn erase_count(sectors: u32) -> u32 {
+    sectors.max(MIN_ERASE_SECTORS)
 }
 
 #[cfg(test)]

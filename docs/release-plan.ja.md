@@ -85,7 +85,7 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 |---|---|
 | probe | list(`--watch`)/ info / firmware info・check・update・exit-iap / mode get・set / power 3v3・5v・cycle |
 | target | info(SKU/family/配線/容量)/ option get・set・reset・write-raw / protect(option base は DB 由来) |
-| flash | flash(erase auto/sector/chip/none・restore-unwritten・preverify・verify・reset・confirm-run・sdi・monitor・repeat)/ verify / read(range・region)/ write / erase(all/range/region)/ reset / recover(power-off・nrst・unprotect・unbrick) |
+| flash | flash(erase chip/sector/keep-store/none・restore-unwritten・preverify・verify・reset・confirm-run・sdi・monitor・repeat)/ verify / read(range・region)/ write / erase(all/range/region)/ reset / recover(power-off・nrst・unprotect・unbrick) |
 | debug | dbg halt/resume/step/regs/reg/dmi / gdb server(HW+RAM+flash BP) |
 | monitor / run | monitor uart / sdi / dmdata / rtt(uart・dmdata・rtt は双方向)/ run(HIL: flash→reset→出力→semihosting exit code) |
 | DB/診断 | db list・info / capabilities(live+static)/ doctor / version / complete |
