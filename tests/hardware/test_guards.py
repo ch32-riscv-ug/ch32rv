@@ -1,15 +1,14 @@
-import fcntl
 from pathlib import Path
 
 import pytest
 
-from harness import check_target, load, run, shared_lock
+from harness import check_target, load, run
 
 
 def test_example_cannot_open_hardware(tmp_path):
     config = load(Path(__file__).with_name('equipment.example.toml'))
     with pytest.raises(ValueError, match='example'):
-        run(config, '/missing-tool', '/missing-lock', tmp_path / 'results')
+        run(config, '/missing-tool', tmp_path / 'results')
     assert not (tmp_path / 'results').exists()
 
 
@@ -25,22 +24,6 @@ def test_target_identity_mismatch_is_rejected():
     with pytest.raises(ValueError, match='SKU/chip'):
         check_target({'chip': 'CH32L103C8T6', 'chip_id': '0x10310710'},
                      {'ok': True, 'target': {'sku': 'CH32V003F4U6', 'chip_id': '0x00310510'}})
-
-
-def test_lock_is_shared_and_never_created(tmp_path):
-    path = tmp_path / 'equipment.lock'
-    with pytest.raises(FileNotFoundError):
-        with shared_lock(path):
-            pass
-    path.touch()
-    inode = path.stat().st_ino
-    with path.open('r+') as owner:
-        fcntl.flock(owner, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        with pytest.raises(BlockingIOError):
-            with shared_lock(path):
-                pass
-    with shared_lock(path):
-        assert path.stat().st_ino == inode
 
 
 @pytest.mark.parametrize('failure,expected_commands', [
@@ -59,8 +42,6 @@ def test_failure_records_evidence_and_only_resets_identified_target(tmp_path, mo
     config['flash']['image'] = str(image)
     tool = tmp_path / 'tool'
     tool.touch()
-    lock = tmp_path / 'lock'
-    lock.touch()
     monkeypatch.setattr(harness, 'probe_snapshot', lambda _: {'unit_id': '000000000000'})
     operations = []
 
@@ -77,7 +58,7 @@ def test_failure_records_evidence_and_only_resets_identified_target(tmp_path, mo
         return subprocess.CompletedProcess(argv, code, json.dumps(value), '')
 
     monkeypatch.setattr(harness.subprocess, 'run', fake_command)
-    report, artifact = run(config, tool, lock, tmp_path / 'results')
+    report, artifact = run(config, tool, tmp_path / 'results')
     assert report['status'] == 'failed'
     assert operations == expected_commands
     assert json.loads(artifact.read_text())['error']

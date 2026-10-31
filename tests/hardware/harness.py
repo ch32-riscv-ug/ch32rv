@@ -1,5 +1,4 @@
 """Explicit one-slot consumer contract; neither a probe updater nor a private inventory reader."""
-from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
@@ -50,17 +49,6 @@ def load(path):
     return data
 
 
-@contextmanager
-def shared_lock(path):
-    import fcntl
-    with Path(path).open('r+') as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
-
-
 def check_target(expected, info):
     target = info.get('target') or info.get('result', {}).get('target', {})
     if not info.get('ok') or target.get('sku') != expected['chip'] or target.get('chip_id', '').lower() != expected['chip_id'].lower():
@@ -89,7 +77,9 @@ def probe_snapshot(probe):
         host.link.close()
 
 
-def run(config, tool, lock, results):
+def run(config, tool, results):
+    # No file lock: an OEP probe is held by its own lease, which every ch32rv command takes
+    # (oep-bench ad9bc77; bench.lock belongs to the OEP tools).
     if config['example']:
         raise ValueError('example configuration cannot operate physical hardware')
     tool = Path(tool).resolve(strict=True)
@@ -128,27 +118,26 @@ def run(config, tool, lock, results):
         return value
 
     try:
-        with shared_lock(lock):
-            report['probe'] = probe_snapshot(config['probe'])
-            report['tool_version'] = command('version', ['version'])
-            report['target_before'] = check_target(config['target'], command('target-info', ['target', 'info']))
-            target_checked = True
-            try:
-                report['flash'] = command('flash', ['flash', str(image), '--at', hex(config['flash']['address']), '--verify', 'readback', '--confirm-run', 'status'])
-                readback = output / 'readback.bin'
-                command('readback', ['read', '--range', f"{hex(config['flash']['address'])}+{len(payload)}", '-o', str(readback.resolve())])
-                contents = readback.read_bytes()
-                report['readback_sha256'] = hashlib.sha256(contents).hexdigest()
-                if contents != payload:
-                    raise RuntimeError('readback differs from the exact test image')
-                report['status'] = 'passed'
-            finally:
-                if target_checked:
-                    try:
-                        report['cleanup'] = command('reset-run', ['reset', '--confirm-run', 'status'])
-                    except Exception as error:
-                        report['cleanup_error'] = str(error)
-                        report['status'] = 'failed'
+        report['probe'] = probe_snapshot(config['probe'])
+        report['tool_version'] = command('version', ['version'])
+        report['target_before'] = check_target(config['target'], command('target-info', ['target', 'info']))
+        target_checked = True
+        try:
+            report['flash'] = command('flash', ['flash', str(image), '--at', hex(config['flash']['address']), '--verify', 'readback', '--confirm-run', 'status'])
+            readback = output / 'readback.bin'
+            command('readback', ['read', '--range', f"{hex(config['flash']['address'])}+{len(payload)}", '-o', str(readback.resolve())])
+            contents = readback.read_bytes()
+            report['readback_sha256'] = hashlib.sha256(contents).hexdigest()
+            if contents != payload:
+                raise RuntimeError('readback differs from the exact test image')
+            report['status'] = 'passed'
+        finally:
+            if target_checked:
+                try:
+                    report['cleanup'] = command('reset-run', ['reset', '--confirm-run', 'status'])
+                except Exception as error:
+                    report['cleanup_error'] = str(error)
+                    report['status'] = 'failed'
     except Exception as error:
         report['error'] = str(error)
     finally:
