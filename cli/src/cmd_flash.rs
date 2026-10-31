@@ -196,8 +196,9 @@ impl EraseReport {
 
 /// en: `result.flash.store` under keep-store: the STORE's address and size (null / 0 when the
 /// image names none) and `method` - untouched (no erase reached it), restored (chip erase, then
-/// written back; an all-erased STORE needs no write) or none-present.
-/// ja: keep-store の `store`。address / bytes と method(untouched / restored / none-present)。
+/// written back through the RAM loader and verified), blank (chip erase over a STORE that held
+/// only the erased value: nothing to write back) or none-present.
+/// ja: keep-store の `store`。address / bytes と method(untouched / restored / blank / none-present)。
 pub(crate) fn store_json(
     store: Option<ch32rv_flash::StoreRegion>,
     method: &str,
@@ -217,13 +218,16 @@ pub(crate) fn store_json(
 }
 
 /// en: keep-store by chip erase on the stub path: the STORE range rounded out to the stub's
-/// pages, its backup, and where the backup sits on the host until the STORE is back.
+/// pages, its backup, where the backup sits on the host until the STORE is back, and the RAM
+/// loader that writes it back.
 /// ja: chip erase で STORE を残すときの範囲・退避した中身・host に置いたファイル。
 struct StoreRestore {
     lo: u32,
     hi: u32,
     backup: Vec<u8>,
     saved: Option<std::path::PathBuf>,
+    /// The RAM loader that writes the STORE back.
+    plan: ch32rv_flash::loader::LoaderPlan,
 }
 
 impl StoreRestore {
@@ -683,9 +687,16 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
     let planned = planned_writes(&programmer, &image);
     // keep-store on the stub path: which way, and the STORE range rounded out to the stub's pages.
     let mut restore: Option<StoreRestore> = None;
+    // The STORE goes back through ch32rv's RAM loader (a second stub run after the image does not
+    // take: V307 bench 2026-11-01), so way (b) needs the family's loader plan.
+    let loader_plan = if erase == EraseMode::KeepStore && store.is_some() && stub_packet.is_some() {
+        ch32rv_flash::loader::plan_for_family(&crate::cmd_target::db_family_of(&mut session))
+    } else {
+        None
+    };
     if erase == EraseMode::KeepStore
         && !args.restore_unwritten
-        && let (Some(packet), Some(st)) = (stub_packet, store)
+        && let (Some(packet), Some(st), Some(plan)) = (stub_packet, store, loader_plan)
     {
         let lo = st.addr - st.addr % packet;
         let hi = st.end().div_ceil(packet).saturating_mul(packet);
@@ -700,10 +711,11 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                 hi,
                 backup: Vec::new(),
                 saved: None,
+                plan,
             });
         }
     }
-    let store_method = match (erase, store, &restore) {
+    let mut store_method = match (erase, store, &restore) {
         (EraseMode::KeepStore, None, _) => Some("none-present"),
         (EraseMode::KeepStore, Some(_), Some(_)) => Some("restored"),
         (EraseMode::KeepStore, Some(_), None) => Some("untouched"),
@@ -766,7 +778,10 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
             let erased_word =
                 ch32rv_target::flash_geometry(&crate::cmd_target::db_family_of(&mut session))
                     .and_then(|g| g.erased_word);
-            if !ch32rv_flash::erase_plan::all_erased(&r.backup, erased_word) {
+            if ch32rv_flash::erase_plan::all_erased(&r.backup, erased_word) {
+                // Nothing to put back: the chip erase leaves the STORE as it was.
+                store_method = Some("blank");
+            } else {
                 // Kept on the host until the STORE is back and verified, so a write that stops
                 // in between loses nothing.
                 match save_store_backup(&backup_id, &r.backup) {
@@ -958,23 +973,6 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                 }
                 base += seg_len;
             }
-            // keep-store by chip erase: the STORE goes back with a second stub run restricted to
-            // it (the stub takes one contiguous region per session, hence the re-attach).
-            if let Some(r) = &restore
-                && r.saved.is_some()
-            {
-                session.link().detach_chip().ok();
-                let _ = session.link().attach_chip();
-                if let Err(e) = session.link().write_flash(r.lo, &r.backup, fp, |_| {}) {
-                    return fail(
-                        cli,
-                        CMD,
-                        ErrorKind::TransferFailed,
-                        format!("writing the STORE back at {:#010x} failed: {e}", r.lo),
-                        store_hint.as_deref(),
-                    );
-                }
-            }
         }
         // No stub for this family: drive the target's own FLASH controller over DMI, page by page.
         // Uncovered bytes of a partially-filled page go out as 0xff, which is what the page holds
@@ -1016,6 +1014,44 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                     });
                 }
             }
+        }
+    }
+
+    // keep-store by chip erase: the STORE goes back through ch32rv's RAM loader over DMI (it
+    // erases, programs and reads back each page). A second stub run after the image did not take
+    // effect (V307, LinkE 2.22, 2026-11-01: the STORE read back blank).
+    if let Some(r) = &restore
+        && r.saved.is_some()
+    {
+        sink.event(&Event::Phase {
+            name: "store".into(),
+            total: Some(r.backup.len() as u64),
+        });
+        if let Err(e) = session.dm().reset_halt() {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::AttachFailed,
+                format!("reset-halt for the STORE write-back failed: {e}"),
+                store_hint.as_deref(),
+            );
+        }
+        let seg = [Segment {
+            addr: r.lo,
+            data: r.backup.clone(),
+        }];
+        let result = {
+            let mut t = ch32rv_dmi::DmTarget::new(session.link());
+            ch32rv_flash::loader::program(&mut t, r.plan, &seg, &mut |_, _| {})
+        };
+        if let Err(e) = result {
+            return fail(
+                cli,
+                CMD,
+                loader_error_kind(&e),
+                format!("writing the STORE back at {:#010x} failed: {e}", r.lo),
+                store_hint.as_deref(),
+            );
         }
     }
 
@@ -2956,6 +2992,8 @@ mod tests {
         assert_eq!(v["address"], "0x0803f000");
         assert_eq!(v["bytes"], 4096);
         assert_eq!(v["method"], "restored");
+        // A chip erase over an all-erased STORE writes nothing back.
+        assert_eq!(store_json(Some(st), "blank")["method"], "blank");
         // No STORE in the image: none-present, whatever the path did.
         assert_eq!(store_json(None, "untouched")["method"], "none-present");
         let r = EraseReport {

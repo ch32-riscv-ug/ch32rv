@@ -40,8 +40,8 @@
             "bytes": {"type": "integer", "description": "STORE の byte 数(無ければ 0)"},
             "method": {
               "type": "string",
-              "enum": ["untouched", "restored", "none-present"],
-              "description": "untouched: どの消去も STORE に届かなかった。restored: chip erase の後で書き戻して照合した(全部が消去済みの値なら書き戻しは省く)。none-present: image に STORE が無い(sector と同じ動き)"
+              "enum": ["untouched", "restored", "blank", "none-present"],
+              "description": "untouched: どの消去も STORE に届かなかった。restored: chip erase の後で RAM loader で書き戻して照合した。blank: chip erase をしたが、STORE は前から消去済みの値だけだったので書き戻しは無い(中身は変わらない)。none-present: image に STORE が無い(sector と同じ動き)"
             }
           }
         },

@@ -7,13 +7,14 @@
 //! - (a) no ch32rv erase: the stub erases the pages it writes; the STORE is never touched.
 //!   Cost grows with the pages written ([`page_self_erase`]).
 //! - (b) back up the STORE (fast read), chip erase, program the image, program the STORE back with
-//!   a second stub run restricted to it, verify both. Cost is about fixed ([`RESTORE_FIXED_MS`]).
+//!   ch32rv's RAM loader over DMI (a second stub run after the image does not take: V307 bench
+//!   2026-11-01), verify both. Cost is about fixed ([`RESTORE_FIXED_MS`]).
 //!
 //! [`choose_keep_store`] picks (b) when the estimate for (a) is larger.
 //!
 //! ja: WCH-Link の stub 経路で `--erase keep-store` をどう行うか。stub は書く page を自分で消し、
 //! chip erase 直後の flash でだけ速く書く。そこで STORE があるときは (a) ch32rv は消さない、(b) STORE
-//! を退避 → chip erase → image → STORE を 2 回目の stub で書き戻す、の 2 通り。見積もりで速い方を選ぶ。
+//! を退避 → chip erase → image → STORE を RAM loader で書き戻す、の 2 通り(2 回目の stub は効かなかった)。見積もりで速い方を選ぶ。
 
 use ch32rv_dmi::FlashProgMode;
 
@@ -29,26 +30,27 @@ pub struct SelfErase {
     pub measured: bool,
 }
 
-/// en: Per-family cost of the stub's own page erase, by AttachChip family byte.
-/// - V003 / CH641 (0x09 / 0x49): 64 B page, ~3 ms. Measured with the stub 2026-11-01: 16 KB,
-///   chip 2.2 s against no-ch32rv-erase 3.0 s = 0.8 s / 256 pages = 3.1 ms.
-/// - V20x / V30x (0x05 / 0x06): 256 B page, ~27 ms. Measured with the stub on V307 2026-11-01:
-///   97 KB, chip 4.0 s against no-ch32rv-erase 14.4 s = 10.4 s / 388 pages = 27 ms (the app-side
-///   fast page erase is 17 ms, ArduinoCore docs/flash-raw.ja.md:14-25). V20x assumed the same
-///   (same flash design, erased word 0xe339): uncertain.
-/// - X035 / CH643 (0x0C / 0x0D): 256 B, ~3 ms; L103 (0x0E): 256 B, ~6.4 ms; V103 (0x01): 128 B,
-///   ~3.1 ms. App-side fast page erase timings (flash-raw.ja.md:14-25), not measured with the
-///   stub: uncertain.
+/// en: Per-family cost of the stub's own page erase, by AttachChip family byte. Measured: ch32rv
+/// bench 2026-11-01, LinkE 2.22, release f7ca580, 3 runs each, wall time; per page = (sector -
+/// chip) / pages written (`--erase sector` = no ch32rv erase on the stub path).
+/// - V003 / CH641 (0x09 / 0x49): 64 B page, 3.1 ms. V003 16 KiB: sector 3.1 s, chip 2.25 s
+///   = 3.3 ms (an earlier run: 3.0 s / 2.2 s = 3.1 ms).
+/// - V30x (0x06): 256 B, 27 ms. V307 96 KiB: sector 14.3 s, chip 4.0 s = 26.8 ms.
+/// - V20x (0x05): 256 B, 19.5 ms. V203C8T6 32 KiB: sector 4.05 s, chip 1.55 s = 19.5 ms.
+/// - L103 (0x0E): 256 B, 13 ms. L103C8T6 32 KiB: sector 3.78 s, chip 2.1 s = 13 ms.
+/// - X035 / CH643 (0x0C / 0x0D): 256 B, ~3 ms; V103 (0x01): 128 B, ~3.1 ms. App-side fast page
+///   erase timings (ArduinoCore docs/flash-raw.ja.md:14-25), not measured with the stub:
+///   uncertain.
 ///
-/// ja: family ごとの stub の page 消去の費用。V003 と V307 は stub で実測(2026-11-01)、ほかは
-/// アプリ側の fast page 消去の時間(flash-raw.ja.md:14-25)からの推定。
+/// ja: family ごとの stub の page 消去の費用。V003 / V307 / V203 / L103 は stub で実測(2026-11-01、
+/// LinkE 2.22、(sector − chip) / page 数)。X035 と V103 はアプリ側の fast page 消去の時間からの推定。
 pub fn page_self_erase(family_byte: u8) -> Option<SelfErase> {
     let (page, ms, measured) = match family_byte {
         0x09 | 0x49 => (64, 3.1, true),
         0x06 => (256, 27.0, true),
-        0x05 => (256, 27.0, false),
+        0x05 => (256, 19.5, true),
         0x0C | 0x0D => (256, 3.0, false),
-        0x0E => (256, 6.4, false),
+        0x0E => (256, 13.0, true),
         0x01 => (128, 3.1, false),
         _ => return None,
     };
@@ -56,9 +58,10 @@ pub fn page_self_erase(family_byte: u8) -> Option<SelfErase> {
 }
 
 /// en: Fixed cost of way (b) beyond a plain chip-erase flash, in ms: the backup read, the second
-/// stub upload and run, the extra verify, the extra attach cycles. From the V307 measurement of
+/// loader upload and run, the extra verify, the extra attach cycles. From the V307 measurement of
 /// backup + chip + restore of a 4 KB STORE (~5.9 s against chip 4.0 s), less the per-byte part.
-/// ja: (b) の固定費(退避の読み、2 回目の stub、照合、attach のやり直し)。V307 の実測から。
+/// The loader's write-back of a 4 KiB STORE on V307 (~16 pages, ~0.4 s) is within this figure.
+/// ja: (b) の固定費(退避の読み、loader での書き戻し、照合、attach のやり直し)。V307 の実測から。
 pub const RESTORE_FIXED_MS: f64 = 1800.0;
 
 /// Way (b)'s cost per STORE byte (read + write back + verify), in ms (~50 ms per KiB, estimate).
@@ -165,6 +168,23 @@ mod tests {
             choose_keep_store(0xC6, 1 << 20, 4096).way,
             KeepStoreWay::StubErase
         );
+    }
+
+    #[test]
+    fn every_family_with_a_self_erase_figure_has_a_loader_for_the_store() {
+        // Way (b) writes the STORE back through the RAM loader: every stub family it can pick
+        // must have a loader plan, or (b) is never taken there.
+        for (byte, family) in [
+            (0x09, "CH32V003"),
+            (0x06, "CH32V307"),
+            (0x05, "CH32V20x"),
+            (0x0C, "CH32X035"),
+            (0x0E, "CH32L103"),
+            (0x01, "CH32V103"),
+        ] {
+            assert!(page_self_erase(byte).is_some(), "{family}");
+            assert!(crate::loader::plan_for_family(family).is_some(), "{family}");
+        }
     }
 
     #[test]
