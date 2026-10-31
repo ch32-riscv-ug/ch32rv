@@ -1,6 +1,6 @@
 [package]
 name = "ch32rv-flash"
-description = "Flash programming orchestration (erase/program/verify/confirm-run) for the ch32rv tool suite"
+description = "Flash programming orchestration (erase/program/verify/confirm-run) for the ch32rv tool suite (a part of the ch32rv CLI; no API or semver promise)"
 keywords = ["ch32", "riscv", "wch", "flash", "programmer"]
 categories = ["embedded", "hardware-support"]
 readme = "README.md"

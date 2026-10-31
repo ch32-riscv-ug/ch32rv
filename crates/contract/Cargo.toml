@@ -1,6 +1,6 @@
 [package]
 name = "ch32rv-contract"
-description = "Shared vocabulary for the ch32rv tool suite: exit codes, JSON result envelope, NDJSON progress events, operation policies"
+description = "Shared vocabulary for the ch32rv tool suite: exit codes, JSON result envelope, NDJSON progress events, operation policies (a part of the ch32rv CLI; no API or semver promise)"
 keywords = ["ch32", "riscv", "wch", "embedded", "cli"]
 categories = ["embedded", "command-line-interface"]
 readme = "README.md"

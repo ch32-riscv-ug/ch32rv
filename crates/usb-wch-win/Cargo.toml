@@ -1,7 +1,7 @@
 [package]
 name = "ch32rv-usb-wch-win"
 version.workspace = true
-description = "Access USB devices bound to WCH's stock Windows vendor driver (CH375-family DeviceIoControl) from 64-bit Rust — no WinUSB replacement, no WCHLinkDLL.dll"
+description = "Access USB devices bound to WCH's stock Windows vendor driver (CH375-family DeviceIoControl) from 64-bit Rust — no WinUSB replacement, no WCHLinkDLL.dll (a part of the ch32rv CLI; no API or semver promise)"
 keywords = ["wch", "ch375", "wch-link", "usb", "windows"]
 categories = ["hardware-support", "os::windows-apis"]
 readme = "README.md"

@@ -1,6 +1,6 @@
 [package]
 name = "ch32rv-oep"
-description = "OEP v1 (Open Embedded Probe) host for the ch32rv tool suite: wire codec, transports, session"
+description = "OEP v1 (Open Embedded Probe) host for the ch32rv tool suite: wire codec, transports, session (a part of the ch32rv CLI; no API or semver promise)"
 keywords = ["oep", "debug-probe", "riscv", "embedded", "ch32"]
 categories = ["embedded", "hardware-support"]
 readme = "README.md"

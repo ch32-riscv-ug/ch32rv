@@ -1,7 +1,7 @@
 [package]
 publish = false
 name = "ch32rv-monitor"
-description = "Runtime I/O monitor (physical UART, WCH SDI print, ch32fun DMDATA mailbox, RTT) for the ch32rv tool suite"
+description = "Runtime I/O monitor (physical UART, WCH SDI print, ch32fun DMDATA mailbox, RTT) for the ch32rv tool suite (a part of the ch32rv CLI; no API or semver promise)"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -1,6 +1,6 @@
 [package]
 name = "ch32rv-target"
-description = "Generated CH32 RISC-V device database (chip detection, flash geometry, option byte layouts) for the ch32rv tool suite"
+description = "Generated CH32 RISC-V device database (chip detection, flash geometry, option byte layouts) for the ch32rv tool suite (a part of the ch32rv CLI; no API or semver promise)"
 keywords = ["ch32", "riscv", "wch", "database", "embedded"]
 categories = ["embedded", "hardware-support"]
 readme = "README.md"

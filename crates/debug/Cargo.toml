@@ -1,6 +1,6 @@
 [package]
 name = "ch32rv-debug"
-description = "Run control, breakpoints, and GDB server for the ch32rv tool suite"
+description = "Run control, breakpoints, and GDB server for the ch32rv tool suite (a part of the ch32rv CLI; no API or semver promise)"
 keywords = ["ch32", "riscv", "gdb", "debug", "embedded"]
 categories = ["embedded", "development-tools::debugging"]
 readme = "README.md"

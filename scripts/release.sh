@@ -10,7 +10,9 @@
 #   X.Y.Z              set an explicit version
 #
 # All member crates inherit `version.workspace = true`, so only the root Cargo.toml is edited:
-# the [workspace.package] version and the 10 internal `ch32rv-* = { path=..., version="X" }` pins.
+# the [workspace.package] version and the internal `ch32rv-* = { path=..., version="=X" }` pins.
+# The pins are exact (`=X`): the library crates promise no API, so a `cargo install ch32rv@X`
+# must build against the very parts released with it, not a later 0.y.z of them.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -50,12 +52,12 @@ esac
 
 echo "bumping $CUR -> $NEW"
 
-# Bump every `version = "$CUR"` in the root manifest: the [workspace.package] version + the 10
-# internal path-dep pins. External deps never equal an internal version, so this is a clean swap;
-# the count guard catches it if that ever stops being true.
-EXPECTED=$(grep -c "version = \"$CUR\"" Cargo.toml)
-sed -i "s/version = \"$CUR\"/version = \"$NEW\"/g" Cargo.toml
-GOT=$(grep -c "version = \"$NEW\"" Cargo.toml)
+# Bump every `version = "$CUR"` / `version = "=$CUR"` in the root manifest: the
+# [workspace.package] version + the internal path-dep pins. External deps never equal an internal
+# version, so this is a clean swap; the count guard catches it if that ever stops being true.
+EXPECTED=$(grep -cE "version = \"=?$CUR\"" Cargo.toml)
+sed -i -E "s/version = \"(=?)$CUR\"/version = \"\1$NEW\"/g" Cargo.toml
+GOT=$(grep -cE "version = \"=?$NEW\"" Cargo.toml)
 if [ "$GOT" -ne "$EXPECTED" ]; then
   echo "error: expected to rewrite $EXPECTED version pins, rewrote $GOT" >&2
   exit 1

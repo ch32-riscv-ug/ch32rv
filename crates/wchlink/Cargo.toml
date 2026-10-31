@@ -1,6 +1,6 @@
 [package]
 name = "ch32rv-wchlink"
-description = "WCH-Link USB protocol implementation (bulk protocol + IAP) for the ch32rv tool suite"
+description = "WCH-Link USB protocol implementation (bulk protocol + IAP) for the ch32rv tool suite (a part of the ch32rv CLI; no API or semver promise)"
 keywords = ["ch32", "riscv", "wch", "wch-link", "debug"]
 categories = ["embedded", "hardware-support"]
 readme = "README.md"

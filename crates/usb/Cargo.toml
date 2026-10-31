@@ -1,6 +1,6 @@
 [package]
 name = "ch32rv-usb"
-description = "USB device enumeration, probe selectors, per-device locking, and transaction capture for the ch32rv tool suite (nusb wrapper)"
+description = "USB device enumeration, probe selectors, per-device locking, and transaction capture for the ch32rv tool suite (nusb wrapper) (a part of the ch32rv CLI; no API or semver promise)"
 keywords = ["ch32", "wch", "usb", "embedded", "probe"]
 categories = ["embedded", "hardware-support"]
 readme = "README.md"
