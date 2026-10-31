@@ -338,9 +338,9 @@ pub struct LinkFirmware {
     pub mcu: &'static str,
     /// `RISC-V` / `ARM` for a CH549 WCH-Link image; empty when the probe has one firmware for both.
     pub mode: &'static str,
-    /// en: `offline` = `FIRMWARE_*.bin`, the application alone (what the IAP path writes);
-    /// `iap` = `*APP_IAP*.bin`, the IAP bootloader in front of the application.
-    /// ja: `offline` = application のみ(IAP 経路で書くもの)、`iap` = IAP bootloader 付き。
+    /// en: `application` = `FIRMWARE_*.bin`, the application alone (what the IAP path writes);
+    /// `with-bootloader` = `*APP_IAP*.bin`, the IAP bootloader in front of the application.
+    /// ja: `application` = application のみ(IAP 経路で書くもの)、`with-bootloader` = IAP bootloader 付き。
     pub role: &'static str,
     /// File name in WCH-LinkUtility.
     pub file: &'static str,
@@ -935,11 +935,14 @@ mod tests {
             .expect("FIRMWARE_CH32V305.bin");
         assert_eq!(
             (e.device, e.role, e.file, e.version),
-            ("WCH-LinkE", "offline", "FIRMWARE_CH32V305.bin", "2.22")
+            ("WCH-LinkE", "application", "FIRMWARE_CH32V305.bin", "2.22")
         );
         let e = link_firmware("3CF143A3B6061E8F6A4CA7EE809FFFE007219CAD062ADCA259D245F996662284")
             .expect("WCH-Link_APP_IAP_ARM.bin");
-        assert_eq!((e.device, e.mode, e.role), ("WCH-Link", "ARM", "iap"));
+        assert_eq!(
+            (e.device, e.mode, e.role),
+            ("WCH-Link", "ARM", "with-bootloader")
+        );
         assert!(link_firmware(&"0".repeat(64)).is_none());
     }
 

@@ -1003,7 +1003,7 @@ enum ImageCheck {
     /// en: Not in the table: the probe model cannot be checked (warning `image-model-unverified`).
     /// ja: 表に無い。probe 型番を照合できない(warning)。
     Unlisted,
-    /// en: The application image (`offline` row) for the connected probe's model.
+    /// en: The application image (`application` row) for the connected probe's model.
     /// ja: つないだ probe の型番の application image。
     Matches(ch32rv_target::LinkFirmware),
     /// en: The application image of some model, while the probe's model is not known (it sits
@@ -1015,20 +1015,20 @@ enum ImageCheck {
     Refuse(String, String),
 }
 
-/// en: The `offline` (application-only) image the table lists for `device` / `mode`.
+/// en: The `application` (application-only) image the table lists for `device` / `mode`.
 /// ja: `device` / `mode` の application image のファイル名。
 fn app_image_for(device: &str, mode: &str) -> Option<&'static str> {
     ch32rv_target::link_firmwares()
         .map(|(_, f)| f)
-        .find(|f| f.device == device && f.mode == mode && f.role == "offline")
+        .find(|f| f.device == device && f.mode == mode && f.role == "application")
         .map(|f| f.file)
 }
 
 /// en: Check a table hit against the probe. `probe` is None when its model is not known (before
-/// a device is opened, or in IAP mode). An `iap` row (bootloader + application) is refused
-/// whatever the probe; an `offline` row for another model than the probe's is refused. `mode`
+/// a device is opened, or in IAP mode). A `with-bootloader` row (bootloader + application) is
+/// refused whatever the probe; an `application` row for another model than the probe's is refused. `mode`
 /// is not compared: only the CH549 WCH-Link has RISC-V / ARM images, and it is not updated here.
-/// ja: 表の行を probe と照らす。`iap` 行(BL 付き)は常に拒否、別型番の `offline` 行も拒否。
+/// ja: 表の行を probe と照らす。`with-bootloader` 行(BL 付き)は常に拒否、別型番の `application` 行も拒否。
 /// `mode` は照合しない(RV/ARM の image を持つのは CH549 だけで、ここでは更新しない)。
 fn check_image(
     known: Option<ch32rv_target::LinkFirmware>,
@@ -1042,7 +1042,7 @@ fn check_image(
     } else {
         format!("{} {} {}", f.device, f.mode, f.version)
     };
-    if f.role != "offline" {
+    if f.role != "application" {
         return ImageCheck::Refuse(
             format!(
                 "the image is WCH's {} ({what}): the IAP bootloader with the application after it, for an external programmer at 0x08000000, not for IAP",

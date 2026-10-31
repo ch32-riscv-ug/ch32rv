@@ -410,7 +410,7 @@
                 "device": {"type": "string"},
                 "mcu": {"type": "string"},
                 "mode": {"type": ["string", "null"]},
-                "role": {"enum": ["offline", "iap"]},
+                "role": {"enum": ["application", "with-bootloader"], "description": "application = FIRMWARE_*.bin(application だけ。IAP 経路で書くのはこれ)、with-bootloader = *APP_IAP*.bin(IAP bootloader の後に application。外部書込機用で、update は拒否する)"},
                 "file": {"type": "string"},
                 "version": {"type": "string"}
               }

@@ -356,14 +356,14 @@ ch32rv probe firmware exit-iap                     IAP mode の probe を、何�
 - **image の型番は sha256 で照合する**。WCH-LinkUtility が配る 10 本の image を ch32-device-data の `index/link_firmware.csv` から `cargo xtask db-gen` が `crates/target/generated/link_firmware.csv` に作り、image の sha256 で引く。表の語彙:
   - `device`: probe の製品名(`WCH-LinkE` / `WCH-Link`(CH549)/ `WCH-LinkW` / `WCH-DAPLink`)。probe の variant と照らす(`linke` = `WCH-LinkE` など。対応は `crates/target/src/link_variant.rs` の 1 か所)。
   - `mode`: CH549 の WCH-Link の image だけが持つ `RISC-V` / `ARM`。ほかの型番は空(1 本で両方)。CH549 はこのコマンドで更新しないので照合には使わない。
-  - `role`: `offline` = `FIRMWARE_*.bin`(application だけ。IAP 経路で書くのはこれ)、`iap` = `*APP_IAP*.bin`(IAP bootloader の後に application。外部書込機用)。
+  - `role`: `application` = `FIRMWARE_*.bin`(application だけ。IAP 経路で書くのはこれ)、`with-bootloader` = `*APP_IAP*.bin`(IAP bootloader の後に application。外部書込機用)。
   - `version`: その image で probe が返す版。
 
   | image | 結果 |
   |---|---|
-  | 表にあり `role` = `iap` | 拒否(exit 2)。hint に同じ型番の `FIRMWARE_*.bin`。`--dry-run` でも拒否 |
-  | 表にあり `offline`、`device` が probe と一致 | 警告なしで書く |
-  | 表にあり `offline`、`device` が probe と違う | 拒否(exit 2)。hint にその probe の `FIRMWARE_*.bin` |
+  | 表にあり `role` = `with-bootloader` | 拒否(exit 2)。hint に同じ型番の `FIRMWARE_*.bin`。`--dry-run` でも拒否 |
+  | 表にあり `application`、`device` が probe と一致 | 警告なしで書く |
+  | 表にあり `application`、`device` が probe と違う | 拒否(exit 2)。hint にその probe の `FIRMWARE_*.bin` |
   | 表にない(版違い・手製の image) | これまでどおり warning `image-model-unverified` を出して書く |
   | probe が IAP mode に居る(型番を返さない) | 型番は照合できないので warning `image-model-unverified`(表にあれば、どの型番の image かを書く) |
 
@@ -427,7 +427,7 @@ WCH-Link の `target info` は未登録チップでも接続成功とDB照合結
 - **値の語の規則**(db-gen が `evt_values` の定数から作る。手で付けない): その option の全部の定数に共通する、`_` で終わるいちばん長い頭(ふつうは引数名 + `_`。`OB_RST_`、`OB_PowerON_Start_Mode_`、`OB_CAN_BusOff_`、`OB_RAM_CODE_`)を除き、残りが `RST` / `EN` なら `on`、`NoRST` / `NoEN` なら `off`、`EN_DT<時間>` なら `<時間>`、それ以外は小文字にして `_` を `-` にする(`OB_IWDG_SW` → `sw`、`OB_RST_EN_DT512us` → `512us`、`OB_RST_PIN_PA15` → `pa15`、`OB_RAM_CODE_MOD1` → `mod1`)。field の値ごとにちょうど 1 つの語が付かない・語が重なる・その形にならない定数があれば db-gen が止まる。
 - family ごとの意味名(DB の `option` 列。EVT の各 `*_flash.c` の `FLASH_UserOptionByteConfig` の引数): V103 / V20x / V307 = `iwdg` `stop-reset` `standby-reset`。V407 = その 3 つ + `ram-split`。L103 / V205 = その 3 つ + `can-bus-off`。X035 = その 3 つ + `reset-pin`。V003 / V006 = `iwdg` `standby-reset` `reset-pin` `start-mode`(`stop-reset` は無い)。M030 = `stop-reset` `standby-reset` `reset-pin` `reset-pin-select` `over-voltage`(`iwdg` は無い)。X315 = `iwdg` `reset-pin` `start-mode` `usbhs-download` `usart-download`。H417 = `iwdg` `usbfs-download` `usart-download`。
 - `user.<field>` は `option` の無い field だけに使う(いまは V103 の `user.PORCTR`)。意味名のある bit を `user.STOPRST` / `user.CFGCANM` や素の `STOPRST` で書くと、意味名での書き方(値の語と EVT の定数)を示して usage error。DB が復位値を持たない意味名の field(V006 の RST_MODE、V407 の RAM_CODE_MOD)も同じ。field 名の大小文字は区別しない。
-- DB の `confidence` が `conflict` の行(M030 の RST_MODE、V003 / V205 の IWDG。RM の中国語版と英語版で field 名の綴りが違うだけで、bit の位置と `option` / `evt_*` 列は一致)も、ほかの行と同じに使う。db-gen はこの表の `confidence` を読まない。
+- 資料の食い違いは ch32-device-data の `index/conflicts.csv` で見る(`table` = `option_byte_fields` の行。`field` が争点の列)。**`field` が `bits` か `default`(書く値そのもの)、または空(争点の列を 1 つに決められない)の行があれば db-gen が止まり**、family・subject・残した値・異議の値を出す(ch32-device-data に解決を頼む)。`field` が `field`(field 名の綴りだけ。いまは M030 の RST_MODE、V003 / V205 の IWDG で、RM の中国語版と英語版の綴り違い。bit の位置と `option` / `evt_*` 列は一致)の行では止まらず、その行はほかの行と同じに使う。db-gen は `option_byte_fields` の `confidence` を読まない。
 - `get` は 2 つのコマンドで同じ形(`docs/contract/commands.schema.json` の `option_bytes`): `family`、`db_family`、`raw`(読んだ byte の hex。debug 線は補数込み 16 byte、ISP は config 12 byte)、`read_protected`、`write_protected`、`options`。`options` は `set` が受ける key ごとに `{"value": "<値の語>", "raw": <生の値>}`(例 `"stop-reset": {"value": "on", "raw": 0}`、`"user.PORCTR": {"value": "1", "raw": 1}`)。`value` はそのまま `set` に渡せる。文字の出力も `key=value` を 1 行ずつ出す。USER の配置を知らない family は `read-protect` / `write-protect` / `data0` / `data1` だけを出し、`warning[option-decode-interim]`。
 - `target option set` は現在値を読み → 指定の field だけ変え → **補数を全部計算し直し** → §4.2.1 の直接 controller で erase+program → reset してから read-back で照合(違えば exit 30)。反映は system reset 後。変更は必ず確認する(`--yes`)。**保護中の `read-protect=off` は全消去、`read-protect=on` は読めなくなる**旨を確認文に出す。実機(L103、意味名にする前の RM 名の経路): STOPRST の bit を 0 にして USER `0xff→0xfd`(補数 `00→02`)、read-back で反映、1 に戻して復元。
 - 「未対応 SKU」と「DB に無い SKU」は JSON で区別する(exit 20 の detail)。
