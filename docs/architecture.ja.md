@@ -44,7 +44,7 @@
 | ihex | 3.0.0 から **2020 年以降更新なし** | 依存せず自前 parser(仕様が小さい。fuzz 対象にする) |
 | cargo-dist | 上流(axodotdev)が 2025-07 に復活、0.32.0(2026-05)。Astral fork はアーカイブ済み | 採用。bus factor に備え、素の GitHub Actions matrix への脱出路を CI 構成で確保 |
 
-**Rust で自動解決しないもの**(原設計案 §7 の再確認): 経験的 protocol 知識、target DB の正しさ、実機 CI、firmware 版ごとの癖。これらは record/replay harness・生成 DB・protocol.md という「仕組み」で担保する(原設計案 §7.1 を維持)。
+**Rust で自動解決しないもの**(原設計案 §7 の再確認): 経験的 protocol 知識、target DB の正しさ、実機 CI、firmware 版ごとの癖。これらは record/replay harness・生成 DB・protocol の記録(wch-protocols。§2.3)という「仕組み」で担保する(原設計案 §7.1 を維持)。
 
 ## 2. crate 構成
 
@@ -55,7 +55,7 @@ workspace は機能単位の library crate 群 + 薄い CLI。**すべての lib
 | `ch32rv-contract` | exit code・JSON/NDJSON event 型・capability 語彙・エラー分類。**CLI/GUI/CI の共通語彙** | `ExitCode`, `Event`, `CapabilityReport`, serde 型 | serde |
 | `ch32rv-usb` | USB 境界層: 列挙(nusb)、selector 解決、advisory lock、transaction capture/replay。転送 backend は nusb + Windows のみ CH375 フォールバック | `enumerate()`, `Selector`, `DeviceLock`, `Capture` | nusb, (win) usb-wch-win |
 | `ch32rv-usb-wch-win` | **Windows 専用・workspace 唯一の unsafe FFI 島**: WCH 純正ドライバ(CH375 系 IOCTL)経由の bulk 転送。protocol 非依存で他ツールからも部品利用可(docs/windows-wch-driver.ja.md §4.1) | `list_interfaces()`, `Ch375Device`(write/read_pipe), `GUID_CH375` | windows-sys |
-| `ch32rv-wchlink` | WCH-Link bulk protocol(`0x81 cmd len ...`)+ IAP。**protocol.md を repo の一級成果物として併設** | `WchLink`(open/attach/dmi/vendor cmd/power/mode/sdi/fw) | usb, contract |
+| `ch32rv-wchlink` | WCH-Link bulk protocol(`0x81 cmd len ...`)+ IAP。送る frame はすべて `Request` が作り、wch-protocols の CSV と test で照合する(§2.3) | `WchLink`(open/attach/dmi/vendor cmd/power/mode/sdi/fw) | usb, contract |
 | `ch32rv-dmi` | RISC-V Debug Module(0.13.2/1.0)準拠層。**WCH 固有差分は quirk 層に隔離** | `DtmAccess` trait, `DebugModule`, `HaltControl` | contract |
 | `ch32rv-target` | 生成 device DB、chip 検出、option byte layout、verified flag | `Db`, `detect()`, `Sku`, `OptionLayout` | contract |
 | `ch32rv-flash` | erase/program/verify/confirm-run の編成、flash stub(in-repo source から build、hash 管理) | `FlashSession`, `FlashOptions`, `Image`(elf/hex/bin/uf2) | dmi, target, object |
@@ -110,6 +110,23 @@ fs.program(&Image::load("app.elf")?, &FlashOptions { verify: Readback, reset: Ru
 ```
 
 nusb が WebUSB(wasm)backend を持つため、**ブラウザ版 flasher(wch-web-isp 相当)も同じ crate 群で原理上成立**する。第 1 版では追わないが、`ch32rv-usb` の境界設計時に wasm target を CI の build check にだけ入れておく。非 Rust GUI 向けの C ABI(cdylib + cbindgen)は P2 で判断する。
+
+### 2.3 protocol の事実と実装判断
+
+protocol の事実(byte 列・応答・status・実測)は **wch-protocols** の `protocols/*.ja.md` が一次で、ch32rv はそれを file + anchor で引く(例 `protocols/pc-to-link.ja.md#cmd-rst-out`)。WCH-Link のコマンド表の正本は `protocols/data/wchlink-commands.csv` で、`ch32rv-wchlink` の unit test が `Request::frame()` の byte を CSV の `request_frame` と比べる(`WCH_PROTOCOLS_DIR`、既定は workspace の隣の `../wch-protocols`。無ければ skip)。ch32rv で分かった事実はそちらへ送る。ch32rv 側に置くのは次の実装判断だけ:
+
+- **転送**: `WchLink` の既定 timeout は 500 ms で、CLI は 3 s(`--timeout`)にする。応答の先頭が `0x81` なら probe 側エラー(byte 1 を reason として返す)。
+- **高速 read**(`WchLink::read_mem`): 16 KiB ごとに SetReadMemoryRegion + ReadMemory を出す。probe が領域を弾いたときだけ DMI の word 読みへ落とす。verify の不一致は DMI の読みで確かめ直してから報告する。DB のメモリ領域の外は warning `read-outside-memory-map`。
+- **stub 書込**: 1 回の書込に連続 region を 1 つだけ渡す(`Image::program_span`、隙間は `0xff`)。読出し保護は保護中のときだけ外す。
+- **直接 FLASH controller 経路**: 方式は `ch32-device-data` の `flash_program_method.csv` から引き、family ごとに手書きしない。buffer load が 32 bit でない family は fail-closed(V103 だけ標準 half-word へ倒す)。`confidence=conflict` の family と page 単位の fast erase を持たない family も fail-closed。option bytes の番地は DB の `option_bytes.csv`、消去済みの値は `flash_geometry.csv` から引き、erase の成否は STATR で決める。
+- **reset**: probe の soft reset の後は ack havereset → DMSTATUS → halt なら resume の順で走行を保証する。reset vector で止める操作は DMI の reset-halt で行う。
+- **debug**: HW trigger は write-readback で検出する。SW breakpoint は RAM patch → 空き HW trigger → flash SW breakpoint の順で、どれも無ければ未対応を返す(`hwbreak+` を偽らない)。RV32E は x0-x15 だけを扱う。`attach_corrupts_regs` の family(V103)は attach の後に soft reset してから halt する。
+- **速度**: attach の前に placeholder family `0x01` で 1 回だけ SetSpeed を送る。実 family での送り直しは `monitor --source sdi` と `gdb` だけ。
+- **SDI の CDC**: DTR を立てない開き方で読む。UART bridge は serialport で開く。
+- **復旧**: ChipInfo が同じ word の繰り返しなら RedetectChip + detach + 再 attach。`recover --method power-off|nrst` は `0x00` の間は 3 回まで繰り返し、`0x0f` が無ければ warning `special-erase-unconfirmed`。
+- **版**: 比較は正規化した `major*10+minor` で行う。既知不良は版と variant で照合し、hash は使わない。
+- **IAP 更新**: ack の timeout は 3 s。`00 00` 以外の応答は即中断する。再列挙は消失と再出現を検出して待ち、戻った直後の open 失敗は retry する。
+- **factory ISP**: IspKey の seed は全 0。IspEnd は応答を読んでから終える。`--erase auto` は image の長さ分の sector(最小 8)。`isp enter --via probe` は reset vector で止めてから 1 回の attach で `BOOT_MODE` を立てる。
 
 ## 3. target DB 生成
 

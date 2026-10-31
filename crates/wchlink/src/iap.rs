@@ -17,7 +17,7 @@
 //! 累積 offset の下位 16 bit なので、転送は厳密に順送りでなければならない(上位を持つのは
 //! host ではなく probe 側)。
 //!
-//! Reference: `docs/protocol/wch-link.ja.md` §6.1 (verified against a live
+//! Reference: wch-protocols `protocols/pc-to-link.ja.md#iap-frame` (verified against a live
 //! WCH-LinkE updated in both directions, 2.22 <-> 2.13).
 
 use std::time::Duration;

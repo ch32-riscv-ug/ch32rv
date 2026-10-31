@@ -993,7 +993,7 @@ fn wait_for_mode(topology: &str, want: ProbeMode, timeout: Duration) -> Option<E
 }
 
 /// en: `probe firmware update --image <file>` - rewrite the probe's OWN firmware over IAP
-/// (docs/protocol/wch-link.ja.md §6.1). The probe leaves RISC-V mode, re-enumerates as
+/// (wch-protocols protocols/pc-to-link.ja.md#iap). The probe leaves RISC-V mode, re-enumerates as
 /// `4348:55e0`, takes the image twice (write pass + verify pass) and jumps back into the new
 /// application. A probe already sitting in IAP mode is written directly - that is the rescue
 /// path for an interrupted update. The target is never touched.
@@ -1263,7 +1263,7 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
     // The probe jumps into the new application and comes back as a normal probe. Right after a
     // re-enumeration the CDC function is claimed before the vendor interface is ready, so the
     // first open can fail with "interface is busy" - retry rather than call it a no-show
-    // (docs/protocol/wch-link.ja.md §7, the same race `report_with_retry` handles).
+    // (wch-protocols protocols/pc-to-link.ja.md#quirks, the same race `report_with_retry` handles).
     let mut after = None;
     for attempt in 0..5 {
         let Some(e) = wait_for_mode(&topology, ProbeMode::Riscv, REENUMERATE_TIMEOUT) else {
@@ -1440,7 +1440,8 @@ pub fn mode_set(cli: &Cli, mode: crate::args::ProbeModeSet) -> ExitCode {
                 Ok(i) => i,
                 Err(e) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, e.to_string(), None),
             };
-            let _ = iface.write(&[0x81, 0xff, 0x01, 0x52], Duration::from_millis(1000));
+            let frame = ch32rv_wchlink::Request::mode_to_riscv().frame();
+            let _ = iface.write(&frame, Duration::from_millis(1000));
         }
         _ => {
             return fail(

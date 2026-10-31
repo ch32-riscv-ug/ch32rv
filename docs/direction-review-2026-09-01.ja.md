@@ -20,7 +20,7 @@
 
 1. **Arduino recipe 制約の織り込み**: [cli.ja.md](cli.ja.md) §5 の flash 呼び出し形は、現行 platform.txt の probe-rs recipe 行と 1:1 で対応する(probe selector を空にできる 1 変数 `{upload.probe_args}`、`--non-interactive`、`--progress none`、`--chip` 変数)。矛盾なし。
 2. **配布枠の整合**: ch32rv は自前 release を持つため、ArduinoCore-CH32RV ADR-0011 の `mirror-` 枠で Board Manager へ再配布できる([architecture.ja.md](architecture.ja.md) §5 の記載と ADR-0011 の実態が一致。ADR-0014 の `build-` 枠は不要)。
-3. **実装の実態**: CHANGELOG の全項目に実機検証の記載がある — 6 board × 6 probe の flash matrix(V003/V103/V203/V307/L103/X035)、GDB server(動的 trigger 検出、RAM/HW/flash SW breakpoint、detach 時 pristine 復元、RV32E 対応)、monitor 3 経路(sdi/dmdata/uart)、doctor、target option get、recover。protocol の capture-verified 規律([protocol/wch-link.ja.md](protocol/wch-link.ja.md))もソース冒頭の宣言どおり運用されている。
+3. **実装の実態**: CHANGELOG の全項目に実機検証の記載がある — 6 board × 6 probe の flash matrix(V003/V103/V203/V307/L103/X035)、GDB server(動的 trigger 検出、RAM/HW/flash SW breakpoint、detach 時 pristine 復元、RV32E 対応)、monitor 3 経路(sdi/dmdata/uart)、doctor、target option get、recover。protocol の capture-verified 規律もソース冒頭の宣言どおり運用されている。
 4. **既存ツールの契約欠陥への回答が設計に入っている**: probe-rs の firmware 版比較バグ → 版比較を契約+test で固定、wlink の verify 欠如 → verify 既定 on、minichlink の overflow → `forbid(unsafe_code)` + fuzz 方針、`hwbreak+` 偽装 → trigger slot の動的検出と正直な広告。
 5. **未実装の確認**(2026-09-01 時点):
    - capture/replay harness と per-device advisory lock(`crates/usb/src/lib.rs` 冒頭に「Not yet」と明記)

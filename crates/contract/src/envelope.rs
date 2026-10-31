@@ -89,11 +89,11 @@ pub enum ProbeMode {
 }
 
 /// en: Probe firmware version. Always carries raw / normalized / WCH notations side by side;
-/// comparisons use `norm` only (docs/protocol/wch-link.ja.md §6 - the notation triplet, and the
+/// comparisons use `norm` only (wch-protocols protocols/pc-to-link.ja.md#firmware-version - the notation triplet, and the
 /// structural answer to probe-rs's version-comparison bug).
 ///
 /// ja: probe firmware 版。raw / 正規化 / WCH 表示を常に併記し、比較は `norm` で行う
-/// (docs/protocol/wch-link.ja.md §6: 表記の三重性と probe-rs の版比較バグへの構造的回答)。
+/// (wch-protocols protocols/pc-to-link.ja.md#firmware-version: 表記の三重性と probe-rs の版比較バグへの構造的回答)。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FirmwareVersion {
     /// Raw bytes as hex (e.g. "020c").

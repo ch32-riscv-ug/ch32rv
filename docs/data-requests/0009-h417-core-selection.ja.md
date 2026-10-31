@@ -7,8 +7,8 @@
 
 ## 収載先と受け入れ確認
 
-- [RISC-V DM の H417 コア選択・CSR 結果表](../../../wch-protocols/protocols/riscv-debug-module.ja.md#h417-の単一コア選択と-csr-読み出し)
-- [PC↔Link の DmiOp 要求・応答 byte](../../../wch-protocols/protocols/pc-to-link.ja.md#4a-h417-のコア選択を運ぶ-dmiop)
+- [RISC-V DM の H417 コア選択・CSR 結果表](../../../wch-protocols/protocols/riscv-debug-module.ja.md#h417-core-select)
+- [PC↔Link の DmiOp 要求・応答 byte](../../../wch-protocols/protocols/pc-to-link.ja.md#h417-core-select)
 - [恒久保存した証拠と照合 script](../../../wch-protocols/captures/fixtures/ch32h417-core-select-2026-10-10/README.ja.md)
 - [残る調査](../../../wch-protocols/coverage.ja.md#h417-core-control)、[台帳の受領記録](../../../wch-protocols/experiments/LEDGER.ja.md)
 

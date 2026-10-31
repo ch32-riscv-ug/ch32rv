@@ -9,8 +9,9 @@
 //! implements [`ch32rv_dmi::DtmAccess`] (USB command `0x08 DmiOp`), so a
 //! [`ch32rv_dmi::DebugModule`] can drive the Debug Module over it.
 //!
-//! The primary protocol reference is `docs/protocol/wch-link.ja.md`; per that document's rule,
-//! commands that are not capture-verified are not implemented.
+//! The protocol facts live in wch-protocols (`protocols/pc-to-link.ja.md`, command table source
+//! `protocols/data/wchlink-commands.csv`); every request frame is built by [`Request`], and a unit
+//! test compares those frames with the CSV.
 //!
 //! ```no_run
 //! use ch32rv_wchlink::WchLink;
@@ -28,8 +29,9 @@
 //! 開き、probe セッション・バルクメモリ読み([`WchLink::read_mem`])・stub 経由 flash 書込
 //! ([`WchLink::write_flash`]、パラメータは `ch32rv_flash::params_for_family`)・chip/power-off
 //! 消去・target 給電・RISC-V/DAP 切替・SDI print を扱う。[`ch32rv_dmi::DtmAccess`](USB `0x08
-//! DmiOp`)も実装するので [`ch32rv_dmi::DebugModule`] を載せられる。一次文書は
-//! `docs/protocol/wch-link.ja.md`。capture で verified でないコマンドは実装しない。
+//! DmiOp`)も実装するので [`ch32rv_dmi::DebugModule`] を載せられる。protocol の事実は
+//! wch-protocols(`protocols/pc-to-link.ja.md`、コマンド表の正本は `protocols/data/wchlink-commands.csv`)
+//! にある。request frame はすべて [`Request`] が作り、unit test がその frame を CSV と比べる。
 
 pub mod iap;
 pub mod probe;
@@ -37,8 +39,11 @@ pub mod probe;
 pub use iap::{IapDevice, IapError, ImageInfo, Pass};
 pub use probe::{
     AttachInfo, ChipInfo, ChipInfoStatus, DmiReply, DmiStatus, FlashParams, FwMode, ProbeInfo,
-    Speed, Variant, WchLink, WchLinkError, family_name, known_bad_firmware,
+    Request, Speed, Variant, WchLink, WchLinkError, family_name, frame, known_bad_firmware,
 };
+
+#[cfg(test)]
+mod wch_protocols_frames;
 
 /// WCH USB Vendor ID.
 pub const VID_WCH: u16 = 0x1a86;

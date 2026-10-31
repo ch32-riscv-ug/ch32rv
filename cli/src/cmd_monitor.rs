@@ -105,7 +105,7 @@ fn finish_ok(
 
 /// en: The warning every attaching monitor prints. A WCH-Link AttachChip may leave the target's clock
 /// reprogrammed and not restored - seen on the wire for CH32L103 / V20x / X035 and inferred for V30x,
-/// while a V003 attach touches no RCC at all (2026-09-25, `docs/protocol/wch-link.ja.md` §7a) - so
+/// while a V003 attach touches no RCC at all (2026-09-25, wch-protocols `protocols/pc-to-link.ja.md#quirks`) - so
 /// the firmware being watched may keep a different clock until it resets. It is worded as a
 /// possibility and shown on every target: the per-family picture is still being filled in, and a
 /// definite claim would be wrong wherever it turns out otherwise. ch32rv cannot undo it (the original

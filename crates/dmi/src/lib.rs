@@ -41,7 +41,7 @@ pub use dmseq::{DmSeq, DmSeqPoll};
 use thiserror::Error;
 
 /// en: Minimal access to the DTM (Debug Transport Module), implemented by probe backends.
-/// On WCH-Link this maps to USB command `0x08 DmiOp` (docs/protocol/wch-link.ja.md §4.1).
+/// On WCH-Link this maps to USB command `0x08 DmiOp` (wch-protocols protocols/pc-to-link.ja.md#cmd-dmi-op).
 ///
 /// ja: DTM への最小アクセス。probe backend が実装する。WCH-Link では USB コマンド
 /// `0x08 DmiOp` に対応する。
@@ -56,7 +56,7 @@ pub trait DtmAccess {
     /// DMI register write.
     fn dmi_write(&mut self, addr: u8, value: u32) -> Result<(), DmiError>;
     /// en: DMI nop. Note: WCH-Link firmware reportedly returns the previous read result on
-    /// nop (docs/protocol/wch-link.ja.md §7). Absorbing that quirk is the backend's job;
+    /// nop (wch-protocols protocols/pc-to-link.ja.md#quirks). Absorbing that quirk is the backend's job;
     /// this trait keeps Debug Spec semantics.
     ///
     /// ja: DMI nop。WCH-Link firmware には「nop が直前の read 結果を返す」quirk が報告

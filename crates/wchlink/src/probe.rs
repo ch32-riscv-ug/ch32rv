@@ -1,10 +1,11 @@
-//! en: WCH-Link probe session over the command endpoint pair (OUT 0x01 / IN 0x81).
-//! Only capture-verified or attested commands are implemented; byte layouts come from
-//! docs/protocol/wch-link.ja.md and are verified against live probes as they land.
+//! en: WCH-Link probe session over the command endpoint pair (OUT 0x01 / IN 0x81). Byte layouts
+//! follow wch-protocols `protocols/pc-to-link.ja.md#commands`, whose table source is
+//! `protocols/data/wchlink-commands.csv`; every request frame is built by [`Request`], and a unit
+//! test checks those frames against the CSV.
 //!
-//! ja: WCH-Link の probe セッション(command endpoint OUT 0x01 / IN 0x81)。
-//! capture 済み/attested のコマンドのみ実装する。byte 配列は docs/protocol/wch-link.ja.md
-//! に従い、実装のたびに実機で裏を取る。
+//! ja: WCH-Link の probe セッション(command endpoint OUT 0x01 / IN 0x81)。byte 配列は wch-protocols
+//! `protocols/pc-to-link.ja.md#commands`(表の正本は `protocols/data/wchlink-commands.csv`)に従う。
+//! request frame はすべて [`Request`] が作り、その frame を CSV と突き合わせる unit test がある。
 
 use std::time::Duration;
 
@@ -24,6 +25,9 @@ const CMD_SET_READ_MEM_REGION: u8 = 0x03;
 const CMD_PROGRAM: u8 = 0x02;
 const CMD_CONFIG_CHIP: u8 = 0x06;
 const CMD_RESET: u8 = 0x0b;
+const CMD_IAP: u8 = 0x0f;
+const CMD_CHIP_INFO: u8 = 0x11;
+const CMD_MODE: u8 = 0xff;
 const DATA_EP_OUT: u8 = 0x02;
 const DATA_EP_IN: u8 = 0x82;
 const DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
@@ -36,7 +40,194 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_millis(500);
 /// これで受けてプロトコル上の必要分だけ切り出す。
 const MAX_BULK_PACKET: usize = 64;
 
-/// en: Flash parameters that vary by chip family (docs/protocol/wch-link.ja.md, from wlink).
+/// en: One command-endpoint frame: `0x81 cmd len payload` (wch-protocols
+/// `protocols/pc-to-link.ja.md#frame`). `len` is the payload length; the caller keeps it within
+/// one 64-byte packet. ja: command EP の frame `0x81 cmd len payload` を 1 つ作る。
+pub fn frame(cmd: u8, payload: &[u8]) -> Vec<u8> {
+    let mut tx = Vec::with_capacity(payload.len() + 3);
+    tx.push(0x81);
+    tx.push(cmd);
+    tx.push(payload.len() as u8);
+    tx.extend_from_slice(payload);
+    tx
+}
+
+/// en: The request a [`WchLink`] method sends, as `cmd` + payload. Each constructor is the one
+/// place that method's bytes are written, so [`Request::frame`] gives exactly what goes on the
+/// command endpoint - the frames a test compares with wch-protocols'
+/// `protocols/data/wchlink-commands.csv` (constructor names follow the CSV `id`s, `cmd-*`).
+/// ja: [`WchLink`] の各メソッドが送る要求(`cmd` + payload)。メソッドの byte はここにしか書かないので、
+/// [`Request::frame`] が command EP に出る byte そのものになる(test が wch-protocols の CSV と比べる)。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Request {
+    pub cmd: u8,
+    pub payload: Vec<u8>,
+}
+
+impl Request {
+    fn new(cmd: u8, payload: &[u8]) -> Self {
+        Self {
+            cmd,
+            payload: payload.to_vec(),
+        }
+    }
+
+    /// The whole frame on the wire (`0x81 cmd len payload`).
+    pub fn frame(&self) -> Vec<u8> {
+        frame(self.cmd, &self.payload)
+    }
+
+    /// GetProbeInfo (`cmd-get-probe-info`).
+    pub fn probe_info() -> Self {
+        Self::new(CMD_CONTROL, &[0x01])
+    }
+
+    /// AttachChip (`cmd-attach-chip`).
+    pub fn attach_chip() -> Self {
+        Self::new(CMD_CONTROL, &[0x02])
+    }
+
+    /// RedetectChip (`cmd-redetect-chip`).
+    pub fn redetect_chip() -> Self {
+        Self::new(CMD_CONTROL, &[0x03])
+    }
+
+    /// DetachChip (`cmd-detach-chip`).
+    pub fn detach_chip() -> Self {
+        Self::new(CMD_CONTROL, &[0xff])
+    }
+
+    /// SetSpeed (`cmd-set-speed`).
+    pub fn set_speed(family_byte: u8, speed: Speed) -> Self {
+        Self::new(CMD_SET_SPEED, &[family_byte, speed as u8])
+    }
+
+    /// DmiOp (`cmd-dmi-op`): `addr data_be32 op`.
+    pub fn dmi_op(addr: u8, data: u32, op: u8) -> Self {
+        let mut payload = [0u8; 6];
+        payload[0] = addr;
+        payload[1..5].copy_from_slice(&data.to_be_bytes());
+        payload[5] = op;
+        Self::new(CMD_DMI_OP, &payload)
+    }
+
+    /// CheckReadProtect (`cmd-check-read-protect`).
+    pub fn check_read_protect() -> Self {
+        Self::new(CMD_CONFIG_CHIP, &[0x01])
+    }
+
+    /// Unprotect (`cmd-unprotect`).
+    pub fn unprotect() -> Self {
+        Self::new(CMD_CONFIG_CHIP, &[0x02])
+    }
+
+    /// EraseFlash, whole chip (`cmd-erase-flash`).
+    pub fn erase_flash() -> Self {
+        Self::new(CMD_PROGRAM, &[0x01])
+    }
+
+    /// SetWriteMemoryRegion (`cmd-set-write-memory-region`): `addr_be32 len_be32`.
+    pub fn set_write_memory_region(addr: u32, len: u32) -> Self {
+        Self::new(CMD_SET_MEM_REGION, &region(addr, len))
+    }
+
+    /// WriteFlashOP, followed by the stub on the data endpoint (`cmd-write-flash-op`).
+    pub fn write_flash_op() -> Self {
+        Self::new(CMD_PROGRAM, &[0x05])
+    }
+
+    /// Confirm (`cmd-write-flash-confirm`); the reply echoes `0x07`.
+    pub fn write_flash_confirm() -> Self {
+        Self::new(CMD_PROGRAM, &[0x07])
+    }
+
+    /// WriteFlash, followed by the data chunks (`cmd-write-flash`).
+    pub fn write_flash() -> Self {
+        Self::new(CMD_PROGRAM, &[0x02])
+    }
+
+    /// End of the stub write (`cmd-write-flash-end`).
+    pub fn write_flash_end() -> Self {
+        Self::new(CMD_PROGRAM, &[0x08])
+    }
+
+    /// SetReadMemoryRegion (`cmd-set-read-memory-region`): `addr_be32 len_be32`.
+    pub fn set_read_memory_region(addr: u32, len: u32) -> Self {
+        Self::new(CMD_SET_READ_MEM_REGION, &region(addr, len))
+    }
+
+    /// ReadMemory, followed by the data-endpoint stream (`cmd-read-memory`).
+    pub fn read_memory() -> Self {
+        Self::new(CMD_PROGRAM, &[0x0c])
+    }
+
+    /// SetPower (`cmd-set-power-3v3` / `cmd-set-power-5v`): 3.3V on `09` / off `0a`, 5V on `0b` /
+    /// off `0c`.
+    pub fn set_power(rail_5v: bool, on: bool) -> Self {
+        let sub = match (rail_5v, on) {
+            (false, true) => 0x09,
+            (false, false) => 0x0a,
+            (true, true) => 0x0b,
+            (true, false) => 0x0c,
+        };
+        Self::new(CMD_CONTROL, &[sub])
+    }
+
+    /// Mode switch RISC-V -> DAP (`cmd-mode-to-dap`), to the RISC-V-mode command endpoint.
+    pub fn mode_to_dap() -> Self {
+        Self::new(CMD_MODE, &[0x41])
+    }
+
+    /// Mode switch DAP -> RISC-V (`cmd-mode-to-riscv`), to the DAP device's OUT endpoint 0x02.
+    pub fn mode_to_riscv() -> Self {
+        Self::new(CMD_MODE, &[0x52])
+    }
+
+    /// IAP entry (`cmd-iap-entry`).
+    pub fn iap_entry() -> Self {
+        Self::new(CMD_IAP, &[0x01])
+    }
+
+    /// Soft reset, Reset sub `0x01` (`cmd-soft-reset`).
+    pub fn soft_reset() -> Self {
+        Self::new(CMD_RESET, &[0x01])
+    }
+
+    /// EraseCodeFlash by power off (`cmd-erase-code-flash-power-off`).
+    pub fn erase_code_flash_by_power_off(family_byte: u8) -> Self {
+        Self::new(CMD_CONTROL, &[0x0f, family_byte])
+    }
+
+    /// EraseCodeFlash by RST pin (`cmd-erase-code-flash-rst`).
+    pub fn erase_code_flash_by_rst(family_byte: u8) -> Self {
+        Self::new(CMD_CONTROL, &[0x08, family_byte])
+    }
+
+    /// SDI print enable `ee 00` / disable `ee 01` (`cmd-sdi-print-enable` / `-disable`).
+    pub fn sdi_print(enable: bool) -> Self {
+        Self::new(CMD_CONTROL, &[0xee, if enable { 0x00 } else { 0x01 }])
+    }
+
+    /// RstOut on `13` / off `14` (`cmd-rst-out`).
+    pub fn rst_out(asserted: bool) -> Self {
+        Self::new(CMD_CONTROL, &[if asserted { 0x13 } else { 0x14 }])
+    }
+
+    /// ChipInfo (`cmd-chip-info`); the reply is a raw 20-byte block, not a frame.
+    pub fn chip_info() -> Self {
+        Self::new(CMD_CHIP_INFO, &[0x05])
+    }
+}
+
+/// `addr_be32 len_be32`, the payload of both memory-region commands.
+fn region(addr: u32, len: u32) -> [u8; 8] {
+    let mut r = [0u8; 8];
+    r[..4].copy_from_slice(&addr.to_be_bytes());
+    r[4..].copy_from_slice(&len.to_be_bytes());
+    r
+}
+
+/// en: Flash parameters that vary by chip family (wch-protocols protocols/pc-to-link.ja.md#flash, from wlink).
 /// ja: chip family ごとに変わる flash パラメータ(wlink 由来)。
 #[derive(Debug, Clone, Copy)]
 pub struct FlashParams {
@@ -84,10 +275,11 @@ pub struct DmiReply {
 /// en: Debug speed. WCH-Link supports exactly three steps; the wire encoding is inverted
 /// (High=0x01 ... Low=0x03). The per-variant figures are the nominal ones; on a WCH-LinkE
 /// fw 2.22 + CH32L103 the measured SWCLK is ~0.47 / ~0.89 / ~0.89 MHz, with High reaching
-/// ~2.5 MHz (~10 MHz on a CH32V203) only on the flash program path (docs/protocol/wch-link.ja.md §7a).
+/// ~2.5 MHz (~10 MHz on a CH32V203) only on the flash program path (wch-protocols protocols/link-to-target.ja.md#speed).
 /// ja: debug 速度。WCH-Link は 3 段階のみで、wire 上の符号は逆順(High=0x01 ... Low=0x03)。
 /// 各 variant の値は公称。LinkE fw 2.22 + L103 の実測は約 0.47 / 0.89 / 0.89 MHz で、High が
-/// 速くなるのは flash の Program 経路だけ(L103 約 2.5 MHz、V203 約 10 MHz。§7a)。
+/// 速くなるのは flash の Program 経路だけ(L103 約 2.5 MHz、V203 約 10 MHz。wch-protocols
+/// protocols/link-to-target.ja.md#speed)。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum Speed {
@@ -100,7 +292,7 @@ pub enum Speed {
     High = 0x01,
 }
 
-/// en: Family byte reported by AttachChip (docs/protocol/wch-link.ja.md §5, attested from
+/// en: Family byte reported by AttachChip (wch-protocols protocols/pc-to-link.ja.md#chip-identification, attested from
 /// probe-rs). Returns None for unknown values — including, until measured, the 7 gap series.
 /// ja: AttachChip が返す family byte の名前(attested)。未知値(gap 7 series を含む)は None。
 pub fn family_name(byte: u8) -> Option<&'static str> {
@@ -152,7 +344,7 @@ pub struct ChipInfo {
     /// Flash size in bytes (the probe reports KiB; converted at the boundary for a uniform unit).
     pub flash_bytes: u32,
     pub uuid: [u8; 8],
-    /// Interpretation not yet established; exposed raw (docs/protocol/wch-link.ja.md).
+    /// Interpretation not yet established; exposed raw (wch-protocols protocols/pc-to-link.ja.md#chip-identification).
     pub protection_raw: [u8; 4],
     pub chip_id_echo: u32,
 }
@@ -373,15 +565,11 @@ impl WchLink {
     /// en: Send one framed command (`0x81 cmd len payload`) and parse the reply
     /// (`0x82 cmd len payload`; an `0x81`-headed reply is a probe-side error).
     /// ja: フレーム化コマンドを 1 往復する。応答先頭 `0x81` は probe 側エラー。
-    fn command(&mut self, cmd: u8, payload: &[u8]) -> Result<Vec<u8>, WchLinkError> {
-        if payload.len() > 60 {
-            return Err(WchLinkError::PayloadTooLong(payload.len()));
+    fn command(&mut self, req: &Request) -> Result<Vec<u8>, WchLinkError> {
+        if req.payload.len() > 60 {
+            return Err(WchLinkError::PayloadTooLong(req.payload.len()));
         }
-        let mut tx = Vec::with_capacity(payload.len() + 3);
-        tx.push(0x81);
-        tx.push(cmd);
-        tx.push(payload.len() as u8);
-        tx.extend_from_slice(payload);
+        let tx = req.frame();
         let written = self.iface.write(&tx, self.timeout)?;
         if written != tx.len() {
             return Err(WchLinkError::ShortWrite {
@@ -400,7 +588,7 @@ impl WchLink {
                 raw: rx[..n].to_vec(),
             });
         }
-        if rx[0] != 0x82 || rx[1] != cmd {
+        if rx[0] != 0x82 || rx[1] != req.cmd {
             return Err(WchLinkError::UnexpectedResponse(rx[..n].to_vec()));
         }
         Ok(rx[3..n].to_vec())
@@ -410,7 +598,7 @@ impl WchLink {
     /// Status: verified against live Link(CH549) + LinkE on 2026-09-01.
     /// ja: GetProbeInfo。firmware 版と型番。2026-09-01 に実機 Link + LinkE で検証済み。
     pub fn probe_info(&mut self) -> Result<ProbeInfo, WchLinkError> {
-        let payload = self.command(CMD_CONTROL, &[0x01])?;
+        let payload = self.command(&Request::probe_info())?;
         if payload.len() < 3 {
             return Err(WchLinkError::UnexpectedResponse(payload));
         }
@@ -439,7 +627,7 @@ impl WchLink {
     /// unknown; probe-rs sends 0x01 (CH32V103) as the placeholder and so do we.
     /// ja: SetSpeed。初回 attach 前は family 不明のため、probe-rs と同じく 0x01 を送る。
     pub fn set_speed(&mut self, family_byte: u8, speed: Speed) -> Result<(), WchLinkError> {
-        let _ack = self.command(CMD_SET_SPEED, &[family_byte, speed as u8])?;
+        let _ack = self.command(&Request::set_speed(family_byte, speed))?;
         Ok(())
     }
 
@@ -449,7 +637,7 @@ impl WchLink {
     /// ja: AttachChip。応答 payload は `[family, chip_id_be32]` の 5 byte。chip id の
     /// `[7:4]` は silicon revision(照合時 don't-care)。
     pub fn attach_chip(&mut self) -> Result<AttachInfo, WchLinkError> {
-        let payload = self.command(CMD_CONTROL, &[0x02])?;
+        let payload = self.command(&Request::attach_chip())?;
         if payload.len() != 5 {
             return Err(WchLinkError::UnexpectedResponse(payload));
         }
@@ -465,11 +653,7 @@ impl WchLink {
     /// ja: DmiOp。target debug transport への 1 トランザクション。op=0 nop/1 read/2 write。
     /// 応答は `[addr, data_be32, status]`。実機で検証済み。
     pub fn dmi_op(&mut self, addr: u8, data: u32, op: u8) -> Result<DmiReply, WchLinkError> {
-        let mut payload = [0u8; 6];
-        payload[0] = addr;
-        payload[1..5].copy_from_slice(&data.to_be_bytes());
-        payload[5] = op;
-        let resp = self.command(CMD_DMI_OP, &payload)?;
+        let resp = self.command(&Request::dmi_op(addr, data, op))?;
         if resp.len() != 6 {
             return Err(WchLinkError::UnexpectedResponse(resp));
         }
@@ -484,7 +668,7 @@ impl WchLink {
     /// target core; also used to clear probe state before a session (board-identify).
     /// ja: DetachChip。掴んでいる target core を解放する。セッション前の状態クリアにも使う。
     pub fn detach_chip(&mut self) -> Result<(), WchLinkError> {
-        let _ = self.command(CMD_CONTROL, &[0xff])?;
+        let _ = self.command(&Request::detach_chip())?;
         self.selected_hart = 0;
         Ok(())
     }
@@ -501,15 +685,15 @@ impl WchLink {
     /// ja: RedetectChip。target を reset せずに probe の把握し直しを行わせる(havereset の
     /// sticky bit で board-identify が実測確認)。LinkE の壊れ読み値の解消に使う。
     pub fn redetect_chip(&mut self) -> Result<(), WchLinkError> {
-        let _ = self.command(CMD_CONTROL, &[0x03])?;
+        let _ = self.command(&Request::redetect_chip())?;
         Ok(())
     }
 
-    // ---- Flash programming (docs/protocol/wch-link.ja.md §4.2 flash path, from wlink) ----
+    // ---- Flash programming (wch-protocols protocols/pc-to-link.ja.md#flash, from wlink) ----
 
     /// Send a command and return the first payload byte (Program/ConfigChip replies).
-    fn command_u8(&mut self, cmd: u8, payload: &[u8]) -> Result<u8, WchLinkError> {
-        let resp = self.command(cmd, payload)?;
+    fn command_u8(&mut self, req: &Request) -> Result<u8, WchLinkError> {
+        let resp = self.command(req)?;
         resp.first()
             .copied()
             .ok_or(WchLinkError::UnexpectedResponse(resp))
@@ -518,7 +702,7 @@ impl WchLink {
     /// en: Check read-protection state (ConfigChip 0x01). 1 = protected, 2 = unprotected.
     /// ja: 読み出し保護状態を確認(ConfigChip 0x01)。1=保護、2=非保護。
     pub fn check_read_protect(&mut self) -> Result<u8, WchLinkError> {
-        self.command_u8(CMD_CONFIG_CHIP, &[0x01])
+        self.command_u8(&Request::check_read_protect())
     }
 
     /// en: Unprotect flash (ConfigChip 0x02). Only meaningful when currently protected: the
@@ -526,7 +710,7 @@ impl WchLink {
     /// ja: 保護解除(ConfigChip 0x02)。保護時のみ実行する。
     pub fn unprotect_if_needed(&mut self) -> Result<(), WchLinkError> {
         if self.check_read_protect()? == 0x01 {
-            let _ = self.command_u8(CMD_CONFIG_CHIP, &[0x02])?;
+            let _ = self.command_u8(&Request::unprotect())?;
             self.detach_chip()?;
             let _ = self.attach_chip()?;
         }
@@ -537,7 +721,7 @@ impl WchLink {
     /// have attached first.
     /// ja: chip 全体の flash 消去(Program 0x01)後に再 attach。
     pub fn erase_flash(&mut self) -> Result<(), WchLinkError> {
-        let _ = self.command_u8(CMD_PROGRAM, &[0x01])?;
+        let _ = self.command_u8(&Request::erase_flash())?;
         let _ = self.attach_chip()?;
         Ok(())
     }
@@ -560,23 +744,20 @@ impl WchLink {
         }
 
         // SetWriteMemoryRegion (cmd 0x01): start_addr BE32 + len BE32.
-        let mut region = Vec::with_capacity(8);
-        region.extend_from_slice(&addr.to_be_bytes());
-        region.extend_from_slice(&(data.len() as u32).to_be_bytes());
-        let _ = self.command(CMD_SET_MEM_REGION, &region)?;
+        let _ = self.command(&Request::set_write_memory_region(addr, data.len() as u32))?;
 
         // WriteFlashOP (Program 0x05), then upload the stub on the data endpoint.
-        let _ = self.command_u8(CMD_PROGRAM, &[0x05])?;
+        let _ = self.command_u8(&Request::write_flash_op())?;
         self.write_data_padded(params.stub, params.data_packet_size)?;
 
         // Confirm (Program 0x07) — must echo 0x07.
-        let n = self.command_u8(CMD_PROGRAM, &[0x07])?;
+        let n = self.command_u8(&Request::write_flash_confirm())?;
         if n != 0x07 {
             return Err(WchLinkError::UnexpectedResponse(vec![n]));
         }
 
         // WriteFlash (Program 0x02), then stream data chunks, checking each ack.
-        let _ = self.command_u8(CMD_PROGRAM, &[0x02])?;
+        let _ = self.command_u8(&Request::write_flash())?;
         let mut done = 0u64;
         for chunk in data.chunks(params.write_pack_size) {
             self.write_data_padded(chunk, params.data_packet_size)?;
@@ -599,7 +780,7 @@ impl WchLink {
             progress(done);
         }
 
-        let _ = self.command_u8(CMD_PROGRAM, &[0x08])?; // End
+        let _ = self.command_u8(&Request::write_flash_end())?;
         Ok(())
     }
 
@@ -659,12 +840,9 @@ impl WchLink {
         while off < len4 {
             let want = READ_WINDOW.min(len4 - off);
             // SetReadMemoryRegion (cmd 0x03): start_addr BE32 + len BE32.
-            let mut region = Vec::with_capacity(8);
-            region.extend_from_slice(&(start + off).to_be_bytes());
-            region.extend_from_slice(&want.to_be_bytes());
-            let _ = self.command(CMD_SET_READ_MEM_REGION, &region)?;
+            let _ = self.command(&Request::set_read_memory_region(start + off, want))?;
             // Program ReadMemory (0x0c), then stream `want` bytes from the data endpoint.
-            let _ = self.command(CMD_PROGRAM, &[0x0c])?;
+            let _ = self.command(&Request::read_memory())?;
             let mut window = vec![0u8; want as usize];
             let mut got = 0usize;
             while got < window.len() {
@@ -695,13 +873,7 @@ impl WchLink {
     /// no power output: fw 2.12 acknowledges `0a` / `0c`, and the CH32V103 on the same board ran on
     /// through 2 s of each, 2026-10-30). ja: WCH-LinkE の target 給電出力を制御(SetPower)。LinkE 限定。
     pub fn set_power(&mut self, rail_5v: bool, on: bool) -> Result<(), WchLinkError> {
-        let payload: u8 = match (rail_5v, on) {
-            (false, true) => 0x09,
-            (false, false) => 0x0a,
-            (true, true) => 0x0b,
-            (true, false) => 0x0c,
-        };
-        let _ = self.command(CMD_CONTROL, &[payload])?;
+        let _ = self.command(&Request::set_power(rail_5v, on))?;
         Ok(())
     }
 
@@ -712,7 +884,9 @@ impl WchLink {
     /// ja: WCH-LinkE を RISC-V→DAP に切替(`81 ff 01 41`)。probe は PID 0x8012 へ再列挙するので
     /// 応答は読まない。LinkE 限定(呼び出し側で variant 確認)。戻すのは 0x8012 の EP0x02 へ `81 ff 01 52`。
     pub fn switch_to_dap(&mut self) -> Result<(), WchLinkError> {
-        let _ = self.iface.write(&[0x81, 0xff, 0x01, 0x41], self.timeout);
+        let _ = self
+            .iface
+            .write(&Request::mode_to_dap().frame(), self.timeout);
         Ok(())
     }
 
@@ -720,19 +894,21 @@ impl WchLink {
     /// re-enumerates as `4348:55e0`, where [`crate::IapDevice`] rewrites its firmware. No reply
     /// is returned (the device leaves immediately), and the target is untouched. LinkE only -
     /// the caller must check the variant first. Verified: WCH-LinkUtility V3.00 capture
-    /// (docs/protocol/wch-link.ja.md §6.1).
+    /// (wch-protocols protocols/pc-to-link.ja.md#iap).
     /// ja: IAP mode に入る(`81 0f 01 01`)。probe は自分の bootloader へ再起動し `4348:55e0`
     /// として再列挙する。応答は返らない(即座に device が消える)。target には触れない。
     /// LinkE 限定(呼び出し側で variant 確認)。
     pub fn enter_iap(&mut self) -> Result<(), WchLinkError> {
-        let _ = self.iface.write(&[0x81, 0x0f, 0x01, 0x01], self.timeout);
+        let _ = self
+            .iface
+            .write(&Request::iap_entry().frame(), self.timeout);
         Ok(())
     }
 
     /// en: Soft reset and run (Reset 0x01). This is `wlink reset` / the run-after-flash reset.
     /// ja: soft reset して実行(Reset 0x01)。`wlink reset` 相当。
     pub fn soft_reset(&mut self) -> Result<(), WchLinkError> {
-        let _ = self.command(CMD_RESET, &[0x01])?;
+        let _ = self.command(&Request::soft_reset())?;
         Ok(())
     }
 
@@ -755,7 +931,7 @@ impl WchLink {
     /// ja: probe の status byte を返す。X035 では `0x0f` = 消えた、`0x00` = 消えていない(E162 / E164)。
     pub fn erase_code_flash_by_power_off(&mut self, family_byte: u8) -> Result<u8, WchLinkError> {
         self.set_speed(family_byte, Speed::default())?;
-        let resp = self.command(CMD_CONTROL, &[0x0f, family_byte])?;
+        let resp = self.command(&Request::erase_code_flash_by_power_off(family_byte))?;
         Ok(resp.first().copied().unwrap_or(0))
     }
 
@@ -766,8 +942,7 @@ impl WchLink {
     /// ja: SDI print forward の有効/無効。payload は enable=`ee 00`、disable=`ee 01`(直感と逆。
     /// wlink と usbmon capture で確認)。応答 byte 0x00=成功、0xff=非対応。LinkE 専用。
     pub fn set_sdi_print_enabled(&mut self, enable: bool) -> Result<(), WchLinkError> {
-        let flag = if enable { 0x00 } else { 0x01 };
-        let resp = self.command(CMD_CONTROL, &[0xee, flag])?;
+        let resp = self.command(&Request::sdi_print(enable))?;
         if resp.first() == Some(&0xff) {
             return Err(WchLinkError::UnexpectedResponse(resp));
         }
@@ -776,13 +951,13 @@ impl WchLink {
 
     /// en: RstOut (`0x81 0x0d 0x01 0x13` on / `0x14` off): drive the RST pin (the target's
     /// NRST, when wired) low, or release it. From WCH's own OpenOCD (`wlinke.c`
-    /// `wlink_rstout`), wch-protocols pc-to-link §4. The LinkE (fw 2.22) answers `00`; the CH549
+    /// `wlink_rstout`), wch-protocols protocols/pc-to-link.ja.md#cmd-rst-out. The LinkE (fw 2.22) answers `00`; the CH549
     /// Link (fw 2.12) answers `ff` and does nothing, which is [`WchLinkError::Unsupported`].
     /// The sub byte must be the payload's first byte: `0x01 0x13` would be GetProbeInfo.
     /// ja: RstOut。RST の線(配線していれば target の NRST)を low に駆動する / 離す。CH549 の
     /// Link(fw 2.12)は `ff` を返して何もしないので Unsupported。
     pub fn rst_out(&mut self, asserted: bool) -> Result<(), WchLinkError> {
-        let reply = self.command(CMD_CONTROL, &[if asserted { 0x13 } else { 0x14 }])?;
+        let reply = self.command(&Request::rst_out(asserted))?;
         if reply == [0xff] {
             return Err(WchLinkError::Unsupported("RstOut"));
         }
@@ -797,7 +972,7 @@ impl WchLink {
     /// ja: probe の status byte を返す(実機未測定)。
     pub fn erase_code_flash_by_rst(&mut self, family_byte: u8) -> Result<u8, WchLinkError> {
         self.set_speed(family_byte, Speed::default())?;
-        let resp = self.command(CMD_CONTROL, &[0x08, family_byte])?;
+        let resp = self.command(&Request::erase_code_flash_by_rst(family_byte))?;
         Ok(resp.first().copied().unwrap_or(0))
     }
 
@@ -805,7 +980,7 @@ impl WchLink {
     /// The reply is raw (no `0x82` frame), so this bypasses the framed reader.
     /// ja: ChipInfo。flash 容量・工場 UUID・保護フラグ。応答はフレーム無しの生データ。
     pub fn chip_info(&mut self) -> Result<ChipInfoStatus, WchLinkError> {
-        let tx = [0x81, 0x11, 0x01, 0x05];
+        let tx = Request::chip_info().frame();
         let written = self.iface.write(&tx, self.timeout)?;
         if written != tx.len() {
             return Err(WchLinkError::ShortWrite {

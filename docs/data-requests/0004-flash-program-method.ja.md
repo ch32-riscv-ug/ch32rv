@@ -91,7 +91,7 @@ catalog の全 12 family。特に埋めてほしいのは **ch32rv が実機を�
 
 - **R-31**(`wch-protocols` から依頼済): flash 消去後の読み出し値(系統 A `0xFFFFFFFF` / B `0xe339e339`)。本依頼と対になるデータで、ch32rv は実機読み 6 family を証拠として提供済み。
 - 依頼 [0003](0003-option-byte-layout.ja.md)(R-30)で納品された `option_bytes.csv` の `write_unit` が、本依頼の書式の下敷き。
-- 手順そのものの記述は `wch-protocols` の [pc-to-link.ja.md](../../../wch-protocols/protocols/pc-to-link.ja.md) §6 / §6b(protocol 側の一次ソース)。
+- 手順そのものの記述は `wch-protocols` の [pc-to-link.ja.md#flash-controller](../../../wch-protocols/protocols/pc-to-link.ja.md#flash-controller) / [#option-bytes](../../../wch-protocols/protocols/pc-to-link.ja.md#option-bytes)(protocol 側の一次ソース)。
 
 ## 追記: 受け入れ後の確認事項(2026-09-06)
 

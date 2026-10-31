@@ -1,7 +1,7 @@
 //! Bench diagnostic: how large a single ReadMemory the probe honours, and whether anything is
 //! left on the data endpoint afterwards. Usage: read_limit <serial> <len>[,<len>...]
 //! (not a test - needs a probe with an attached target; reads only, never writes)
-//! Findings: docs/protocol/wch-link.ja.md §4.2.2 (per-probe stream rate and the 16 KiB read window).
+//! Findings: wch-protocols protocols/pc-to-link.ja.md#fast-read (per-probe stream rate and the 16 KiB read window).
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,

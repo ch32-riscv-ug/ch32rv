@@ -196,7 +196,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// --exit-on semihosting` sat until its cap there - and re-attaching did not help (the hart
     /// stayed where the flash stub left it, `dpc = 0x200002ea` in SRAM). A WCH-LinkE (fw 2.22)
     /// raises `haltreq` and then issues a PFIC system reset, so its hart comes up halted (wire
-    /// capture, 2026-09-25; `docs/protocol/wch-link.ja.md` §7a) - the reason the same image ran
+    /// capture, 2026-09-25; wch-protocols `protocols/pc-to-link.ja.md#cmd-soft-reset`) - the reason the same image ran
     /// fine through a LinkE. This DMI reset-halt is correct on both.
     /// ja: hart を reset し、**reset vector で捕まえる**(DMI 経由): `ndmreset` と `haltreq` を同時に
     /// 立て、`haltreq` を保持したまま reset を解除する。hart は何も実行する前に debug mode へ入る。
@@ -207,7 +207,7 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// `run --exit-on semihosting` が cap まで待った原因。再 attach も効かなかった(hart は flash stub が
     /// 残した `dpc = 0x200002ea` = SRAM に居座る)。WCH-LinkE(fw 2.22)は `haltreq` を立ててから PFIC の
     /// system reset を出すので hart は止まって出てくる(2026-09-25 の線 capture、
-    /// `docs/protocol/wch-link.ja.md` §7a)— 同じ image が LinkE では通っていた理由。この DMI の
+    /// wch-protocols `protocols/pc-to-link.ja.md#cmd-soft-reset`)— 同じ image が LinkE では通っていた理由。この DMI の
     /// reset-halt はどちらでも正しい。
     pub fn reset_halt(&mut self) -> Result<(), DmiError> {
         // ndmreset + haltreq, then release the reset with haltreq still asserted.

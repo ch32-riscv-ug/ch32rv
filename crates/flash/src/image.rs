@@ -159,7 +159,7 @@ impl Image {
     /// first is silently lost. Measured on a CH32V307VCT6 + WCH-LinkE with a two-block image
     /// (0x08000000 and 0x08004600, both page-aligned): the second block's page read back erased,
     /// and the data was not written anywhere else either. A detach/attach or a soft reset between
-    /// the two writes does not help. `docs/protocol/wch-link.ja.md` §4.3 records the same boundary
+    /// the two writes does not help. wch-protocols `protocols/pc-to-link.ja.md#flash` records the same boundary
     /// from the other side: the stub path is for full-region programming after an erase.
     ///
     /// The filler cannot damage anything it covers - programming `0xff` clears no cell - but the
@@ -172,7 +172,7 @@ impl Image {
     /// Program サブコマンドも正常応答)ながら**何も焼かない**ので、2 つ目以降の block が黙って消える。
     /// CH32V307VCT6 + WCH-LinkE で 2 block image(0x08000000 と 0x08004600、ともに page 整列)で実測:
     /// 2 つ目の page は消去状態のまま、データはどこにも書かれていない。間に detach/attach や soft
-    /// reset を挟んでも変わらない。`docs/protocol/wch-link.ja.md` §4.3 が逆側から同じ境界を記録して
+    /// reset を挟んでも変わらない。wch-protocols `protocols/pc-to-link.ja.md#flash` が逆側から同じ境界を記録して
     /// いる(stub 経路は消去後の全 region 書込用)。埋めの `0xff` はセルを落とせないので覆った領域を
     /// 壊さないが、**焼くのは span 全体なので、呼び出し側は segment ではなく span を消去する**こと。
     pub fn program_span(&self, align: u32) -> Option<Segment> {

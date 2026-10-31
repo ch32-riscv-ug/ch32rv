@@ -56,7 +56,7 @@ ch32rv 側は現状の転記を使い続けるので、**納品を待つ必要�
 ## 関連
 
 - ch32rv の blob: `crates/flash/src/stub.rs`(逐語転記であることと将来の方針をファイル冒頭に明記)
-- stub 経路の protocol: [../protocol/wch-link.ja.md](../protocol/wch-link.ja.md) §4.2
+- stub 経路の protocol: wch-protocols `protocols/pc-to-link.ja.md#flash`
 - 既存の目録: `wch-protocols` `references/data/bootloader-survey/stubs.csv`(minichlink 側 51 行)
 
 ## 納品の受け入れ(2026-09-06)
