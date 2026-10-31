@@ -390,7 +390,7 @@ WCH-Link の `target info` は未登録チップでも接続成功とDB照合結
   | key | 値 | EVT の定数(USER の bit) | 極性 |
   |---|---|---|---|
   | `read-protect` | `on` / `off` | (RDPR。`off` = `0xA5`) | `on` は RDPR を `0xA5` 以外にする(debug 線は `0xFF`、ISP は `0x00`)。状態が変わるときだけ書く |
-  | `write-protect` | `<u32>` | (WRPR0–3) | 生の WRPR。立った bit の sector は書込可 |
+  | `write-protect` | `<mask>`(u32) | `FLASH_EnableWriteProtection` の `FLASH_WRProt_Pages*`(WRPR0–3) | 立った bit の sector(群)を保護。WRPR はその反転で、`get` の `raw` は WRPR の値 |
   | `data0` / `data1` | `<byte>`(10 進か `0x`) | (Data0 / Data1) | — |
   | `iwdg` | `sw` / `hw` | `OB_IWDG_SW` / `OB_IWDG_HW`(bit 0) | `sw` = 1 |
   | `stop-reset` | `on` / `off` | `OB_STOP_RST` / `OB_STOP_NoRST`(bit 1) | `on`(STOP で reset)= 0 |

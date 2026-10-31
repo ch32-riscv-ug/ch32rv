@@ -447,7 +447,7 @@ pub enum OptionCmd {
     /// Show the option bytes: each key with its value and raw value
     Get,
     /// Change option bytes (the vocabulary of `isp config set`): read-protect=on|off
-    /// write-protect=<u32> data0=<byte> data1=<byte> iwdg=sw|hw stop-reset=on|off
+    /// write-protect=<mask> data0=<byte> data1=<byte> iwdg=sw|hw stop-reset=on|off
     /// standby-reset=on|off reset-pin=off|12ms|1ms|128us (the values the family's WCH EVT names);
     /// a USER bit EVT has no name for: user.<RM field>=<bit value>
     Set {
@@ -653,7 +653,7 @@ pub enum IspConfigCmd {
     /// Show the option bytes: each key with its value and raw value
     Get,
     /// Change option bytes (the vocabulary of `target option set`): read-protect=on|off
-    /// write-protect=<u32> data0=<byte> data1=<byte> iwdg=sw|hw stop-reset=on|off
+    /// write-protect=<mask> data0=<byte> data1=<byte> iwdg=sw|hw stop-reset=on|off
     /// standby-reset=on|off reset-pin=off|12ms|1ms|128us (the values the family's WCH EVT names);
     /// a USER bit EVT has no name for: user.<RM field>=<bit value>
     Set {

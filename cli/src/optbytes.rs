@@ -54,7 +54,7 @@ impl Layout {
     pub(crate) fn keys(&self) -> String {
         let mut k = vec![
             "read-protect=on|off".to_owned(),
-            "write-protect=<u32>".to_owned(),
+            "write-protect=<mask>".to_owned(),
             "data0=<byte>".to_owned(),
             "data1=<byte>".to_owned(),
         ];
@@ -146,8 +146,11 @@ pub(crate) fn apply(
                 out.changes.push(format!("{k}=0x{b:02x}"));
             }
             "write-protect" => {
-                f.wrpr = number(k, v)?;
-                out.changes.push(format!("{k}=0x{:08x}", f.wrpr));
+                // en: EVT FLASH_EnableWriteProtection: a set bit protects its sectors; WRPR holds
+                // the inverse. ja: EVT と同じく立った bit が保護。WRPR はその反転。
+                let mask = number(k, v)?;
+                f.wrpr = !mask;
+                out.changes.push(format!("{k}=0x{mask:08x}"));
             }
             "read-protect" => {
                 let want = match v {
@@ -271,7 +274,7 @@ pub(crate) fn decode(layout: &Layout, f: OptionFields) -> Map<String, Value> {
     m.insert("read-protect".into(), entry(rp.into(), f.rdpr.into()));
     m.insert(
         "write-protect".into(),
-        entry(format!("0x{:08x}", f.wrpr), f.wrpr),
+        entry(format!("0x{:08x}", !f.wrpr), f.wrpr),
     );
     m.insert(
         "data0".into(),
@@ -343,7 +346,7 @@ pub(crate) fn print(v: &Value) {
         let pair = format!("{k}={}", e["value"].as_str().unwrap_or("-"));
         let raw = e["raw"].as_u64().unwrap_or(0);
         let note = match k.as_str() {
-            "write-protect" => "  (a set bit leaves its sectors writable)".to_owned(),
+            "write-protect" => format!("  (a set bit protects its sectors; WRPR 0x{raw:08x})"),
             "read-protect" => format!("  (rdpr 0x{raw:02x})"),
             _ if k.starts_with("user.") || k.starts_with("data") => String::new(),
             _ => format!("  (raw {raw})"),
@@ -446,6 +449,23 @@ mod tests {
         assert_eq!((a.read_protect, f.rdpr), (Some(true), 0xff));
         let a = apply(&l, &mut f, &s(&["read-protect=off"]), 0xff).unwrap();
         assert_eq!((a.read_protect, f.rdpr), (Some(false), RDPR_OFF));
+    }
+
+    #[test]
+    fn write_protect_is_the_evt_mask_and_raw_is_wrpr() {
+        let l = Layout::of("CH32V307");
+        let mut f = factory();
+        // FLASH_WRProt_Pages0to3 | Pages4to7: protect the first two groups.
+        apply(&l, &mut f, &s(&["write-protect=0x3"]), 0).unwrap();
+        assert_eq!(f.wrpr, 0xFFFF_FFFC);
+        let d = decode(&l, f);
+        assert_eq!(
+            d["write-protect"],
+            json!({"value": "0x00000003", "raw": 0xFFFF_FFFCu32})
+        );
+        assert_eq!(result(None, None, "", &l, f)["write_protected"], true);
+        let d = decode(&l, factory());
+        assert_eq!(d["write-protect"]["value"], "0x00000000");
     }
 
     #[test]

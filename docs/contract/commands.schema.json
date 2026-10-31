@@ -127,7 +127,7 @@
       "required": ["value", "raw"],
       "properties": {
         "value": {"type": "string", "description": "set に渡す値の語(on / off / sw / 12ms / 0x5a など)"},
-        "raw": {"type": "integer", "minimum": 0, "description": "field の生の値(bit の値、byte、WRPR の 32 bit)"}
+        "raw": {"type": "integer", "minimum": 0, "description": "field の生の値(bit の値、byte、WRPR の 32 bit。write-protect の value は EVT の向き(立った bit = 保護)で、raw の WRPR はその反転)"}
       }
     },
     "version": {
