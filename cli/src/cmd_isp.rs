@@ -67,9 +67,12 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
     // en: `--device` names a position - the bootloader's (`ch32rv-isp://`, discovery's), or either
     // the bootloader's or the application's (`topology:`; the bootloader comes up where the
     // application was) - or the running application (its serial port, `ch32rv-app://`,
-    // `VID:PID`), found now so that only the ISP device at its position is taken.
+    // `VID:PID`), found now so that only the ISP device at its position is taken. An application
+    // that is not there is looked for no further ([`Miss::app_gone`]): the ISP device is picked as
+    // without `--device`, and an entry asked for fails on it only when no ISP device is up.
     // ja: `--device` は位置(bootloader の `ch32rv-isp://`、どちらでもよい `topology:`)か、走っている
-    // アプリ。アプリは今引いて、その位置の ISP device だけを使う。
+    // アプリ。アプリは今引いて、その位置の ISP device だけを使う。アプリが居なければ `--device` 無しと
+    // 同じに選び、ISP device も居ないときだけ entry がアプリの不在で止まる。
     let mut app = None;
     let mut want = match args.device.as_deref() {
         None => None,
@@ -84,12 +87,15 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
                     Some("--device topology:<bus>-<ports> or ch32rv-isp://<bus>-<ports>"),
                 ));
             }
-            None => {
-                let a = usb_device(cli, cmd, d)?;
-                let t = a.dev.topology();
-                app = Some(a);
-                Some(t)
-            }
+            None => match find_usb_device(d) {
+                Ok(a) => {
+                    let t = a.dev.topology();
+                    app = Some(a);
+                    Some(t)
+                }
+                Err(m) if m.app_gone() => None,
+                Err(m) => return Err(m.fail(cli, cmd)),
+            },
         },
     };
     let present = |want: &Option<String>| {
@@ -150,7 +156,9 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
                 cmd,
                 ErrorKind::DeviceAmbiguous,
                 format!("{} ISP devices are connected", found.len()),
-                Some("pick one with --device topology:<bus>-<ports>"),
+                Some(
+                    "pick one with --device ch32rv-isp://<bus>-<ports> (the IDE's ch32rv-isp:// port)",
+                ),
                 at,
             ));
         }
@@ -922,10 +930,55 @@ fn ide_address(s: &str) -> Option<&str> {
 /// error. A bootloader's own address that the caller does not write (`ch32rv-hid://`,
 /// `ch32rv-isp://`) is a usage error. ja: `--device` の USB device を解く。ちょうど 1 台か、エラー。
 pub(crate) fn usb_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, ExitCode> {
-    if let Some(instead) = ch32rv_usb::selector::removed(sel) {
-        return Err(fail(
+    find_usb_device(sel).map_err(|m| m.fail(cli, cmd))
+}
+
+/// en: Why a `--device` found no one USB device. ja: `--device` が 1 台に決まらなかった理由。
+struct Miss {
+    kind: ErrorKind,
+    msg: String,
+    hint: Option<String>,
+    candidates: Vec<serde_json::Value>,
+}
+
+impl Miss {
+    fn new(kind: ErrorKind, msg: String, hint: Option<String>) -> Self {
+        Miss {
+            kind,
+            msg,
+            hint,
+            candidates: Vec::new(),
+        }
+    }
+
+    fn fail(self, cli: &Cli, cmd: &str) -> ExitCode {
+        crate::cmd_probe::fail_with_candidates(
             cli,
             cmd,
+            self.kind,
+            self.msg,
+            self.hint.as_deref(),
+            self.candidates,
+        )
+    }
+
+    /// en: Whether `isp` goes on without the application: it is not there (or not one), which is
+    /// what the IDE's application port looks like once the chip is already in its bootloader
+    /// (the port stays selected after a failed upload). The ISP device is then picked as without
+    /// `--device`; a malformed address or a USB failure still stops.
+    /// ja: アプリが居ない(1 台に決まらない)なら、`--device` 無しと同じに ISP device を選ぶ。チップが
+    /// もう bootloader に居ると IDE のアプリの port はこう見える。形の誤りと USB の失敗は止める。
+    fn app_gone(&self) -> bool {
+        matches!(
+            self.kind,
+            ErrorKind::DeviceNotFound | ErrorKind::DeviceAmbiguous
+        )
+    }
+}
+
+fn find_usb_device(sel: &str) -> Result<AppDevice, Miss> {
+    if let Some(instead) = ch32rv_usb::selector::removed(sel) {
+        return Err(Miss::new(
             ErrorKind::Usage,
             format!("--device `{sel}`: this form is gone; write {instead}"),
             None,
@@ -936,12 +989,10 @@ pub(crate) fn usb_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
         (ISP_SCHEME, "isp"),
     ] {
         if sel.starts_with(scheme) {
-            return Err(fail(
-                cli,
-                cmd,
+            return Err(Miss::new(
                 ErrorKind::Usage,
                 format!("--device `{sel}` names a bootloader this command does not write"),
-                Some(&format!("`{what} --device {sel}` writes it")),
+                Some(format!("`{what} --device {sel}` writes it")),
             ));
         }
     }
@@ -949,14 +1000,14 @@ pub(crate) fn usb_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
     let usb_sel;
     let sel = match ide_address(sel).and_then(|a| a.strip_prefix(APP_SCHEME)) {
         Some(id) => {
-            let dev = find_app(id).map_err(|(kind, m)| fail(cli, cmd, kind, m, None))?;
+            let dev = find_app(id).map_err(|(kind, m)| Miss::new(kind, m, None))?;
             usb_sel = format!("topology:{}", dev.topology());
             usb_sel.as_str()
         }
         None => sel,
     };
     let all = ch32rv_usb::enumerate()
-        .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
+        .map_err(|e| Miss::new(ErrorKind::DeviceOpenFailed, e.to_string(), None))?;
     let canon = |p: &str| {
         std::fs::canonicalize(p)
             .map(|c| c.to_string_lossy().into_owned())
@@ -991,12 +1042,13 @@ pub(crate) fn usb_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
                 s.and_then(|v| u16::from_str_radix(v.trim_start_matches("0x"), 16).ok())
             };
             let (Some(vid), Some(pid)) = (num(parts.next()), num(parts.next())) else {
-                return Err(fail(
-                    cli,
-                    cmd,
+                return Err(Miss::new(
                     ErrorKind::Usage,
                     format!("invalid --device `{sel}`"),
-                    Some("use the serial port's path, topology:<bus>-<ports> or VID:PID[:SERIAL]"),
+                    Some(
+                        "use the serial port's path, topology:<bus>-<ports> or VID:PID[:SERIAL]"
+                            .to_owned(),
+                    ),
                 ));
             };
             let serial = parts.next().filter(|s| !s.is_empty());
@@ -1009,9 +1061,7 @@ pub(crate) fn usb_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
             (found, None)
         };
     match found.len() {
-        0 => Err(fail(
-            cli,
-            cmd,
+        0 => Err(Miss::new(
             ErrorKind::DeviceNotFound,
             format!("no USB device matches --device `{sel}`"),
             None,
@@ -1021,17 +1071,17 @@ pub(crate) fn usb_device(cli: &Cli, cmd: &str, sel: &str) -> Result<AppDevice, E
             let port = port.or_else(|| dev.serial_ports().into_iter().next());
             Ok(AppDevice { dev, port })
         }
-        n => Err(crate::cmd_probe::fail_with_candidates(
-            cli,
-            cmd,
-            ErrorKind::DeviceAmbiguous,
-            format!("{n} USB devices match --device `{sel}`"),
-            Some("name it by position: --device topology:<bus>-<ports>"),
-            found
+        n => Err(Miss {
+            candidates: found
                 .iter()
                 .map(|d| serde_json::json!(format!("topology:{}", d.topology())))
                 .collect(),
-        )),
+            ..Miss::new(
+                ErrorKind::DeviceAmbiguous,
+                format!("{n} USB devices match --device `{sel}`"),
+                Some("name it by position: --device topology:<bus>-<ports>".to_owned()),
+            )
+        }),
     }
 }
 
@@ -1088,7 +1138,15 @@ fn enter_via_app(
                 }
             }
         }
-        (None, Some(sel)) => Some(usb_device(cli, cmd, sel)?),
+        (None, Some(sel)) => Some(find_usb_device(sel).map_err(|mut m| {
+            if m.app_gone() {
+                m.hint = Some(format!(
+                    "the application is not connected and no ISP device is up; pick the board's port as it is now (ch32rv-isp://… once the chip is in its bootloader){}",
+                    m.hint.map(|h| format!(" ({h})")).unwrap_or_default()
+                ));
+            }
+            m.fail(cli, cmd)
+        })?),
         (None, None) if entry == IspEntry::DfuDetach => {
             let all = ch32rv_usb::enumerate()
                 .map_err(|e| fail(cli, cmd, ErrorKind::DeviceOpenFailed, e.to_string(), None))?;

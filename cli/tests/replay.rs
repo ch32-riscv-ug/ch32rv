@@ -389,6 +389,48 @@ fn isp_info_replays() {
     assert!(!stderr.contains("diverged"), "stderr: {stderr}");
 }
 
+/// en: `--device` naming an application that is gone - the IDE keeps the application's port
+/// selected once the chip is already in its bootloader - takes the one ISP device present, as
+/// without `--device`, whatever `--entry`; a malformed address still stops (exit 2).
+/// ja: 居ないアプリの `--device`(IDE はチップが bootloader に入った後もアプリの port を選んだまま)は、
+/// `--device` 無しと同じに唯一の ISP device を使う。形の誤りは止める。
+#[test]
+fn isp_device_of_an_application_gone_takes_the_isp_device() {
+    let run = |device: &str, entry: &str| {
+        Command::new(bin())
+            .args([
+                "--replay",
+                &fixture("isp-info-x035.ndjson"),
+                "isp",
+                "info",
+                "--entry",
+                entry,
+                "--device",
+                device,
+            ])
+            .output()
+            .expect("run ch32rv")
+    };
+    for device in [
+        "/dev/ch32rv-no-such-tty",
+        "ch32rv-app://NO-SUCH-APP",
+        "1234:5678",
+    ] {
+        for entry in ["auto", "dfu-detach", "touch1200", "none"] {
+            let out = run(device, entry);
+            assert!(
+                out.status.success(),
+                "{device} {entry}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(String::from_utf8_lossy(&out.stdout).contains("2.60"));
+        }
+    }
+    for device in ["usb:3-1", "hid://3-1", "ch32rv-hid://3-1", "zz"] {
+        assert_eq!(run(device, "auto").status.code(), Some(2), "{device}");
+    }
+}
+
 /// en: The same bootloader taking `pattern-4k.bin`: key, erase (8 sectors), 74 Program chunks
 /// plus the closing empty one, 74 Verify chunks, and IspEnd with its answer read. Replay checks
 /// every OUT byte against the recording, so the XOR key and framing are pinned.
