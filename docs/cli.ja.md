@@ -32,8 +32,7 @@ ch32rv
 │  ├─ power <3v3|5v> <on|off>  電源出力                                            P0  [wlink set-power, minichlink -3/-5/-t/-f]
 │  ├─ power cycle              電源再投入                                          P0
 │  ├─ mode <get|set>           RISC-V / DAP 切替                                   P1  [wlink mode-switch]
-│  ├─ firmware <info|check|update>  版の解釈・不良版検出・IAP 書込                 P0/P0/P1  [wlink-iap, LinkUtility]
-│  └─ vendor <hex>             backend 固有 escape(隠し)                          P2  [minichlink -X]
+│  └─ firmware <info|check|update>  版の解釈・不良版検出・IAP 書込                 P0/P0/P1  [wlink-iap, LinkUtility]
 │
 ├─ target                      target の識別と不揮発設定
 │  ├─ info                     chip ID/SKU 候補/UID/容量/保護/option 要約          P0  [minichlink -i, LinkUtility]
@@ -50,19 +49,14 @@ ch32rv
 │  └─ sdi <on|off>             SDI print の有効/無効                               P1  [wlink sdi-print]
 │
 ├─ gdb                         GDB server(attach 時 flash 非改変)                P1  [WCH OpenOCD, minichlink -G, probe-rs gdb]
-├─ dap                         DAP server(予約・未実装、help に出さない、exit 71)   P2  [probe-rs dap-server]
 │
-├─ isp                         factory ISP 経路(予約・未実装、help に出さない、exit 71) P2  [wchisp, WCHISPTool_CMD]
+├─ isp                         factory ISP 経路                                    P2  [wchisp, WCHISPTool_CMD]
 │  ├─ list / info / enter / reset
 │  ├─ flash <file> / verify <file> / erase
-│  ├─ eeprom <read|write|erase>
-│  └─ config <get|set|reset>
+│  └─ config <get|set>
 │
-├─ boot                        custom bootloader 経路                              P2  [dfu-util, UF2 copy, tinyboot, rv003usb]
-│  ├─ enter [--method touch1200|double-reset|magic|pin]   (予約・未実装)
-│  ├─ dfu <flash|info>                                    (予約・未実装)
-│  ├─ uf2 flash <file>                                    (予約・未実装)
-│  ├─ uart <flash|info> [--node <id>]                     (予約・未実装)
+├─ boot                        custom bootloader 経路                              P2  [dfu-util, rv003usb]
+│  ├─ dfu <flash|info>
 │  └─ hid flash <file>
 │
 ├─ db                          target DB の閲覧
@@ -214,9 +208,9 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 | 61 | `run`: `--duration` の間に終わりも止まりもしなかった(`run-timeout`) |
 | 62 | `run`: semihosting でない理由で止まった(`target-halted`。breakpoint、例外。`result.dpc`) |
 | 70 | 内部エラー(bug。report 情報を出す) |
-| 71 | 予約されたが未実装のコマンド(`unimplemented`) |
+| 71 | 欠番。0.24 までは予約だけのコマンドが出した(`unimplemented`)。別の意味では使わない |
 
-10-14 は「経路の入口 device」、20-24 は「target」、30-41 は「転送・検証」、50 は「実行確認」、60-69 は「`run` での target 自身の結果」、70-79 は「tool 自身」。将来の追加は各帯の空き番号のみ使う(2026-10-01 に 60-62 と 71 を足した。docs/freeze-decisions.ja.md §6 / §8)。
+10-14 は「経路の入口 device」、20-24 は「target」、30-41 は「転送・検証」、50 は「実行確認」、60-69 は「`run` での target 自身の結果」、70-79 は「tool 自身」。将来の追加は各帯の空き番号のみ使い、欠番(71)は使い回さない。
 
 ### 3.7 排他制御と再試行
 
@@ -322,7 +316,6 @@ ch32rv probe firmware info                        版(0 埋めしない "2.22"�
 ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12(実装済。実機: LinkE 2.22 は --min 2.20 通過/2.30 で exit12、CH549 2.12 は --min 2.20 で exit12)
 ch32rv probe firmware update --image <FILE> [--yes]  IAP 経由で probe 自身の firmware を書換(実装済。実機: LinkE 2.22 ⇔ 2.13 を相互に更新し版を確認)
 ch32rv probe firmware exit-iap                     IAP mode の probe を、何も書かずに今入っている app で起動させる(実装済)
-ch32rv probe vendor <hex...>                      隠し。backend 固有 command の escape hatch
 ```
 
 - **`probe power` は target の電源を切れないことがある**: WCH-LinkE fw 2.22 は `3v3 off` / `5v off` を受理する(rc 0)が、LinkE から給電している CH32L103 / V203 / V003 / X035 で、off の間も target は走り続けた(UART が途切れず、X035 は loop counter も連続。wch-protocols E166)。**回り込みではなく、出力がそもそも切れていない**: target をつながない LinkE の 3V3 を ADC で測ると、`3v3 off`(`0a`)の後も `5v off`(`0c`)の後も 3.24 V のままだった(最小 3.1 V、E167)。`probe power` は off / cycle のたびに warning `power-off-unverified` を出す。特殊消去の中でも 3V3 は切れず、RST が pulse する(E167。§4.3)。RST 未配線のとき、正常な target は特殊消去で reset されない(havereset なし、RAM の目印が残る。E168)。attach で止まった target では、電源が落ちないまま reset がかかる(出どころは未確定)。
@@ -417,11 +410,10 @@ ch32rv monitor sdi <on|off>
 - port は VID/PID/serial/interface から決め、COM 番号・`/dev/tty*` の番号に依存しない。`--probe name:bench-01` から同一物理 device の CDC を引けることが HIL の要件。
 - 実装は 2 backend に割れる: **CDC serial backend**(`uart`/`sdi`。`sdi` は先に enable command)と **DMI backend**(`dmdata`/`dmseq`/`rtt`。core を halt せず running 中に DMI read/write)。
 
-### 4.6 gdb / dap
+### 4.6 gdb
 
 ```text
 ch32rv gdb [--listen 127.0.0.1:3333] [--reset-halt] [--no-flash]
-ch32rv dap [--port <n>|--stdio]                     P2
 ```
 
 - **attach 時に target flash を書き換えない**(WCH OpenOCD の挙動を再現しない)。`load`(vFlash)には対応するが必須にしない。
@@ -455,9 +447,8 @@ ch32rv isp flash <FILE> [--erase auto|none] [--verify on|none] [--reset run|none
 ch32rv isp verify <FILE>                            bootloader が照合(不一致 exit 30)
 ch32rv isp erase                                    code flash 全消去(確認あり、--yes で省略)
 ch32rv isp reset                                    bootloader を抜けて app を起動
-ch32rv isp eeprom read|write|erase [<FILE>]         予約(exit 71)
 ch32rv isp config get                               option bytes を解いて表示
-ch32rv isp config set <key>=<v>...                  option bytes を変更して読み直しで照合(reset は予約)
+ch32rv isp config set <key>=<v>...                  option bytes を変更して読み直しで照合
 ```
 
 - **USB transport は実装済み(2026-10-13)**。CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で info / flash / verify / erase / reset を実機確認し、書いた内容は RVSWD の読み出しで照合した。byte の記録は [protocol/factory-isp.ja.md](protocol/factory-isp.ja.md)、replay fixture は `tests/fixtures/replay/isp-*-x035.ndjson`。
@@ -466,7 +457,7 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
 - `--wait <SECS>`(既定 0): device が無ければその秒数だけ待つ。最初に、入り方(Boot キーを押したまま USB を接続、または `--entry probe`)を stderr に 1 回出す。期限切れは exit 10。
 - `--entry probe`: ISP device が無ければ、`--probe` の debug 線で hart を reset vector で止め、`FLASH_KEYR` と `FLASH_BOOT_MODEKEYR` を外し、`FLASH_STATR.BOOT_MODE` を立てて reset してから、最大 5 s 待つ。flash の中身を先に走らせないので、壊れた image が入っていても入れる。OEP の probe と WCH-Link の両方で使える(WCH-Link は DMI の reset-halt で捕まえ、最後は probe の system reset)。family は CH32X033 / X035 だけ(他は exit 24)。WCH-LinkE(fw 2.22)+ CH32X035C8T6 でも、reset 後に `FLASH_STATR` = `0xF000`・PC が BOOT 領域になることを確認した(この板の USB は PC に未接続)。入れたのに ISP device が現れないときは、チップの USB の接続を疑うよう hint を出す。読み出し保護中のチップ(`FLASH_OBR.RDPRT`)には入れず exit 21(bootloader が走らないため。`recover --method unprotect` を hint に出す)。`isp enter` は `--entry probe` で開いて Identify / ReadConfig までして終わる。
 - `--entry` は ISP device が居ないときの入り方(既定 `none`)。どれも、入れた後は最大 5 s(`--wait` が長ければそれ)待つ。
-  - **DFU について**: ここで使う DFU は、DFU 1.1 の **run-time interface と DFU_DETACH 要求だけ**(アプリに「bootloader へ再起動して」と頼む標準の合図)。その後に現れるのは WCH の factory ISP(`1a86:55e0`、独自 protocol)で、DFU mode の device ではない。**DFU の download(DNLOAD)は使わず、dfu-util では書けない**。DFU mode で書く本物の DFU bootloader は別の経路(`boot dfu`、予約)。
+  - **DFU について**: ここで使う DFU は、DFU 1.1 の **run-time interface と DFU_DETACH 要求だけ**(アプリに「bootloader へ再起動して」と頼む標準の合図)。その後に現れるのは WCH の factory ISP(`1a86:55e0`、独自 protocol)で、DFU mode の device ではない。**DFU の download(DNLOAD)は使わず、dfu-util では書けない**。DFU mode で書く DFU の device は別の経路(`boot dfu`)。
   - `dfu-detach`: アプリの DFU 1.1 run-time interface(class `0xfe`/`0x01`/`0x01`)へ DFU_DETACH(`21 00`、`wValue` 1000、`wIndex` = interface)。`--app-device` が無ければ、run-time interface を持つ device がちょうど 1 台のときだけそれを使う(0 台 exit 10、2 台以上 exit 14)。アプリは status stage の前に切れることがあり(Linux では stall)、それでも detach するので、エラーは `warning[dfu-detach]` にとどめて待つ。
   - `touch1200`: アプリの serial port を 1200 bps で開き、DTR を落として閉じる(Arduino の約束)。**`--app-device` で名指しした device にだけ送る**(無関係な板を reset しないため。無ければ exit 2)。
   - `auto`: 名指しされたアプリが DFU run-time interface を持てば `dfu-detach`、無くて serial port があれば `touch1200`。アプリの指定が無く `--probe` があれば `probe`。どれも無ければ何もせず、`--wait` の間、入り方を出して待つ。Arduino の upload recipe はこれを使う(`--entry auto --app-device "port:{upload.port.address}"`)。
@@ -487,18 +478,14 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
 ### 4.8 boot(custom bootloader 経路)
 
 ```text
-ch32rv boot enter [--method touch1200|double-reset|magic|pin] [--port <p>]
-ch32rv boot dfu flash <FILE> [--alt <n>] [--address <a>] [--usb-id <VID:PID>]   dfu-util 相当
+ch32rv boot dfu flash <FILE> [--format auto|elf|hex|bin] [--at <addr>]   DFU 1.1 の download
 ch32rv boot dfu info
-ch32rv boot uf2 flash <FILE>                                   volume 検出→(必要なら変換)→copy→完了監視
-ch32rv boot uart flash|info <FILE> [--node <id>]               tinyboot 系(RS-485 multi-drop 含む)
 ch32rv boot hid flash <FILE> [--usb-id <VID:PID>] [--wait <SECS>]  rv003usb / b003fun 系(UIAPduino 等)
 ```
 
 HID flashは実装済み。既定で`1209:b803`（UIAPduino）→`1209:b003`（rv003usb）の順に探索し、
 64 byte page単位でpreverify・erase・program・read-back verifyを行ってuser appを起動する。
-`--capture` / `--replay`もHID feature reportを含めて対応する。DFU / UF2 / UARTとboot entryの
-一般化はP2。
+`--capture` / `--replay`もHID feature reportを含めて対応する。
 
 bootloaderが見つからないときは、`--wait`の秒数(既定30、`0`で即exit 10)だけ200 ms間隔で探し直す。
 最初に見つからなかった時点で、待つことと入り方(RESETを押したままUSBを接続し、すぐ離す。押し続けると

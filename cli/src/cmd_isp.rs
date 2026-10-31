@@ -22,7 +22,6 @@ use crate::cmd_probe::fail;
 const CODE_FLASH_START: u32 = 0x0800_0000;
 
 pub fn isp(cli: &Cli, args: &IspArgs) -> ExitCode {
-    let cmd = crate::canonical_name(&cli.command);
     match &args.cmd {
         IspCmd::List => list(cli),
         IspCmd::Info => info(cli, args),
@@ -38,7 +37,6 @@ pub fn isp(cli: &Cli, args: &IspArgs) -> ExitCode {
         IspCmd::Enter { via: IspVia::Probe } => enter(cli, args),
         IspCmd::Config(IspConfigCmd::Get) => config_get(cli, args),
         IspCmd::Config(IspConfigCmd::Set { kv }) => config_set(cli, args, kv),
-        _ => crate::unimplemented_cmd(cli, cmd),
     }
 }
 

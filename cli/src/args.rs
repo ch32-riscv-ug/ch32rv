@@ -138,9 +138,6 @@ pub enum Command {
     Monitor(MonitorArgs),
     /// GDB server (never modifies flash on attach)
     Gdb(GdbArgs),
-    /// DAP server (reserved, not implemented yet: exit 71)
-    #[command(hide = true)]
-    Dap(DapArgs),
     /// Factory ISP route: the chip's own USB bootloader
     Isp(IspArgs),
     /// Custom bootloader route
@@ -355,12 +352,6 @@ pub enum ProbeCmd {
     /// Probe firmware: version info, known-bad check, IAP update
     #[command(subcommand)]
     Firmware(FirmwareCmd),
-    /// Backend-specific escape hatch (reserved, not implemented yet: exit 71)
-    #[command(hide = true)]
-    Vendor {
-        #[arg(required = true)]
-        hex: Vec<String>,
-    },
 }
 
 #[derive(Subcommand)]
@@ -554,14 +545,6 @@ pub struct GdbArgs {
     pub no_flash: bool,
 }
 
-#[derive(Args)]
-pub struct DapArgs {
-    #[arg(long)]
-    pub port: Option<u16>,
-    #[arg(long)]
-    pub stdio: bool,
-}
-
 // en: §4.7 isp. / ja: §4.7 isp。
 
 #[derive(Args)]
@@ -635,9 +618,6 @@ pub enum IspCmd {
     Verify { file: PathBuf },
     /// Erase all of code flash
     Erase,
-    /// Dataflash (EEPROM) (reserved, not implemented yet: exit 71)
-    #[command(subcommand, hide = true)]
-    Eeprom(EepromCmd),
     /// Option bytes: read protection, write protection, USER flags, DATA0/1
     #[command(subcommand)]
     Config(IspConfigCmd),
@@ -669,13 +649,6 @@ pub enum IspReset {
 }
 
 #[derive(Subcommand)]
-pub enum EepromCmd {
-    Read { out: Option<PathBuf> },
-    Write { file: PathBuf },
-    Erase,
-}
-
-#[derive(Subcommand)]
 pub enum IspConfigCmd {
     /// Show the option bytes, decoded
     Get,
@@ -685,35 +658,18 @@ pub enum IspConfigCmd {
         #[arg(required = true)]
         kv: Vec<String>,
     },
-    /// Reserved, not implemented yet (exit 71)
-    #[command(hide = true)]
-    Reset,
 }
 
 // en: §4.8 boot. / ja: §4.8 boot。
 
 #[derive(Subcommand)]
 pub enum BootCmd {
-    /// Enter the bootloader (reserved, not implemented yet: exit 71)
-    #[command(hide = true)]
-    Enter {
-        #[arg(long)]
-        method: Option<String>,
-        #[arg(long)]
-        port: Option<String>,
-    },
     /// USB DFU 1.1 download into an application that reflashes itself (DFU_DETACH first when it
     /// runs its DFU run-time interface). Select it with --probe <serial port> |
     /// ch32rv-app://<id> | usb:<bus>-<ports> | VID:PID[:SERIAL]; the only DFU device when
     /// omitted
     #[command(subcommand)]
     Dfu(DfuCmd),
-    /// Reserved, not implemented yet (exit 71)
-    #[command(subcommand, hide = true)]
-    Uf2(Uf2Cmd),
-    /// Reserved, not implemented yet (exit 71)
-    #[command(subcommand, hide = true)]
-    Uart(UartBootCmd),
     #[command(subcommand)]
     Hid(HidBootCmd),
 }
@@ -731,29 +687,6 @@ pub enum DfuCmd {
     },
     /// Show the DFU device and its state
     Info,
-}
-
-#[derive(Subcommand)]
-pub enum Uf2Cmd {
-    Flash {
-        file: PathBuf,
-        #[arg(long)]
-        volume: Option<String>,
-    },
-}
-
-#[derive(Subcommand)]
-pub enum UartBootCmd {
-    Flash {
-        file: PathBuf,
-        /// RS-485 multi-drop node id
-        #[arg(long)]
-        node: Option<String>,
-    },
-    Info {
-        #[arg(long)]
-        node: Option<String>,
-    },
 }
 
 #[derive(Subcommand)]

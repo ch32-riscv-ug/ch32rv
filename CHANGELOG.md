@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) Breaking: the reserved-only subcommands are gone: `dap`, `probe vendor`, `isp eeprom`, `isp config reset`, `boot enter`, `boot uf2`, `boot uart`. They only answered exit 71; they come back as plain additions when implemented. Exit code 71 (`unimplemented`) is retired and never reused.
+- (JA) 破壊的変更: 予約だけのサブコマンドを消した(`dap`、`probe vendor`、`isp eeprom`、`isp config reset`、`boot enter`、`boot uf2`、`boot uart`)。exit 71 を返すだけだった。実装するときに追加として戻す。exit 71(`unimplemented`)は欠番にし、使い回さない。
 - (EN) The library crates are parts of the ch32rv CLI, published so that `cargo install ch32rv` builds: their API is not promised and they follow no semver promise (each README and description says so). ch32rv now depends on them with exact versions (`=X.Y.Z`), so installing an older ch32rv cannot pick up a later part whose API moved. `scripts/release.sh` bumps the exact pins.
 - (JA) ライブラリの crate は ch32rv の CLI の部品で、`cargo install ch32rv` のために公開している。API は約束せず、semver の約束もしない(各 README と description に書いた)。ch32rv はそれらに完全一致の版(`=X.Y.Z`)で依存するので、古い ch32rv を入れるときに、API の動いた後の部品を拾わない。`scripts/release.sh` は完全一致の固定を上げる。
 - (EN) Fix: RstOut sent `81 0d 02 01 13`, which the Link reads as GetProbeInfo (sub `01`): it answered with its probe info, drove no RST, and left the next DMI reads busy. It now sends WCH's `81 0d 01 13` / `14`. The LinkE (fw 2.22) answers `00`; the CH549 Link (fw 2.12) answers `ff`, so `--connect-under-reset` on it now fails with "the probe does not support RstOut" instead of going on as if NRST were held. Whether the LinkE's RST line moves is not measured yet (no bench target has its NRST wired to a LinkE).

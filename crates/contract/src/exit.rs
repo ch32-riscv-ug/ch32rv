@@ -52,8 +52,7 @@ pub enum ExitCode {
     TargetHalted = 62,
     /// Internal error (bug)
     Internal = 70,
-    /// The command is reserved but not implemented yet
-    Unimplemented = 71,
+    // 71 is retired: up to 0.24 it meant "reserved, not implemented"; it is never reused.
 }
 
 impl ExitCode {
@@ -102,8 +101,6 @@ pub enum ErrorKind {
     /// `run`: the target stopped other than by a semihosting exit.
     TargetHalted,
     Internal,
-    /// A reserved command that is not implemented yet.
-    Unimplemented,
 }
 
 impl ErrorKind {
@@ -133,7 +130,6 @@ impl ErrorKind {
             ErrorKind::RunTimeout => "run-timeout",
             ErrorKind::TargetHalted => "target-halted",
             ErrorKind::Internal => "internal",
-            ErrorKind::Unimplemented => "unimplemented",
         }
     }
 
@@ -161,7 +157,6 @@ impl ErrorKind {
             ErrorKind::RunTimeout => ExitCode::RunTimeout,
             ErrorKind::TargetHalted => ExitCode::TargetHalted,
             ErrorKind::Internal => ExitCode::Internal,
-            ErrorKind::Unimplemented => ExitCode::Unimplemented,
         }
     }
 }
@@ -196,7 +191,6 @@ mod tests {
         ErrorKind::RunTimeout,
         ErrorKind::TargetHalted,
         ErrorKind::Internal,
-        ErrorKind::Unimplemented,
     ];
 
     /// The frozen exit-code numbers (docs/cli.ja.md §3.6). These are a public contract and must
@@ -223,7 +217,6 @@ mod tests {
         assert_eq!(ExitCode::RunTimeout.code(), 61);
         assert_eq!(ExitCode::TargetHalted.code(), 62);
         assert_eq!(ExitCode::Internal.code(), 70);
-        assert_eq!(ExitCode::Unimplemented.code(), 71);
     }
 
     /// Every kind maps to a code in the documented band set; `exit_code` is total (compile-checked)

@@ -109,8 +109,7 @@ a device. Exit codes and the JSON envelope are defined by the `ch32rv-contract` 
 | `arduino` | Arduino IDE integration (`discovery` / `monitor` Pluggable protocols) |
 
 `isp` (the chip's factory USB bootloader) is verified on CH32X035 only; `--entry probe` puts
-the chip in its bootloader over an OEP probe's debug wire. Some routes advertised in `--help` —
-`dap`, the rest of `boot` — are planned for a later `0.x` and are not part of the verified surface yet.
+the chip in its bootloader over an OEP probe's debug wire.
 
 ## Library crates
 

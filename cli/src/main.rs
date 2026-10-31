@@ -294,7 +294,6 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
         Command::Boot(BootCmd::Dfu(DfuCmd::Info)) => cmd_boot::dfu_info(cli),
         Command::Isp(a) => cmd_isp::isp(cli, a),
         Command::Complete(a) => cmd_complete(a.shell),
-        other => unimplemented_cmd(cli, canonical_name(other)),
     }
 }
 
@@ -354,25 +353,6 @@ fn cmd_version(cli: &Cli) -> std::process::ExitCode {
     }
 }
 
-pub(crate) fn unimplemented_cmd(cli: &Cli, cmd: &str) -> std::process::ExitCode {
-    if cli.json {
-        let mut env = ResultEnvelope::failure(
-            cmd,
-            ErrorKind::Unimplemented,
-            format!("`{cmd}` is reserved and not implemented yet"),
-        );
-        if let Some(e) = env.error.as_mut() {
-            e.hint = Some("the name is reserved for a later version (docs/cli.ja.md)".to_owned());
-        }
-        let code = ErrorKind::Unimplemented.exit_code();
-        let _ = print_envelope(&env);
-        code.into()
-    } else {
-        eprintln!("ch32rv: error[unimplemented]: `{cmd}` is reserved and not implemented yet");
-        ErrorKind::Unimplemented.exit_code().into()
-    }
-}
-
 pub(crate) fn print_envelope(env: &ResultEnvelope) -> std::process::ExitCode {
     match serde_json::to_string(env) {
         Ok(s) => {
@@ -415,7 +395,6 @@ pub(crate) fn canonical_name(cmd: &Command) -> &'static str {
             ProbeCmd::Firmware(FirmwareCmd::Check { .. }) => "probe.firmware.check",
             ProbeCmd::Firmware(FirmwareCmd::ExitIap) => "probe.firmware.exit-iap",
             ProbeCmd::Firmware(FirmwareCmd::Update { .. }) => "probe.firmware.update",
-            ProbeCmd::Vendor { .. } => "probe.vendor",
         },
         Command::Target(t) => match t {
             TargetCmd::List { .. } => "target.list",
@@ -440,7 +419,6 @@ pub(crate) fn canonical_name(cmd: &Command) -> &'static str {
             None => "monitor",
         },
         Command::Gdb(_) => "gdb",
-        Command::Dap(_) => "dap",
         Command::Isp(i) => match &i.cmd {
             IspCmd::List => "isp.list",
             IspCmd::Info => "isp.info",
@@ -448,21 +426,13 @@ pub(crate) fn canonical_name(cmd: &Command) -> &'static str {
             IspCmd::Flash { .. } => "isp.flash",
             IspCmd::Verify { .. } => "isp.verify",
             IspCmd::Erase => "isp.erase",
-            IspCmd::Eeprom(EepromCmd::Read { .. }) => "isp.eeprom.read",
-            IspCmd::Eeprom(EepromCmd::Write { .. }) => "isp.eeprom.write",
-            IspCmd::Eeprom(EepromCmd::Erase) => "isp.eeprom.erase",
             IspCmd::Config(IspConfigCmd::Get) => "isp.config.get",
             IspCmd::Config(IspConfigCmd::Set { .. }) => "isp.config.set",
-            IspCmd::Config(IspConfigCmd::Reset) => "isp.config.reset",
             IspCmd::Reset => "isp.reset",
         },
         Command::Boot(b) => match b {
-            BootCmd::Enter { .. } => "boot.enter",
             BootCmd::Dfu(DfuCmd::Flash { .. }) => "boot.dfu.flash",
             BootCmd::Dfu(DfuCmd::Info) => "boot.dfu.info",
-            BootCmd::Uf2(Uf2Cmd::Flash { .. }) => "boot.uf2.flash",
-            BootCmd::Uart(UartBootCmd::Flash { .. }) => "boot.uart.flash",
-            BootCmd::Uart(UartBootCmd::Info { .. }) => "boot.uart.info",
             BootCmd::Hid(HidBootCmd::Flash { .. }) => "boot.hid.flash",
         },
         Command::Db(d) => match d {
