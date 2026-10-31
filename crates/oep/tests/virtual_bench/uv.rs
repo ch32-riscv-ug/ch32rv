@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// oep-client-python on oep-spec f8bb2de and after: the virtual bench, with `lose`, `reboot` and
-/// `--announce` (DNS-SD).
-const BENCH_REV: &str = "b1eaeefca8ea72c0455132bca281ee7f43dd0a0a";
+/// The oep-client-python version tests/oep-virtual pins (its uv.lock): part of the venv's name, so
+/// a new pin never reuses a venv built for an older client.
+const BENCH_REV: &str = "0.0.41";
 
 fn target_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();

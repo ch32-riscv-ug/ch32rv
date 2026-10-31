@@ -11,15 +11,19 @@ dependencies = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "oep-client-python", git = "https://github.com/Open-Embedded-Probe/oep-client-python?rev=b32731341c705155f085231dad995b65f53af2fe" }]
+requires-dist = [{ name = "oep-client-python", specifier = "==0.0.41" }]
 
 [[package]]
 name = "oep-client-python"
-version = "0.0.38"
-source = { git = "https://github.com/Open-Embedded-Probe/oep-client-python?rev=b32731341c705155f085231dad995b65f53af2fe#b32731341c705155f085231dad995b65f53af2fe" }
+version = "0.0.41"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyserial" },
     { name = "pyusb" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c9/a3/53d4ffd732d2b68c1cea5018ba92d99413038f2b2405d57549208ec2f9ef/oep_client_python-0.0.41.tar.gz", hash = "sha256:ee421803a0700d846f610fdf51a80e35ccb4d2c346f2886bccc032202fd3f7f9", size = 2001266, upload-time = "2026-10-31T21:46:51.154Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f0/f6/39522e5eee770cc38b7585a428a996cabc6612297d7917487b78c5805d24/oep_client_python-0.0.41-py3-none-any.whl", hash = "sha256:5d85cfcc70c57f043db4318656a6c3f83614a1b7daa6030b101c94a4c1e451c8", size = 915831, upload-time = "2026-10-31T21:46:49.038Z" },
 ]
 
 [[package]]
