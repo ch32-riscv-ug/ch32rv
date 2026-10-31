@@ -135,6 +135,7 @@ dependencies = [
  "rustix",
  "serde_json",
  "serialport",
+ "sha2",
  "socket2",
  "toml",
 ]

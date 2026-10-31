@@ -992,6 +992,99 @@ fn wait_for_mode(topology: &str, want: ProbeMode, timeout: Duration) -> Option<E
     }
 }
 
+/// en: The ch32-device-data `link_firmware.device` name of a probe variant; None for a variant
+/// with no image in the table.
+/// ja: variant の `link_firmware.device` での名前。表に image の無い variant は None。
+fn link_device(v: wchlink::Variant) -> Option<&'static str> {
+    match v {
+        wchlink::Variant::Ch549 => Some("WCH-Link"),
+        wchlink::Variant::LinkE => Some("WCH-LinkE"),
+        wchlink::Variant::LinkW => Some("WCH-LinkW"),
+        wchlink::Variant::DapLink => Some("WCH-DAPLink"),
+        _ => None,
+    }
+}
+
+/// What the image table (ch32-device-data `index/link_firmware.csv`, by sha256) says about an
+/// image for `probe firmware update`.
+#[derive(Debug, PartialEq, Eq)]
+enum ImageCheck {
+    /// en: Not in the table: the probe model cannot be checked (warning `image-model-unverified`).
+    /// ja: 表に無い。probe 型番を照合できない(warning)。
+    Unlisted,
+    /// en: The application image (`offline` row) for the connected probe's model.
+    /// ja: つないだ probe の型番の application image。
+    Matches(ch32rv_target::LinkFirmware),
+    /// en: The application image of some model, while the probe's model is not known (it sits
+    /// in IAP mode, which does not report one).
+    /// ja: application image だが、probe の型番が分からない(IAP mode は型番を返さない)。
+    ModelUnknown(ch32rv_target::LinkFirmware),
+    /// en: Refuse the image: (message, hint).
+    /// ja: 拒否する(message, hint)。
+    Refuse(String, String),
+}
+
+/// en: The `offline` (application-only) image the table lists for `device` / `mode`.
+/// ja: `device` / `mode` の application image のファイル名。
+fn app_image_for(device: &str, mode: &str) -> Option<&'static str> {
+    ch32rv_target::link_firmwares()
+        .map(|(_, f)| f)
+        .find(|f| f.device == device && f.mode == mode && f.role == "offline")
+        .map(|f| f.file)
+}
+
+/// en: Check a table hit against the probe. `probe` is None when its model is not known (before
+/// a device is opened, or in IAP mode). An `iap` row (bootloader + application) is refused
+/// whatever the probe; an `offline` row for another model than the probe's is refused. `mode`
+/// is not compared: only the CH549 WCH-Link has RISC-V / ARM images, and it is not updated here.
+/// ja: 表の行を probe と照らす。`iap` 行(BL 付き)は常に拒否、別型番の `offline` 行も拒否。
+/// `mode` は照合しない(RV/ARM の image を持つのは CH549 だけで、ここでは更新しない)。
+fn check_image(
+    known: Option<ch32rv_target::LinkFirmware>,
+    probe: Option<wchlink::Variant>,
+) -> ImageCheck {
+    let Some(f) = known else {
+        return ImageCheck::Unlisted;
+    };
+    let what = if f.mode.is_empty() {
+        format!("{} {}", f.device, f.version)
+    } else {
+        format!("{} {} {}", f.device, f.mode, f.version)
+    };
+    if f.role != "offline" {
+        return ImageCheck::Refuse(
+            format!(
+                "the image is WCH's {} ({what}): the IAP bootloader with the application after it, for an external programmer at 0x08000000, not for IAP",
+                f.file
+            ),
+            match app_image_for(f.device, f.mode) {
+                Some(app) => format!("write Firmware_Link/{app}, the application alone"),
+                None => "write the application-only Firmware_Link/FIRMWARE_*.bin".to_owned(),
+            },
+        );
+    }
+    let Some(v) = probe else {
+        return ImageCheck::ModelUnknown(f);
+    };
+    if link_device(v) == Some(f.device) {
+        return ImageCheck::Matches(f);
+    }
+    ImageCheck::Refuse(
+        format!(
+            "the image is WCH's {} ({what}), the firmware of another probe model - this probe is {}",
+            f.file,
+            v.name()
+        ),
+        match link_device(v).and_then(|d| app_image_for(d, "")) {
+            Some(app) => format!("the {} image is Firmware_Link/{app}", v.name()),
+            None => format!(
+                "WCH-LinkUtility's Firmware_Link/ has no image for {}",
+                v.name()
+            ),
+        },
+    )
+}
+
 /// en: `probe firmware update --image <file>` - rewrite the probe's OWN firmware over IAP
 /// (wch-protocols protocols/pc-to-link.ja.md#iap). The probe leaves RISC-V mode, re-enumerates as
 /// `4348:55e0`, takes the image twice (write pass + verify pass) and jumps back into the new
@@ -1024,6 +1117,19 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
     if image.is_empty() {
         return fail(cli, CMD, ErrorKind::Usage, "image is empty", None);
     }
+    // The images WCH-LinkUtility ships are known by sha256 (ch32-device-data
+    // `index/link_firmware.csv`): such an image says which probe model it is for.
+    let sha256: String = {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(&image)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    };
+    let known = ch32rv_target::link_firmware(&sha256);
+    if let ImageCheck::Refuse(msg, hint) = check_image(known, None) {
+        return fail(cli, CMD, ErrorKind::Usage, msg, Some(&hint));
+    }
     let info = iap::inspect(&image);
     // The most likely accident: WCH ships `*-APP-IAP.bin` (bootloader + application) next to the
     // application-only image. Writing the former over IAP puts a bootloader image where the
@@ -1043,6 +1149,16 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
         );
     }
     let image_version = info.version.map(|(a, b)| format!("{a}.{b}"));
+    let known_json = known.map(|f| {
+        serde_json::json!({
+            "device": f.device,
+            "mcu": f.mcu,
+            "mode": (!f.mode.is_empty()).then_some(f.mode),
+            "role": f.role,
+            "file": f.file,
+            "version": f.version,
+        })
+    });
 
     // `--dry-run`: everything that can be said about the image without opening a device.
     if cli.dry_run {
@@ -1062,6 +1178,8 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
                     "version": image_version,
                     "usb_ids": usb_ids,
                     "riscv": info.looks_riscv,
+                    "sha256": sha256,
+                    "known": known_json,
                 },
                 "frames_per_pass": frames,
             }));
@@ -1082,6 +1200,14 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
             }
         );
         println!("riscv:    {}", if info.looks_riscv { "yes" } else { "no" });
+        println!("sha256:   {sha256}");
+        match known {
+            Some(f) => println!(
+                "known:    WCH {} for {} ({}, {})",
+                f.file, f.device, f.role, f.version
+            ),
+            None => println!("known:    no (not an image WCH-LinkUtility ships)"),
+        }
         println!("plan:     enter IAP, write {frames} frames, verify {frames} frames, end");
         println!("dry-run:  no device opened");
         return ExitCode::SUCCESS;
@@ -1100,8 +1226,21 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
     let mut before: Option<String> = None;
     let resumed_in_iap = entry.mode == ProbeMode::Iap;
     match entry.mode {
-        // Rescue: the probe is already in its bootloader, so no entry command is needed.
-        ProbeMode::Iap => {}
+        // Rescue: the probe is already in its bootloader, so no entry command is needed. IAP
+        // mode does not report the probe model, so the image cannot be matched against it.
+        ProbeMode::Iap => match check_image(known, None) {
+            ImageCheck::ModelUnknown(f) => crate::warn(
+                "image-model-unverified",
+                format!(
+                    "the probe is in IAP mode, which does not report its model; the image is WCH's {} for a {}",
+                    f.file, f.device
+                ),
+            ),
+            _ => crate::warn(
+                "image-model-unverified",
+                "the probe is in IAP mode, which does not report its model, and the image is not one WCH-LinkUtility ships; for a WCH-LinkE it must be Firmware_Link/FIRMWARE_CH32V305.bin",
+            ),
+        },
         ProbeMode::Riscv => {
             let mut link = match WchLink::open(&entry.dev) {
                 Ok(l) => l,
@@ -1153,11 +1292,17 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
                 );
             }
             // Nothing in a WCH probe image names its probe model (the USB product string is
-            // "WCH-Link" in all of them), so a LinkW image would pass every check here.
-            crate::warn(
-                "image-model-unverified",
-                "the image cannot be checked against the probe model; for a WCH-LinkE it must be Firmware_Link/FIRMWARE_CH32V305.bin",
-            );
+            // "WCH-Link" in all of them); only an image the table knows by sha256 says it.
+            match check_image(known, Some(probe_info.variant)) {
+                ImageCheck::Matches(_) => {}
+                ImageCheck::Refuse(msg, hint) => {
+                    return fail(cli, CMD, ErrorKind::Usage, msg, Some(&hint));
+                }
+                ImageCheck::Unlisted | ImageCheck::ModelUnknown(_) => crate::warn(
+                    "image-model-unverified",
+                    "the image is not one WCH-LinkUtility ships, so it cannot be checked against the probe model; for a WCH-LinkE it must be Firmware_Link/FIRMWARE_CH32V305.bin",
+                ),
+            }
             before = Some(format!("{}.{}", probe_info.fw_major, probe_info.fw_minor));
             if let Err(why) = confirm_destructive(
                 cli,
@@ -1290,6 +1435,8 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
                 "path": image_path.display().to_string(),
                 "bytes": image.len(),
                 "version": image_version,
+                "sha256": sha256,
+                "known": known_json,
             },
             "firmware_before": before,
             "firmware_after": after,
@@ -1586,5 +1733,47 @@ pub fn power(cli: &Cli, cmd: &crate::args::PowerCmd) -> ExitCode {
             }
         }
         Err(e) => fail(cli, CMD, ErrorKind::TransferFailed, e.to_string(), None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::panic)]
+    use super::*;
+
+    const LINKE_APP: &str = "9c1cd70565ee339409f8bf1f9e466ed0495e0e903fab4fd1044ac55ceb5d6695";
+    const LINKE_APP_IAP: &str = "62e2e3a3854dbafdfea4ed73f5a070314f5ff8174c797016ac7f91685ad3de72";
+    const LINKW_APP: &str = "5c59f42e7d14b4681de89e35860a36915a89a099fdafedba236c622d84152bc8";
+
+    #[test]
+    fn image_check_cases() {
+        use wchlink::Variant;
+        let row = |sha: &str| ch32rv_target::link_firmware(sha);
+        assert_eq!(
+            check_image(None, Some(Variant::LinkE)),
+            ImageCheck::Unlisted
+        );
+        assert!(matches!(
+            check_image(row(LINKE_APP), Some(Variant::LinkE)),
+            ImageCheck::Matches(f) if f.file == "FIRMWARE_CH32V305.bin"
+        ));
+        assert!(matches!(
+            check_image(row(LINKE_APP), None),
+            ImageCheck::ModelUnknown(f) if f.device == "WCH-LinkE"
+        ));
+        match check_image(row(LINKE_APP_IAP), None) {
+            ImageCheck::Refuse(msg, hint) => {
+                assert!(msg.contains("WCH-LinkE-APP-IAP.bin"), "{msg}");
+                assert!(hint.contains("FIRMWARE_CH32V305.bin"), "{hint}");
+            }
+            other => panic!("{other:?}"),
+        }
+        match check_image(row(LINKW_APP), Some(Variant::LinkE)) {
+            ImageCheck::Refuse(msg, hint) => {
+                assert!(msg.contains("FIRMWARE_CH32V208.bin"), "{msg}");
+                assert!(hint.contains("FIRMWARE_CH32V305.bin"), "{hint}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

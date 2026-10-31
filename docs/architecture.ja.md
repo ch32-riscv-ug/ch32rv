@@ -134,7 +134,7 @@ protocol の事実(byte 列・応答・status・実測)は **wch-protocols** の
 
 | 項目 | 方針 |
 |---|---|
-| 源泉 | flash geometry・memory map・option 分割・DM レジスタ番地 = `ch32-device-data`(stable 表、provenance 付き)。chip ID(device_id)値と flash mode 付き memory 定義 = `ch32-data`(**2026-10-14 更新**: device_id は ch32-device-data が WCH EVT の ChipID 一覧と実測だけから作るようになり、ch32-data は外れた。device_ids に無い型番も parts から ID 無しで生成する)。**gap の 7 series(V205/V407/V467/X305/X315/M030/M103)の device_id は `ch32-device-data` に evidence 表の新設を依頼する**(実測手順は `ch32-data/docs/device-ids.md`、実測 basis の前例は `curated/debug-data-measured.json`)。probe firmware の hash→版対応も既存の `evidence/link_firmware.csv` を使い、不足分は依頼で埋める |
+| 源泉 | flash geometry・memory map・option 分割・DM レジスタ番地 = `ch32-device-data`(stable 表、provenance 付き)。chip ID(device_id)値と flash mode 付き memory 定義 = `ch32-data`(**2026-10-14 更新**: device_id は ch32-device-data が WCH EVT の ChipID 一覧と実測だけから作るようになり、ch32-data は外れた。device_ids に無い型番も parts から ID 無しで生成する)。**gap の 7 series(V205/V407/V467/X305/X315/M030/M103)の device_id は `ch32-device-data` に evidence 表の新設を依頼する**(実測手順は `ch32-data/docs/device-ids.md`、実測 basis の前例は `curated/debug-data-measured.json`)。probe firmware の hash→型番・版の対応は `index/link_firmware.csv` から `link_firmware.csv` を生成して使う(`probe firmware update` の image 照合) |
 | 暫定 overlay | 依頼中データの一時置き場(`provisional/`)。生成 pipeline を必ず通し、生成物と CLI 出力に `provisional` flag を出す(verified と同列の可視性) |
 | 生成 | `xtask db-gen` が入力 repo の pinned revision から `ch32rv-target/generated/` を生成して **commit する**(hermetic build。build.rs でネットワークや隣接 repo に依存しない)。CI が再生成一致を検査 |
 

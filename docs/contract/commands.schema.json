@@ -402,7 +402,19 @@
             "bytes": {"type": "integer"},
             "version": {"type": ["string", "null"]},
             "usb_ids": {"type": "array", "items": {"type": "string"}},
-            "riscv": {"type": "boolean"}
+            "riscv": {"type": "boolean"},
+            "sha256": {"type": "string"},
+            "known": {
+              "type": ["object", "null"],
+              "properties": {
+                "device": {"type": "string"},
+                "mcu": {"type": "string"},
+                "mode": {"type": ["string", "null"]},
+                "role": {"enum": ["offline", "iap"]},
+                "file": {"type": "string"},
+                "version": {"type": "string"}
+              }
+            }
           }
         },
         "frames_per_pass": {"type": "integer"},

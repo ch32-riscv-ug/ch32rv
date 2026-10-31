@@ -483,20 +483,25 @@ pub struct ProbeInfo {
     pub fw_mode: Option<FwMode>,
 }
 
-/// en: Known-bad firmware table. Returns the defect description.
-/// Source: measured on ArduinoCore-CH32RV (upload-and-fixture); hash mapping lives in
-/// ch32-device-data `evidence/link_firmware.csv`.
-/// ja: 既知不良 firmware 表。不良内容を返す。出典は ArduinoCore-CH32RV の実測。
 /// en: Known-bad firmware: (variant ID, or `None` for every variant, major, minor, why). Matched by
-/// version and variant; there is no hash check (docs/freeze-decisions.ja.md §12). The 2.11 entry
-/// was recorded without the variant it was seen on, so it applies to all.
+/// version and variant; there is no hash check (docs/freeze-decisions.ja.md §12). Source of the 2.11
+/// entry: ArduinoCore-CH32RV e6e9dfa6 (2026-08-22), docs/upload-and-fixture.ja.md section
+/// "probe の firmware 版が upload の成否を変える": the original WCH-Link (CH549) on 2.11 (v31) with a
+/// CH32V103R8T6 - probe-rs `download --reset` wrote the flash but the core stayed halted, every
+/// time; the same CH549 on 2.12 (v32) ran it every time. The WCH-LinkE boards there (on 2.12) never
+/// showed it, and no LinkE on 2.11 was tried, so the entry is the CH549's only. The images
+/// themselves (sha256, version) are in ch32-device-data `index/link_firmware.csv`.
 /// ja: 既知の不良の firmware。(variant の ID か全 variant の `None`、版、理由)で照合する。hash での照合は
-/// しない。2.11 はどの variant で見たかの記録が無いので全 variant に当てる。
+/// しない。2.11 の出典は ArduinoCore-CH32RV e6e9dfa6 の docs/upload-and-fixture.ja.md
+/// 「probe の firmware 版が upload の成否を変える」: 初代 WCH-Link(CH549)の 2.11(v31)+ CH32V103R8T6 で
+/// probe-rs `download --reset` が書けてもコアが halt のまま(毎回)、同じ CH549 を 2.12(v32)に上げると
+/// 毎回走った。LinkE(2.12)では出ておらず、2.11 の LinkE は試していないので CH549 にだけ当てる。
+/// image の sha256 と版は ch32-device-data `index/link_firmware.csv`。
 const KNOWN_BAD: &[(Option<&str>, u8, u8, &str)] = &[(
-    None,
+    Some("link-ch549"),
     2,
     11,
-    "firmware 2.11 (v31) has a known defect: the target is not started after flashing (reset does not take effect)",
+    "WCH-Link (CH549) firmware 2.11 (v31) has a known defect: the target is not started after flashing (reset does not take effect); 2.12 does not have it",
 )];
 
 pub fn known_bad_firmware(variant: Variant, major: u8, minor: u8) -> Option<&'static str> {
@@ -1105,9 +1110,10 @@ mod tests {
     }
 
     #[test]
-    fn known_bad_is_only_2_11() {
-        assert!(known_bad_firmware(Variant::LinkE, 2, 11).is_some());
+    fn known_bad_is_only_ch549_2_11() {
         assert!(known_bad_firmware(Variant::Ch549, 2, 11).is_some());
+        assert!(known_bad_firmware(Variant::Ch549, 2, 12).is_none());
+        assert!(known_bad_firmware(Variant::LinkE, 2, 11).is_none());
         assert!(known_bad_firmware(Variant::LinkE, 2, 22).is_none());
         assert!(known_bad_firmware(Variant::LinkE, 2, 12).is_none());
         assert_eq!(Variant::LinkE.id(), "linke");

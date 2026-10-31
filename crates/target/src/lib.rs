@@ -58,6 +58,9 @@ const GENERATED_FLASH_PROGRAM_METHOD: &str = include_str!("../generated/flash_pr
 /// The embedded generated per-family option-byte block location (`cargo xtask db-gen`).
 const GENERATED_OPTION_BYTES: &str = include_str!("../generated/option_bytes.csv");
 
+/// The embedded generated WCH probe firmware images, keyed by sha256 (`cargo xtask db-gen`).
+const GENERATED_LINK_FIRMWARE: &str = include_str!("../generated/link_firmware.csv");
+
 /// en: Provenance of the embedded device DB, for `version --json` reproducibility
 /// (docs/architecture.ja.md §3). ja: 埋め込み device DB の来歴。`version --json` の再現性表示用。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +99,8 @@ pub fn provenance() -> DbProvenance {
         GENERATED_FLASH_GEOMETRY,
         GENERATED_FLASH_PROGRAM_METHOD,
         GENERATED_OPTION_BYTES,
+        GENERATED_ESIG,
+        GENERATED_LINK_FIRMWARE,
     ] {
         for &b in part.as_bytes() {
             h ^= u64::from(b);
@@ -314,6 +319,60 @@ pub fn uid_addr(family: &str) -> Option<u32> {
         }
         u32::from_str_radix(addr.trim_start_matches("0x"), 16).ok()
     })
+}
+
+/// en: A WCH probe firmware image WCH-LinkUtility ships (ch32-device-data `index/link_firmware.csv`).
+/// ja: WCH-LinkUtility 同梱の probe firmware の 1 本。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkFirmware {
+    /// Probe product the image is for (`WCH-LinkE`, `WCH-Link`, `WCH-LinkW`, `WCH-DAPLink`).
+    pub device: &'static str,
+    /// MCU on the probe that runs it (`CH32V305`, `CH549`, ...).
+    pub mcu: &'static str,
+    /// `RISC-V` / `ARM` for a CH549 WCH-Link image; empty when the probe has one firmware for both.
+    pub mode: &'static str,
+    /// en: `offline` = `FIRMWARE_*.bin`, the application alone (what the IAP path writes);
+    /// `iap` = `*APP_IAP*.bin`, the IAP bootloader in front of the application.
+    /// ja: `offline` = application のみ(IAP 経路で書くもの)、`iap` = IAP bootloader 付き。
+    pub role: &'static str,
+    /// File name in WCH-LinkUtility.
+    pub file: &'static str,
+    /// The version the probe reports with this image (`2.22`).
+    pub version: &'static str,
+}
+
+/// en: Every shipped probe firmware image in the embedded table, with its sha256 (lowercase hex).
+/// ja: 埋め込み表の probe firmware を sha256(小文字 16 進)と組で全部返す。
+pub fn link_firmwares() -> impl Iterator<Item = (&'static str, LinkFirmware)> {
+    GENERATED_LINK_FIRMWARE.lines().filter_map(|line| {
+        let line = line.trim();
+        if line.starts_with('#') {
+            return None;
+        }
+        let c: Vec<&'static str> = line.split(',').collect();
+        if c.len() < 8 {
+            return None;
+        }
+        Some((
+            c[0],
+            LinkFirmware {
+                device: c[1],
+                mcu: c[2],
+                mode: c[3],
+                role: c[4],
+                file: c[5],
+                version: c[7],
+            },
+        ))
+    })
+}
+
+/// en: The shipped probe firmware image whose sha256 is `sha256_hex`, or None.
+/// ja: sha256 が一致する WCH 配布の probe firmware。無ければ None。
+pub fn link_firmware(sha256_hex: &str) -> Option<LinkFirmware> {
+    link_firmwares()
+        .find(|(sha, _)| sha.eq_ignore_ascii_case(sha256_hex))
+        .map(|(_, f)| f)
 }
 
 /// One named field of the option USER byte, for a family: one bit, or a range (`RST_MODE[4:3]`).
@@ -769,6 +828,20 @@ mod tests {
         assert!(p.digest.starts_with("fnv1a64:"));
         assert_eq!(p.digest.len(), "fnv1a64:".len() + 16);
         assert_eq!(provenance().digest, p.digest);
+    }
+
+    #[test]
+    fn link_firmware_by_sha256() {
+        let e = link_firmware("9c1cd70565ee339409f8bf1f9e466ed0495e0e903fab4fd1044ac55ceb5d6695")
+            .expect("FIRMWARE_CH32V305.bin");
+        assert_eq!(
+            (e.device, e.role, e.file, e.version),
+            ("WCH-LinkE", "offline", "FIRMWARE_CH32V305.bin", "2.22")
+        );
+        let e = link_firmware("3CF143A3B6061E8F6A4CA7EE809FFFE007219CAD062ADCA259D245F996662284")
+            .expect("WCH-Link_APP_IAP_ARM.bin");
+        assert_eq!((e.device, e.mode, e.role), ("WCH-Link", "ARM", "iap"));
+        assert!(link_firmware(&"0".repeat(64)).is_none());
     }
 
     #[test]

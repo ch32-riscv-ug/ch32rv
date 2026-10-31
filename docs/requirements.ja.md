@@ -173,7 +173,7 @@ wchisp は GPL-2.0 のため**コードは取り込まない**。protocol(0xa1 I
 |---|---|---|
 | IAP entry / exit | `probe firmware update` に内蔵 | P1 |
 | image 書込 | `probe firmware update --image <file>` | P1。firmware blob は同梱しない |
-| (無し) | `probe firmware info\|check` | P0。**既知不良版(2.11 の reset 問題)の検出**。hash 照合は `ch32-device-data/evidence/link_firmware.csv` を源泉にできる |
+| (無し) | `probe firmware info\|check` | P0。**既知不良版(2.11 の reset 問題)の検出**。既知不良は variant と版で照合する(CH549 の 2.11)。`probe firmware update` の image の型番照合は `ch32-device-data/index/link_firmware.csv` の sha256 |
 
 注意: LinkE の IAP mode は `4348:55e0` で enumerate され、**WCH factory ISP device と同じ VID:PID**(LinkE の IAP は搭載 CH32V305 の ISP そのもの)。`isp list` は BTVER/chip 種別で区別し、LinkE と判定したら `probe firmware` へ誘導する。IAP に滞留した個体の検出・脱出(`0x83`)も `probe firmware` / `doctor` が持つ。
 
@@ -215,7 +215,7 @@ flash/erase/unbrick/NRST option の参考実装。`flash` / `erase` / `recover` 
 5. **SDI 有効化を upload に織り込む手段が既存構成に無い**(upload は probe-rs、SDI enable は wlink で、recipe に入らない)。`flash --sdi on` が直接の解になる。
 6. **ISP device は USB serial を持たない**(`4348:55e0`)。ISP 経路の複数台識別は topology(bus/port)か「1台のみ」fail-closed になる。probe 経路と同じ selector 文法に topology を含める理由。
 7. **LinkE IAP mode と factory ISP device が同じ VID:PID**。`isp list` / `doctor` に区別ロジックが要る(§3.7)。
-8. **LinkE firmware の hash→版対応表が手元にある**(`ch32-device-data/evidence/link_firmware.csv`)。既知不良版検出(P0)の源泉。
+8. **WCH-Link 系 firmware の hash→型番・版の対応表が手元にある**(`ch32-device-data/index/link_firmware.csv`)。`probe firmware update` の image 照合の源泉。
 9. **target DB の源泉分担が確定**: flash geometry・memory map・option 分割・DM レジスタ番地は ch32-device-data(stable 表 + provenance)、**chip ID(device_id)値は ch32-data のみが持つ**が、ちょうど gap の 7 series が欠落 → 実機実測での evidence 表新設が M2 の必須作業。作成は ch32-device-data 側へ依頼し、納品まで ch32rv 内の暫定 overlay で進める(方針は architecture.ja.md §3。実測手順は `ch32-data/docs/device-ids.md` に既存)。
 10. **CDC が vendor interface より先に見える attach レース**が実測されている(1 秒間隔 3 回の再試行が必要)。probe open の retry を契約に含める。
 11. **Arduino recipe の制約**: `{serial.port}` を使わず、probe selector は「空にできる 1 変数」に畳む必要がある。`--non-interactive` と進捗抑止も必須。現行 platform.txt の probe-rs 呼び出しがそのまま移行先の形を規定する。

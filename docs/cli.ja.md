@@ -205,7 +205,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 {"ev":"phase","name":"erase","total":12}
 {"ev":"progress","phase":"program","done":8192,"total":16700}
 {"ev":"retry","phase":"program","attempt":2,"cause":"transport-timeout"}
-{"ev":"warn","code":"fw-known-bad","msg":"LinkE firmware 2.11 has a known reset defect"}
+{"ev":"warn","code":"fw-known-bad","msg":"WCH-Link (CH549) firmware 2.11 (v31) has a known defect: the target is not started after flashing (reset does not take effect); 2.12 does not have it"}
 ```
 
 ### 3.6 exit code
@@ -341,7 +341,7 @@ ch32rv probe power <3v3|5v> <on|off>
 ch32rv probe power cycle [--off-ms 300]
 ch32rv probe mode get
 ch32rv probe mode set <riscv|dap> [--yes]
-ch32rv probe firmware info                        版(0 埋めしない "2.22"、WCH 表記 v42、raw 0216)、variant、mode、既知不良の判定(variant と版で照合。hash では照合しない)
+ch32rv probe firmware info                        版(0 埋めしない "2.22"、WCH 表記 v42、raw 0216)、variant、mode、既知不良の判定(variant と版で照合。hash では照合しない。既知不良は CH549 の WCH-Link の 2.11 だけ)
 ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12(実装済。実機: LinkE 2.22 は --min 2.20 通過/2.30 で exit12、CH549 2.12 は --min 2.20 で exit12)
 ch32rv probe firmware update --image <FILE> [--yes]  IAP 経由で probe 自身の firmware を書換(実装済。実機: LinkE 2.22 ⇔ 2.13 を相互に更新し版を確認)
 ch32rv probe firmware exit-iap                     IAP mode の probe を、何も書かずに今入っている app で起動させる(実装済)
@@ -352,7 +352,22 @@ ch32rv probe firmware exit-iap                     IAP mode の probe を、何�
 - `firmware update` は IAP mode(`4348:55e0`)への遷移・書込・再 enumeration 待ち・版確認までを 1 操作にする(protocol は wch-protocols `protocols/pc-to-link.ja.md#iap`)。**既に IAP に滞留した個体はそのまま書ける**(entry 不要)ので、中断した更新の復旧経路が同じコマンドになる。image は同梱しない(user-supplied)。
 - **image は同梱しない**。WCH の [WCH-LinkUtility](https://www.wch.cn/downloads/WCH-LinkUtility_ZIP.html)(**中文サイトのみ**。英語サイトの同名ページは開いても内容が出ない)を展開した `Firmware_Link/` に平文で入っている(WCH-LinkE = `FIRMWARE_CH32V305.bin`)。MounRiver Studio 同梱版でも同じ。`--help`・エラー hint からもこの入手先を案内する。
 - **IAP entry は不揮発**: probe を IAP に入れると、app が無傷でも電源再投入では戻らない(protocol §6.1)。抜けるのは終了 frame だけなので、`firmware exit-iap` を脱出口として持つ。中断した更新は `firmware update` の再実行でそのまま復旧する(どの時点で切れても IAP に残る)。
-- image は渡された時点で検査する: **BL 付き `*_APP_IAP.bin` は拒否**(外部書込機用。IAP に流すと app 領域に BL を書く)、非 RISC-V image は拒否、版は image 内の `bcdDevice` から読む。probe 型番は image からは判別できないため警告を出す(LinkE には `FIRMWARE_CH32V305.bin`)。
+- image は渡された時点で検査する: **BL 付き `*_APP_IAP.bin` は拒否**(外部書込機用。IAP に流すと app 領域に BL を書く)、非 RISC-V image は拒否、版は image 内の `bcdDevice` から読む。
+- **image の型番は sha256 で照合する**。WCH-LinkUtility が配る 10 本の image を ch32-device-data の `index/link_firmware.csv` から `cargo xtask db-gen` が `crates/target/generated/link_firmware.csv` に作り、image の sha256 で引く。表の語彙:
+  - `device`: probe の製品名(`WCH-LinkE` / `WCH-Link`(CH549)/ `WCH-LinkW` / `WCH-DAPLink`)。probe の variant と照らす(`linke` = `WCH-LinkE` など)。
+  - `mode`: CH549 の WCH-Link の image だけが持つ `RISC-V` / `ARM`。ほかの型番は空(1 本で両方)。CH549 はこのコマンドで更新しないので照合には使わない。
+  - `role`: `offline` = `FIRMWARE_*.bin`(application だけ。IAP 経路で書くのはこれ)、`iap` = `*APP_IAP*.bin`(IAP bootloader の後に application。外部書込機用)。
+  - `version`: その image で probe が返す版。
+
+  | image | 結果 |
+  |---|---|
+  | 表にあり `role` = `iap` | 拒否(exit 2)。hint に同じ型番の `FIRMWARE_*.bin`。`--dry-run` でも拒否 |
+  | 表にあり `offline`、`device` が probe と一致 | 警告なしで書く |
+  | 表にあり `offline`、`device` が probe と違う | 拒否(exit 2)。hint にその probe の `FIRMWARE_*.bin` |
+  | 表にない(版違い・手製の image) | これまでどおり warning `image-model-unverified` を出して書く |
+  | probe が IAP mode に居る(型番を返さない) | 型番は照合できないので warning `image-model-unverified`(表にあれば、どの型番の image かを書く) |
+
+  `--dry-run` と `--json` の `result.image` は `sha256` と `known`(表の行。無ければ `null`)を出す。上書きの flag は無い。
 - 対応 probe: WCH-LinkE / LinkW / LinkS / 旧 Link(CH549)を型番として区別し、非対応 operation は capability で事前に弾く。互換 probe(funprog HID / NHC-Link042 / ardulink / rv003usb 系)は P2 の backend として同じ体系に入る。
 
 ### 4.3 target
