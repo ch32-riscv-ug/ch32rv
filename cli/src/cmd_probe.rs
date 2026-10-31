@@ -835,7 +835,7 @@ pub fn firmware_info(cli: &Cli) -> ExitCode {
         }));
         crate::print_envelope(&env)
     } else {
-        println!("firmware:  {maj}.{min:02} (WCH {}, raw {})", fw.wch, fw.raw);
+        println!("firmware:  {maj}.{min} (WCH {}, raw {})", fw.wch, fw.raw);
         if let Some(m) = &mode {
             println!("mode:      {m}");
         }
@@ -860,7 +860,7 @@ pub fn firmware_check(cli: &Cli, min: Option<&str>) -> ExitCode {
             cli,
             CMD,
             ErrorKind::DeviceFirmwareKnownBad,
-            format!("probe firmware {maj}.{mn:02} is known-bad: {reason}"),
+            format!("probe firmware {maj}.{mn} is known-bad: {reason}"),
             Some("update the probe firmware (WCH-LinkUtility / `probe firmware update`)"),
         );
     }
@@ -879,7 +879,7 @@ pub fn firmware_check(cli: &Cli, min: Option<&str>) -> ExitCode {
                 cli,
                 CMD,
                 ErrorKind::DeviceFirmwareUnsupported,
-                format!("probe firmware {maj}.{mn:02} is below the required {rmaj}.{rmin:02}"),
+                format!("probe firmware {maj}.{mn} is below the required {rmaj}.{rmin}"),
                 Some("update the probe firmware"),
             );
         }
@@ -887,12 +887,12 @@ pub fn firmware_check(cli: &Cli, min: Option<&str>) -> ExitCode {
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(serde_json::json!({
-            "firmware": format!("{maj}.{mn:02}"),
+            "firmware": format!("{maj}.{mn}"),
             "min": min,
         }));
         crate::print_envelope(&env)
     } else {
-        println!("probe firmware {maj}.{mn:02}: OK");
+        println!("probe firmware {maj}.{mn}: OK");
         ExitCode::SUCCESS
     }
 }
@@ -946,7 +946,7 @@ pub fn firmware_exit_iap(cli: &Cli) -> ExitCode {
         if let Ok(mut link) = WchLink::open(&e.dev)
             && let Ok(i) = link.probe_info()
         {
-            after = Some(format!("{}.{:02}", i.fw_major, i.fw_minor));
+            after = Some(format!("{}.{}", i.fw_major, i.fw_minor));
             break;
         }
         std::thread::sleep(Duration::from_secs(1));
@@ -1042,7 +1042,7 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
             ),
         );
     }
-    let image_version = info.version.map(|(a, b)| format!("{a}.{b:02}"));
+    let image_version = info.version.map(|(a, b)| format!("{a}.{b}"));
 
     // `--dry-run`: everything that can be said about the image without opening a device.
     if cli.dry_run {
@@ -1154,14 +1154,11 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
             }
             // Nothing in a WCH probe image names its probe model (the USB product string is
             // "WCH-Link" in all of them), so a LinkW image would pass every check here.
-            crate::progress::sink(cli).event(&Event::Warn {
-                code: "image-model-unverified".into(),
-                msg: "the image cannot be checked against the probe model; for a WCH-LinkE it must be Firmware_Link/FIRMWARE_CH32V305.bin".into(),
-            });
-            before = Some(format!(
-                "{}.{:02}",
-                probe_info.fw_major, probe_info.fw_minor
-            ));
+            crate::warn(
+                "image-model-unverified",
+                "the image cannot be checked against the probe model; for a WCH-LinkE it must be Firmware_Link/FIRMWARE_CH32V305.bin",
+            );
+            before = Some(format!("{}.{}", probe_info.fw_major, probe_info.fw_minor));
             if let Err(why) = confirm_destructive(
                 cli,
                 &format!(
@@ -1275,7 +1272,7 @@ pub fn firmware_update(cli: &Cli, image_path: &std::path::Path) -> ExitCode {
         if let Ok(mut link) = WchLink::open(&e.dev)
             && let Ok(i) = link.probe_info()
         {
-            after = Some(format!("{}.{:02}", i.fw_major, i.fw_minor));
+            after = Some(format!("{}.{}", i.fw_major, i.fw_minor));
             break;
         }
         sink.event(&Event::Retry {

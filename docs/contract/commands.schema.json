@@ -1,0 +1,952 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ch32-riscv-ug/ch32rv/docs/contract/commands.schema.json",
+  "title": "ch32rv command results (contract 5)",
+  "description": "コマンドごとの result の形。$defs のコマンドの名前(封筒の cmd)の項がそのコマンドの result。field の追加は自由で、利用者は知らない field を無視する。result.schema.json がこの schema を参照する",
+  "$defs": {
+    "flash_result": {
+      "type": "object",
+      "description": "書き込みの結果。経路によらずこの形(docs/freeze-decisions.ja.md §7)。経路が持つものは足してある",
+      "required": ["bytes", "family", "programmer", "verified", "running", "skipped", "scope"],
+      "properties": {
+        "bytes": {"type": "integer", "description": "書いた image の byte 数"},
+        "family": {
+          "type": ["string", "null"],
+          "description": "target の family(例 CH32V30x)。経路が知らなければ null(hid、dfu)"
+        },
+        "programmer": {
+          "type": "string",
+          "description": "書いた経路。既知の値: stub(WCH-Link と flash stub)、controller(WCH-Link が FLASH controller を直接)、loader(WCH-Link と ch32rv の RAM loader)、oep-loader(OEP の probe と RAM loader)、hid(HID bootloader)、isp(factory ISP bootloader)、dfu(DFU 1.1)。値は足すことがある"
+        },
+        "verified": {
+          "type": ["boolean", "null"],
+          "description": "読み戻して一致した = true。検証しなかった = null。不一致はコマンドの失敗(exit 30)"
+        },
+        "running": {
+          "type": ["boolean", "null"],
+          "description": "書いた後に program が走っている = true、走っていない = false、分からない = null"
+        },
+        "skipped": {"type": "boolean", "description": "--preverify で一致したので消去も書き込みもしなかった"},
+        "scope": {
+          "type": "string",
+          "description": "消した範囲。既知の値: chip、sector(image が覆う page)、pages(loader が page ごと)、sectors(bootloader の sector)、image(device が自分で消す。dfu)、none。値は足すことがある"
+        },
+        "seconds": {"type": "number", "description": "書き込みにかかった秒(経路が測るもの)"},
+        "pages": {"type": "integer", "description": "loader: 書いた page 数"},
+        "rewritten": {"type": "integer", "description": "loader: 書き直した page 数"},
+        "restarted_runs": {"type": "integer", "description": "loader: 出し直した run の数"},
+        "chip_id": {"type": ["string", "null"], "description": "target の chip id(経路が読むもの)"},
+        "usb": {
+          "type": ["string", "null"],
+          "description": "bootloader の VID:PID(hid、isp。UART の isp では null)"
+        },
+        "sectors_written": {"type": "integer", "description": "hid: 変えた sector 数"},
+        "sector_size": {"type": "integer", "description": "hid: sector の byte 数"},
+        "erased_sectors": {
+          "type": ["integer", "null"],
+          "description": "isp: 消した sector 数(消さなければ null)"
+        },
+        "blocks": {"type": "integer", "description": "dfu: 送った block 数"},
+        "transfer_size": {"type": "integer", "description": "dfu: 1 block の byte 数"}
+      }
+    },
+    "verify_result": {
+      "type": "object",
+      "required": ["bytes", "verified"],
+      "properties": {
+        "bytes": {"type": "integer"},
+        "verified": {"type": "boolean", "description": "一致した(不一致はコマンドの失敗、exit 30)"}
+      }
+    },
+    "probe_firmware": {
+      "type": "object",
+      "properties": {
+        "raw": {"type": "string", "description": "生 byte の hex"},
+        "norm": {"type": "string", "description": "\"<major>.<minor>\"(0 埋めしない)。比較はこの値で"},
+        "wch": {"type": "string", "description": "WCH の表示(v42 など)"},
+        "known_bad": {"type": "boolean"},
+        "mode": {"type": "string", "description": "riscv / arm(CH549 の Link だけ)"}
+      }
+    },
+    "debug_wiring": {
+      "type": ["object", "null"],
+      "description": "デバッグの配線(DB にあれば)",
+      "properties": {
+        "wire": {"type": "string"},
+        "swdio": {"type": ["string", "null"]},
+        "swclk": {"type": ["string", "null"]}
+      }
+    },
+    "isp_device": {
+      "type": "object",
+      "required": ["at", "chip_id", "device_type"],
+      "properties": {
+        "usb": {"type": ["string", "null"], "description": "VID:PID(UART なら null)"},
+        "topology": {"type": ["string", "null"]},
+        "at": {"type": "string", "description": "開いた場所(usb の位置か serial port)"},
+        "series": {"type": ["string", "null"], "description": "family 名(知らない device_type なら null)"},
+        "chip_id": {"type": "string", "description": "0x 付きの hex"},
+        "device_type": {"type": "string", "description": "0x 付きの hex"},
+        "btver": {"type": "string", "description": "bootloader の版"},
+        "uid": {"type": "string", "description": "hex"},
+        "read_protected": {"type": "boolean"},
+        "config": {"type": "string", "description": "config の生 byte の hex"},
+        "flash_bytes": {"type": ["integer", "null"]}
+      }
+    },
+    "isp_options": {
+      "type": "object",
+      "description": "option の名前と値(ISP の語彙。family で変わる)",
+      "properties": {}
+    },
+    "version": {
+      "type": "object",
+      "required": ["version", "git_rev", "target_db", "flash_stub_digest", "build"],
+      "properties": {
+        "version": {"type": "string", "description": "ch32rv の版"},
+        "git_rev": {"type": "string"},
+        "target_db": {
+          "type": "object",
+          "properties": {
+            "source": {"type": "string"},
+            "source_rev": {"type": ["string", "null"]},
+            "digest": {"type": "string"}
+          }
+        },
+        "flash_stub_digest": {"type": "string"},
+        "build": {
+          "type": "object",
+          "properties": {"os": {"type": "string"}, "arch": {"type": "string"}}
+        }
+      }
+    },
+    "flash": {
+      "type": "object",
+      "required": ["flash"],
+      "properties": {"flash": {"$ref": "#/$defs/flash_result"}}
+    },
+    "isp.flash": {
+      "type": "object",
+      "required": ["flash"],
+      "properties": {
+        "flash": {"$ref": "#/$defs/flash_result"},
+        "device": {"$ref": "#/$defs/isp_device"}
+      }
+    },
+    "boot.dfu.flash": {
+      "type": "object",
+      "required": ["flash"],
+      "properties": {"flash": {"$ref": "#/$defs/flash_result"}}
+    },
+    "boot.hid.flash": {
+      "type": "object",
+      "required": ["flash"],
+      "properties": {"flash": {"$ref": "#/$defs/flash_result"}}
+    },
+    "verify": {"$ref": "#/$defs/verify_result"},
+    "isp.verify": {"$ref": "#/$defs/verify_result"},
+    "read": {
+      "type": "object",
+      "required": ["addr", "len"],
+      "properties": {
+        "addr": {"type": "string", "description": "先頭番地"},
+        "len": {"type": "integer", "description": "byte 数"},
+        "out": {"type": "string", "description": "--out: 書いたファイル"},
+        "hex": {"type": "string", "description": "--out 無し: 読んだ byte の hex"},
+        "blank": {"type": "boolean", "description": "--blank: すべて消去済みの値か"}
+      }
+    },
+    "write": {
+      "type": "object",
+      "required": ["addr", "len", "region"],
+      "properties": {
+        "addr": {"type": "string", "description": "0x 付きの hex"},
+        "len": {"type": "integer"},
+        "region": {"type": "string", "description": "flash / memory"},
+        "verified": {"type": ["boolean", "null"], "description": "読み戻して一致 = true、検証しなかった = null"}
+      }
+    },
+    "erase": {
+      "type": "object",
+      "required": ["scope", "family"],
+      "properties": {
+        "scope": {"type": "string", "description": "chip / sector / range"},
+        "family": {"type": "string"},
+        "addr": {"type": "string", "description": "0x 付きの hex"},
+        "len": {"type": "integer"},
+        "pages": {"type": "integer"},
+        "page_size": {"type": "integer"}
+      }
+    },
+    "reset": {
+      "type": "object",
+      "required": ["mode", "running"],
+      "properties": {
+        "mode": {"type": "string", "description": "run / halt"},
+        "running": {"type": ["boolean", "null"], "description": "走っている(halt なら false)。分からなければ null"},
+        "pc": {"type": "string", "description": "OEP: reset 後の pc"}
+      }
+    },
+    "run": {
+      "type": "object",
+      "properties": {
+        "exit": {"type": "integer", "description": "target の終了コード(semihosting の exit)"},
+        "reason": {"type": "string", "description": "timeout: --exit-on timeout で --duration に達した"},
+        "dpc": {"type": "string", "description": "止まった所(target-halted)"}
+      }
+    },
+    "recover": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "type": "string",
+          "description": "nrst / unprotect / unbrick / power-off / special-erase など。無ければ診断だけ(state)"
+        },
+        "family": {"type": ["string", "null"]},
+        "state": {"type": "string", "description": "診断: target の状態"},
+        "probe": {"type": "string"},
+        "speed": {"type": ["string", "null"]},
+        "db_family": {"type": ["string", "null"]},
+        "chip_id": {"type": ["string", "null"], "description": "0x 付きの hex(分からなければ null)"},
+        "option_bytes": {"type": ["string", "null"]},
+        "recommendation": {
+          "type": "object",
+          "properties": {"action": {"type": "string"}, "command": {"type": ["string", "null"]}}
+        },
+        "notes": {"type": "array", "items": {"type": "string"}},
+        "caveats": {"type": "array", "items": {"type": "string"}},
+        "stopped_at": {"type": ["string", "null"], "description": "0x 付きの hex(分からなければ null)"},
+        "unprotected": {"type": "boolean"},
+        "erased": {"type": "boolean"},
+        "image": {"type": ["integer", "null"]},
+        "preserved_user_bits": {"type": "boolean"},
+        "note": {"type": "string"},
+        "protected": {"type": "boolean"},
+        "action": {"type": "string"},
+        "attempts": {"type": "integer"},
+        "answers": {"type": "array", "items": {"type": "string"}},
+        "confirmed": {"type": "boolean"}
+      }
+    },
+    "probe.list": {
+      "type": "object",
+      "required": ["probes"],
+      "properties": {
+        "probes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "serial", "usb", "ports"],
+            "properties": {
+              "kind": {"type": "string", "enum": ["wchlink", "oep"]},
+              "serial": {"type": "string", "description": "USB の serial。OEP の probe では unit_id と同じ"},
+              "usb": {"type": "string", "description": "VID:PID"},
+              "topology": {"type": "string", "description": "<bus>-<ports>"},
+              "ports": {"type": "array", "items": {"type": "string"}},
+              "model": {"type": "string", "description": "表示用の名前(照合には使わない)"},
+              "tcp": {
+                "type": "string",
+                "description": "OEP だけ。同じ probe が DNS-SD(_oep._tcp)でも見つかったときの <address>:<port>"
+              },
+              "variant": {"type": "string", "description": "WCH-Link だけ。probe.variant と同じ"},
+              "address": {"type": "string", "description": "--probe に渡せる住所"},
+              "mode": {"type": "string", "enum": ["riscv", "dap", "iap", "isp", "unknown"]},
+              "firmware": {
+                "type": ["object", "string"],
+                "properties": {
+                  "raw": {"type": "string", "description": "生 byte の hex"},
+                  "norm": {"type": "string", "description": "\"<major>.<minor>\"(0 埋めしない)。比較はこの値で"},
+                  "wch": {"type": "string", "description": "WCH の表示(v42 など)"},
+                  "known_bad": {"type": "boolean"},
+                  "mode": {"type": "string", "description": "riscv / arm(CH549 の Link だけ)"}
+                },
+                "description": "WCH-Link は object。OEP の probe は describe の FIRMWARE の文字列"
+              }
+            }
+          },
+          "description": "つながっている probe。WCH-Link と USB の OEP probe"
+        },
+        "network": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["kind", "unit_id", "tcp"],
+            "properties": {
+              "kind": {"type": "string", "enum": ["oep"]},
+              "address": {"type": "string", "description": "oep-net://<unit_id>"},
+              "firmware": {"type": ["string", "null"]},
+              "unit_id": {"type": "string", "description": "TXT の unit_id"},
+              "tcp": {"type": "string", "description": "<address>:<port>"},
+              "instance": {"type": "string", "description": "DNS-SD の instance の名前(表示用)"}
+            }
+          },
+          "description": "USB に無く、ローカルネットワークで DNS-SD(_oep._tcp)に名乗った OEP probe。名乗った unit_id に confirm と describe で答えたものだけ(答えないものは警告 oep-tcp-unverified で除く)"
+        }
+      }
+    },
+    "probe.info": {
+      "type": "object",
+      "description": "WCH-Link は封筒の probe に出し、result は無い。OEP の probe は result.probe",
+      "properties": {
+        "probe": {
+          "type": "object",
+          "properties": {
+            "kind": {"type": "string"},
+            "firmware": {"type": ["string", "null"]},
+            "model": {"type": ["string", "null"]},
+            "unit_id": {"type": ["string", "null"]},
+            "chip": {"type": ["string", "null"]},
+            "max_op_ms": {"type": ["integer", "null"]},
+            "interfaces": {"type": "array", "items": {"type": "object", "properties": {}}},
+            "ports": {"type": "array", "items": {"type": "string"}},
+            "labels": {"type": "array", "items": {"type": "object", "properties": {}}}
+          }
+        }
+      }
+    },
+    "probe.power": {
+      "type": "object",
+      "required": ["rail", "on"],
+      "properties": {
+        "rail": {"type": "string", "description": "3v3 / 5v"},
+        "on": {"type": "boolean"},
+        "cycled": {"type": "boolean"},
+        "off_ms": {"type": "integer"}
+      }
+    },
+    "probe.mode.get": {
+      "type": "object",
+      "required": ["mode"],
+      "properties": {
+        "mode": {"type": "string"},
+        "vid": {"type": "string", "description": "0x 付きの hex"},
+        "pid": {"type": "string", "description": "0x 付きの hex"},
+        "firmware_mode": {"type": ["string", "null"]}
+      }
+    },
+    "probe.mode.set": {
+      "type": "object",
+      "required": ["mode", "changed"],
+      "properties": {
+        "mode": {"type": "string"},
+        "changed": {"type": "boolean"},
+        "reenumerating": {"type": "boolean"}
+      }
+    },
+    "probe.firmware.info": {
+      "type": "object",
+      "required": ["firmware", "variant", "known_bad"],
+      "properties": {
+        "firmware": {"type": "string", "description": "\"<major>.<minor>\"(0 埋めしない)"},
+        "variant": {"type": "string"},
+        "raw": {"type": "string"},
+        "wch": {"type": "string"},
+        "firmware_mode": {"type": ["string", "null"]},
+        "known_bad": {"type": "boolean"},
+        "known_bad_reason": {"type": ["string", "null"]}
+      }
+    },
+    "probe.firmware.check": {
+      "type": "object",
+      "required": ["firmware"],
+      "properties": {
+        "firmware": {"type": "string", "description": "\"<major>.<minor>\"(0 埋めしない)"},
+        "min": {"type": ["string", "null"], "description": "--min"}
+      }
+    },
+    "probe.firmware.exit-iap": {
+      "type": "object",
+      "required": ["left_iap"],
+      "properties": {"firmware": {"type": ["string", "null"]}, "left_iap": {"type": "boolean"}}
+    },
+    "probe.firmware.update": {
+      "type": "object",
+      "required": ["image"],
+      "properties": {
+        "dry_run": {"type": "boolean"},
+        "image": {
+          "type": "object",
+          "properties": {
+            "path": {"type": "string"},
+            "bytes": {"type": "integer"},
+            "version": {"type": ["string", "null"]},
+            "usb_ids": {"type": "array", "items": {"type": "string"}},
+            "riscv": {"type": "boolean"}
+          }
+        },
+        "frames_per_pass": {"type": "integer"},
+        "firmware_before": {"type": ["string", "null"]},
+        "firmware_after": {"type": ["string", "null"]}
+      }
+    },
+    "target.info": {
+      "type": "object",
+      "description": "識別の本体は封筒の target。ここはその詳しい所",
+      "properties": {
+        "connection": {"type": "string"},
+        "identification": {"type": "string", "description": "identified / ambiguous / …"},
+        "family_byte": {"type": "string", "description": "0x 付きの hex"},
+        "silicon_revision": {"type": "integer"},
+        "sram_bytes": {"type": ["integer", "null"]},
+        "sku_candidates": {"type": "array", "items": {"type": "string"}},
+        "flash_capacity_source": {"type": ["string", "null"]},
+        "flash_capacity_raw": {
+          "type": ["string", "null"],
+          "description": "0x 付きの hex(分からなければ null)"
+        },
+        "protection_raw": {"type": ["string", "null"]},
+        "chip_id_echo": {"type": ["string", "null"], "description": "0x 付きの hex(分からなければ null)"},
+        "debug_wiring": {"$ref": "#/$defs/debug_wiring"},
+        "probe": {
+          "type": "object",
+          "description": "OEP: probe の種類",
+          "properties": {"kind": {"type": "string"}}
+        },
+        "target": {
+          "type": "object",
+          "description": "OEP: 識別した target(封筒の target と同じ値)",
+          "properties": {
+            "chip_id": {"type": ["string", "null"], "description": "0x 付きの hex(分からなければ null)"},
+            "family": {"type": ["string", "null"]},
+            "sku": {"type": ["string", "null"]},
+            "uid": {"type": ["string", "null"]},
+            "flash_bytes": {"type": ["integer", "null"]},
+            "sram_bytes": {"type": ["integer", "null"]}
+          }
+        }
+      }
+    },
+    "target.list": {
+      "type": "object",
+      "required": ["places"],
+      "properties": {
+        "places": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["address", "mode"],
+            "properties": {
+              "address": {"type": "string", "description": "--probe に渡せる住所"},
+              "mode": {"type": "string"},
+              "topology": {"type": "string"},
+              "model": {"type": "string"},
+              "label": {"type": ["string", "null"]},
+              "properties": {"type": "object", "properties": {}},
+              "target": {
+                "type": "object",
+                "description": "--identify: target info の target(読めなければ error)",
+                "properties": {}
+              },
+              "runs_on": {
+                "type": ["string", "null"],
+                "description": "アプリの行: それが動くチップのデバッグの場所の address"
+              }
+            }
+          }
+        }
+      }
+    },
+    "target.option.get": {
+      "type": "object",
+      "required": ["raw", "read_protected", "write_protected"],
+      "properties": {
+        "family": {"type": "string"},
+        "db_family": {"type": ["string", "null"]},
+        "raw": {"type": "string", "description": "16 byte の hex"},
+        "read_protected": {"type": "boolean"},
+        "rdpr": {"type": "string", "description": "0x 付きの hex"},
+        "user": {"type": "string", "description": "0x 付きの hex"},
+        "user_bits": {
+          "type": "object",
+          "description": "USER の bit の名前と値",
+          "properties": {},
+          "additionalProperties": {"type": "boolean"}
+        },
+        "data0": {"type": "string", "description": "0x 付きの hex"},
+        "data1": {"type": "string", "description": "0x 付きの hex"},
+        "wrpr": {"type": "string", "description": "0x 付きの hex"},
+        "write_protected": {"type": "boolean"}
+      }
+    },
+    "target.option.set": {
+      "type": "object",
+      "required": ["before", "after", "verified"],
+      "properties": {
+        "family": {"type": "string"},
+        "before": {"type": "string"},
+        "after": {"type": "string"},
+        "verified": {"type": "boolean"},
+        "note": {"type": "string"}
+      }
+    },
+    "target.option.reset": {
+      "type": "object",
+      "required": ["before", "after", "verified"],
+      "properties": {
+        "family": {"type": "string"},
+        "before": {"type": "string"},
+        "after": {"type": "string"},
+        "verified": {"type": "boolean"},
+        "note": {"type": "string"}
+      }
+    },
+    "target.option.write-raw": {
+      "type": "object",
+      "required": ["before", "after", "verified"],
+      "properties": {
+        "family": {"type": "string"},
+        "before": {"type": "string"},
+        "after": {"type": "string"},
+        "verified": {"type": "boolean"},
+        "note": {"type": "string"}
+      }
+    },
+    "target.protect": {
+      "type": "object",
+      "properties": {
+        "family": {"type": "string"},
+        "before": {"type": "string"},
+        "after": {"type": "string"},
+        "verified": {"type": "boolean"},
+        "note": {"type": "string"},
+        "changed": {"type": "boolean"},
+        "read_protected": {"type": "boolean"}
+      }
+    },
+    "dbg.halt": {
+      "type": "object",
+      "required": ["halted"],
+      "properties": {
+        "halted": {"type": "boolean"},
+        "pc": {"type": ["string", "null"], "description": "0x 付きの hex(分からなければ null)"}
+      }
+    },
+    "dbg.resume": {
+      "type": "object",
+      "required": ["resumed"],
+      "properties": {"resumed": {"type": "boolean"}}
+    },
+    "dbg.step": {
+      "type": "object",
+      "required": ["stepped"],
+      "properties": {
+        "stepped": {"type": "integer"},
+        "pc": {"type": ["string", "null"], "description": "0x 付きの hex(分からなければ null)"}
+      }
+    },
+    "dbg.regs": {
+      "type": "object",
+      "required": ["gpr"],
+      "properties": {
+        "gpr": {
+          "type": "object",
+          "description": "x0..x31(RV32E は x0..x15)",
+          "properties": {},
+          "additionalProperties": {"type": "string", "description": "0x 付きの hex"}
+        },
+        "pc": {"type": ["string", "null"], "description": "0x 付きの hex(分からなければ null)"}
+      }
+    },
+    "dbg.reg": {
+      "type": "object",
+      "required": ["reg", "value"],
+      "properties": {
+        "reg": {"type": "string"},
+        "value": {"type": "string", "description": "0x 付きの hex"}
+      }
+    },
+    "dbg.dmi": {
+      "type": "object",
+      "required": ["addr", "value"],
+      "properties": {
+        "addr": {"type": "string", "description": "0x 付きの hex"},
+        "value": {"type": "string", "description": "0x 付きの hex"}
+      }
+    },
+    "monitor": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {
+        "source": {
+          "type": "string",
+          "description": "uart / sdi / dmdata / dmseq / rtt / semihosting など"
+        }
+      }
+    },
+    "monitor.list": {
+      "type": "object",
+      "required": ["probes"],
+      "properties": {
+        "probes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "probe": {"type": ["string", "null"], "description": "probe の serial"},
+              "mode": {"type": "string"},
+              "cdc_ports": {"type": "array", "items": {"type": "string"}}
+            }
+          }
+        }
+      }
+    },
+    "monitor.sdi": {
+      "type": "object",
+      "required": ["sdi"],
+      "properties": {"sdi": {"type": "boolean"}}
+    },
+    "isp.list": {
+      "type": "object",
+      "required": ["devices"],
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["usb", "kind"],
+            "properties": {
+              "usb": {"type": "string"},
+              "topology": {"type": "string"},
+              "kind": {"type": "string", "description": "factory-isp / unknown"},
+              "series": {"type": ["string", "null"]},
+              "chip_id": {"type": "string", "description": "0x 付きの hex"},
+              "device_type": {"type": "string", "description": "0x 付きの hex"},
+              "error": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "isp.info": {"$ref": "#/$defs/isp_device"},
+    "isp.enter": {"$ref": "#/$defs/isp_device"},
+    "isp.erase": {
+      "type": "object",
+      "required": ["erased_sectors"],
+      "properties": {"erased_sectors": {"type": "integer"}}
+    },
+    "isp.config.get": {
+      "type": "object",
+      "required": ["options", "config"],
+      "properties": {"options": {"$ref": "#/$defs/isp_options"}, "config": {"type": "string"}}
+    },
+    "isp.config.set": {
+      "type": "object",
+      "required": ["options", "changed"],
+      "properties": {"options": {"$ref": "#/$defs/isp_options"}, "changed": {"type": "boolean"}}
+    },
+    "boot.dfu.info": {
+      "type": "object",
+      "required": ["usb"],
+      "properties": {
+        "usb": {"type": "string"},
+        "topology": {"type": "string"},
+        "serial": {"type": ["string", "null"]},
+        "runtime_interface": {"type": ["integer", "null"]},
+        "dfu_interface": {"type": ["integer", "null"]},
+        "transfer_size": {"type": ["integer", "null"]},
+        "manifestation_tolerant": {"type": ["boolean", "null"]},
+        "state": {"type": ["integer", "null"], "description": "DFU の bState(DFU mode のときだけ)"}
+      }
+    },
+    "db.list": {
+      "type": "object",
+      "required": ["count", "skus"],
+      "properties": {
+        "count": {"type": "integer"},
+        "skus": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["sku", "family", "verified"],
+            "properties": {
+              "sku": {"type": "string"},
+              "family": {"type": "string"},
+              "device_id": {"type": ["string", "null"], "description": "0x 付きの hex(分からなければ null)"},
+              "flash_bytes": {"type": ["integer", "null"]},
+              "sram_bytes": {"type": ["integer", "null"]},
+              "verified": {"type": "boolean", "description": "実機で確かめた SKU か"},
+              "provisional": {"type": "boolean"}
+            }
+          }
+        }
+      }
+    },
+    "db.info": {
+      "type": "object",
+      "required": ["sku", "family", "verified"],
+      "properties": {
+        "sku": {"type": "string"},
+        "family": {"type": "string"},
+        "series": {"type": ["string", "null"]},
+        "device_id": {"type": ["string", "null"], "description": "0x 付きの hex(分からなければ null)"},
+        "flash_bytes": {"type": ["integer", "null"]},
+        "sram_bytes": {"type": ["integer", "null"]},
+        "verified": {"type": "boolean"},
+        "provisional": {"type": "boolean"},
+        "debug_wiring": {"$ref": "#/$defs/debug_wiring"},
+        "flash_geometry": {"type": ["object", "null"], "properties": {}},
+        "flash_program_method": {"type": ["object", "null"], "properties": {}}
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["capabilities"],
+      "properties": {
+        "probe": {"type": "string"},
+        "firmware": {"type": "string"},
+        "family": {"type": "string"},
+        "sku": {"type": ["string", "null"]},
+        "planned": {"type": "boolean", "description": "probe を開かずに DB から見積もった"},
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["op", "supported"],
+            "properties": {
+              "op": {"type": "string"},
+              "supported": {"type": "boolean"},
+              "reason": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
+    "doctor": {
+      "type": "object",
+      "required": ["checks"],
+      "properties": {
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "ok"],
+            "properties": {
+              "name": {"type": "string"},
+              "ok": {"type": "boolean"},
+              "detail": {"type": "string"},
+              "hint": {"type": ["string", "null"]}
+            }
+          }
+        }
+      }
+    },
+    "broker.endpoint": {
+      "type": "object",
+      "required": ["endpoint", "pid", "transport", "version"],
+      "properties": {
+        "endpoint": {
+          "type": ["string", "null"],
+          "description": "ブローカーの待ち受け \"127.0.0.1:<port>\"。動いていなければ null"
+        },
+        "pid": {"type": ["integer", "null"], "description": "ブローカーの process id"},
+        "transport": {"type": ["string", "null"], "description": "ブローカーが probe を開いた道"},
+        "version": {
+          "type": ["string", "null"],
+          "description": "ブローカーの ch32rv の版(版を持たない古いブローカーなら null)"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "version"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/version"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "flash"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/flash"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "isp.flash"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/isp.flash"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "boot.dfu.flash"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/boot.dfu.flash"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "boot.hid.flash"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/boot.hid.flash"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "verify"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/verify"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "isp.verify"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/isp.verify"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "read"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/read"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "write"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/write"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "erase"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/erase"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "reset"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/reset"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "run"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/run"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "recover"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/recover"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "probe.list"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/probe.list"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "probe.info"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/probe.info"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "probe.power"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/probe.power"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "probe.mode.get"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/probe.mode.get"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "probe.mode.set"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/probe.mode.set"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "probe.firmware.info"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/probe.firmware.info"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "probe.firmware.check"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/probe.firmware.check"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "probe.firmware.exit-iap"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/probe.firmware.exit-iap"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "probe.firmware.update"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/probe.firmware.update"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "target.info"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/target.info"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "target.list"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/target.list"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "target.option.get"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/target.option.get"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "target.option.set"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/target.option.set"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "target.option.reset"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/target.option.reset"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "target.option.write-raw"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/target.option.write-raw"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "target.protect"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/target.protect"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "dbg.halt"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/dbg.halt"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "dbg.resume"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/dbg.resume"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "dbg.step"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/dbg.step"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "dbg.regs"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/dbg.regs"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "dbg.reg"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/dbg.reg"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "dbg.dmi"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/dbg.dmi"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "monitor"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/monitor"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "monitor.list"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/monitor.list"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "monitor.sdi"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/monitor.sdi"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "isp.list"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/isp.list"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "isp.info"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/isp.info"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "isp.enter"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/isp.enter"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "isp.erase"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/isp.erase"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "isp.config.get"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/isp.config.get"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "isp.config.set"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/isp.config.set"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "boot.dfu.info"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/boot.dfu.info"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "db.list"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/db.list"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "db.info"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/db.info"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "capabilities"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/capabilities"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "doctor"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/doctor"}}}
+    },
+    {
+      "if": {"required": ["cmd"], "properties": {"cmd": {"const": "broker.endpoint"}}},
+      "then": {"properties": {"result": {"$ref": "#/$defs/broker.endpoint"}}}
+    }
+  ]
+}

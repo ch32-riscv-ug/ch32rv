@@ -674,7 +674,7 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
             Err(msg) => return fail(cli, cmd, ErrorKind::CapabilityUnsupported, msg, None),
         };
         if let Some(w) = option_method_warning(db_family) {
-            eprintln!("warning[option-write-method]: {w}");
+            crate::warn("option-write-method", w);
         }
         if let Err(e) = t.halt() {
             return fail(

@@ -5,6 +5,7 @@
 //! ja: OEP の probe での `ch32rv flash` を端から端まで(偽の probe、TCP と pty)。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
 #[path = "../../crates/oep/tests/virtual_bench/uv.rs"]
 mod uv;
 use std::io::{BufRead, BufReader};
@@ -73,8 +74,7 @@ fn flash(probe: &str) -> serde_json::Value {
         ])
         .output()
         .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    let v: serde_json::Value = common::envelope(&out.stdout);
     assert!(out.status.success(), "{v}");
     v
 }
@@ -125,6 +125,9 @@ fn flash_raw(probe: &str, chip: Option<&str>) -> (bool, serde_json::Value) {
     }
     let out = cmd.output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    if !v.is_null() {
+        common::assert_envelope(&v);
+    }
     (out.status.success(), v)
 }
 
@@ -188,8 +191,7 @@ fn run(args: &[&str]) -> (bool, serde_json::Value) {
         .args(["--json", "--non-interactive"])
         .output()
         .unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    let v: serde_json::Value = common::envelope(&out.stdout);
     (out.status.success(), v)
 }
 
@@ -279,6 +281,7 @@ fn pins_given_by_role_flash_a_probe_that_names_no_ports() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
     assert!(out.status.success(), "{v}");
+    common::assert_envelope(&v);
     assert_eq!(v["result"]["flash"]["family"], "CH32V20x");
 }
 

@@ -1,66 +1,175 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/ch32-riscv-ug/ch32rv/docs/contract/events.schema.json",
-  "title": "ch32rv NDJSON progress event (contract 4)",
+  "title": "ch32rv NDJSON progress event (contract 5)",
   "description": "--progress ndjson 時に stderr へ 1 行 1 object。library の ProgressSink event と同一の型",
   "type": "object",
-  "required": ["ev"],
+  "required": [
+    "ev"
+  ],
   "properties": {
     "ev": {
       "type": "string",
-      "enum": ["phase", "progress", "retry", "warn", "log", "output"]
+      "description": "event の種類。開いている: 今の値は phase、progress、retry、warn、log、output。足すことがあり、知らない ev の行は読み飛ばす"
     }
   },
-  "oneOf": [
+  "allOf": [
     {
-      "properties": {
-        "ev": { "const": "phase" },
-        "name": { "type": "string", "description": "erase / program / verify / reset / confirm-run 等" },
-        "total": { "type": "integer", "description": "単位数が事前に分かる場合" }
+      "if": {
+        "properties": {
+          "ev": {
+            "const": "phase"
+          }
+        }
       },
-      "required": ["ev", "name"]
+      "then": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "erase / program / verify / reset / confirm-run 等"
+          },
+          "total": {
+            "type": "integer",
+            "description": "単位数が事前に分かる場合"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      }
     },
     {
-      "properties": {
-        "ev": { "const": "progress" },
-        "phase": { "type": "string" },
-        "done": { "type": "integer" },
-        "total": { "type": "integer" }
+      "if": {
+        "properties": {
+          "ev": {
+            "const": "progress"
+          }
+        }
       },
-      "required": ["ev", "phase", "done"]
+      "then": {
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "done": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "phase",
+          "done"
+        ]
+      }
     },
     {
-      "properties": {
-        "ev": { "const": "retry" },
-        "phase": { "type": "string" },
-        "attempt": { "type": "integer", "minimum": 1 },
-        "cause": { "type": "string", "description": "transport-timeout 等の安定名" }
+      "if": {
+        "properties": {
+          "ev": {
+            "const": "retry"
+          }
+        }
       },
-      "required": ["ev", "phase", "attempt", "cause"]
+      "then": {
+        "properties": {
+          "phase": {
+            "type": "string"
+          },
+          "attempt": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cause": {
+            "type": "string",
+            "description": "transport-timeout 等の安定名"
+          }
+        },
+        "required": [
+          "phase",
+          "attempt",
+          "cause"
+        ]
+      }
     },
     {
-      "properties": {
-        "ev": { "const": "warn" },
-        "code": { "type": "string" },
-        "msg": { "type": "string" }
+      "if": {
+        "properties": {
+          "ev": {
+            "const": "warn"
+          }
+        }
       },
-      "required": ["ev", "code", "msg"]
+      "then": {
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "msg": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "msg"
+        ]
+      }
     },
     {
-      "properties": {
-        "ev": { "const": "log" },
-        "level": { "type": "string", "enum": ["error", "warn", "info", "debug", "trace"] },
-        "msg": { "type": "string" }
+      "if": {
+        "properties": {
+          "ev": {
+            "const": "log"
+          }
+        }
       },
-      "required": ["ev", "level", "msg"]
+      "then": {
+        "properties": {
+          "level": {
+            "type": "string",
+            "enum": [
+              "error",
+              "warn",
+              "info",
+              "debug",
+              "trace"
+            ]
+          },
+          "msg": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "level",
+          "msg"
+        ]
+      }
     },
     {
-      "properties": {
-        "ev": { "const": "output" },
-        "source": { "type": "string", "description": "uart / sdi / dmdata / dmseq / rtt / semihosting" },
-        "data": { "type": "string", "description": "target の実行時出力(UTF-8 文字境界で分割。--json 時の monitor / run)" }
+      "if": {
+        "properties": {
+          "ev": {
+            "const": "output"
+          }
+        }
       },
-      "required": ["ev", "source", "data"]
+      "then": {
+        "properties": {
+          "source": {
+            "type": "string",
+            "description": "uart / sdi / dmdata / dmseq / rtt / semihosting"
+          },
+          "data": {
+            "type": "string",
+            "description": "target の実行時出力(UTF-8 文字境界で分割。--json 時の monitor / run)"
+          }
+        },
+        "required": [
+          "source",
+          "data"
+        ]
+      }
     }
   ]
 }

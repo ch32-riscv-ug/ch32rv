@@ -5,6 +5,7 @@
 //! ja: ブローカーを偽の probe(pty)で試験する。2 つの client、共有の接続の detach、最後の client で終わる。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
 #[path = "../../crates/oep/tests/virtual_bench/uv.rs"]
 mod uv;
 use std::io::{BufRead, BufReader};
@@ -59,7 +60,7 @@ fn endpoint(pty: &str) -> Option<String> {
         &format!("port:{pty}"),
         "--json",
     ]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     v["result"]["endpoint"].as_str().map(str::to_owned)
 }
 
@@ -330,7 +331,7 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
     let port = line.trim().strip_prefix("PORT ").unwrap().to_owned();
 
     let out = ch32rv(&["probe", "list", "--json"]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     let net = v["result"]["network"].as_array().unwrap();
     let Some(found) = net.iter().find(|n| n["unit_id"] == unit.as_str()) else {
         // A host with no multicast route at all (a bare container): nothing to test here.
@@ -356,7 +357,7 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
         format!("tcp://{unit}"),
     ] {
         let out = ch32rv(&["target", "info", "--probe", &probe, "--json"]);
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let v: serde_json::Value = common::envelope(&out.stdout);
         assert_eq!(v["ok"], true, "{probe}: {v}");
         assert_eq!(
             v["result"]["target"]["chip_id"], "0x00300500",
@@ -372,7 +373,7 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
         &format!("tcp:{unit}"),
         "--json",
     ]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     let by_unit = v["result"]["endpoint"].as_str().map(str::to_owned);
     assert!(by_unit.is_some(), "{v}");
     // Named by address it is the same broker: the address's probe says its unit id, and the
@@ -384,7 +385,7 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
         &format!("tcp:127.0.0.1:{port}"),
         "--json",
     ]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     assert_eq!(
         v["result"]["endpoint"].as_str().map(str::to_owned),
         by_unit,
@@ -439,7 +440,7 @@ fn a_probe_another_host_holds_is_waited_for_lock_timeout_then_busy() {
         "1",
         "--json",
     ]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     assert_eq!(out.status.code(), Some(13), "{v}");
     assert_eq!(v["error"]["kind"], "device-busy", "{v}");
     assert!(
@@ -485,7 +486,7 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
         &format!("port:{pty}"),
         "--json",
     ]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     assert_eq!(v["result"]["version"], env!("CARGO_PKG_VERSION"), "{v}");
     assert_eq!(v["result"]["pid"], pid, "{v}");
     // A client keeps it up.
@@ -518,7 +519,7 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
         "1",
         "--json",
     ]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     assert_eq!(out.status.code(), Some(13), "{v}");
     assert_eq!(v["error"]["kind"], "device-busy", "{v}");
     let msg = v["error"]["msg"].as_str().unwrap();
@@ -551,7 +552,7 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
     std::thread::sleep(Duration::from_millis(500));
     drop(holder);
     let out = cmd.join().unwrap();
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     assert_eq!(out.status.code(), Some(0), "{v}");
     assert!(
         broker.0.try_wait().unwrap().is_some() || {

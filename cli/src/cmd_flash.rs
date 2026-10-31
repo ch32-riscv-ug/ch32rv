@@ -931,9 +931,12 @@ fn finish_flash(
     if let Some(state) = sdi {
         let on = matches!(state, SwitchState::On);
         if let Err(e) = session.link().set_sdi_print_enabled(on) {
-            eprintln!(
-                "warning[sdi]: could not set SDI print {}: {e}",
-                if on { "on" } else { "off" }
+            crate::warn(
+                "sdi",
+                format!(
+                    "could not set SDI print {}: {e}",
+                    if on { "on" } else { "off" }
+                ),
             );
         }
     }
@@ -2158,8 +2161,9 @@ pub(crate) fn recover_unprotect(cli: &Cli) -> ExitCode {
                 _ => (crate::cmd_target::BLANKET_FACTORY, false),
             };
             if !preserved {
-                eprintln!(
-                    "warning[option-defaults]: the target's current option bytes could not be read back, so family-specific USER bits (SRAM split, NRST mode) are set to 0xff rather than preserved"
+                crate::warn(
+                    "option-defaults",
+                    "the target's current option bytes could not be read back, so family-specific USER bits (SRAM split, NRST mode) are set to 0xff rather than preserved",
                 );
             }
             if let Err(e) = dm.flash_program_option_bytes(option_base, &image) {
@@ -2398,9 +2402,12 @@ pub(crate) fn recover_special_erase(cli: &Cli, method: RecoverMethod) -> ExitCod
             ),
         );
     }
-    if !params_for_family(family_byte).is_some_and(|p| p.supports_special_erase) && !cli.json {
-        eprintln!(
-            "warning[special-erase-untried]: the special erase has not been seen working on {chip} here; the probe's answer tells"
+    if !params_for_family(family_byte).is_some_and(|p| p.supports_special_erase) {
+        crate::warn(
+            "special-erase-untried",
+            format!(
+                "the special erase has not been seen working on {chip} here; the probe's answer tells"
+            ),
         );
     }
 

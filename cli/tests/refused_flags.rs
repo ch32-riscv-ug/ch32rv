@@ -4,6 +4,8 @@
 //! ja: その経路で守れないフラグは、device を開く前に断る(exit 24)。無視しない。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
+
 use std::process::Command;
 
 fn run(args: &[&str]) -> (i32, serde_json::Value) {
@@ -12,8 +14,7 @@ fn run(args: &[&str]) -> (i32, serde_json::Value) {
         .arg("--json")
         .output()
         .unwrap();
-    let v = serde_json::from_slice(&out.stdout)
-        .unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stdout)));
+    let v = common::envelope(&out.stdout);
     (out.status.code().unwrap(), v)
 }
 

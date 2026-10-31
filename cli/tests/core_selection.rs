@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
+
 use std::process::Command;
 
 #[test]
@@ -16,7 +18,7 @@ fn unsupported_core_operations_fail_before_opening_a_probe() {
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(24));
-        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        let value: serde_json::Value = common::envelope(&output.stdout);
         assert_eq!(value["error"]["kind"], "capability-unsupported");
     }
 }
@@ -48,7 +50,7 @@ fn h417_core1_register_read_replays_with_selection_preserved() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let value: serde_json::Value = common::envelope(&output.stdout);
     assert!(value["ok"].as_bool().unwrap());
     assert_eq!(value["result"]["value"], "0x00000001");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("divergen"));
@@ -103,7 +105,7 @@ fn rejected_hart_readback_does_not_access_core0_registers() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(24));
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let value: serde_json::Value = common::envelope(&output.stdout);
     assert_eq!(value["error"]["kind"], "capability-unsupported");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("divergen"));
 }

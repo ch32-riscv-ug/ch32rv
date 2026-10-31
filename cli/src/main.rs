@@ -1,12 +1,11 @@
 //! en: ch32rv CLI. A thin layer that only composes the library crates (docs/architecture.ja.md §2).
 //! The WCH-LinkE-route surface is implemented (flash/verify/read/write/erase/reset/recover, run,
-//! dbg + gdb, monitor, target/probe/db/capabilities, arduino), as are `isp` over USB and
-//! `boot hid`; the rest of the boot/dap routes return exit 71 (unimplemented).
+//! dbg + gdb, monitor, target/probe/db/capabilities, arduino), as are `isp` and `boot hid` /
+//! `boot dfu`.
 //!
 //! ja: ch32rv CLI。library crate 群を組み合わせるだけの薄い層(docs/architecture.ja.md §2)。
 //! WCH-LinkE 経路の機能は実装済み(flash/verify/read/write/erase/reset/recover、run、dbg+gdb、
-//! monitor、target/probe/db/capabilities、arduino)。USB の isp と boot hid も実装済み。残りの boot/dap は
-//! exit 71(unimplemented)。
+//! monitor、target/probe/db/capabilities、arduino)。isp と boot hid / boot dfu も実装済み。
 
 mod args;
 mod broker;
@@ -34,6 +33,9 @@ mod progress;
 mod session;
 mod source;
 
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use clap::Parser;
 
 use args::*;
@@ -41,6 +43,7 @@ use ch32rv_contract::{self as contract, ErrorKind, ResultEnvelope};
 
 fn main() -> std::process::ExitCode {
     let mut cli = Cli::parse();
+    JSON.store(cli.json, Ordering::Relaxed);
     // `--chip` > CH32RV_CHIP (clap reads both) > the config's `[defaults] chip`.
     if cli.chip.is_none() {
         cli.chip = config::default_chip();
@@ -72,12 +75,16 @@ fn main() -> std::process::ExitCode {
     if let Some(path) = cli.capture.as_deref()
         && let Err(e) = ch32rv_usb::capture::start(path)
     {
-        eprintln!(
-            "warning: --capture disabled: cannot write {}: {e}",
-            path.display()
+        warn(
+            "capture-disabled",
+            format!("--capture disabled: cannot write {}: {e}", path.display()),
         );
     }
     let code = run_command(&cli);
+    // A command that printed no envelope (gdb, a streaming monitor) still shows its warnings.
+    for w in take_warnings() {
+        eprintln!("warning[{}]: {}", w.code, w.msg);
+    }
     // After a replay, note if the run diverged from the recording (a protocol change) or ran short.
     if let Some((divergences, underruns)) = ch32rv_usb::replay::summary()
         && (divergences > 0 || underruns > 0)
@@ -394,7 +401,49 @@ fn cmd_version(cli: &Cli) -> std::process::ExitCode {
     }
 }
 
+/// en: `--json` given: warnings go into the envelope's `warnings[]`, not to stderr.
+/// ja: `--json` のとき warning は stderr ではなく封筒の `warnings[]` へ。
+static JSON: AtomicBool = AtomicBool::new(false);
+static WARNINGS: Mutex<Vec<contract::envelope::Warning>> = Mutex::new(Vec::new());
+
+/// en: A warning raised where no command's warning list is at hand (config, the address resolver,
+/// a step deep in a command): `warning[code]: msg` on stderr, or with `--json` an entry of the
+/// `warnings[]` of the envelope printed next (docs/cli.ja.md §3.5). It never fails the command.
+/// ja: 手元に warning の一覧が無い所の warning。`--json` なら次に出す封筒の `warnings[]` へ入れる。
+pub(crate) fn warn(code: &str, msg: impl Into<String>) {
+    let msg = msg.into();
+    if JSON.load(Ordering::Relaxed) {
+        if let Ok(mut w) = WARNINGS.lock()
+            && !w.iter().any(|x| x.code == code && x.msg == msg)
+        {
+            w.push(contract::envelope::Warning {
+                code: code.to_owned(),
+                msg,
+            });
+        }
+    } else {
+        eprintln!("warning[{code}]: {msg}");
+    }
+}
+
+fn take_warnings() -> Vec<contract::envelope::Warning> {
+    WARNINGS
+        .lock()
+        .map(|mut w| std::mem::take(&mut *w))
+        .unwrap_or_default()
+}
+
 pub(crate) fn print_envelope(env: &ResultEnvelope) -> std::process::ExitCode {
+    let pending = take_warnings();
+    let merged;
+    let env = if pending.is_empty() {
+        env
+    } else {
+        let mut e = env.clone();
+        e.warnings.extend(pending);
+        merged = e;
+        &merged
+    };
     match serde_json::to_string(env) {
         Ok(s) => {
             println!("{s}");

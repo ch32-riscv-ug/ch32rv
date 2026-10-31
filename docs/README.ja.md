@@ -12,7 +12,7 @@
 | [cli.ja.md](cli.ja.md) | コマンド体系仕様。全機能を最終的に実装する前提の完成形ツリーと共通契約(JSON、exit code、selector) |
 | [architecture.ja.md](architecture.ja.md) | 実装言語の検証(Rust 採用判断)と crate 分割、library API 規約、target DB 生成、配布 |
 | [naming.ja.md](naming.ja.md) | repository 名・CLI 名・crate 名の決定 |
-| [contract/](contract/README.ja.md) | JSON contract(result envelope・NDJSON event の schema)。契約版 1 |
+| [contract/](contract/README.ja.md) | JSON contract(result envelope・コマンドごとの result・NDJSON event の schema)。契約版 5 |
 | [protocol/wch-link.ja.md](protocol/wch-link.ja.md) | WCH-Link USB protocol ノート(骨組み。capture で verified 化する) |
 | [data-requests/](data-requests/README.ja.md) | ch32-device-data への CSV 作成依頼書(ファイル単位で依頼に使う) |
 | [direction-review-2026-09-01.ja.md](direction-review-2026-09-01.ja.md) | ArduinoCore-CH32RV 側からの方向性レビュー記録。リリース方針(probe-rs 非同梱・ch32rv 一本化・Linux 先行ドッグフーディング)とギャップ・開始条件 |

@@ -7,6 +7,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::process::Command;
 
 fn bin() -> &'static str {
@@ -244,7 +246,7 @@ fn unregistered_target_still_reports_its_signature_and_connection() {
         assert!(out.status.success(), "{stderr}");
         assert!(!stderr.contains("diverged"), "{stderr}");
         if json {
-            let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+            let v: serde_json::Value = common::envelope(&out.stdout);
             assert_eq!(v["result"]["connection"], "connected");
             assert_eq!(v["result"]["identification"], "unregistered");
             assert_eq!(v["result"]["family_byte"], "0x77");
@@ -286,7 +288,7 @@ fn v205_registration_exposes_delivered_and_measured_evidence() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     assert_eq!(v["target"]["family"], "CH32V205");
     assert_eq!(v["target"]["sku"], "CH32V205RCT6");
     assert_eq!(v["target"]["verified"], true);
@@ -320,7 +322,7 @@ fn x315_erased_capacity_uses_db_and_retains_raw_response() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let v: serde_json::Value = common::envelope(&out.stdout);
     assert_eq!(v["target"]["family"], "CH32X315");
     assert_eq!(v["target"]["sku"], "CH32X315MCU6");
     assert_eq!(v["target"]["verified"], true);

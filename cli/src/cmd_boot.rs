@@ -95,6 +95,8 @@ pub fn hid_flash(
             "flash": {
                 "bytes": report.bytes,
                 "programmer": "hid",
+                // The bootloader does not say which chip it runs on.
+                "family": null,
                 "usb": format!("{:04x}:{:04x}", report.vid, report.pid),
                 "sectors_written": report.sectors_written,
                 "sector_size": 64,
@@ -392,6 +394,14 @@ pub fn dfu_flash(
         env.result = Some(serde_json::json!({
             "flash": {
                 "bytes": flat.len(),
+                "programmer": "dfu",
+                // DFU names no chip, erases what it is sent by itself, reads nothing back and
+                // restarts the device on its own after manifestation.
+                "family": null,
+                "skipped": false,
+                "scope": "image",
+                "verified": null,
+                "running": null,
                 "blocks": block,
                 "transfer_size": dfu.transfer_size,
                 "seconds": secs,

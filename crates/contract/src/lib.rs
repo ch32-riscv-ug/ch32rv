@@ -1,5 +1,6 @@
 //! en: Shared vocabulary (contract) for the ch32rv tool suite.
-//! This crate implements `docs/contract/` (result.schema.json / events.schema.json) and gives
+//! This crate implements `docs/contract/` (result.schema.json / commands.schema.json /
+//! events.schema.json) and gives
 //! the CLI, GUIs, and CI the same types to talk with. The contract version is
 //! [`CONTRACT_VERSION`]; fields may be added without bumping it, breaking changes bump the
 //! major (docs/contract/README.ja.md).
@@ -34,7 +35,7 @@ pub mod progress;
 
 /// en: JSON contract version, carried in `ResultEnvelope::contract`.
 /// ja: JSON contract の版。`ResultEnvelope::contract` に入る。
-pub const CONTRACT_VERSION: &str = "4";
+pub const CONTRACT_VERSION: &str = "5";
 
 pub use envelope::{
     ErrorBody, FirmwareVersion, ProbeMode, ProbeReport, ResultEnvelope, TargetReport, Warning,

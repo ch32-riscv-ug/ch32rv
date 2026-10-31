@@ -168,13 +168,20 @@ chip = "CH32V203C8T6"
 - **stdout**: 結果。`--json` 時は単一の JSON object のみ。human 出力時も結果のみ。
 - **stderr**: log・進捗・警告。`--progress ndjson` 時は 1 行 1 event の NDJSON。
 - **streaming command(`monitor` / `run` / `flash --monitor`)の target 出力**: human 時は stdout へ生 byte。`--json` 時は stdout を envelope に譲り、stderr へ `{"ev":"output","source":"<uart|sdi|dmdata|rtt|semihosting>","data":"<text>"}` を 1 chunk 1 行で流す(`data` は UTF-8 文字境界で分割、不正列は U+FFFD)。envelope は stream の終わり(`--duration` 満了 / semihosting exit)に 1 つ。
-- JSON には必ず `contract`(契約版)と `ok` を含む。schema は `docs/contract/` に置き、CLI の版とは独立に versioning する。
+- JSON には必ず `contract`(契約版)と `ok` を含む。schema は `docs/contract/` に置き、CLI の版とは独立に versioning する。`result` を出すコマンドは、すべて `docs/contract/commands.schema.json` に形がある(`cmd` で引く)。
+- `flash` の結果は経路(`isp flash`、`boot dfu flash`、`boot hid flash` を含む)によらず `result.flash` の 1 つの形。検証の結果はどのコマンドでも `verified`(bool。検証しなかったら null)。
 
 ```json
-{"contract":"4","ok":true,"cmd":"flash",
+{"contract":"5","ok":true,"cmd":"flash",
  "result":{"flash":{"bytes":16700,"family":"CH32V20x","programmer":"stub","skipped":false,
-                    "scope":"sectors","verified":true,"running":true}}}
+                    "scope":"sector","verified":true,"running":true}}}
 ```
+
+- **語彙の約束**:
+  - `error.code` と NDJSON の `ev` は開いている。値を足すことがあり、知らない `ev` の行は読み飛ばす。知らない `error.code` は §3.6 の帯の意味で扱う。
+  - `error.kind` と `warnings[].code` は開いた語彙として名前を約束する。名前は凍結し、別の意味で使い回さない。足すことはある。知らない `kind` は同じ `error.code` の帯の意味で扱う。
+  - warning は `ok` を変えない。`--json` では warning はすべて `warnings[]` に出し、stderr には出さない。
+  - `msg` と `hint` は人向けで、文面は約束しない。
 
 NDJSON event(stderr)の例。**再試行は必ず event として可視化する**(「16.7 KB で固まる」問題の運用要件):
 
@@ -220,7 +227,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 - **OEP の probe**: 使用中は probe の lock(lease)で決まる。ブローカーが probe を開くとき、他の host の session が lock を持っていれば `--lock-timeout` まで待ち、取れなければ、ブローカーを起動したコマンドは exit 13(`device-busy`)。ブローカーはそのコマンドの `--lock-timeout` と `--timeout` で起動する。
 - **別の版の ch32rv のブローカー**: probe のブローカーが別の版の ch32rv のもの(IDE 同梱と PATH のものなど)なら、使用中と同じに扱う。client はそのブローカーと話さず、`--lock-timeout` まで待つ(ブローカーは最後の client が抜けると終わるので、そのあと自分の版のブローカーを起動して続ける)。待っても終わらなければ exit 13(`device-busy`)で、msg に相手の版と PID を出す(`the probe's broker is ch32rv 0.24.0 (pid 1234), not ch32rv 0.25.0, …`)。版を持たない古いブローカーも別の版として扱う。
 - **open 再試行**: 挿抜直後は CDC interface が vendor interface より先に見える(実測)。open 失敗は 1 秒間隔で計 3 回まで再試行してから exit する。
-- **転送再試行**: chunk 単位の timeout→再試行(既定 3 回)。再試行が起きた事実は NDJSON event と JSON 結果(`retries`)に必ず出す。
+- **転送再試行**: chunk 単位の timeout→再試行(既定 3 回)。再試行が起きた事実は NDJSON event(`retry`)に必ず出す。
 - **固まり検出**: 再試行が尽きて probe が応答しなくなったら、`USBDEVFS_RESET` は使わず、再接続手順(usbipd / 物理挿抜)を提示して exit 41。
 - **capture(`--capture <file>`)実装(2026-09-02、依頼 A-3)**: `ch32rv-usb::capture`。`main` が `--capture` 時に一度 sink を設定し、`UsbInterface` の全 bulk 転送(cmd EP 0x01/0x81・data EP 0x02/0x82)とbootloaderのHID feature reportをNDJSON 1行ずつ追記する。bulk行は`{seq,t_us,ep,chan(cmd|data),dir(out|in),len,ok,data(hex)}`、HID行は`ep:"feature",chan:"hid"`。先頭に `{"_meta":{"format":1,"unit":"us"}}` と `{"_device":{…}}` を持つ。**bulkの`ep`は生のendpoint番地**(`"0x01"`等)で、こちらが正: 複数の列挙をまたぐsession(`probe firmware update`のIAP modeなど)では`chan`だけで役割が決まらない。行ごとflush(途中クラッシュでもそこまで残る)。flag無しはno-op。HIDを含め`--replay`可能。実機検証: `target info --capture`のGetProbeInfo/SetSpeed/AttachChip、および`boot hid flash --capture`のB803 erase/program/verify/runを記録・再生済み。
 
@@ -253,7 +260,7 @@ ch32rv flash <FILE>
 - **`--erase` のモード別挙動(2026-09-01 修正)**: `chip` は WCH-Link の全 chip 消去(`erase_flash` = `Program 0x01`。stub ではなく LinkE が FLASH controller の MER を直接叩く。protocol §7a。1発で速い)。`sector` は **image が実際に覆う flash page だけ**を §4.2.1 の直接 FLASH controller(`flash_page_erase`)で消してから stub で program する — image 外の flash(高位の bootloader・校正データ等)を消さない。`auto` は **image の最小番地が flash 先頭(`code_flash_start`)なら chip、そうでなければ(部分/offset 書込)sector** を選ぶ。`none` は消去なし。**選ばれた scope は必ず出力する**(通常出力の `erase:` 行 / JSON の `erase` フィールド)ので auto の挙動が不透明にならない。**修正の背景**: 修正前は `sector`/`auto` とも無条件で全 chip 消去していた(=部分 image を焼くと chip 全体が飛ぶ silent な data-loss footgun)。auto を「全 image=chip・部分=sector」に賢くすることで footgun を潰しつつ、フル書込(=blink 等の常道)の速度も維持する。**sector が全 image 既定でない理由(実測)**: page 単位消去は ~100ms/page(直接 FLASH controller の DMI 往復)で、chip 消去 0.15s に対し 32KB(128 page)= 12.8s、64KB= ~25s、V307 の 288KB なら数分。フル書込を毎回 sector にすると Arduino ビルドループ等が致命的に遅くなるため、フル image は chip を選ぶ。sector は検証済み FLASH-controller profile を持つ family のみ(無ければ fail-closed。`--erase chip` を案内)。同一 page を共有するセグメントは 1 回に畳んで program 前に一括消去。実機検証(L103): フル image + `--erase auto` → `erase: chip`(0.78s で 64KB 書込+program)、`flash <256B> --offset 0x0800FF00 --erase auto/sector` → `erase: sector` で 0x08000000 の firmware・未対象域を無傷のまま対象 page だけ書換え(page 計算は単体テスト `covered_pages`)。program 後に stub が page-erase 済み(chip-erase でない)flash へ書けることも実機確認済み。
 - **`--restore-unwritten`(2026-09-01 実装)**: sector 消去は覆う page 全体を消すため、image が page の一部しか埋めない場合その page の残りは blank になる。このフラグを付けると、**消去前に対象 page を read → image を上書き合成 → page 全体を program** することで、image が触れない byte の元値を保つ。**page 単位 erase 必須**なので `--erase chip`/`none` と併用は fail-closed(usage error)、`--erase auto` は自動で sector に倒す。**family 制限**: 消去済みセルが `0xff` を返す family(RM の消去系統 A = profile の `erased_reads_ff`)のみ。V20x/V30x は系統 B で消去済みが `0xe339e339` を返し(**link でなくシリコンの特性**)、blank と実データを区別できず消去パターンを焼き込むため fail-closed(capability-unsupported、消去前に判定=非破壊)。実機検証(L103): page に pattern を置き先頭16Bだけ 0xAA を `--restore-unwritten` で書くと 16–255B目の pattern が保存、verify OK。V307 では消去せずに拒否・firmware 無傷を確認。
 - **`--reset none` の注意(2026-09-25)**: WCH-LinkE は書込の前後で RCC の周辺クロック enable と SysTick を 0 にし、**戻さない**(線上で確認。protocol §7a)。`--reset none` で終えた chip はその状態のままなので、アプリを reset せずに再開すると周辺が動かない。`--reset run`(既定)と `halt` は reset を通るので影響しない。
-- **`--preverify`(2026-09-01 実装)**: 破壊操作の前に image 領域を read して現在値と比較し、**全一致なら erase/program をまるごと省略**(flash cycle と摩耗を節約)。一致時は `preverify: target already matches - skipped`(JSON `skipped:true`・`erase:"none"`・`verify:true`)を出し、**reset 方針だけは適用**(reset run 済みの target をちゃんと走らせる)。不一致なら link 状態を戻して通常の flash に流れる。reset+finish の末尾は `reset_and_finish` に切り出して通常経路と skip 経路で共有。実機検証(L103): 同一 image を再 flash → skip、別 image → 通常書込に流れて反映を確認。
+- **`--preverify`(2026-09-01 実装)**: 破壊操作の前に image 領域を read して現在値と比較し、**全一致なら erase/program をまるごと省略**(flash cycle と摩耗を節約)。一致時は `preverify: target already matches - skipped`(JSON `skipped:true`・`scope:"none"`・`verified:true`)を出し、**reset 方針だけは適用**(reset run 済みの target をちゃんと走らせる)。不一致なら link 状態を戻して通常の flash に流れる。reset+finish の末尾は `reset_and_finish` に切り出して通常経路と skip 経路で共有。実機検証(L103): 同一 image を再 flash → skip、別 image → 通常書込に流れて反映を確認。
 - **`--sdi` / `--monitor` / `--repeat`(2026-09-01 実装)**: いずれも scaffold だったものを実装。**`--sdi on|off`**: 書込+reset 後に probe の SDI print forwarding を設定(`set_sdi_print_enabled`)。programming は成功済みなので失敗しても flash は失敗させず warning 止まり。**`--monitor uart|sdi|dmdata|rtt`**: 書込+reset 後にそのまま monitor session へ移行(Ctrl-C まで、`--duration` でバウンド可)。実装は reset+結果出力の末尾を `finish_flash`(session を値で受けて drop→USB 解放してから monitor が probe を開き直す)に集約し、通常経路・preverify skip 経路の両方から `--sdi`/`--monitor` が効く。**`--repeat`**: `flash` を dispatcher にして `flash_once` をループ。1 台焼く→operator が外す(AttachChip 失敗を poll)→次を挿す(AttachChip 成功を poll)→焼く、を Ctrl-C まで。失敗 board は報告して次へ。実機検証(L103): `--sdi on` が program+設定を完了、`--preverify --monitor dmdata --timeout 4` が skip→dmdata monitor 移行→bound 終了、`--repeat` が #1 を焼いて removal 待ちに入る(remove→insert→再焼きの完全周回は物理 target 交換が要るため未検証)。
 
 #### verify / read / write / erase
@@ -613,7 +620,7 @@ CI / HIL:
 
 ```sh
 ch32rv probe firmware check --min 2.12 --probe name:bench-01        # 既知不良版なら exit 12
-ch32rv flash app.elf --probe name:bench-01 --json > result.json     # retries も JSON に残る
+ch32rv flash app.elf --probe name:bench-01 --json > result.json     # 結果を JSON で残す
 ch32rv run tests.elf --probe name:bench-01 --source dmdata --exit-on semihosting
 ```
 
@@ -631,7 +638,8 @@ ch32rv doctor                             # 動かない時の一手目
   - **contract 版**(JSON schema・NDJSON event・exit code)は CLI 版と独立に管理し、破壊変更でのみ版を上げる。field 追加は随時。
   - command と flag は追加のみ。廃止する場合は 2 minor 版の deprecation 警告を挟む。
   - exit code は追加のみ(§3.6 の帯を守る)。
-  - `--json` の schema は `docs/contract/` に置き、release ごとに固定する。実際の出力は試験(cli/tests/contract.rs)で schema と照合する。
+  - `--json` の schema は `docs/contract/` に置き、release ごとに固定する。schema は知らない field を禁じない。実際の出力は試験(cli/tests/contract.rs、ほかの試験の `--json` も)で schema と照合する。
+  - `error.kind` と `warnings[].code` の名前は凍結する(§3.5)。
 
 ## 7. 参照
 

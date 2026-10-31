@@ -547,13 +547,16 @@ fn flash(
             "flash": {
                 "bytes": image.len(),
                 "programmer": "isp",
+                "family": summary["series"],
                 "usb": summary["usb"],
                 "chip_id": summary["chip_id"],
                 "erased_sectors": (erase == IspErase::Auto).then(|| ch32rv_isp::sectors_for(image.len()).max(8)),
+                // Not verified (`--verify off`) is null; a mismatch fails the command.
                 "verified": verified.then_some(true),
-                "running": running.then_some(true),
+                // Left in the bootloader: the application does not run.
+                "running": running,
                 "skipped": false,
-                "scope": "image",
+                "scope": if erase == IspErase::Auto { "sectors" } else { "none" },
             },
             "device": summary,
         }));
@@ -1098,7 +1101,10 @@ fn enter_via_app(
         // stall on Linux); it still detaches, so the error is only reported.
         // ja: status stage の前に bus から消えることがある(Linux では stall)が、detach はするので報告だけ。
         if let Err(e) = app.dev.dfu_detach(intf, DETACH_TIMEOUT_MS) {
-            eprintln!("warning[dfu-detach]: {e} (waiting for the bootloader anyway)");
+            crate::warn(
+                "dfu-detach",
+                format!("{e} (waiting for the bootloader anyway)"),
+            );
         }
         if !cli.json {
             eprintln!("sent DFU_DETACH to usb:{at} (interface {intf})");

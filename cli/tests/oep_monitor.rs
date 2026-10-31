@@ -4,6 +4,7 @@
 //! ja: OEP の probe の serial port での `arduino monitor`(試験が arduino-cli の役)。
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod common;
 #[path = "../../crates/oep/tests/virtual_bench/uv.rs"]
 mod uv;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -138,7 +139,7 @@ fn a_debug_source_streams_the_oep_console_through_the_broker() {
             ])
             .output()
             .unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let v: serde_json::Value = common::envelope(&out.stdout);
         if v["result"]["endpoint"].is_null() {
             break;
         }
@@ -239,7 +240,7 @@ fn uart_on_an_oep_probe_says_so_and_rtt_looks_for_the_block() {
             .args(["--probe", &format!("port:{pty}"), "--json"])
             .output()
             .unwrap();
-        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let v: serde_json::Value = common::envelope(&out.stdout);
         (out.status.code(), v)
     };
     let (code, v) = run("uart");

@@ -32,7 +32,7 @@ fn tables() -> impl Iterator<Item = (PathBuf, toml::Value)> {
         match toml::from_str(&text) {
             Ok(v) => Some((path, v)),
             Err(e) => {
-                eprintln!("warning[config-parse]: {}: {e}", path.display());
+                crate::warn("config-parse", format!("{}: {e}", path.display()));
                 None
             }
         }

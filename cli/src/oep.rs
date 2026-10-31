@@ -95,8 +95,9 @@ pub(crate) fn net_target(a: &OepAddr) -> Option<crate::broker::BrokerTarget> {
         OepAddr::Tcp(t) => {
             let unit = unit_at(t);
             if unit.is_none() {
-                eprintln!(
-                    "warning[oep-unit-unknown]: {t} did not say its unit id; its broker is keyed by the address"
+                crate::warn(
+                    "oep-unit-unknown",
+                    format!("{t} did not say its unit id; its broker is keyed by the address"),
                 );
             }
             Some(crate::broker::BrokerTarget::Net {

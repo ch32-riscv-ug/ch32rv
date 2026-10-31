@@ -16,7 +16,7 @@ pub struct ResultEnvelope {
     pub probe: Option<ProbeReport>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<TargetReport>,
-    /// Command-specific result. Per-command schemas are added to the contract over time.
+    /// Command-specific result; its shape per `cmd` is docs/contract/commands.schema.json.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
@@ -148,7 +148,8 @@ pub struct TargetReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Warning {
-    /// Stable warning code (e.g. fw-known-bad, target-unverified).
+    /// Warning name (e.g. fw-known-bad, target-unverified): an open vocabulary whose names are
+    /// frozen (never reused with another meaning); a warning never makes `ok` false.
     pub code: String,
     pub msg: String,
 }
@@ -157,7 +158,8 @@ pub struct Warning {
 pub struct ErrorBody {
     /// Same value as the exit code (docs/cli.ja.md §3.6).
     pub code: u8,
-    /// Machine-readable name ([`ErrorKind::as_str`]).
+    /// Machine-readable name ([`ErrorKind::as_str`]): an open vocabulary whose names are frozen;
+    /// a reader takes an unknown kind as the meaning of its `code` band.
     pub kind: String,
     pub msg: String,
     #[serde(skip_serializing_if = "Option::is_none")]

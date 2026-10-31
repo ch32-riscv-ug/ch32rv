@@ -3,6 +3,8 @@
 //! ja: `--dry-run` に対応しないコマンドは、device に触れる前に断る(以前は無視して実行した)。
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod common;
+
 use std::process::Command;
 
 fn run(args: &[&str]) -> (i32, serde_json::Value) {
@@ -11,7 +13,7 @@ fn run(args: &[&str]) -> (i32, serde_json::Value) {
         .args(["--json", "--probe", "serial:NO-SUCH-PROBE"])
         .output()
         .unwrap();
-    let v = serde_json::from_slice(&out.stdout).unwrap();
+    let v = common::envelope(&out.stdout);
     (out.status.code().unwrap(), v)
 }
 
