@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use ch32rv_contract::policy::MonitorSource;
 use ch32rv_dmi::{DmTarget, DtmAccess, ResetMode, TargetAccess};
-use ch32rv_oep::codec::{Resolution, parse_tlvs};
+use ch32rv_oep::codec::{RequestTlvError, Resolution, request_tlvs};
 use ch32rv_oep::link::{Call, Limits, Reply};
 use ch32rv_oep::registry::{
     self, core as oep_core, outcomes, reject_reasons, status, target_console as console,
@@ -112,6 +112,14 @@ fn unsupported_tlv(tag: u8) -> Reply {
     Reply {
         resolution: Resolution::Rejected(reject_reasons::UNSUPPORTED),
         payload: vec![tag],
+    }
+}
+
+/// The refusal for a request's TLV list (core §2.3).
+fn tlv_refusal(e: RequestTlvError) -> Reply {
+    match e {
+        RequestTlvError::Malformed => rejected(reject_reasons::MALFORMED),
+        RequestTlvError::Unsupported(tag) => unsupported_tlv(tag),
     }
 }
 
@@ -525,15 +533,16 @@ impl WchUpstream {
                 // answered is the one oep-if-debug §3.1 gives for the chip id. An attach naming
                 // another rest is one this probe cannot make (unsupported, the TLV's number).
                 // ja: 休ませ方は WCH-Link のファームが決める。答えは §3.1 の規則で chip id から。
-                let asked = parse_tlvs(&p[9..]).ok().and_then(|t| {
-                    t.iter()
-                        .find(|t| t.tag & 0x7F == wire::tlvs::attach::IDLE_CLOCK)
-                        .map(|t| t.value.clone())
-                });
-                let asked = match asked.as_deref() {
+                let tlvs = match request_tlvs(&p[9..], &[wire::tlvs::attach::IDLE_CLOCK]) {
+                    Ok(t) => t,
+                    Err(e) => return tlv_refusal(e),
+                };
+                // (value, the tag as received): an unsupported answer names the latter.
+                let asked = match tlvs.first().map(|t| (t.tag, t.value.as_slice())) {
                     None => None,
-                    Some(&[v]) if c.func == FN_RVSWD && v <= 1 => Some(v),
-                    Some(_) => return unsupported_tlv(wire::tlvs::attach::IDLE_CLOCK),
+                    Some((tag, &[v])) if c.func == FN_RVSWD && v <= 1 => Some((v, tag)),
+                    Some((tag, &[_])) => return unsupported_tlv(tag),
+                    Some(_) => return rejected(reject_reasons::MALFORMED),
                 };
                 let max_speed = Some(hz);
                 let existing = self.session.is_some();
@@ -565,11 +574,13 @@ impl WchUpstream {
                     return failed(vec![status::LINE]);
                 };
                 let rest = ch32rv_oep::target::auto_rest(chip_id);
-                if asked.is_some_and(|a| a != rest) {
+                if let Some((a, tag)) = asked
+                    && a != rest
+                {
                     if !existing {
                         self.session = None;
                     }
-                    return unsupported_tlv(wire::tlvs::attach::IDLE_CLOCK);
+                    return unsupported_tlv(tag);
                 }
                 let Some(s) = self.session.as_mut() else {
                     return failed(vec![status::LINE]);

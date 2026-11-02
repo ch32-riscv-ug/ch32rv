@@ -2,8 +2,10 @@
 
 ## Unreleased
 
-- (EN) The OEP registry is generated from oep-spec a6a4374 (hash e3a38d162ae5aefb): debug's wire settings are `channel.{}.rest` / `channel.{}.hold` (were `rest.{}` / `hold.{}`), and the fixture interfaces added since cc82b5e are in it. ch32rv does not read these settings by name, so nothing it does changes.
-- (JA) OEP の registry を oep-spec a6a4374(hash e3a38d162ae5aefb)から生成した。debug の線の設定は `channel.{}.rest` / `channel.{}.hold`(以前は `rest.{}` / `hold.{}`)。cc82b5e の後に足された fixture のインターフェースも入った。ch32rv はこの設定を名前で読まないので、動きは変わらない。
+- (EN) The OEP registry is generated from oep-spec 364827b (hash 278114efc9235b4c): debug's wire settings are `channel.{}.rest` / `channel.{}.hold` (were `rest.{}` / `hold.{}`), and the fixture interfaces added since cc82b5e are in it. ch32rv does not read these settings by name, so nothing it does changes.
+- (JA) OEP の registry を oep-spec 364827b(hash 278114efc9235b4c)から生成した。debug の線の設定は `channel.{}.rest` / `channel.{}.hold`(以前は `rest.{}` / `hold.{}`)。cc82b5e の後に足された fixture のインターフェースも入った。ch32rv はこの設定を名前で読まないので、動きは変わらない。
+- (EN) Breaking (oep-spec 253c643, core §2.3): the WCH-Link broker refuses an `attach` carrying `idle_clock` twice (bit 7 aside) as rejected malformed; a broken TLV list or an `idle_clock` of another length is malformed too (was: the list ignored, or unsupported), an unknown critical TLV is rejected unsupported with the tag as received (was: ignored), and an unsupported `idle_clock` is named by the tag as received. The OEP broker checks an `attach` it answers itself (a shared connection) the same way: a broken list or `idle_clock` / `reset` twice is malformed.
+- (JA) 破壊的変更(oep-spec 253c643、core §2.3): WCH-Link のブローカーは、`idle_clock` を 2 つ持つ `attach`(bit 7 によらない)を rejected malformed で断る。壊れた TLV の並びと、長さの違う `idle_clock` も malformed(以前は並びを無視、または unsupported)。知らない critical な TLV は、受け取ったままの tag で rejected unsupported(以前は無視)。扱わない `idle_clock` の unsupported も、受け取ったままの tag を返す。OEP のブローカーも、自分で答える `attach`(共有の接続)を同じに確かめる: 壊れた並びと、`idle_clock` / `reset` を 2 つ持つものは malformed。
 ## 0.25.1 - 2026-10-31
 
 ## 0.25.0 - 2026-10-31

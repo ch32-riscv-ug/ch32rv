@@ -307,6 +307,35 @@ pub fn parse_tlvs(mut b: &[u8]) -> Result<Vec<Tlv>, DecodeError> {
     Ok(out)
 }
 
+/// Why a request's TLV list is refused (core §2.3), as the probe answers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestTlvError {
+    /// A broken list, or a tag the answerer implements given twice (bit 7 aside).
+    Malformed,
+    /// An unknown critical tag; the tag as received.
+    Unsupported(u8),
+}
+
+/// A request's TLVs whose numbers are in `known` (the tags the answerer implements, none of
+/// which repeats), in order. Unknown tags are not counted: a critical one is unsupported, a
+/// plain one is skipped (core §2.3).
+pub fn request_tlvs(b: &[u8], known: &[u8]) -> Result<Vec<Tlv>, RequestTlvError> {
+    let number = |tag: u8| tag & !registry::constants::TAG_CRITICAL;
+    let mut out: Vec<Tlv> = Vec::new();
+    for t in parse_tlvs(b).map_err(|_| RequestTlvError::Malformed)? {
+        if !known.contains(&number(t.tag)) {
+            if t.tag & registry::constants::TAG_CRITICAL != 0 {
+                return Err(RequestTlvError::Unsupported(t.tag));
+            }
+        } else if out.iter().any(|o| number(o.tag) == number(t.tag)) {
+            return Err(RequestTlvError::Malformed);
+        } else {
+            out.push(t);
+        }
+    }
+    Ok(out)
+}
+
 // ---- messages ----
 
 /// A request's header: role corr(u16) fn(u16) op session_id(u32) (core §4.1).
@@ -621,6 +650,34 @@ mod tests {
         let t = parse_tlvs(&b).unwrap();
         assert_eq!(t[0].value, 1_000_000u32.to_le_bytes().to_vec());
         assert_eq!(parse_tlvs(&[0x10, 5, 0, 1]), Err(DecodeError::TruncatedTlv));
+    }
+
+    #[test]
+    fn request_tlvs_follow_core_2_3() {
+        let (ic, crit) = (0x03, registry::constants::TAG_CRITICAL);
+        // A known tag twice, bit 7 aside: malformed.
+        let mut b = Vec::new();
+        put_tlv(&mut b, ic, false, &[0]);
+        put_tlv(&mut b, ic, true, &[0]);
+        assert_eq!(request_tlvs(&b, &[ic]), Err(RequestTlvError::Malformed));
+        // Unknown tags are not counted; a known one is kept.
+        let mut b = Vec::new();
+        put_tlv(&mut b, 0x7E, false, &[1]);
+        put_tlv(&mut b, 0x7E, false, &[2]);
+        put_tlv(&mut b, ic, true, &[1]);
+        let t = request_tlvs(&b, &[ic]).unwrap();
+        assert_eq!(t.len(), 1);
+        assert_eq!((t[0].tag, t[0].value.as_slice()), (ic | crit, &[1u8][..]));
+        // An unknown critical tag: unsupported, as received.
+        assert_eq!(
+            request_tlvs(&[0x7E | crit, 0, 0], &[ic]),
+            Err(RequestTlvError::Unsupported(0x7E | crit))
+        );
+        // A broken list: malformed.
+        assert_eq!(
+            request_tlvs(&[ic, 2, 0, 0], &[ic]),
+            Err(RequestTlvError::Malformed)
+        );
     }
 
     #[test]

@@ -1883,11 +1883,25 @@ impl Broker {
                         .find(|t| t.tag & 0x7F == tag && t.value.len() == 1)
                         .map(|t| t.value[0])
                 };
-                let asked = req
-                    .payload
-                    .get(9..)
-                    .and_then(|b| parse_tlvs(b).ok())
-                    .and_then(|t| rest(&t, wire_rvswd::tlvs::attach::IDLE_CLOCK));
+                // Answered here, so the request's TLVs are checked here as the probe would
+                // (core §2.3): a broken list or an attach TLV twice is malformed.
+                let known = [
+                    wire_rvswd::tlvs::attach::IDLE_CLOCK,
+                    wire_rvswd::tlvs::attach::RESET,
+                ];
+                let asked = match ch32rv_oep::codec::request_tlvs(req.payload.get(9..)?, &known) {
+                    Ok(t) => rest(&t, wire_rvswd::tlvs::attach::IDLE_CLOCK),
+                    Err(ch32rv_oep::codec::RequestTlvError::Malformed) => {
+                        return Some(refuse(reject_reasons::MALFORMED));
+                    }
+                    Err(ch32rv_oep::codec::RequestTlvError::Unsupported(tag)) => {
+                        return Some(encode_result(
+                            req.corr,
+                            Resolution::Rejected(reject_reasons::UNSUPPORTED),
+                            &[tag],
+                        ));
+                    }
+                };
                 let held_rest = answer
                     .get(13..)
                     .and_then(|b| parse_tlvs(b).ok())
