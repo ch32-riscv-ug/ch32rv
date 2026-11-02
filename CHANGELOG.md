@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) The OEP registry is generated from oep-spec a6a4374 (hash e3a38d162ae5aefb): debug's wire settings are `channel.{}.rest` / `channel.{}.hold` (were `rest.{}` / `hold.{}`), and the fixture interfaces added since cc82b5e are in it. ch32rv does not read these settings by name, so nothing it does changes.
+- (JA) OEP の registry を oep-spec a6a4374(hash e3a38d162ae5aefb)から生成した。debug の線の設定は `channel.{}.rest` / `channel.{}.hold`(以前は `rest.{}` / `hold.{}`)。cc82b5e の後に足された fixture のインターフェースも入った。ch32rv はこの設定を名前で読まないので、動きは変わらない。
 ## 0.25.1 - 2026-10-31
 
 ## 0.25.0 - 2026-10-31
