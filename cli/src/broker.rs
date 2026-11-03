@@ -63,9 +63,12 @@ const RAISES_AGAIN: u32 = 3;
 const BROKER_PROTOCOL: u64 = 1;
 /// The ch32rv a broker of this build is.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-/// en: The named extension the broker's confirm answer carries: `protocol(u8) version(utf8)`.
-/// ja: ブローカーの confirm の答えに付ける名前つき拡張(`protocol(u8) version(utf8)`)。
-const BROKER_EXTENSION: &str = "io.github.ch32-riscv-ug.broker";
+/// en: The firmware text (fn 0 describe, core §7.5) of a broker that is the probe itself (the
+/// WCH-Link broker): which ch32rv it is, for users outside ch32rv. A broker in front of an OEP
+/// probe passes the probe's own on. ja: WCH-Link のブローカーの describe の firmware(どの ch32rv か)。
+pub(crate) fn broker_firmware() -> String {
+    format!("ch32rv-broker {VERSION} protocol {BROKER_PROTOCOL}")
+}
 
 /// en: Which other ch32rv wrote endpoint record `v` (`ch32rv 0.24.0 (pid 123)`), or `None` when
 /// it is a broker of this ch32rv. A client talks only to a broker of its own protocol and
@@ -84,55 +87,6 @@ fn other_version(v: &Value) -> Option<String> {
         Some(ver) => format!("ch32rv {ver} (pid {pid})"),
         None => format!("a ch32rv older than the broker version check (pid {pid})"),
     })
-}
-
-/// en: The version a broker's confirm answer `payload` names, as [`other_version`] reads an
-/// endpoint record: `None` for a broker of this ch32rv.
-/// ja: ブローカーの confirm の答えが名乗る版。この ch32rv のブローカーなら None。
-fn other_version_in_confirm(payload: &[u8]) -> Option<String> {
-    let named = payload
-        .get(16..)
-        .and_then(|b| parse_tlvs(b).ok())
-        .unwrap_or_default()
-        .into_iter()
-        .find_map(|t| {
-            let v = t.value;
-            let n = usize::from(*v.first()?);
-            (t.tag & 0x7F == registry::constants::TAG_NAMED_EXTENSION
-                && v.get(1..1 + n) == Some(BROKER_EXTENSION.as_bytes()))
-            .then(|| v[1 + n..].to_vec())
-        });
-    let Some(data) = named else {
-        return Some("a ch32rv older than the broker version check".to_owned());
-    };
-    let protocol = data.first().copied().map(u64::from);
-    let version = data
-        .get(1..)
-        .map(String::from_utf8_lossy)
-        .unwrap_or_default();
-    (protocol != Some(BROKER_PROTOCOL) || version != VERSION).then(|| format!("ch32rv {version}"))
-}
-
-/// en: Ask the broker behind `l` which ch32rv it is (a confirm, which the broker answers itself):
-/// `Some` names another one. A link that does not answer is left to the client's own confirm.
-/// ja: `l` の先のブローカーに版を聞く(confirm。ブローカーが自分で答える)。別の版なら Some。
-pub(crate) fn other_broker(l: &mut Link) -> Option<String> {
-    let mut payload = registry::constants::CONFIRM_REQUEST_MAGIC
-        .as_bytes()
-        .to_vec();
-    payload.extend_from_slice(&[registry::PROTOCOL_REVISION, registry::PROTOCOL_REVISION]);
-    let r = l
-        .call(Call {
-            func: oep_core::FN,
-            op: oep_core::op::CONFIRM,
-            session: None,
-            payload,
-        })
-        .ok()?;
-    if !r.succeeded() {
-        return None;
-    }
-    other_version_in_confirm(&r.payload)
 }
 
 // ---- where a broker is ----
@@ -521,11 +475,10 @@ enum Found {
 /// still names the same broker once connected: a broker about to end takes its endpoint down
 /// first and then still accepts for a moment, so a client that read the file just before would
 /// otherwise talk to a process on its way out. A broker of another ch32rv counts while it holds
-/// its flock (the record of one that died is no one's), named by its record or, when the record
-/// names this ch32rv, by its confirm answer.
+/// its flock (the record of one that died is no one's), named by its record.
 /// ja: endpoint の記録 `v` のブローカーにつなぐ。つないだ後も endpoint が同じブローカーを指すときだけ
 /// 有効(終わりかけのブローカーは先に endpoint を下ろしてからも少し受け付ける)。別の版の ch32rv の
-/// ブローカーは flock を持っている間だけ数える。版は記録で、記録がこの版なら confirm の答えでも確かめる。
+/// ブローカーは flock を持っている間だけ数える。版は記録で確かめる。
 fn connect_endpoint(key: &str, v: &Value) -> Found {
     let (Some(port), Some(pid)) = (
         v.get("port").and_then(Value::as_u64),
@@ -542,16 +495,13 @@ fn connect_endpoint(key: &str, v: &Value) -> Found {
             Found::Nothing
         };
     }
-    let Ok(mut l) = ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")) else {
+    let Ok(l) = ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")) else {
         return Found::Nothing;
     };
     if read_endpoint(key).and_then(|w| w.get("pid")?.as_u64()) != Some(pid) {
         return Found::Nothing;
     }
-    match other_broker(&mut l) {
-        Some(who) => Found::Other(format!("{who} (pid {pid})")),
-        None => Found::Link(Box::new(l)),
-    }
+    Found::Link(Box::new(l))
 }
 
 /// en: A link to the broker of `target`, starting the broker when none answers. An endpoint the
@@ -658,15 +608,24 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, ClientLinkE
 /// an address is a broker's client port, opened directly (a broker is never put in front of a
 /// broker). ja: `addr` がこの PC の ch32rv のブローカーか(endpoint の file から)。そうなら直接つなぐ。
 pub(crate) fn is_broker_endpoint(addr: &str) -> bool {
-    let Some((host, port)) = addr.rsplit_once(':') else {
-        return false;
-    };
+    broker_record_at(addr).is_some()
+}
+
+/// en: Which other ch32rv the broker at `addr` is (as [`other_version`] reads its endpoint
+/// record), or `None` for a broker of this ch32rv or no broker. The version lives in the record
+/// only: the confirm answer must fit 64 bytes (core §7.1).
+/// ja: `addr` のブローカーが別の版の ch32rv ならその名前。版は endpoint の記録だけが持つ。
+pub(crate) fn other_broker_at(addr: &str) -> Option<String> {
+    other_version(&broker_record_at(addr)?)
+}
+
+/// The endpoint record of the running broker whose client port is `addr` (`127.0.0.1:<port>`).
+fn broker_record_at(addr: &str) -> Option<Value> {
+    let (host, port) = addr.rsplit_once(':')?;
     if !matches!(host, "127.0.0.1" | "localhost") {
-        return false;
+        return None;
     }
-    let Ok(port) = port.parse::<u64>() else {
-        return false;
-    };
+    let port = port.parse::<u64>().ok()?;
     std::fs::read_dir(ch32rv_usb::runtime_dir())
         .into_iter()
         .flatten()
@@ -680,9 +639,10 @@ pub(crate) fn is_broker_endpoint(addr: &str) -> bool {
         .filter(|(_, v)| v.get("port").and_then(Value::as_u64) == Some(port))
         // Only a broker that still runs (holds its flock): a broker that died leaves its file,
         // and its port may now be anyone's.
-        .any(|(key, _)| {
+        .find(|(key, _)| {
             ch32rv_usb::DeviceLock::acquire(&format!("{key}.broker"), Duration::ZERO).is_err()
         })
+        .map(|(_, v)| v)
 }
 
 /// en: A link to `target`'s broker if one of this ch32rv runs; never starts one (a broker of
@@ -1798,18 +1758,6 @@ impl Broker {
                         false,
                         &[0],
                     );
-                    // Which ch32rv this broker is: a client of another version stops here.
-                    let name = BROKER_EXTENSION.as_bytes();
-                    let mut v = vec![name.len() as u8];
-                    v.extend_from_slice(name);
-                    v.push(BROKER_PROTOCOL as u8);
-                    v.extend_from_slice(VERSION.as_bytes());
-                    ch32rv_oep::codec::put_tlv(
-                        &mut p,
-                        registry::constants::TAG_NAMED_EXTENSION,
-                        false,
-                        &v,
-                    );
                     Some(ok(&p))
                 }
                 // lease_ms(u32) force(u8) [TLV owner]; the session id is the header's (core §6.4).
@@ -2233,44 +2181,5 @@ mod tests {
         // A broker from before the check wrote neither field.
         let old = json!({"port": 1, "pid": 7, "time": 0, "transport": "serial"});
         assert!(other_version(&old).unwrap().contains("older"));
-    }
-
-    fn confirm_answer(ext: Option<(u8, &str)>) -> Vec<u8> {
-        let mut p = registry::constants::CONFIRM_RESULT_MAGIC
-            .as_bytes()
-            .to_vec();
-        p.extend_from_slice(&[1; 12]);
-        ch32rv_oep::codec::put_tlv(
-            &mut p,
-            oep_core::tlvs::confirm_answer::TRANSPORT,
-            false,
-            &[0],
-        );
-        if let Some((protocol, version)) = ext {
-            let mut v = vec![BROKER_EXTENSION.len() as u8];
-            v.extend_from_slice(BROKER_EXTENSION.as_bytes());
-            v.push(protocol);
-            v.extend_from_slice(version.as_bytes());
-            ch32rv_oep::codec::put_tlv(&mut p, registry::constants::TAG_NAMED_EXTENSION, false, &v);
-        }
-        p
-    }
-
-    #[test]
-    fn the_confirm_answer_names_the_brokers_version() {
-        let ours = confirm_answer(Some((BROKER_PROTOCOL as u8, VERSION)));
-        assert_eq!(other_version_in_confirm(&ours), None);
-        let other = confirm_answer(Some((BROKER_PROTOCOL as u8, "0.0.1")));
-        assert_eq!(
-            other_version_in_confirm(&other).as_deref(),
-            Some("ch32rv 0.0.1")
-        );
-        let protocol = confirm_answer(Some((BROKER_PROTOCOL as u8 + 1, VERSION)));
-        assert!(other_version_in_confirm(&protocol).is_some());
-        assert!(
-            other_version_in_confirm(&confirm_answer(None))
-                .unwrap()
-                .contains("older")
-        );
     }
 }

@@ -736,18 +736,16 @@ const OTHER_VERSION_HINT: &str = "another ch32rv (an IDE's bundled one, or one o
 /// en: A `via=tcp:` endpoint that is a broker itself, opened directly: refused (exit 13) when the
 /// broker is of another ch32rv. ja: ブローカー自身の `via=tcp:` を直接開く。別の版なら断る(exit 13)。
 fn open_broker_directly(t: &str) -> Result<ch32rv_oep::link::Link, (ErrorKind, String)> {
-    let mut l =
-        ch32rv_oep::link::open_tcp(t).map_err(|e| (ErrorKind::DeviceOpenFailed, e.to_string()))?;
-    match crate::broker::other_broker(&mut l) {
-        Some(who) => Err((
+    if let Some(who) = crate::broker::other_broker_at(t) {
+        return Err((
             ErrorKind::DeviceBusy,
             format!(
                 "{t} is the broker of {who}, not of ch32rv {}",
                 env!("CARGO_PKG_VERSION")
             ),
-        )),
-        None => Ok(l),
+        ));
     }
+    ch32rv_oep::link::open_tcp(t).map_err(|e| (ErrorKind::DeviceOpenFailed, e.to_string()))
 }
 
 /// en: Connect and confirm, through the probe's broker whatever the route (started if it is not

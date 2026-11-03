@@ -285,6 +285,10 @@ impl WchUpstream {
                             oep_core::tlvs::describe::MODEL,
                             format!("{} via ch32rv broker", self.model()).as_bytes(),
                         )];
+                        v.push(tlv(
+                            oep_core::tlvs::describe::FIRMWARE,
+                            crate::broker::broker_firmware().as_bytes(),
+                        ));
                         // unit_id (required): the Link's serial, a-z 0-9 - only.
                         v.push(tlv(
                             oep_core::tlvs::describe::UNIT_ID,
