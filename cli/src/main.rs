@@ -9,6 +9,7 @@
 
 mod args;
 mod broker;
+mod broker_lock;
 mod broker_wch;
 mod cmd_arduino;
 mod cmd_boot;

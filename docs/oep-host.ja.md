@@ -227,7 +227,9 @@ ch32rv は attach せずに分かること(unit_id、口の名前)だけで口�
 - **終わり方**: **client が 0 になったらすぐ終わる**(待ち時間なし)。transport を閉じ、`<key>.oep` を消す。probe を失ったとき(抜かれた、boot_id が変わった)は、client に切断で知らせてから終わる。
 - **client から見ると OEP そのもの**(spec の TCP の形 `length(u16) message`)。ブローカーは次のことをする。
   - client ごとに corr を付け替え、probe への pipeline に混ぜる。応答は元の corr に戻して、その client にだけ返す。
-  - client の `open` / `end` / `keepalive` / `lock_state` は受け止めて、自分で答える。open は lease_ms と本物の boot_id を返し、client の session id を覚える(それ以外の id の要求には no_session。end でその client の接続と plan を外す)。client の owner の名前は台帳に持ち、`broker endpoint --json` で一覧できるようにする。
+  - client の `open` / `end` / `keepalive` / `lock_state` は受け止めて、自分で答える。open は lease_ms と本物の boot_id を返す。client の owner の名前は台帳に持ち、`broker endpoint --json` で一覧できるようにする。
+  - **ロックは 1 つ**(oep-spec の host ガイド §7、versioning §3.1)。ch32rv の道具(flash、monitor、gdb、pytest の `oep_host`)は、open に名前つき拡張 `io.github.ch32-riscv-ug.share` を critical(tag 0xFF、値は name_len と名前だけ)で付けて、1 つのロックに相乗りする。相乗りの session は client ごとで、end か切断でその client の分だけ外す。相乗りしない client(拡張の無い OEP の host)には、ブローカーは 1 つの probe として core のとおりに答える: §6.2 の表、lease の期限切れ、force、end での解放、そして probe に 1 つの再送の状態(最後の session の最後の corr と、要求と答えの記録 64 件、§5.1)。相乗りの間は、拡張の無い client の open は force でも locked。拡張の無い client がロックを持つ間は、相乗りの open が locked。その client の接続が切れても、session は lease が切れるまで残る(transports §3)。lock_state は、どちらかが持っている間 locked と答える。
+  - 拡張を知らない相手(OEP の probe、ほかのブローカー)は、critical の拡張を unsupported(0xFF)で断る。ch32rv の client はそれを見て、拡張の無い open をやり直す。
   - confirm / list / describe は、ブローカーが持っている写しで答える(boot_id が変わったら取り直す)。
   - 1 つの client の要求の並びは崩さない(probe は順に処理する)。client をまたいだ並びは到着順。
 - **client ごとの資源の台帳**:

@@ -99,7 +99,17 @@ pub struct Probe {
     fns: HashMap<String, Interface>,
     /// Each fn's declared ops (describe tag `ops`), learned once per boot; `None` = no ops tag.
     ops: HashMap<u16, Option<Vec<u8>>>,
+    /// Open with [`SHARE_EXTENSION`]: join the lock a ch32rv broker shares among its own tools.
+    share: bool,
 }
+
+/// en: The named extension (sent critical, value: the name alone) by which an `open` asks a ch32rv
+/// broker to share its one lock with the broker's other ch32rv clients (monitor, gdb, flash at
+/// once). A client without it is answered as core says: one lock, and while the ch32rv tools
+/// share it, its open is locked (host guide §7). Anything else (an OEP probe) refuses it
+/// unsupported, and the open goes again without it.
+/// ja: ch32rv のブローカーに、1 つのロックへの相乗りを頼む open の名前つき拡張(critical)。
+pub const SHARE_EXTENSION: &str = "io.github.ch32-riscv-ug.share";
 
 impl Probe {
     /// Confirm the probe (no session yet).
@@ -113,7 +123,13 @@ impl Probe {
             max_op_ms: None,
             fns: HashMap::new(),
             ops: HashMap::new(),
+            share: false,
         })
+    }
+
+    /// Whether [`open`](Self::open) asks to share a ch32rv broker's lock ([`SHARE_EXTENSION`]).
+    pub fn set_share(&mut self, on: bool) {
+        self.share = on;
     }
 
     pub fn limits(&self) -> Limits {
@@ -191,12 +207,37 @@ impl Probe {
             let b = &o.as_bytes()[..o.len().min(32)];
             put_tlv(&mut p, core::tlvs::open::OWNER, false, b);
         }
-        let r = self.link.call(Call {
+        let plain = p.clone();
+        if self.share {
+            let mut v = vec![SHARE_EXTENSION.len() as u8];
+            v.extend_from_slice(SHARE_EXTENSION.as_bytes());
+            put_tlv(
+                &mut p,
+                crate::registry::constants::TAG_NAMED_EXTENSION,
+                true,
+                &v,
+            );
+        }
+        let call = |payload| Call {
             func: core::FN,
             op: core::op::OPEN,
             session: Some(session_id),
-            payload: p,
-        })?;
+            payload,
+        };
+        let r = self.link.call(call(p))?;
+        // Not a ch32rv broker: it refuses the share (the critical named extension, core §2.2),
+        // and this host opens as any other. ja: 相乗りを断られたら、普通の open に戻る。
+        let r = match &r.resolution {
+            Resolution::Rejected(reason)
+                if self.share
+                    && *reason == reject_reasons::UNSUPPORTED
+                    && r.payload.first() == Some(&0xFF) =>
+            {
+                self.share = false;
+                self.link.call(call(plain))?
+            }
+            _ => r,
+        };
         let p = check(r)?;
         if p.len() < 8 {
             return Err(OepError::Malformed(

@@ -771,6 +771,8 @@ fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
     };
     apply_timeout(&mut link);
     let mut p = Probe::connect(link).map_err(|e| oep_fail(cli, cmd, e))?;
+    // Always a ch32rv broker here: share its lock with the other ch32rv tools (host guide §7).
+    p.set_share(true);
     if let Some(place) = a.place() {
         verify_unit(&mut p, &place.unit)
             .map_err(|m| fail(cli, cmd, ErrorKind::DeviceNotFound, m, None))?;
@@ -1717,6 +1719,7 @@ impl ConsoleSession {
         };
         apply_timeout(&mut link);
         let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
+        probe.set_share(true);
         if let Some(place) = a.place() {
             verify_unit(&mut probe, &place.unit)?;
         }

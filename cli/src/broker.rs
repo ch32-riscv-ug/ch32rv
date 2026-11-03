@@ -32,6 +32,7 @@ use ch32rv_oep::session::Probe;
 use serde_json::{Value, json};
 
 use crate::args::Cli;
+use crate::broker_lock::{Access, CoreLock, Opened, Replay};
 use crate::cmd_probe::fail;
 use crate::oep::OepAddr;
 
@@ -87,6 +88,33 @@ fn other_version(v: &Value) -> Option<String> {
         Some(ver) => format!("ch32rv {ver} (pid {pid})"),
         None => format!("a ch32rv older than the broker version check (pid {pid})"),
     })
+}
+
+/// Whether an open's payload (lease force [TLV]) carries `SHARE_EXTENSION`.
+fn opens_shared(payload: &[u8]) -> bool {
+    payload
+        .get(5..)
+        .and_then(|b| {
+            ch32rv_oep::codec::request_tlvs_named(
+                b,
+                &[oep_core::tlvs::open::OWNER],
+                &[ch32rv_oep::session::SHARE_EXTENSION],
+            )
+            .ok()
+        })
+        .is_some_and(|t| {
+            t.iter()
+                .any(|t| t.tag & 0x7F == registry::constants::TAG_NAMED_EXTENSION)
+        })
+}
+
+/// rejected locked: remaining_ms(u32) [TLV owner] (core §4.3).
+fn locked(corr: u16, remaining_ms: u32, owner: Option<&[u8]>) -> Vec<u8> {
+    let mut p = remaining_ms.to_le_bytes().to_vec();
+    if let Some(o) = owner {
+        ch32rv_oep::codec::put_tlv(&mut p, oep_core::tlvs::locked_payload::OWNER, false, o);
+    }
+    encode_result(corr, Resolution::Rejected(reject_reasons::LOCKED), &p)
 }
 
 // ---- where a broker is ----
@@ -935,6 +963,8 @@ fn serve_target(
         wires,
         clients: HashMap::new(),
         sessions: HashMap::new(),
+        core: CoreLock::default(),
+        awaiting: HashMap::new(),
         plan_fn: None,
         restart_fn: None,
         relayed_restart: false,
@@ -1191,9 +1221,13 @@ struct Broker {
     sid: u32,
     wires: BTreeSet<u16>,
     clients: HashMap<u64, TcpStream>,
-    /// Each client's open session (its id): a request under any other id is answered
-    /// no_session, as a probe answers one for a session that ended (core §6.2).
+    /// The ch32rv tools' shared sessions (opened with `SHARE_EXTENSION`), by client.
     sessions: HashMap<u64, u32>,
+    /// The one lock for everyone else, as at a probe (core §5.1, §6).
+    core: CoreLock,
+    /// Requests of the lock's last session not answered yet: (client, corr) -> session id, so
+    /// that their answers are kept for resends.
+    awaiting: HashMap<(u64, u16), u32>,
     /// The probe's `oep.probe.plan` and `oep.probe.restart` fns, when it has them.
     plan_fn: Option<u16>,
     restart_fn: Option<u16>,
@@ -1257,6 +1291,9 @@ impl Broker {
                         }
                         continue;
                     }
+                    if let Some(c) = self.core.expire(Instant::now()) {
+                        self.release_quiet(c, "lease lapse");
+                    }
                     if self.raise_again() {
                         last_upstream = Instant::now();
                     }
@@ -1294,9 +1331,13 @@ impl Broker {
                         // the broker under the clients still here; the probe drops what it holds
                         // when the broker's session ends anyway.
                         // ja: release の失敗で、残っている client ごとブローカーを終わらせない。
-                        if let Err(e) = self.release(id) {
+                        // The one lock's session outlives its connection until its lease
+                        // ends (transports §3); what it holds goes then.
+                        let holds = self.core.holder.as_ref().is_some_and(|h| h.client == id);
+                        if !holds && let Err(e) = self.release(id) {
                             broker_log(&self.key, &format!("client {id}: release failed: {e}"));
                         }
+                        self.awaiting.retain(|(c, _), _| *c != id);
                         self.up.client_gone(id);
                         self.clients.remove(&id);
                         self.sessions.remove(&id);
@@ -1389,12 +1430,12 @@ impl Broker {
             }
             if req.func == oep_core::FN && req.op == oep_core::op::END {
                 self.flush(&mut pending, &mut calls)?;
-                self.sessions.remove(&id);
-                if let Err(e) = self.release(id) {
-                    broker_log(
-                        &self.key,
-                        &format!("client {id}: release at end failed: {e}"),
-                    );
+                // A shared session ends alone; the one lock's end frees it (core §6.4).
+                if req.session.is_some() && self.sessions.get(&id) == req.session.as_ref() {
+                    self.sessions.remove(&id);
+                    self.release_quiet(id, "end");
+                } else if let Some(c) = self.core.end() {
+                    self.release_quiet(c, "end");
                 }
                 let ok = encode_result(req.corr, Resolution::Completed(outcomes::SUCCESS), &[]);
                 self.send(id, &ok);
@@ -1728,6 +1769,7 @@ impl Broker {
         self.swept();
         // Every client's session ended with the broker's (core §9): they open again.
         self.sessions.clear();
+        self.core.end();
         // A restarted probe may number its interfaces anew.
         self.wires = self.up.wires()?;
         self.find_fns();
@@ -1751,8 +1793,26 @@ impl Broker {
     }
 
     fn send(&mut self, id: u64, msg: &[u8]) {
+        if msg.first() == Some(&registry::roles::RESULT)
+            && let Some(c) = msg.get(1..3)
+        {
+            let corr = u16::from_le_bytes([c[0], c[1]]);
+            if let Some(sid) = self.awaiting.remove(&(id, corr)) {
+                self.core.answered(sid, corr, msg, Instant::now());
+            }
+        }
         if let Some(s) = self.clients.get_mut(&id) {
             let _ = s.write_all(&length_frame(msg));
+        }
+    }
+
+    /// Release what client `c` holds, logging a failure (the broker goes on).
+    fn release_quiet(&mut self, c: u64, why: &str) {
+        if let Err(e) = self.release(c) {
+            broker_log(
+                &self.key,
+                &format!("client {c}: release at {why} failed: {e}"),
+            );
         }
     }
 
@@ -1776,13 +1836,39 @@ impl Broker {
         {
             return Some(refuse(reject_reasons::SESSION_REQUIRED));
         }
-        // A session id that is not the client's open session (never opened, ended, or ended by a
-        // restart): no_session, as the probe answers (core §6.2).
+        // en: The session checks (core §4.3 steps 2-3). A ch32rv tool's shared session is the
+        // broker's to keep; anyone else meets the one lock as at a probe: the resend check, then
+        // the session table. ja: 相乗りの session はそのまま。ほかは probe と同じ 1 つのロック。
+        let now = Instant::now();
+        if let Some(c) = self.core.expire(now) {
+            self.release_quiet(c, "lease lapse");
+        }
+        let shared = req
+            .session
+            .is_some_and(|sid| self.sessions.get(&id) == Some(&sid));
+        let share_open = open && opens_shared(&req.payload);
         if let Some(sid) = req.session
-            && !open
-            && self.sessions.get(&id) != Some(&sid)
+            && !shared
+            && !share_open
         {
-            return Some(refuse(reject_reasons::NO_SESSION));
+            let bytes = req.encode();
+            match self.core.replay(sid, req.corr, &bytes) {
+                Replay::Stored(a) => return Some(a),
+                Replay::Lost => return Some(refuse(reject_reasons::RESULT_LOST)),
+                Replay::Malformed => return Some(refuse(reject_reasons::MALFORMED)),
+                Replay::New => {}
+            }
+            if !open {
+                match self.core.access(sid, now) {
+                    Access::Owner => {}
+                    Access::NoSession => return Some(refuse(reject_reasons::NO_SESSION)),
+                    Access::Locked(ms, owner) => {
+                        return Some(locked(req.corr, ms, owner.as_deref()));
+                    }
+                }
+                self.core.note(req.corr, bytes);
+                self.awaiting.insert((id, req.corr), sid);
+            }
         }
         if req.func == oep_core::FN {
             let op = req.op;
@@ -1799,8 +1885,13 @@ impl Broker {
                 _ => None,
             };
             if let Some((fixed, known)) = shape {
-                use ch32rv_oep::codec::{RequestTlvError, request_tlvs};
-                match req.payload.get(fixed..).map(|b| request_tlvs(b, known)) {
+                use ch32rv_oep::codec::{RequestTlvError, request_tlvs_named};
+                let names = [ch32rv_oep::session::SHARE_EXTENSION];
+                match req
+                    .payload
+                    .get(fixed..)
+                    .map(|b| request_tlvs_named(b, known, &names))
+                {
                     None | Some(Err(RequestTlvError::Malformed)) => {
                         return Some(refuse(reject_reasons::MALFORMED));
                     }
@@ -1857,31 +1948,79 @@ impl Broker {
                     );
                     Some(ok(&p))
                 }
-                // lease_ms(u32) force(u8) [TLV owner]; the session id is the header's (core §6.4).
+                // lease_ms(u32) force(u8) [TLV owner] (core §6.4); the session id is the
+                // header's. With SHARE_EXTENSION it joins the ch32rv tools' shared lock, unless
+                // someone else holds the one lock; without, it meets that lock (host guide §7).
                 o if o == oep_core::op::OPEN => {
                     let Some(sid) = req.session else {
                         return Some(refuse(reject_reasons::MALFORMED));
                     };
-                    let Some(lease) = req
-                        .payload
-                        .get(..4)
-                        .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-                    else {
-                        return Some(refuse(reject_reasons::MALFORMED));
+                    let p = &req.payload;
+                    let lease = u32::from_le_bytes([p[0], p[1], p[2], p[3]]);
+                    let force = match p[4] {
+                        0 => false,
+                        1 => true,
+                        _ => return Some(refuse(reject_reasons::MALFORMED)),
                     };
-                    let lease = if lease == 0 { LEASE_MS } else { lease }.clamp(1000, 60_000);
-                    self.sessions.insert(id, sid);
-                    let mut p = lease.to_le_bytes().to_vec();
-                    p.extend_from_slice(&self.up.boot_id().to_le_bytes());
-                    Some(ok(&p))
+                    let owner = ch32rv_oep::codec::parse_tlvs(&p[5..])
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|t| t.tag & 0x7F == oep_core::tlvs::open::OWNER)
+                        .map(|t| t.value);
+                    if owner.as_ref().is_some_and(|o| !(1..=32).contains(&o.len())) {
+                        return Some(refuse(reject_reasons::MALFORMED));
+                    }
+                    let boot = self.up.boot_id().to_le_bytes();
+                    if share_open {
+                        if let Some((ms, owner)) = self.core.state(now) {
+                            return Some(locked(req.corr, ms, owner.as_deref()));
+                        }
+                        let lease = if lease == 0 { LEASE_MS } else { lease }.clamp(1000, 60_000);
+                        self.sessions.insert(id, sid);
+                        let mut a = lease.to_le_bytes().to_vec();
+                        a.extend_from_slice(&boot);
+                        return Some(ok(&a));
+                    }
+                    let busy = (!self.sessions.is_empty()).then_some(LEASE_MS);
+                    let bytes = req.encode();
+                    match self
+                        .core
+                        .open(sid, id, lease, force, owner, busy, req.corr, bytes, now)
+                    {
+                        Opened::Held { lease_ms, stolen } => {
+                            if let Some(c) = stolen {
+                                self.release_quiet(c, "force");
+                            }
+                            self.awaiting.insert((id, req.corr), sid);
+                            let mut a = lease_ms.to_le_bytes().to_vec();
+                            a.extend_from_slice(&boot);
+                            Some(ok(&a))
+                        }
+                        Opened::Refused(Access::Locked(ms, owner)) => {
+                            Some(locked(req.corr, ms, owner.as_deref()))
+                        }
+                        Opened::Refused(_) => Some(refuse(reject_reasons::NO_SESSION)),
+                    }
                 }
                 o if o == oep_core::op::KEEPALIVE => Some(ok(&[])),
-                // locked(u8) remaining_ms(u32): held while any client has a session open (the
-                // broker's own session to the probe is not the clients' lock, core §6.4).
+                // locked(u8) remaining_ms(u32) [TLV owner]: the one lock, or the ch32rv tools'
+                // shared one (the broker's own session to the probe is neither, core §6.4).
                 o if o == oep_core::op::LOCK_STATE => {
-                    let held = !self.sessions.is_empty();
+                    let (held, ms, owner) = match self.core.state(now) {
+                        Some((ms, owner)) => (true, ms, owner),
+                        None if !self.sessions.is_empty() => (true, LEASE_MS, None),
+                        None => (false, 0, None),
+                    };
                     let mut p = vec![u8::from(held)];
-                    p.extend_from_slice(&(if held { LEASE_MS } else { 0 }).to_le_bytes());
+                    p.extend_from_slice(&ms.to_le_bytes());
+                    if let Some(o) = owner {
+                        ch32rv_oep::codec::put_tlv(
+                            &mut p,
+                            oep_core::tlvs::lock_state_answer::OWNER,
+                            false,
+                            &o,
+                        );
+                    }
                     Some(ok(&p))
                 }
                 _ => None,

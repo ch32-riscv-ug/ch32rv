@@ -58,8 +58,10 @@ fn endpoint(pty: &str) -> Option<String> {
     v["result"]["endpoint"].as_str().map(str::to_owned)
 }
 
+/// A ch32rv tool's link to the broker: it shares the broker's lock (host guide §7).
 fn client(ep: &str) -> Probe {
     let mut p = Probe::connect(open_tcp(ep).unwrap()).unwrap();
+    p.set_share(true);
     p.open(
         ch32rv_oep::session::random_session_id(),
         3000,
@@ -545,4 +547,50 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
             broker.0.try_wait().unwrap().is_some()
         }
     );
+}
+
+#[test]
+fn a_client_without_the_share_meets_one_lock() {
+    let Some((_fake, pty)) = fake_pty() else {
+        return;
+    };
+    let _broker = Kill(
+        uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
+            .args(["broker", "serve", "--probe", pty.as_str()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let ep = loop {
+        if let Some(ep) = endpoint(&pty) {
+            break ep;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the broker published no endpoint"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let sid = ch32rv_oep::session::random_session_id;
+    let locked = |r| matches!(r, Err(ch32rv_oep::session::OepError::Locked { .. }));
+    // While a ch32rv tool shares the lock, a plain open is locked, even forced.
+    let mut tool = client(&ep);
+    let mut plain = Probe::connect(open_tcp(&ep).unwrap()).unwrap();
+    assert!(locked(plain.open(sid(), 3000, false, None)));
+    assert!(locked(plain.open(sid(), 3000, true, None)));
+    tool.end().unwrap();
+    // Once it is free, the plain client holds the one lock, and a tool's open is locked.
+    plain.open(sid(), 3000, false, Some("plain")).unwrap();
+    let mut other = Probe::connect(open_tcp(&ep).unwrap()).unwrap();
+    other.set_share(true);
+    assert!(locked(other.open(sid(), 3000, false, None)));
+    assert!(locked(
+        Probe::connect(open_tcp(&ep).unwrap())
+            .unwrap()
+            .open(sid(), 3000, false, None)
+    ));
+    plain.end().unwrap();
+    other.open(sid(), 3000, false, None).unwrap();
 }
