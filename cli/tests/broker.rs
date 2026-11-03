@@ -549,57 +549,115 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
     );
 }
 
-#[test]
-fn a_client_without_the_share_meets_one_lock() {
-    let Some((_fake, pty)) = fake_pty() else {
-        return;
-    };
-    let _broker = Kill(
+/// `broker serve --probe <probe>` and its endpoint once published.
+fn serve(probe: &str) -> (Kill, String) {
+    let broker = Kill(
         uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
-            .args(["broker", "serve", "--probe", pty.as_str()])
+            .args(["broker", "serve", "--probe", probe])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .spawn()
             .unwrap(),
     );
-    let deadline = Instant::now() + Duration::from_secs(5);
-    let ep = loop {
-        if let Some(ep) = endpoint(&pty) {
-            break ep;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(ep) = endpoint(probe) {
+            return (broker, ep);
         }
         assert!(
             Instant::now() < deadline,
             "the broker published no endpoint"
         );
         std::thread::sleep(Duration::from_millis(50));
-    };
+    }
+}
+
+/// en: The broker's lock as oep-spec host guide §7 has it, on the broker at `ep`: (1) clients
+/// that open with the share extension hold the lock at once; (2) one without it meets core's
+/// one lock (locked); (3) a forced open takes the lock from the sharers as from one holder; (4)
+/// the confirm answer fits 64 bytes (core §7.1). Only sessions: nothing reaches the target.
+/// ja: ブローカーのロック(host ガイド §7)の 4 点。session だけで、target には触れない。
+fn shares_one_lock(ep: &str) {
+    use ch32rv_oep::session::OepError;
     let sid = ch32rv_oep::session::random_session_id;
-    let locked = |r| matches!(r, Err(ch32rv_oep::session::OepError::Locked { .. }));
-    // While a ch32rv tool shares the lock, a plain open is locked; a forced one takes it, and
-    // the tool hears it on its next request.
-    let mut tool = client(&ep);
-    let mut plain = Probe::connect(open_tcp(&ep).unwrap()).unwrap();
-    assert!(locked(plain.open(sid(), 3000, false, None)));
-    plain.open(sid(), 3000, true, None).unwrap();
-    assert!(matches!(
-        tool.keepalive(),
-        Err(ch32rv_oep::session::OepError::Locked { .. })
-    ));
-    plain.end().unwrap();
-    assert!(matches!(
-        tool.keepalive(),
-        Err(ch32rv_oep::session::OepError::SessionEnded)
-    ));
-    // Once it is free, the plain client holds the one lock, and a tool's open is locked.
-    plain.open(sid(), 3000, false, Some("plain")).unwrap();
-    let mut other = Probe::connect(open_tcp(&ep).unwrap()).unwrap();
-    other.set_share(true);
-    assert!(locked(other.open(sid(), 3000, false, None)));
-    assert!(locked(
-        Probe::connect(open_tcp(&ep).unwrap())
-            .unwrap()
-            .open(sid(), 3000, false, None)
-    ));
-    plain.end().unwrap();
-    other.open(sid(), 3000, false, None).unwrap();
+    fn locked<T>(r: Result<T, OepError>) -> bool {
+        matches!(r, Err(OepError::Locked { .. }))
+    }
+    let plain = || Probe::connect(open_tcp(ep).unwrap()).unwrap();
+
+    // (4) confirm: the answer's length, as the TCP framing carries it (length(u16) message).
+    let mut s = std::net::TcpStream::connect(ep).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut confirm = b"OEP?".to_vec();
+    confirm.extend_from_slice(&[1, 1]);
+    let req = ch32rv_oep::codec::Request {
+        corr: 1,
+        func: ch32rv_oep::registry::core::FN,
+        op: ch32rv_oep::registry::core::op::CONFIRM,
+        session: None,
+        payload: confirm,
+    };
+    std::io::Write::write_all(&mut s, &ch32rv_oep::codec::length_frame(&req.encode())).unwrap();
+    let mut len = [0u8; 2];
+    std::io::Read::read_exact(&mut s, &mut len).unwrap();
+    let len = u16::from_le_bytes(len);
+    assert!(
+        len <= 64,
+        "confirm answered {len} bytes, over core §7.1's 64"
+    );
+    drop(s);
+
+    // (1) Two tools hold the lock at once; anyone sees it held.
+    let mut a = client(ep);
+    let mut b = client(ep);
+    a.keepalive().unwrap();
+    b.keepalive().unwrap();
+    assert!(plain().lock_state().unwrap().locked);
+
+    // (2) A client without the extension is locked out.
+    let mut p = plain();
+    assert!(locked(p.open(sid(), 3000, false, None)));
+
+    // (3) A forced open takes it from both; they hear it on their next request.
+    p.open(sid(), 3000, true, Some("plain")).unwrap();
+    assert!(locked(a.keepalive()));
+    assert!(locked(b.keepalive()));
+    // While the plain client holds it, a tool's open is locked too.
+    let mut c = Probe::connect(open_tcp(ep).unwrap()).unwrap();
+    c.set_share(true);
+    assert!(locked(c.open(sid(), 3000, false, None)));
+    p.end().unwrap();
+    assert!(matches!(a.keepalive(), Err(OepError::SessionEnded)));
+    assert!(!plain().lock_state().unwrap().locked);
+    // Free again: the tools share it once more.
+    c.open(sid(), 3000, false, None).unwrap();
+    c.end().unwrap();
+    assert!(!plain().lock_state().unwrap().locked);
+}
+
+#[test]
+fn the_broker_shares_one_lock_with_its_tools() {
+    let Some((_fake, pty)) = fake_pty() else {
+        return;
+    };
+    let (_broker, ep) = serve(&pty);
+    shares_one_lock(&ep);
+}
+
+/// en: The same on a WCH-Link broker (the Link's own OEP face), on hardware: run with
+/// `CH32RV_HW_WCHLINK=<Link serial>`; skipped without it. Sessions only, the target is not
+/// touched. ja: 実機の WCH-Link のブローカーで同じことを確かめる(`CH32RV_HW_WCHLINK`)。
+#[test]
+fn a_wchlink_broker_shares_one_lock_with_its_tools() {
+    let Ok(serial) = std::env::var("CH32RV_HW_WCHLINK") else {
+        return;
+    };
+    // The bench's H417 Link shares its SWD pins with USB3 (bench note): never this one.
+    assert_ne!(
+        serial.to_ascii_uppercase(),
+        "49808F06CE30",
+        "not the H417's Link"
+    );
+    let (_broker, ep) = serve(&format!("wchlink://{serial}"));
+    shares_one_lock(&ep);
 }

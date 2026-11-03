@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Tests: the broker's one lock (oep-spec host guide §7) is checked in ch32rv itself (cli/tests/broker.rs `shares_one_lock`): two clients with the share extension hold it at once, a client without it is locked, a forced open takes it from the sharers as from one holder (they then hear locked, and no_session once it is free), and the confirm answer fits 64 bytes. It runs without hardware on the spec side's fake probe, and on a WCH-Link broker with `CH32RV_HW_WCHLINK=<Link serial>` (sessions only; the target is not touched; the H417's Link is refused).
+- (JA) 試験: ブローカーの 1 つのロック(oep-spec の host ガイド §7)を、ch32rv の中で確かめる(cli/tests/broker.rs の `shares_one_lock`)。share 拡張を付けた 2 つの client が同時に持てる、付けない client は locked、force の open は相乗りを 1 つの持ち主として奪う(奪われた側は locked、空いた後は no_session)、confirm の答えは 64 byte に収まる。実機なしで仕様側の偽の probe で回り、`CH32RV_HW_WCHLINK=<Link の serial>` で WCH-Link のブローカーでも回る(session だけで target には触れない。H417 の Link は断る)。
+
 ## 0.26.0 - 2026-11-03
 
 - (EN) The OEP registry is generated from oep-spec 364827b (hash 278114efc9235b4c): debug's wire settings are `channel.{}.rest` / `channel.{}.hold` (were `rest.{}` / `hold.{}`), and the fixture interfaces added since cc82b5e are in it. ch32rv does not read these settings by name, so nothing it does changes.
