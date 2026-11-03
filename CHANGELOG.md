@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.26.0 - 2026-11-03
+
 - (EN) The OEP registry is generated from oep-spec 364827b (hash 278114efc9235b4c): debug's wire settings are `channel.{}.rest` / `channel.{}.hold` (were `rest.{}` / `hold.{}`), and the fixture interfaces added since cc82b5e are in it. ch32rv does not read these settings by name, so nothing it does changes.
 - (JA) OEP の registry を oep-spec 364827b(hash 278114efc9235b4c)から生成した。debug の線の設定は `channel.{}.rest` / `channel.{}.hold`(以前は `rest.{}` / `hold.{}`)。cc82b5e の後に足された fixture のインターフェースも入った。ch32rv はこの設定を名前で読まないので、動きは変わらない。
 - (EN) Breaking (oep-spec 253c643, core §2.3): the WCH-Link broker refuses an `attach` carrying `idle_clock` twice (bit 7 aside) as rejected malformed; a broken TLV list or an `idle_clock` of another length is malformed too (was: the list ignored, or unsupported), an unknown critical TLV is rejected unsupported with the tag as received (was: ignored), and an unsupported `idle_clock` is named by the tag as received. The OEP broker checks an `attach` it answers itself (a shared connection) the same way: a broken list or `idle_clock` / `reset` twice is malformed.
