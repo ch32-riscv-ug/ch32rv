@@ -148,7 +148,7 @@ struct Table {
 }
 
 /// The `index/VERSION` this generator is written against.
-const INDEX_VERSION: &str = "2";
+const INDEX_VERSION: &str = "1";
 
 impl Table {
     fn open(data: &Path, name: &'static str) -> Result<Table, String> {
@@ -767,9 +767,9 @@ fn gen_link_firmware_issues(data: &Path, rev: &str) -> Result<(String, usize), S
     Ok((out, n))
 }
 
-/// en: A row's `confidence`, from the closed vocabulary of index/VERSION 2 (`confirmed` /
+/// en: A row's `confidence`, from the closed vocabulary of index/VERSION 1 (`confirmed` /
 /// `reference` / `conflict`); any other word stops the generation.
-/// ja: `confidence` の値(VERSION 2 で閉じた 3 語)。それ以外なら生成を止める。
+/// ja: `confidence` の値(VERSION 1 で閉じた 3 語)。それ以外なら生成を止める。
 fn confidence_word<'a>(t: &Table, row: &'a [String], i: usize) -> Result<&'a str, String> {
     match Table::cell(row, i) {
         w @ ("confirmed" | "reference" | "conflict") => Ok(w),
