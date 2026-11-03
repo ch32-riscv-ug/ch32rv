@@ -78,13 +78,13 @@ fn cases() -> Vec<(Vec<String>, &'static str, bool)> {
         (
             s(&[
                 "flash",
-                &input("runtest-ch32v307.bin"),
+                &input("runtest-ch32v203.bin"),
                 "--erase",
                 "chip",
                 "--confirm-run",
                 "pc",
                 "--replay",
-                &replay("flash-v307.ndjson"),
+                &replay("flash-v203.ndjson"),
                 "--json",
                 "--progress",
                 "none",
@@ -345,9 +345,9 @@ fn flash_results_share_one_shape() {
 fn progress_events_match_the_schema() {
     let (_, stderr) = stdout_json(&[
         "flash",
-        &input("runtest-ch32v307.bin"),
+        &input("runtest-ch32v103.bin"),
         "--replay",
-        &replay("flash-v307.ndjson"),
+        &replay("flash-v103-keep-store.ndjson"),
         "--json",
         "--progress",
         "ndjson",

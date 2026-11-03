@@ -119,14 +119,10 @@ fn planned_writes(programmer: &Programmer, image: &Image) -> Vec<Segment> {
 
 /// en: Before writing, put down mode bits a stopped earlier write left in FLASH_CTLR (see
 /// `DebugModule::flash_clear_stale_mode`), with a `flash-controller-reset` warning when it found
-/// any. A hart that was running runs again afterwards; a check that cannot run is skipped, and
-/// so is a replay (its recordings hold no such exchange).
+/// any. A hart that was running runs again afterwards; a check that cannot run is skipped.
 /// ja: 書く前に、止まった前の書き込みが FLASH_CTLR に残したビットを下ろす。見つけたら warning。
-/// 走っていた hart は走らせ直す。replay では飛ばす(記録にこのやり取りが無い)。
+/// 走っていた hart は走らせ直す。
 pub(crate) fn clear_stale_flash_mode(session: &mut Session, warnings: &mut Vec<Warning>) {
-    if ch32rv_usb::replay::active() {
-        return;
-    }
     let mut dm = session.dm();
     let Ok(was_halted) = dm.is_halted() else {
         return;

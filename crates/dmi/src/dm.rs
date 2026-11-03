@@ -1437,6 +1437,28 @@ mod tests {
         }
     }
 
+    /// en: The FLASH_CTLR check before a write leaves the program buffer as the WCH-Link loaded
+    /// it: on CH32V103 the Link's own erase and stub use those instructions, and overwritten
+    /// they refuse (`81 55 01 02`). Checked whether the read goes through or fails.
+    /// ja: 書く前の FLASH_CTLR の確かめは、Link が入れた program buffer を元に戻す。
+    #[test]
+    fn the_flash_mode_check_puts_the_program_buffer_back() {
+        for fails in [false, true] {
+            let mut m = MockDtm::default();
+            m.set(DMPROGBUF0, 0xffc5_f613);
+            m.set(DMPROGBUF1, 0x00b6_1563);
+            if fails {
+                // An abstract command that errs: cmderr stays set on ABSTRACTCS.
+                m.set(DMABSTRACTCS, 2 << ABSTRACTCS_CMDERR_SHIFT);
+            }
+            let _ = DebugModule::new(&mut m).flash_clear_stale_mode();
+            // The check used the program buffer, and put it back last.
+            assert!(m.writes.contains(&(DMPROGBUF0, 0x0002_a303)));
+            assert_eq!(m.regs[&DMPROGBUF0], 0xffc5_f613, "fails = {fails}");
+            assert_eq!(m.regs[&DMPROGBUF1], 0x00b6_1563, "fails = {fails}");
+        }
+    }
+
     #[test]
     fn mass_erase_is_refused_without_mer_before_any_access() {
         let mut m = MockDtm::default();

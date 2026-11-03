@@ -95,19 +95,19 @@ fn replay_without_device_line_errors() {
 
 #[test]
 fn flash_round_trip_replays() {
-    // The whole flash protocol (stub upload, chip erase, program, readback verify, reset,
-    // confirm-run) replays offline from a CH32V307 capture - no probe, no writes to hardware.
-    // The capture erased the chip, so the replay asks for it (the default keep-store does not).
+    // The whole flash protocol (the FLASH_CTLR check, stub upload, chip erase, program, readback
+    // verify, reset, confirm-run) replays offline from a CH32V203 capture - no probe, no writes to
+    // hardware. The capture erased the chip, so the replay asks for it.
     let out = Command::new(bin())
         .args([
             "flash",
-            &input("runtest-ch32v307.bin"),
+            &input("runtest-ch32v203.bin"),
             "--erase",
             "chip",
             "--confirm-run",
             "pc",
             "--replay",
-            &fixture("flash-v307.ndjson"),
+            &fixture("flash-v203.ndjson"),
         ])
         .output()
         .expect("run ch32rv");
@@ -123,18 +123,49 @@ fn flash_round_trip_replays() {
 }
 
 #[test]
+fn v103_keep_store_erases_first_and_keeps_the_links_program_buffer() {
+    // CH32V103's stub does not erase what it writes, and its Link uses the program buffer it
+    // loaded at attach: the default keep-store erases the covered pages over DMI, attaches again
+    // and then runs the stub (LinkE 2.12 + V103R8T6 capture). The whole exchange, the FLASH_CTLR
+    // check putting PROGBUF back included, must replay as recorded.
+    let out = Command::new(bin())
+        .args([
+            "flash",
+            &input("runtest-ch32v103.bin"),
+            "--progress",
+            "ndjson",
+            "--replay",
+            &fixture("flash-v103-keep-store.ndjson"),
+        ])
+        .output()
+        .expect("run ch32rv");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "exit failure; stderr: {stderr}");
+    assert!(stdout.contains("readback matches"), "stdout: {stdout}");
+    assert!(
+        stderr.contains(r#"{"ev":"phase","name":"erase","total":8}"#),
+        "no DMI pre-erase of the 8 covered pages; stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("diverged"),
+        "unexpected divergence: {stderr}"
+    );
+}
+
+#[test]
 fn flash_erase_none_is_refused_on_the_stub_path() {
-    // WCH's stub erases every page it writes: `--erase none` is refused (exit 24) once the attach
-    // shows a stub family, before anything is erased or written.
+    // V20x's stub erases every page it writes: `--erase none` is refused (exit 24) once the
+    // attach shows that family, before anything is erased or written.
     let out = Command::new(bin())
         .args([
             "--json",
             "flash",
-            &input("runtest-ch32v307.bin"),
+            &input("runtest-ch32v203.bin"),
             "--erase",
             "none",
             "--replay",
-            &fixture("flash-v307.ndjson"),
+            &fixture("flash-v203.ndjson"),
         ])
         .output()
         .expect("run ch32rv");
