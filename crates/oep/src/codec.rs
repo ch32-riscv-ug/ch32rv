@@ -318,12 +318,21 @@ pub enum RequestTlvError {
 
 /// A request's TLVs whose numbers are in `known` (the tags the answerer implements, none of
 /// which repeats), in order. Unknown tags are not counted: a critical one is unsupported, a
-/// plain one is skipped (core §2.3).
+/// plain one is skipped (core §2.3). A named extension (0x7F) whose name does not fit its
+/// value, or is empty, is malformed; one is never `known` here (core §2.2).
 pub fn request_tlvs(b: &[u8], known: &[u8]) -> Result<Vec<Tlv>, RequestTlvError> {
     let number = |tag: u8| tag & !registry::constants::TAG_CRITICAL;
     let mut out: Vec<Tlv> = Vec::new();
     for t in parse_tlvs(b).map_err(|_| RequestTlvError::Malformed)? {
-        if !known.contains(&number(t.tag)) {
+        if number(t.tag) == registry::constants::TAG_NAMED_EXTENSION {
+            let n = t.value.first().map(|&n| usize::from(n));
+            if !n.is_some_and(|n| n >= 1 && t.value.len() > n) {
+                return Err(RequestTlvError::Malformed);
+            }
+            if t.tag & registry::constants::TAG_CRITICAL != 0 {
+                return Err(RequestTlvError::Unsupported(t.tag));
+            }
+        } else if !known.contains(&number(t.tag)) {
             if t.tag & registry::constants::TAG_CRITICAL != 0 {
                 return Err(RequestTlvError::Unsupported(t.tag));
             }

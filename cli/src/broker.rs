@@ -898,7 +898,8 @@ fn serve_target(
 
     broker_log(&key, &format!("up on 127.0.0.1:{port} over {transport}"));
     let (tx, rx) = mpsc::channel::<Ev>();
-    std::thread::spawn(move || accept_loop(listener, tx));
+    let max_frame = usize::from(up.limits().max_frame);
+    std::thread::spawn(move || accept_loop(listener, tx, max_frame));
     // en: A UART bridge's link is raised for the broker's long session (oep-core §3.5, by default
     // since 2026-10-01: "a feature that is not used breaks"), every trial logged so the rates can
     // be decided from what is seen. Clients that connect meanwhile wait (their TCP wait is 15 s).
@@ -1003,6 +1004,32 @@ impl Upstream {
                 .map_err(|e| e.to_string()),
             Upstream::Wch(w) => Ok(w.wires().into_iter().collect()),
         }
+    }
+
+    /// en: Whether `func` offers `op`, from its describe's ops (core §4.3: unknown_function and
+    /// unknown_operation come before the session checks). `None` when it cannot be told (a fn
+    /// with no ops tag): the probe answers. ja: `func` が `op` を持つか(describe の ops から)。
+    fn declares(&mut self, func: u16, op: u8) -> Option<Result<(), u8>> {
+        let ops = match self {
+            Upstream::Oep(p) => match p.ops(func) {
+                Ok(o) => o?,
+                Err(ch32rv_oep::session::OepError::Rejected { reason, .. })
+                    if reason == reject_reasons::UNKNOWN_FUNCTION =>
+                {
+                    return Some(Err(reason));
+                }
+                Err(_) => return None,
+            },
+            Upstream::Wch(_) => match crate::broker_wch::declared_ops(func) {
+                Some(o) => o.to_vec(),
+                None => return Some(Err(reject_reasons::UNKNOWN_FUNCTION)),
+            },
+        };
+        Some(if ops.contains(&op) {
+            Ok(())
+        } else {
+            Err(reject_reasons::UNKNOWN_OPERATION)
+        })
     }
 
     /// Serve `calls` (each tagged with the client it came from), in order.
@@ -1117,7 +1144,7 @@ impl Upstream {
     }
 }
 
-fn accept_loop(listener: TcpListener, tx: mpsc::Sender<Ev>) {
+fn accept_loop(listener: TcpListener, tx: mpsc::Sender<Ev>, max_frame: usize) {
     for (id, stream) in listener.incoming().flatten().enumerate() {
         let id = id as u64 + 1;
         let _ = stream.set_nodelay(true);
@@ -1128,12 +1155,14 @@ fn accept_loop(listener: TcpListener, tx: mpsc::Sender<Ev>) {
             return;
         }
         let tx = tx.clone();
-        std::thread::spawn(move || read_loop(id, reader, tx));
+        std::thread::spawn(move || read_loop(id, reader, tx, max_frame));
     }
 }
 
-fn read_loop(id: u64, mut s: TcpStream, tx: mpsc::Sender<Ev>) {
-    let mut d = LengthDeframer::new(0xFFFF);
+/// en: A client's messages. One longer than the broker's max_frame closes the connection, as a
+/// TCP probe does (oep-transports §1). ja: max_frame を超える message は接続を閉じる。
+fn read_loop(id: u64, mut s: TcpStream, tx: mpsc::Sender<Ev>, max_frame: usize) {
+    let mut d = LengthDeframer::new(max_frame);
     let mut buf = [0u8; 8192];
     loop {
         match s.read(&mut buf) {
@@ -1147,7 +1176,10 @@ fn read_loop(id: u64, mut s: TcpStream, tx: mpsc::Sender<Ev>) {
                     }
                 }
                 // A client that breaks the framing is dropped (it is a local program).
-                Err(_) => break,
+                Err(_) => {
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                    break;
+                }
             },
         }
     }
@@ -1729,6 +1761,21 @@ impl Broker {
         let ok = |p: &[u8]| encode_result(req.corr, Resolution::Completed(outcomes::SUCCESS), p);
         let refuse = |r: u8| encode_result(req.corr, Resolution::Rejected(r), &[]);
         let open = req.func == oep_core::FN && req.op == oep_core::op::OPEN;
+        // The header first, in core §4.3's order: corr 0 is malformed, then an unknown fn or op,
+        // then a locking fn 0 op without a session is session_required (other fns' go on as
+        // they are, and the probe answers them).
+        if req.corr == 0 {
+            return Some(refuse(reject_reasons::MALFORMED));
+        }
+        if let Some(Err(reason)) = self.up.declares(req.func, req.op) {
+            return Some(refuse(reason));
+        }
+        if req.func == oep_core::FN
+            && req.session.is_none()
+            && oep_core::OPS.iter().any(|o| o.code == req.op && o.lock)
+        {
+            return Some(refuse(reject_reasons::SESSION_REQUIRED));
+        }
         // A session id that is not the client's open session (never opened, ended, or ended by a
         // restart): no_session, as the probe answers (core §6.2).
         if let Some(sid) = req.session
@@ -1739,9 +1786,59 @@ impl Broker {
         }
         if req.func == oep_core::FN {
             let op = req.op;
+            // The fn 0 requests the broker answers: their fixed part, then TLVs (core §2.3).
+            let shape: Option<(usize, &[u8])> = match op {
+                o if o == oep_core::op::CONFIRM => Some((6, &[])),
+                o if o == oep_core::op::OPEN => Some((5, &[oep_core::tlvs::open::OWNER])),
+                o if o == oep_core::op::END
+                    || o == oep_core::op::KEEPALIVE
+                    || o == oep_core::op::LOCK_STATE =>
+                {
+                    Some((0, &[]))
+                }
+                _ => None,
+            };
+            if let Some((fixed, known)) = shape {
+                use ch32rv_oep::codec::{RequestTlvError, request_tlvs};
+                match req.payload.get(fixed..).map(|b| request_tlvs(b, known)) {
+                    None | Some(Err(RequestTlvError::Malformed)) => {
+                        return Some(refuse(reject_reasons::MALFORMED));
+                    }
+                    Some(Err(RequestTlvError::Unsupported(tag))) => {
+                        return Some(encode_result(
+                            req.corr,
+                            Resolution::Rejected(reject_reasons::UNSUPPORTED),
+                            &[tag],
+                        ));
+                    }
+                    Some(Ok(_)) => {}
+                }
+            }
             return match op {
                 o if o == oep_core::op::CONFIRM => {
                     let l = self.up.limits();
+                    // "OEP?" min_rev max_rev (core §7.1): another magic or min > max is
+                    // malformed; a range without the revision is unsupported, naming the range.
+                    let (min, max) = (req.payload[4], req.payload[5]);
+                    if &req.payload[..4] != registry::constants::CONFIRM_REQUEST_MAGIC.as_bytes()
+                        || min > max
+                    {
+                        return Some(refuse(reject_reasons::MALFORMED));
+                    }
+                    if !(min..=max).contains(&l.revision) {
+                        let mut p = vec![0x00];
+                        ch32rv_oep::codec::put_tlv(
+                            &mut p,
+                            oep_core::tlvs::unsupported_payload::SUPPORTED,
+                            false,
+                            &[l.revision, l.revision],
+                        );
+                        return Some(encode_result(
+                            req.corr,
+                            Resolution::Rejected(reject_reasons::UNSUPPORTED),
+                            &p,
+                        ));
+                    }
                     let mut p = registry::constants::CONFIRM_RESULT_MAGIC
                         .as_bytes()
                         .to_vec();
@@ -1779,9 +1876,12 @@ impl Broker {
                     Some(ok(&p))
                 }
                 o if o == oep_core::op::KEEPALIVE => Some(ok(&[])),
+                // locked(u8) remaining_ms(u32): held while any client has a session open (the
+                // broker's own session to the probe is not the clients' lock, core §6.4).
                 o if o == oep_core::op::LOCK_STATE => {
-                    let mut p = vec![1u8];
-                    p.extend_from_slice(&LEASE_MS.to_le_bytes());
+                    let held = !self.sessions.is_empty();
+                    let mut p = vec![u8::from(held)];
+                    p.extend_from_slice(&(if held { LEASE_MS } else { 0 }).to_le_bytes());
                     Some(ok(&p))
                 }
                 _ => None,

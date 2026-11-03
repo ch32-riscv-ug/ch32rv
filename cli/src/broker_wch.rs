@@ -57,6 +57,47 @@ const INTERFACES: [(u16, &str); 5] = [
     (FN_WCHLINK, WCHLINK_IF),
 ];
 
+/// The ops each fn declares (describe's `ops`, core §7.4); `None` for a fn this broker lacks.
+pub(crate) fn declared_ops(func: u16) -> Option<&'static [u8]> {
+    use oep_core::op as o;
+    Some(match func {
+        f if f == oep_core::FN => &[
+            o::CONFIRM,
+            o::LIST,
+            o::DESCRIBE,
+            o::OPEN,
+            o::END,
+            o::KEEPALIVE,
+            o::LOCK_STATE,
+            o::CLOCK,
+        ],
+        FN_RVSWD | FN_SWIO => &[
+            wire::op::ATTACH,
+            wire::op::DETACH,
+            wire::op::CONNECTIONS,
+            wire::op::HOLDS,
+        ],
+        FN_DM => &[
+            dm::op::DMI,
+            dm::op::HALT,
+            dm::op::RESUME,
+            dm::op::RESET,
+            dm::op::READ_BLOCK,
+            dm::op::WRITE_BLOCK,
+            dm::op::RUN,
+        ],
+        FN_CONSOLE => &[
+            console::op::OPEN,
+            console::op::READ,
+            console::op::WRITE,
+            console::op::CLOSE,
+            console::op::STREAMS,
+        ],
+        FN_WCHLINK => &[OP_LEND, OP_RECLAIM],
+        _ => return None,
+    })
+}
+
 /// The console mechanisms this broker offers, in describe order: the wire value is the place
 /// (from 1) in this list (a named list, core §7.7).
 const MECHANISMS: [&str; 2] = [
@@ -304,17 +345,7 @@ impl WchUpstream {
                             oep_core::tlvs::describe::MAX_OP_MS,
                             &MAX_OP_MS.to_le_bytes(),
                         ));
-                        use oep_core::op as o;
-                        v.push(ops_tlv(&[
-                            o::CONFIRM,
-                            o::LIST,
-                            o::DESCRIBE,
-                            o::OPEN,
-                            o::END,
-                            o::KEEPALIVE,
-                            o::LOCK_STATE,
-                            o::CLOCK,
-                        ]));
+                        v.push(ops_tlv(declared_ops(oep_core::FN).unwrap_or_default()));
                         v
                     }
                     FN_RVSWD | FN_SWIO => {
@@ -338,12 +369,7 @@ impl WchUpstream {
                                 registry::describe_common::MAX_CLOCK_HZ,
                                 &6_000_000u32.to_le_bytes(),
                             ),
-                            ops_tlv(&[
-                                wire::op::ATTACH,
-                                wire::op::DETACH,
-                                wire::op::CONNECTIONS,
-                                wire::op::HOLDS,
-                            ]),
+                            ops_tlv(declared_ops(func).unwrap_or_default()),
                         ]
                     }
                     FN_DM => {
@@ -351,15 +377,7 @@ impl WchUpstream {
                             registry::describe_common::MAX_LENGTH,
                             &(BLOCK_MAX_LENGTH as u16).to_le_bytes(),
                         )];
-                        v.push(ops_tlv(&[
-                            dm::op::DMI,
-                            dm::op::HALT,
-                            dm::op::RESUME,
-                            dm::op::RESET,
-                            dm::op::READ_BLOCK,
-                            dm::op::WRITE_BLOCK,
-                            dm::op::RUN,
-                        ]));
+                        v.push(ops_tlv(declared_ops(FN_DM).unwrap_or_default()));
                         v
                     }
                     FN_CONSOLE => {
@@ -369,16 +387,10 @@ impl WchUpstream {
                             .iter()
                             .map(|m| tlv(console::tlvs::describe::MECHANISM, m.as_bytes()))
                             .collect();
-                        v.push(ops_tlv(&[
-                            console::op::OPEN,
-                            console::op::READ,
-                            console::op::WRITE,
-                            console::op::CLOSE,
-                            console::op::STREAMS,
-                        ]));
+                        v.push(ops_tlv(declared_ops(FN_CONSOLE).unwrap_or_default()));
                         v
                     }
-                    FN_WCHLINK => vec![ops_tlv(&[OP_LEND, OP_RECLAIM])],
+                    FN_WCHLINK => vec![ops_tlv(declared_ops(FN_WCHLINK).unwrap_or_default())],
                     _ => return rejected(reject_reasons::UNKNOWN_FUNCTION),
                 };
                 // more(u8) then the TLVs from `first`.
