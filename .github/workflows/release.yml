@@ -130,7 +130,7 @@ jobs:
         run: |
           gh release create "${{ steps.ver.outputs.tag }}" \
             --title "${{ steps.ver.outputs.tag }}" \
-            --notes "See CHANGELOG.md. Verified on Linux x86_64; macOS/Windows binaries are experimental."
+            --notes "See CHANGELOG.md. Verified on Linux x86_64 and Windows x86_64; macOS and arm binaries are experimental."
 
   crates-io:
     needs: prepare

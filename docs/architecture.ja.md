@@ -37,7 +37,7 @@
 
 | 部品 | 版・状況 | 対応方針 |
 |---|---|---|
-| nusb | 0.2.7(2026-08)。hotplug、backend は usbfs/WinUSB/IOKit/**WebUSB(wasm)**。0.1→0.2 で API 変動あり | `ch32rv-usb` に完全隔離し、他 crate に nusb 型を漏らさない。万一死んだら rusb/libusb へ差し替え可能な境界にする。**Windows のみ例外**: WCH 純正ドライバが interface を所有していて WinUSB(nusb)で開けない場合、`ch32rv-usb-wch-win`(CH375 IOCTL 直叩き)へ device 単位でフォールバックする(2026-09-02 追加、docs/windows-wch-driver.ja.md) |
+| nusb | 0.2.7(2026-08)。hotplug、backend は usbfs/WinUSB/IOKit/**WebUSB(wasm)**。0.1→0.2 で API 変動あり | `ch32rv-usb` に完全隔離し、他 crate に nusb 型を漏らさない。万一死んだら rusb/libusb へ差し替え可能な境界にする。**Windows のみ例外**: WCH 純正ドライバが interface を所有していて WinUSB(nusb)で開けない場合、`ch32rv-usb-wch-win`(CH375 IOCTL 直叩き)へ device 単位でフォールバックする(docs/windows-wch-driver.ja.md) |
 | gdbstub | 0.7.10(2026-03)。no_std、実績多数。**gdbstub_arch の RISC-V は整数レジスタのみ** | V4F(V307/V317/H41x)の FPU レジスタは自前 Arch 定義で足す(作業量小)。probe-rs が `=0.7.8` に pin した前例に倣い exact pin |
 | serialport | 4.10.0(2026-08)。活発 | 採用 |
 | clap / serde / object | いずれも活発 | 採用。ELF は object を採用(goblin は不採用) |
@@ -134,17 +134,15 @@ protocol の事実(byte 列・応答・status・実測)は **wch-protocols** の
 
 | 項目 | 方針 |
 |---|---|
-| 源泉 | flash geometry・memory map・option 分割・DM レジスタ番地 = `ch32-device-data`(stable 表、provenance 付き)。chip ID(device_id)値と flash mode 付き memory 定義 = `ch32-data`(**2026-10-14 更新**: device_id は ch32-device-data が WCH EVT の ChipID 一覧と実測だけから作るようになり、ch32-data は外れた。device_ids に無い型番も parts から ID 無しで生成する)。**gap の 7 series(V205/V407/V467/X305/X315/M030/M103)の device_id は `ch32-device-data` に evidence 表の新設を依頼する**(実測手順は `ch32-data/docs/device-ids.md`、実測 basis の前例は `curated/debug-data-measured.json`)。probe firmware の hash→型番・版の対応は `index/link_firmware.csv` から `link_firmware.csv` を生成して使う(`probe firmware update` の image 照合)。既知不良の firmware は `index/link_firmware_issues.csv` から `link_firmware_issues.csv` を生成して使う(手書きの表は持たない)。ch32-device-data の probe の名前(`device` + `mcu`)から variant ID(`linke` など)への対応は `crates/target/src/link_variant.rs` の 1 か所だけに書き、db-gen も同じファイルを読んで、対応の無い device で生成を止める |
+| 源泉 | flash geometry・memory map・option 分割・DM レジスタ番地 = `ch32-device-data`(stable 表、provenance 付き)。chip ID(device_id)値 = `ch32-device-data`(WCH EVT の ChipID 一覧と実測だけから作る。device_ids に無い型番も parts から ID 無しで生成する)。flash mode 付き memory 定義 = `ch32-data`。**gap の 7 series(V205/V407/V467/X305/X315/M030/M103)の device_id は `ch32-device-data` に evidence 表の新設を依頼する**(実測手順は `ch32-data/docs/device-ids.md`、実測 basis の前例は `curated/debug-data-measured.json`)。probe firmware の hash→型番・版の対応は `index/link_firmware.csv` から `link_firmware.csv` を生成して使う(`probe firmware update` の image 照合)。既知不良の firmware は `index/link_firmware_issues.csv` から `link_firmware_issues.csv` を生成して使う(手書きの表は持たない)。ch32-device-data の probe の名前(`device` + `mcu`)から variant ID(`linke` など)への対応は `crates/target/src/link_variant.rs` の 1 か所だけに書き、db-gen も同じファイルを読んで、対応の無い device で生成を止める |
 | 暫定 overlay | 依頼中データの一時置き場(`provisional/`)。生成 pipeline を必ず通し、生成物と CLI 出力に `provisional` flag を出す(verified と同列の可視性) |
 | 生成 | `xtask db-gen` が入力 repo の pinned revision から `ch32rv-target/generated/` を生成して **commit する**(hermetic build。build.rs でネットワークや隣接 repo に依存しない)。CI が再生成一致を検査 |
-
-**実装状況(2026-09-02)**: `cargo xtask db-gen [DATA_DIR]`(既定 `$CH32_DEVICE_DATA` or `../ch32-device-data`)を実装。ch32-device-data の `evidence/device_ids.csv` + `index/parts.csv` を part_number で join して `crates/target/generated/skus.csv`(65 SKU)、`evidence/option_byte_fields.csv` の USER byte から `option_fields.csv`(43 fields)を生成し commit。`ch32rv-target` は両者を `include_str!` で埋め込むので build は隣接 repo 非依存。生成時に (a) don't-care bits が [7:4] でなければ拒否、(b) masked device_id(0xFFFFFF0F)が実衝突すれば拒否、で fail-closed。`verified` 列は本プロジェクトが実機測定した 6 SKU のみ true(`MEASURED` 定数、docs/data-requests/measured/ 由来)。geometry は skus.csv の flash/sram に加え `flash_geometry.csv`(page/fast erase・fast program・block erase)。**CI 再生成一致検査 `cargo xtask db-check` を実装**: 生成物を in-memory 再生成して committed とデータ比較し、drift があれば exit 1。**provenance ヘッダ(source rev 行)は無視**するので、ch32-device-data の HEAD が無関係な commit で進んでもデータが同一なら通る(実データ変化のみ検出)。生成/検査は `generate()` を共有。**2026-09-06**: `flash_geometry.csv` に `erased_word`(消去済み word の読み出し値。RM の 2 系統 `0xFFFFFFFF` / `0xe339e339`)を追加し、`flash_program_method.csv`(FLASH controller の書込方式 `buffered` / `direct`・commit bit・buffer load 幅・confidence)を新設。`ch32rv-flash::flash_controller_profile` の手書き表を廃し、page サイズ・方式・消去パターンをすべて DB から引く(`conflict` 行・page 消去なし・DMI で駆動できない手順は fail-closed)。buffer load 幅(32/64/128)も DB の `program_buffer_load_bits` 由来で、**手書き・暫定値は持たない**。**option byte の位置も DB 化**: `option_bytes.csv`(family 別 base + 書込方式)を生成し、`option get/set/reset/write-raw/protect` と `recover` が使う。base は共通ではない(CH32M030 = `0x1FFF_F300`)ため、DB に無い family は fail-closed。
-
-- 依頼 0001(device_id)/0002(debug wiring)/0003(option byte layout)は 2026-09-02 に納品受け入れ。実測6台と rev [7:4] don't-care で全一致を確認済み。gap 7 series(V205/V407/V467/X305/X315/M030/M103)は未発売でデータ側も未収載。
 | 再現性 | 入力 rev と sha256 を生成物に埋め、`version --json` に出す |
 | verified | SKU ごとに「実機確認済み」flag と根拠(いつ・どの probe・どの操作)を持ち、CLI 出力に出す |
 | flash stub | 事前 build blob を持たず、in-repo の source から CI で build して hash を `version --json` に出す(データではなくコードなので ch32rv 内で持つ) |
 | 手書き禁止 | 例外が要る場合も暫定 overlay として入れ、`ch32-device-data` への依頼(issue 等)と紐付ける |
+
+**実装**: `cargo xtask db-gen [DATA_DIR]`(既定 `$CH32_DEVICE_DATA` or `../ch32-device-data`)。ch32-device-data の `evidence/device_ids.csv` + `index/parts.csv` を part_number で join して `crates/target/generated/skus.csv`(65 SKU)、`evidence/option_byte_fields.csv` の USER byte から `option_fields.csv`(43 fields)を生成し commit する。`ch32rv-target` は両者を `include_str!` で埋め込むので build は隣接 repo 非依存。生成時に (a) don't-care bits が [7:4] でなければ拒否、(b) masked device_id(0xFFFFFF0F)が実衝突すれば拒否、で fail-closed。`verified` 列は本プロジェクトが実機測定した 6 SKU のみ true(`MEASURED` 定数、docs/data-requests/measured/ 由来)。geometry は skus.csv の flash/sram に加え `flash_geometry.csv`(page/fast erase・fast program・block erase)。**CI 再生成一致検査は `cargo xtask db-check`**: 生成物を in-memory 再生成して committed とデータ比較し、drift があれば exit 1。**provenance ヘッダ(source rev 行)は無視**するので、ch32-device-data の HEAD が無関係な commit で進んでもデータが同一なら通る(実データ変化のみ検出)。生成/検査は `generate()` を共有。`flash_geometry.csv` は `erased_word`(消去済み word の読み出し値。RM の 2 系統 `0xFFFFFFFF` / `0xe339e339`)も持つ。`flash_program_method.csv` は FLASH controller の書込方式(`buffered` / `direct`)・commit bit・buffer load 幅・confidence を持つ。`ch32rv-flash::flash_controller_profile` は手書きの表を持たず、page サイズ・方式・消去パターンをすべて DB から引く(`conflict` 行・page 消去なし・DMI で駆動できない手順は fail-closed)。buffer load 幅(32/64/128)も DB の `program_buffer_load_bits` 由来で、**手書き・暫定値は持たない**。**option byte の位置も DB 化**: `option_bytes.csv`(family 別 base + 書込方式)を生成し、`option get/set/reset/write-raw/protect` と `recover` が使う。base は共通ではない(CH32M030 = `0x1FFF_F300`)ため、DB に無い family は fail-closed。device_id・debug wiring・option byte layout は、実測 6 台と rev [7:4] don't-care で全一致を確認済み。gap 7 series(V205/V407/V467/X305/X315/M030/M103)は未発売でデータ側も未収載。
 
 ## 4. テストの骨子(原設計案 §7.1 の確認)
 
@@ -157,7 +155,7 @@ protocol の事実(byte 列・応答・status・実測)は **wch-protocols** の
 | 項目 | 方針 |
 |---|---|
 | license | **MIT**(単一。repo の LICENSE 取得済み)。依存 crate の inventory は cargo-deny で管理 |
-| binary | cargo-dist で Win x64/arm64、Linux x64/arm64、macOS x64/arm64。checksum + artifact attestation + SBOM |
+| binary | release workflow(`.github/workflows/release.yml`。cargo-dist は使わない)で Win x64、Linux x64/arm64、macOS x64/arm64。各 archive に checksum(`.sha256`)を付ける。手順は [release-plan.ja.md](release-plan.ja.md) |
 | USB 権限 | udev rule を同梱し `doctor --emit-udev` でも出す。Windows は WinUSB binding の検出と手順提示を `doctor` が持つ(自動変更しない) |
 | Arduino | Board Manager package。ch32rv は自前 release を持つため ADR-0011 の `mirror-` 枠で追従できる(ADR-0014 の `build-` 枠は不要) |
 | vendor blob | 同梱しない(LinkE firmware は user-supplied) |

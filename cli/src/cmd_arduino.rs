@@ -95,7 +95,7 @@ const LISTING_LIFE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// en: The probe's ports: `read` when it could be read (kept as its last listing, by unit id),
 /// else that last listing while it is younger than [`LISTING_LIFE`], only its entries that name
-/// a port of this very probe in today's form (`oep://<unit>/<port>`).
+/// a port of this very probe, or the probe itself, in today's form (`oep://<unit>[/<port>]`).
 /// ja: 読めればそれ(unit id ごとに前回の一覧として残す)。読めなければ 30 秒以内の前回の一覧を、
 /// 同じ probe の今の形のアドレスの分だけ。
 fn listing_or_recent(read: Option<Vec<Value>>, unit: &str) -> Vec<Value> {
@@ -117,14 +117,16 @@ fn listing_or_recent(read: Option<Vec<Value>>, unit: &str) -> Vec<Value> {
     else {
         return Vec::new();
     };
-    let prefix = format!("oep://{unit}/");
+    let whole = format!("oep://{unit}");
+    let prefix = format!("{whole}/");
     ports
         .into_iter()
         .filter(|p| {
             p["address"].as_str().is_some_and(|a| {
-                a.get(..prefix.len())
-                    .is_some_and(|h| h.eq_ignore_ascii_case(&prefix))
-                    && port_name_ok(&a[prefix.len()..])
+                a.eq_ignore_ascii_case(&whole)
+                    || a.get(..prefix.len())
+                        .is_some_and(|h| h.eq_ignore_ascii_case(&prefix))
+                        && port_name_ok(&a[prefix.len()..])
             })
         })
         .collect()
@@ -186,31 +188,46 @@ fn net_oep_ports(on_usb: &[String]) -> Vec<Value> {
 }
 
 /// en: The probe's ports as discovery ports (host guide §5.3): one `oep://<id>/<port>` per port
-/// its labels name (the `S` of the `S.N` labels, as written); a probe naming none has no port to
-/// list. `props` added to each one's properties. Read lock-free, without attaching: the target
-/// is not known until a tool attaches.
+/// its labels name (the `S` of the `S.N` labels, as written); a probe naming none is listed as
+/// itself, `oep://<id>` (its pins then come from `--pins`). `props` added to each one's
+/// properties. Read lock-free, without attaching: the target is not known until a tool attaches.
 /// ja: probe の口を discovery の port として出す。ラベルが名指す口ごとに 1 つ。名前つきの口が
-/// 無い probe は出さない。attach しないので target は分からない。
+/// 無い probe は `oep://<id>` で出す。attach しないので target は分からない。
 fn port_entries(p: &mut ch32rv_oep::session::Probe, id: &str, props: &Value) -> Option<Vec<Value>> {
     let labels = ch32rv_oep::config::labels(p).ok()?;
     let ports = ch32rv_oep::config::ports_named(&labels);
-    let entry = |port: &str| {
+    let entry = |port: Option<&str>| {
         let mut properties = json!({ "port_name": port });
         if let (Some(m), Some(extra)) = (properties.as_object_mut(), props.as_object()) {
             for (k, v) in extra {
                 m.insert(k.clone(), v.clone());
             }
         }
+        let (address, label, hardware) = match port {
+            Some(port) => (
+                format!("oep://{id}/{port}"),
+                format!("{port} on OEP probe {id}"),
+                format!("{id}/{port}"),
+            ),
+            None => (
+                format!("oep://{id}"),
+                format!("OEP probe {id}"),
+                id.to_owned(),
+            ),
+        };
         json!({
-            "address": format!("oep://{id}/{port}"),
-            "label": format!("{port} on OEP probe {id}"),
+            "address": address,
+            "label": label,
             "protocol": "oep",
             "protocolLabel": "OEP probe",
-            "hardwareId": format!("{id}/{port}"),
+            "hardwareId": hardware,
             "properties": properties,
         })
     };
-    Some(ports.iter().map(|s| entry(s)).collect())
+    if ports.is_empty() {
+        return Some(vec![entry(None)]);
+    }
+    Some(ports.iter().map(|s| entry(Some(s))).collect())
 }
 
 /// WCH-Links as `wchlink://<serial>`, or `wchlink://usb-<bus>-<ports>` for one without a serial.

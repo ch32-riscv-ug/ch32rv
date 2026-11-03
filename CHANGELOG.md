@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- (EN) Breaking (oep-spec host guide §5.3: no "any" form; `oep://<probe>` is the probe itself): `arduino discovery` lists an OEP probe that names no ports as `oep://<probe>` (it was `oep://<probe>/any`; a saved port selection is chosen again in the IDE), and named ports as `oep://<probe>/<port>` as before. A command given `oep://<probe>` alone (was exit 2) uses the probe's one named port, asks for `--pins` when it names none, and exits 23 with the list when it names two or more.
+- (JA) 破壊的変更(oep-spec の host ガイド §5.3: 「どれでも」を表す書き方は無く、`oep://<probe>` は probe 自身): `arduino discovery` は、名前つきの口の無い OEP の probe を `oep://<probe>` で出す(以前は `oep://<probe>/any`。IDE で保存した port の選択は選び直す)。名前つきの口は今までどおり `oep://<probe>/<port>`。`oep://<probe>` だけを渡したコマンドは(以前は exit 2)、名前つきの口が 1 つならそこを使い、無ければ `--pins` を求め、2 つ以上なら一覧を付けて exit 23。
+
+- (EN) Docs: exit 41 (`probe-wedged`) is reserved and not emitted; a probe that stops answering after the retries ends with exit 40. The release notes say Linux x86_64 and Windows x86_64 are verified, as the README does.
+- (JA) 文書: exit 41(`probe-wedged`)は予約で、まだ出さない。再試行の後も probe が答えないときは exit 40 で終わる。リリースノートは README と同じく、Linux x86_64 と Windows x86_64 を verified とする。
+
 - (EN) Tests: the broker's one lock (oep-spec host guide §7) is checked in ch32rv itself (cli/tests/broker.rs `shares_one_lock`): two clients with the share extension hold it at once, a client without it is locked, a forced open takes it from the sharers as from one holder (they then hear locked, and no_session once it is free), and the confirm answer fits 64 bytes. It runs without hardware on the spec side's fake probe, and on a WCH-Link broker with `CH32RV_HW_WCHLINK=<Link serial>` (sessions only; the target is not touched; the H417's Link is refused).
 - (JA) 試験: ブローカーの 1 つのロック(oep-spec の host ガイド §7)を、ch32rv の中で確かめる(cli/tests/broker.rs の `shares_one_lock`)。share 拡張を付けた 2 つの client が同時に持てる、付けない client は locked、force の open は相乗りを 1 つの持ち主として奪う(奪われた側は locked、空いた後は no_session)、confirm の答えは 64 byte に収まる。実機なしで仕様側の偽の probe で回り、`CH32RV_HW_WCHLINK=<Link の serial>` で WCH-Link のブローカーでも回る(session だけで target には触れない。H417 の Link は断る)。
 

@@ -76,13 +76,6 @@ impl OepAddr {
         self.place().and_then(|p| p.port.as_deref())
     }
 
-    /// en: The address is `oep://<probe>` alone, which names the probe itself (host guide §5.3:
-    /// a segment left out is not "unspecified"), so no port is chosen for it - not even the only
-    /// one. ja: `oep://<probe>` だけは probe 自身。口は選ばない。
-    pub(crate) fn whole_probe(&self) -> bool {
-        self.place().is_some_and(|p| p.port.is_none())
-    }
-
     /// The target the address names (`oep://<probe>/<port>/<target>`), if it does.
     pub(crate) fn target(&self) -> Option<&str> {
         self.place().and_then(|p| p.target.as_deref())
@@ -1001,8 +994,9 @@ fn chip_idles_low(chip: Option<&str>) -> bool {
 /// en: Choose the port without attaching (host guide §5.3: resolving an address narrows probe and
 /// port by names only and stops unless one is left; an attach to search could wake and reset a
 /// target on rvswd). The port the address names (ASCII case aside, used as its labels write it);
-/// an address with no port (a serial port as it is) takes the probe's one named port, as a
-/// convenience of this tool. No port named by the labels: nothing to choose. The wire comes from
+/// an address with no port (`oep://<probe>`, or a serial port as it is) takes the probe's one
+/// named port, as a convenience of this tool (§5.3 allows leaving a segment out when one is
+/// left); two or more are ambiguous (exit 23). No port named by the labels: `--pins` gives them. The wire comes from
 /// the port's labels (`S.swio`: one wire, `S.swclk`: two), else from `--chip`.
 /// ja: attach せずに口を選ぶ。アドレスの口(大小文字を区別しない)、口の無いアドレスなら名前つきの
 /// 口がちょうど 1 つのときそれ。名前つきの口が無ければ選べない。
@@ -1025,12 +1019,6 @@ fn choose_place(p: &mut Probe, a: &OepAddr, chip: Option<&str>) -> Result<Place,
     }
     let labels = labels(p).map_err(|e| e.to_string())?;
     let ports = ports_named(&labels);
-    if a.whole_probe() {
-        return Err(PlaceError {
-            kind: ErrorKind::Usage,
-            msg: whole_probe_msg(&ports),
-        });
-    }
     let port = match a.port() {
         Some(name) => match ports.iter().find(|p| p.eq_ignore_ascii_case(name)) {
             Some(p) => p.clone(),
@@ -1205,24 +1193,10 @@ fn attach_at(
     attach(p, wire, options)
 }
 
-/// Why `oep://<probe>` alone picks no port, with the addresses that would.
-fn whole_probe_msg(ports: &[String]) -> String {
-    if ports.is_empty() {
-        format!(
-            "oep://<probe> names the probe itself, not a port, and it names no ports: {NO_PORTS_HINT}"
-        )
-    } else {
-        format!(
-            "oep://<probe> names the probe itself, not a port: name one, oep://<probe>/<port> \
-             (its ports: {})",
-            ports.join(", ")
-        )
-    }
-}
-
 /// What to do when a probe names no ports (host guide §5.3: only `S.N` labels name ports).
-const NO_PORTS_HINT: &str = "label its pins `<port>.swdio` / `<port>.swclk` (or `<port>.swio`) \
-     with `oep settings set <probe> core channel.<pin>.label=<port>.swdio ...`";
+const NO_PORTS_HINT: &str = "give its pins with --pins swdio=<pin>,swclk=<pin> (or swio=<pin>), or \
+     label them `<port>.swdio` / `<port>.swclk` (or `<port>.swio`) with \
+     `oep settings set <probe> core channel.<pin>.label=<port>.swdio ...`";
 
 /// The DB family of the attached target, checked against `--chip` (fail-closed).
 fn family(cli: &Cli, cmd: &str, chip_id: Option<u32>) -> Result<String, ExitCode> {
@@ -1722,10 +1696,6 @@ impl ConsoleSession {
         probe.set_share(true);
         if let Some(place) = a.place() {
             verify_unit(&mut probe, &place.unit)?;
-        }
-        if a.whole_probe() {
-            let labels = ch32rv_oep::config::labels(&mut probe).unwrap_or_default();
-            return Err(whole_probe_msg(&ch32rv_oep::config::ports_named(&labels)));
         }
         let owner = format!("ch32rv monitor pid {}", std::process::id());
         // A probe on TCP may still be held by another host's session - a broker on its other
