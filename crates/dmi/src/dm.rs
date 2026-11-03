@@ -926,17 +926,43 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// en: Put down erase / program mode bits a stopped operation left in FLASH_CTLR, and return
     /// the bits it found (0 when the controller was idle). A process killed between setting FTER
     /// and clearing it (a page erase over DMI) leaves FTER set; the WCH stub then programs only
-    /// the first page of every image until the chip resets (CH32V003, 2026-10-31). The hart must
-    /// be halted.
+    /// the first page of every image until the chip resets (CH32V003). The hart must be halted.
     /// ja: 止まった操作が FLASH_CTLR に残した消去・書き込みのモードのビットを下ろし、見つけたビットを
     /// 返す。FTER を立てて下ろす前に止まると FTER が残り、WCH の stub は以後 1 ページ目しか書かない。
+    ///
+    /// The program buffer is put back as it was: this runs right before the WCH-Link's own erase
+    /// and stub, and on CH32V103 those use the instructions the Link loaded into PROGBUF0/1 at
+    /// attach - overwritten, the Link refuses them (`81 55 01 02`, LinkE 2.12 / CH549 Link 2.12).
+    /// ja: program buffer は元に戻す。V103 では Link の消去と stub が、attach で Link が入れた
+    /// PROGBUF0/1 の命令を使い、上書きされると断る。
     pub fn flash_clear_stale_mode(&mut self) -> Result<u32, DmiError> {
-        let ctlr = self.read_mem32(FLASH_CTLR)?;
-        let stale = ctlr & FLASH_MODE_BITS;
-        if stale != 0 {
-            self.write_mem32(FLASH_CTLR, ctlr & !FLASH_MODE_BITS)?;
-        }
-        Ok(stale)
+        let kept = self.program_buffer()?;
+        let stale = self.read_mem32(FLASH_CTLR).and_then(|ctlr| {
+            let stale = ctlr & FLASH_MODE_BITS;
+            if stale != 0 {
+                self.write_mem32(FLASH_CTLR, ctlr & !FLASH_MODE_BITS)?;
+            }
+            Ok(stale)
+        });
+        self.put_program_buffer(kept)?;
+        stale
+    }
+
+    /// en: PROGBUF0/1, the words ch32rv's memory accesses overwrite. A WCH-Link loads its own
+    /// instructions there at attach and its erase and stub use them on CH32V103: take them before
+    /// a memory access that precedes the Link's own flash work, and [`put_program_buffer`] after.
+    /// ja: PROGBUF0/1(ch32rv のメモリアクセスが上書きする語)。V103 では Link が attach で入れた命令を
+    /// Link の消去と stub が使うので、その前のメモリアクセスの前後で取って戻す。
+    ///
+    /// [`put_program_buffer`]: Self::put_program_buffer
+    pub fn program_buffer(&mut self) -> Result<[u32; 2], DmiError> {
+        Ok([self.read(DMPROGBUF0)?, self.read(DMPROGBUF1)?])
+    }
+
+    /// Put back what [`program_buffer`](Self::program_buffer) took.
+    pub fn put_program_buffer(&mut self, words: [u32; 2]) -> Result<(), DmiError> {
+        self.write(DMPROGBUF0, words[0])?;
+        self.write(DMPROGBUF1, words[1])
     }
 
     pub fn flash_page_erase(&mut self, addr: u32, mode: FlashProgMode) -> Result<(), DmiError> {

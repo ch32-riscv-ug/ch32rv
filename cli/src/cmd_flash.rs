@@ -646,20 +646,21 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
 
     // Erase per policy (docs/cli.ja.md §4.1).
     //   chip       - one fast whole-chip erase (the Link's MER).
-    //   sector     - only the pages the image covers. WCH's stub erases every page it programs
-    //                itself, so on the stub path ch32rv erases nothing first; the controller path
-    //                erases the covered pages over DMI.
+    //   sector     - only the pages the image covers. Where WCH's stub erases every page it
+    //                programs itself (`stub_erases_pages`), ch32rv erases nothing first; the
+    //                controller path, and a stub that does not (V103), erase them over DMI.
     //   keep-store - the STORE (ELF `.ch32rv_store`) is kept. On the stub path, the cheaper of the
     //                stub's own erase (= sector) and backup -> chip erase -> program -> STORE
     //                written back ([`ch32rv_flash::erase_plan::choose_keep_store`]). No STORE:
     //                the same as sector.
-    //   none       - no erase: the controller path only (the stub always erases what it writes).
+    //   none       - no erase: not on a stub that erases what it writes.
     let erase = args.erase;
     let stub_packet = match &programmer {
         Programmer::Stub(fp) => Some(fp.data_packet_size as u32),
         Programmer::Controller(_) => None,
     };
-    if erase == EraseMode::None && stub_packet.is_some() {
+    let stub_erases = stub_packet.is_some() && ch32rv_flash::erase_plan::stub_erases_pages(family);
+    if erase == EraseMode::None && stub_erases {
         return fail(
             cli,
             CMD,
@@ -817,9 +818,11 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
             let controller = matches!(programmer, Programmer::Controller(_));
             // The controller path erases the covered pages itself, and --restore-unwritten reads
             // them first: both need the family's verified page size.
+            // ch32rv erases the covered pages over DMI unless the stub does it.
+            let pre_erase = controller || !stub_erases;
             let cprofile = match cprofile {
                 Some(p) => Some(p),
-                None if controller || args.restore_unwritten => {
+                None if pre_erase || args.restore_unwritten => {
                     return fail(
                         cli,
                         CMD,
@@ -849,7 +852,7 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                 );
             }
             if let Some(cprofile) = cprofile
-                && (controller || args.restore_unwritten)
+                && (pre_erase || args.restore_unwritten)
             {
                 let page = cprofile.page_size;
                 // The planned writes, not the raw segments: the stub path programs one contiguous
@@ -896,9 +899,8 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                     }
                     restored = Some(merged);
                 }
-                // Only the controller path erases first: WCH's stub erases every page it writes
-                // (a DMI pre-erase was pure overhead there).
-                if controller {
+                // Erase first unless the stub does (a DMI pre-erase is pure overhead there).
+                if pre_erase {
                     let total_pages = pages.len() as u64;
                     sink.event(&Event::Phase {
                         name: "erase".into(),
@@ -922,8 +924,10 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
                             total: Some(total_pages),
                         });
                     }
-                } else {
-                    // The reads halted the core: give the stub a clean slate.
+                }
+                // The stub gets a clean slate: the reads and the erase halted the core and used
+                // the program buffer, which the Link fills again at attach.
+                if !controller {
                     session.link().detach_chip().ok();
                     let _ = session.link().attach_chip();
                 }

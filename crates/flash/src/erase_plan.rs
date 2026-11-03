@@ -1,16 +1,18 @@
 //! en: How `flash --erase keep-store` is carried out on the WCH-Link stub path, and the other
 //! erase facts the paths share (docs/cli.ja.md §4.1).
 //!
-//! The WCH flash stub erases every page it programs by itself, and runs fast only on flash a chip
-//! erase (Link `Program 0x01`, MER) has just cleared. So `keep-store` with a STORE in the image
-//! has two ways:
+//! On the families measured ([`stub_erases_pages`]) the WCH flash stub erases every page it
+//! programs by itself, and runs fast only on flash a chip erase (Link `Program 0x01`, MER) has just
+//! cleared. So `keep-store` with a STORE in the image has two ways there:
 //! - (a) no ch32rv erase: the stub erases the pages it writes; the STORE is never touched.
 //!   Cost grows with the pages written ([`page_self_erase`]).
 //! - (b) back up the STORE (fast read), chip erase, program the image, program the STORE back with
 //!   ch32rv's RAM loader over DMI (a second stub run after the image does not take: V307 bench
 //!   2026-11-01), verify both. Cost is about fixed ([`RESTORE_FIXED_MS`]).
 //!
-//! [`choose_keep_store`] picks (b) when the estimate for (a) is larger.
+//! [`choose_keep_store`] picks (b) when the estimate for (a) is larger. On the other families
+//! (CH32V103's stub does not erase: it stops on a page not erased) ch32rv erases the pages written
+//! over DMI first, as on the controller path, and the STORE is not touched.
 //!
 //! ja: WCH-Link の stub 経路で `--erase keep-store` をどう行うか。stub は書く page を自分で消し、
 //! chip erase 直後の flash でだけ速く書く。そこで STORE があるときは (a) ch32rv は消さない、(b) STORE
@@ -38,23 +40,34 @@ pub struct SelfErase {
 /// - V30x (0x06): 256 B, 27 ms. V307 96 KiB: sector 14.3 s, chip 4.0 s = 26.8 ms.
 /// - V20x (0x05): 256 B, 19.5 ms. V203C8T6 32 KiB: sector 4.05 s, chip 1.55 s = 19.5 ms.
 /// - L103 (0x0E): 256 B, 13 ms. L103C8T6 32 KiB: sector 3.78 s, chip 2.1 s = 13 ms.
-/// - X035 / CH643 (0x0C / 0x0D): 256 B, ~3 ms; V103 (0x01): 128 B, ~3.1 ms. App-side fast page
-///   erase timings (ArduinoCore docs/flash-raw.ja.md:14-25), not measured with the stub:
-///   uncertain.
 ///
-/// ja: family ごとの stub の page 消去の費用。V003 / V307 / V203 / L103 は stub で実測(2026-11-01、
-/// LinkE 2.22、(sector − chip) / page 数)。X035 と V103 はアプリ側の fast page 消去の時間からの推定。
+/// Only the families whose stub was measured erasing ([`stub_erases_pages`]) have a figure.
+///
+/// ja: family ごとの stub の page 消去の費用(V003 / V307 / V203 / L103 を stub で実測、LinkE 2.22、
+/// (sector − chip) / page 数)。stub が消すと実測した family だけ。
 pub fn page_self_erase(family_byte: u8) -> Option<SelfErase> {
-    let (page, ms, measured) = match family_byte {
-        0x09 | 0x49 => (64, 3.1, true),
-        0x06 => (256, 27.0, true),
-        0x05 => (256, 19.5, true),
-        0x0C | 0x0D => (256, 3.0, false),
-        0x0E => (256, 13.0, true),
-        0x01 => (128, 3.1, false),
+    let (page, ms) = match family_byte {
+        0x09 => (64, 3.1),
+        0x06 => (256, 27.0),
+        0x05 => (256, 19.5),
+        0x0E => (256, 13.0),
         _ => return None,
     };
-    Some(SelfErase { page, ms, measured })
+    Some(SelfErase {
+        page,
+        ms,
+        measured: true,
+    })
+}
+
+/// en: Whether the family's WCH stub erases the pages it writes by itself (measured: CH32V003,
+/// V20x, V30x, L103). Elsewhere ch32rv erases them over DMI first: CH32V103's stub does not erase
+/// (LinkE 2.12 and CH549 Link 2.12, `--erase sector` over a programmed chip: the stub times out),
+/// and a family not measured is treated the same, since an erase it repeats only costs time.
+/// ja: その family の stub が書く page を自分で消すか(実測: V003、V20x、V30x、L103)。それ以外は
+/// ch32rv が先に DMI で消す。V103 の stub は消さない(書いた chip に sector で書くと timeout)。
+pub fn stub_erases_pages(family_byte: u8) -> bool {
+    page_self_erase(family_byte).is_some()
 }
 
 /// en: Fixed cost of way (b) beyond a plain chip-erase flash, in ms: the backup read, the second
@@ -178,12 +191,14 @@ mod tests {
             (0x09, "CH32V003"),
             (0x06, "CH32V307"),
             (0x05, "CH32V20x"),
-            (0x0C, "CH32X035"),
             (0x0E, "CH32L103"),
-            (0x01, "CH32V103"),
         ] {
             assert!(page_self_erase(byte).is_some(), "{family}");
             assert!(crate::loader::plan_for_family(family).is_some(), "{family}");
+        }
+        // V103's stub does not erase (measured); X035's was never measured: ch32rv erases first.
+        for byte in [0x01, 0x0C, 0x0D, 0x49] {
+            assert!(!stub_erases_pages(byte), "0x{byte:02x}");
         }
     }
 
