@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.27.0 - 2026-11-03
+
 - (EN) ch32-device-data no longer has `index/VERSION`, and `cargo xtask db-gen` / `db-check` no longer read it. The data stays pinned by its commit and each table's `index/manifest.csv` sha256, and columns are read by name, so a removed or renamed column stops the generation where it is looked up. The tables read and the generated data are unchanged.
 - (JA) ch32-device-data から `index/VERSION` が無くなり、`cargo xtask db-gen` / `db-check` もそれを読まなくなった。データの固定は commit と表ごとの `index/manifest.csv` の sha256 のまま、列は名前で読むので、列が消えたり改名されたりすれば、名前で引く所で生成が止まる。読む表と生成データは変わらない。
 
