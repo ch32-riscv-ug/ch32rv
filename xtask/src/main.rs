@@ -136,10 +136,10 @@ fn data_rows(s: &str) -> Vec<&str> {
 
 /// en: One table of ch32-device-data's public surface, `index/<name>.csv` (its consumer contract,
 /// index/README.md "Contract for consumers": only `index/` is read, columns by name, the table is
-/// pinned by the repo commit plus its `index/manifest.csv` sha256, and `index/VERSION` moves
-/// before a column is removed / renamed / reformatted).
+/// pinned by the repo commit plus its `index/manifest.csv` sha256). A removed or renamed column
+/// stops the generation where it is looked up by name.
 /// ja: ch32-device-data の公開面の表 1 つ(`index/<name>.csv`)。読むのは `index/` だけ、列は名前で、
-/// 固定は commit と manifest の sha256、`index/VERSION` は列の削除・改名・書き方の変更の前に上がる。
+/// 固定は commit と manifest の sha256。列が消えたり改名されたりすれば、名前で引く所で生成が止まる。
 struct Table {
     name: &'static str,
     header: Vec<String>,
@@ -147,21 +147,8 @@ struct Table {
     sha256: String,
 }
 
-/// The `index/VERSION` this generator is written against.
-const INDEX_VERSION: &str = "1";
-
 impl Table {
     fn open(data: &Path, name: &'static str) -> Result<Table, String> {
-        let version_path = data.join("index/VERSION");
-        let version = std::fs::read_to_string(&version_path)
-            .map_err(|e| format!("read {version_path:?}: {e}"))?;
-        if version.trim() != INDEX_VERSION {
-            return Err(format!(
-                "ch32-device-data index/VERSION is {} (db-gen reads version {INDEX_VERSION}): \
-                 a column was removed, renamed or reformatted - update the generator",
-                version.trim()
-            ));
-        }
         let path = data.join(format!("index/{name}.csv"));
         let manifest = read_csv(&data.join("index/manifest.csv"))?;
         let sha256 = manifest
@@ -486,10 +473,10 @@ fn gen_flash_program_method(data: &Path, rev: &str) -> Result<(String, usize), S
             continue;
         }
         // en: `program_method` and `program_commit` are prose columns (index/columns.csv
-        // `spelling`: a rewording does not bump VERSION), so a value that does not read as
+        // `spelling`: free wording), so a value that does not read as
         // expected stops the generation instead of turning into a wrong mode. A row the data
         // repo marks `conflict` may stay unclassified: the consumer fails closed on it.
-        // ja: 2 つとも prose の列(言い換えで VERSION は上がらない)。想定の形で読めなければ生成を
+        // ja: 2 つとも prose の列(書き方は自由)。想定の形で読めなければ生成を
         // 止める。`conflict` の行だけは分類できなくてよい(使う側が fail-closed)。
         let conflict = confidence_word(&t, row, conf_i)? == "conflict";
         let method = Table::cell(row, method_i);
@@ -767,9 +754,9 @@ fn gen_link_firmware_issues(data: &Path, rev: &str) -> Result<(String, usize), S
     Ok((out, n))
 }
 
-/// en: A row's `confidence`, from the closed vocabulary of index/VERSION 1 (`confirmed` /
+/// en: A row's `confidence`, from its closed vocabulary (`confirmed` /
 /// `reference` / `conflict`); any other word stops the generation.
-/// ja: `confidence` の値(VERSION 1 で閉じた 3 語)。それ以外なら生成を止める。
+/// ja: `confidence` の値(閉じた 3 語)。それ以外なら生成を止める。
 fn confidence_word<'a>(t: &Table, row: &'a [String], i: usize) -> Result<&'a str, String> {
     match Table::cell(row, i) {
         w @ ("confirmed" | "reference" | "conflict") => Ok(w),
