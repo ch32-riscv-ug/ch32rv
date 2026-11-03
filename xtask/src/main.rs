@@ -7,6 +7,7 @@
 //! 依存しない。
 
 mod oep;
+mod wch_protocols;
 // The probe device -> variant ID mapping, shared with crates/target (defined once there).
 #[path = "../../crates/target/src/link_variant.rs"]
 mod link_variant;
@@ -41,6 +42,15 @@ fn main() -> ExitCode {
             .or_else(|| std::env::var_os("OEP_SPEC").map(PathBuf::from))
             .unwrap_or_else(|| PathBuf::from("../../dev_oep/oep-spec"))
     };
+    // wch-protocols-sync / -check take the wch-protocols checkout: arg, else WCH_PROTOCOLS_DIR,
+    // else the sibling.
+    let protocols = || {
+        rest.iter()
+            .find(|a| !a.starts_with("--"))
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("WCH_PROTOCOLS_DIR").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("../wch-protocols"))
+    };
     match task.as_deref() {
         Some("oep-gen") => run(oep::write(&spec(), source)),
         Some("oep-check") => run(oep::check(&spec(), source)),
@@ -48,9 +58,11 @@ fn main() -> ExitCode {
         Some("loader-check") => run(oep::loader_check()),
         Some("db-gen") => run(db_write(&data)),
         Some("db-check") => run(db_check(&data)),
+        Some("wch-protocols-sync") => run(wch_protocols::sync(&protocols())),
+        Some("wch-protocols-check") => run(wch_protocols::check(&protocols())),
         _ => {
             eprintln!(
-                "usage: cargo xtask <task> [DATA_DIR]\n\ntasks:\n  db-gen     generate crates/target/generated/ from ch32-device-data\n  db-check   verify the committed generated files match a fresh generation (CI)\n  oep-gen    generate crates/oep/src/registry.rs from oep-spec's committed HEAD (DIR default: $OEP_SPEC or\n             ../../dev_oep/oep-spec; --worktree reads uncommitted edits)\n  oep-check  verify the committed registry.rs matches the registry (CI)\n  loader-gen   assemble crates/flash/loader/ch32_loader.S ($CH32_GCC_BIN or ArduinoCore-CH32RV's xpack gcc)\n  loader-check verify the committed loader binary matches its source\n\n(DATA_DIR default: $CH32_DEVICE_DATA or ../ch32-device-data)"
+                "usage: cargo xtask <task> [DATA_DIR]\n\ntasks:\n  db-gen     generate crates/target/generated/ from ch32-device-data\n  db-check   verify the committed generated files match a fresh generation (CI)\n  oep-gen    generate crates/oep/src/registry.rs from oep-spec's committed HEAD (DIR default: $OEP_SPEC or\n             ../../dev_oep/oep-spec; --worktree reads uncommitted edits)\n  oep-check  verify the committed registry.rs matches the registry (CI)\n  loader-gen   assemble crates/flash/loader/ch32_loader.S ($CH32_GCC_BIN or ArduinoCore-CH32RV's xpack gcc)\n  loader-check verify the committed loader binary matches its source\n  wch-protocols-sync   copy wch-protocols' tables (HEAD) into crates/wchlink/wch-protocols/ for the tests\n                       (DIR default: $WCH_PROTOCOLS_DIR or ../wch-protocols)\n  wch-protocols-check  verify that copy is still the checkout's HEAD\n\n(DATA_DIR default: $CH32_DEVICE_DATA or ../ch32-device-data)"
             );
             ExitCode::from(2)
         }

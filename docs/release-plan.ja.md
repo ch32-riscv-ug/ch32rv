@@ -80,20 +80,7 @@ binary と GitHub Release は揃っても、crates.io への公開が途中で�
 - 公開の loop は、同じ版が crates.io にある crate を飛ばし、失敗した crate は 0 / 60 / 120 / 240 / 480 秒あけて最大 5 回やり直す(index の遅れはこれで吸収する)。
 - 途中で止まったら、Actions の「Release」を **`republish_tag=v<版>`**(`publish_crates=true`)で起動する。版を上げず、tag も binary も作らず、その tag の source で残りの crate だけを出す(Trusted Publishing は `release.yml` に結び付いているので、同じ workflow の中でやる)。
 
-## 3. 出荷済みの機能(0.7.0 時点、全て実機検証済み)
-
-| 系統 | コマンド |
-|---|---|
-| probe | list(`--watch`)/ info / firmware info・check・update・exit-iap / mode get・set / power 3v3・5v・cycle |
-| target | info(SKU/family/配線/容量)/ option get・set・reset・write-raw / protect(option base は DB 由来) |
-| flash | flash(erase chip/sector/keep-store/none・restore-unwritten・preverify・verify・reset・confirm-run・sdi・monitor・repeat)/ verify / read(range・region)/ write / erase(all/range/region)/ reset / recover(power-off・nrst・unprotect・unbrick) |
-| debug | dbg halt/resume/step/regs/reg/dmi / gdb server(HW+RAM+flash BP) |
-| monitor / run | monitor uart / sdi / dmdata / rtt(uart・dmdata・rtt は双方向)/ run(HIL: flash→reset→出力→semihosting exit code) |
-| DB/診断 | db list・info / capabilities(live+static)/ doctor / version / complete |
-| arduino | discovery / monitor(Pluggable。dmdata・rtt を双方向に wrap。upload は flash) |
-| 横断 | `--json`(契約 2)/ `--capture`・`--replay` / per-probe lock(`--lock-timeout`)/ Windows は WCH 純正ドライバで動作(Zadig 不要) |
-
-## 5. 後続(未実装/重い/未検証)
+## 3. 後続(未実装/重い/未検証)
 
 - `isp`(factory ISP 4348:55e0)、`boot`(UIAPduino/DFU/UF2/HID、後日実機)、`dap`(DAP server)
 - gap 7 series(V205/V407/V467/X305/X315/M030/M103)device 対応 ← データ側未発売でブロック
@@ -103,7 +90,7 @@ binary と GitHub Release は揃っても、crates.io への公開が途中で�
 - RTT channel 選択(`--channel`)← **需要待ち**。warning `rtt-channels`(方向あたり 2 本以上)に当たる利用者が出たら
 - `monitor` の外部出口(TCP `--listen` / pty)← **需要待ち**。dmdata/rtt を標準シリアルツール(screen/minicom/PlatformIO/serial GUI)へ繋ぐ IF 候補。IDE は pluggable monitor、端末・CI は stdio で足りるため保留。要るなら TCP(全 OS、std のみ、OpenOCD `rtt server` 同型、channel→port)→ pty(Linux/macOS 限定、pty crate 依存、symlink 管理、読み手不在時は target から汲み続けて host で捨てる)の順。unix の代替: `socat pty,raw,echo=0,link=/tmp/ch32rv0 exec:'ch32rv monitor --source rtt'`
 
-## 6. リリース前チェック
+## 4. リリース前チェック
 
 ブートストラップ(新規 crate ごと一度きり):
 
@@ -121,7 +108,7 @@ binary と GitHub Release は揃っても、crates.io への公開が途中で�
 - [ ] README(repo)に crates.io バッジ / インストール手順 / verified OS 明記
 - [ ] Actions「Release」をUI起動 → crates.io publish（12 crate）と全OSバイナリ添付を確認
 
-## 7. リリース実行順
+## 5. リリース実行順
 
 1. **未コミット分をコミット & push**(ワークフローは `main` の release.yml を使う)。
 2. **新規 crate があれば bootstrap**: `cargo login <token>` → `scripts/first-publish.sh`（既存 crate は skip）。

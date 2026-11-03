@@ -113,7 +113,7 @@ nusb が WebUSB(wasm)backend を持つため、**ブラウザ版 flasher(wch-web
 
 ### 2.3 protocol の事実と実装判断
 
-protocol の事実(byte 列・応答・status・実測)は **wch-protocols** の `protocols/*.ja.md` が一次で、ch32rv はそれを file + anchor で引く(例 `protocols/pc-to-link.ja.md#cmd-rst-out`)。WCH-Link のコマンド表の正本は `protocols/data/wchlink-commands.csv` で、`ch32rv-wchlink` の unit test が `Request::frame()` の byte を CSV の `request_frame` と比べる(`WCH_PROTOCOLS_DIR`、既定は workspace の隣の `../wch-protocols`。無ければ skip)。ch32rv で分かった事実はそちらへ送る。ch32rv 側に置くのは次の実装判断だけ:
+protocol の事実(byte 列・応答・status・実測)は **wch-protocols** の `protocols/*.ja.md` が一次で、ch32rv はそれを file + anchor で引く(例 `protocols/pc-to-link.ja.md#cmd-rst-out`)。WCH-Link のコマンド表の正本は `protocols/data/wchlink-commands.csv` で、`ch32rv-wchlink` の unit test が `Request::frame()` の byte を CSV の `request_frame` と、`family_name` を `protocols/data/families.csv` と比べる。照合するのは ch32rv に置いた写し(`crates/wchlink/wch-protocols/`、元の commit は `WCH_PROTOCOLS_COMMIT`、`cargo xtask wch-protocols-sync` で更新)で、隣の checkout には頼らない。chip のデータと firmware の指紋は ch32-device-data が正本で、ch32rv は `cargo xtask db-gen` で生成する。ch32rv で分かった事実はそちらへ送る。ch32rv 側に置くのは次の実装判断だけ:
 
 - **転送**: `WchLink` の既定 timeout は 500 ms で、CLI は 3 s(`--timeout`)にする。応答の先頭が `0x81` なら probe 側エラー(byte 1 を reason として返す)。
 - **高速 read**(`WchLink::read_mem`): 16 KiB ごとに SetReadMemoryRegion + ReadMemory を出す。probe が領域を弾いたときだけ DMI の word 読みへ落とす。verify の不一致は DMI の読みで確かめ直してから報告する。DB のメモリ領域の外は warning `read-outside-memory-map`。

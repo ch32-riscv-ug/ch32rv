@@ -30,7 +30,7 @@ cargo deny check
 - **workspace lints**: `unsafe_code = forbid`、clippy `unwrap_used` / `expect_used` / `panic` / `todo` / `unimplemented` = deny(テストは局所 `#![allow(...)]` 可)。
   - **例外**: `ch32rv-usb-wch-win`(Windows の WCH 純正ドライバ FFI 島)だけ `unsafe_code` を許可する。その crate は `[lints]` を独自定義し、`unsafe_code=forbid` を継承せず clippy denies は手書きで維持する([windows-wch-driver.ja.md](windows-wch-driver.ja.md) §4、architecture §2 の別バックエンド枠)。
 - **CLI shape は [cli.ja.md](cli.ja.md) で固定**。exit code と JSON は `ch32rv-contract` から来る。
-- **protocol の事実は wch-protocols が一次**(`protocols/*.ja.md`、WCH-Link のコマンド表の正本は `protocols/data/wchlink-commands.csv`)。ch32rv で分かった事実はそちらへ送り、ch32rv には実装判断だけを書く([architecture.ja.md](architecture.ja.md) §2)。引用は file + anchor(例 wch-protocols `protocols/pc-to-link.ja.md#cmd-rst-out`)。ch32rv が送る command frame は `crates/wchlink` の unit test が CSV と照合する(`WCH_PROTOCOLS_DIR`、既定は workspace の隣の `../wch-protocols`。無ければ skip)。
+- **protocol の事実は wch-protocols が一次**(`protocols/*.ja.md`、WCH-Link のコマンド表の正本は `protocols/data/wchlink-commands.csv`)。ch32rv で分かった事実はそちらへ送り、ch32rv には実装判断だけを書く([architecture.ja.md](architecture.ja.md) §2)。引用は file + anchor(例 wch-protocols `protocols/pc-to-link.ja.md#cmd-rst-out`)。ch32rv が送る command frame と AttachChip の family の名前は、`crates/wchlink` の unit test が wch-protocols の表(`wchlink-commands.csv`、`families.csv`)の写しと照合する。写しは `crates/wchlink/wch-protocols/` にあり、元の commit を `WCH_PROTOCOLS_COMMIT` に書く。更新は `cargo xtask wch-protocols-sync [DIR]`(`DIR` の既定は `$WCH_PROTOCOLS_DIR`、無ければ `../wch-protocols`)、写しが checkout の HEAD のままかは `cargo xtask wch-protocols-check` で確かめる。試験は写しだけを読むので、隣の checkout は要らない。
 
 ## 4. リリース
 

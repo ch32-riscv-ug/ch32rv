@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- (EN) Tests: wch-protocols' tables are checked from ch32rv's own copy, `crates/wchlink/wch-protocols/` (`wchlink-commands.csv`, `families.csv`, and the commit they came from in `WCH_PROTOCOLS_COMMIT`; `cargo xtask wch-protocols-sync [DIR]` refreshes it, `cargo xtask wch-protocols-check` tells whether it is still the checkout's HEAD). The request frames are compared with the commands table as before, and `family_name` now with the AttachChip family table, both ways. Nothing is skipped without a sibling checkout any more (`WCH_PROTOCOLS_DIR` is only the sync tool's default).
+- (JA) 試験: wch-protocols の表は、ch32rv に置いた写し `crates/wchlink/wch-protocols/` と照合する(`wchlink-commands.csv`、`families.csv`、元の commit を書いた `WCH_PROTOCOLS_COMMIT`。`cargo xtask wch-protocols-sync [DIR]` で更新し、`cargo xtask wch-protocols-check` で checkout の HEAD のままかを確かめる)。request frame はコマンドの表と、`family_name` は AttachChip の family の表と、両方向で比べる。隣の checkout が無くても飛ばさない(`WCH_PROTOCOLS_DIR` は同期の道具の既定に使うだけ)。
+
+- (EN) Docs: oep-host §7.3 (a one-time audit of the WCH-Link broker's answers) and release-plan §3 (the features shipped as of 0.7.0) are gone; release-plan's sections are numbered 1-5.
+- (JA) 文書: oep-host §7.3(WCH-Link のブローカーの答えを点検した時点の記録)と release-plan §3(0.7.0 時点の出荷済みの機能)を消した。release-plan の節の番号は 1〜5 に詰めた。
+
 - (EN) Breaking (oep-spec host guide §5.3: no "any" form; `oep://<probe>` is the probe itself): `arduino discovery` lists an OEP probe that names no ports as `oep://<probe>` (it was `oep://<probe>/any`; a saved port selection is chosen again in the IDE), and named ports as `oep://<probe>/<port>` as before. A command given `oep://<probe>` alone (was exit 2) uses the probe's one named port, asks for `--pins` when it names none, and exits 23 with the list when it names two or more.
 - (JA) 破壊的変更(oep-spec の host ガイド §5.3: 「どれでも」を表す書き方は無く、`oep://<probe>` は probe 自身): `arduino discovery` は、名前つきの口の無い OEP の probe を `oep://<probe>` で出す(以前は `oep://<probe>/any`。IDE で保存した port の選択は選び直す)。名前つきの口は今までどおり `oep://<probe>/<port>`。`oep://<probe>` だけを渡したコマンドは(以前は exit 2)、名前つきの口が 1 つならそこを使い、無ければ `--pins` を求め、2 つ以上なら一覧を付けて exit 23。
 

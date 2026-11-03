@@ -1,36 +1,27 @@
-//! en: The request frames ch32rv sends, checked against wch-protocols'
-//! `protocols/data/wchlink-commands.csv` (the source of the command tables in
-//! `protocols/pc-to-link.ja.md#commands`). The CSV is read from `$WCH_PROTOCOLS_DIR`, or from the
-//! sibling checkout `../wch-protocols` next to the workspace root; when it is absent the test says
-//! so and passes, so a build without the sibling repository is not blocked.
+//! en: What ch32rv knows of the WCH-Link protocol, checked against wch-protocols' tables: the
+//! request frames it sends against `protocols/data/wchlink-commands.csv` (the source of the
+//! command tables in `protocols/pc-to-link.ja.md#commands`), and its AttachChip family names
+//! against `protocols/data/families.csv` (§9). The tables are read from ch32rv's own copy,
+//! `crates/wchlink/wch-protocols/` (the commit in `WCH_PROTOCOLS_COMMIT`, refreshed by
+//! `cargo xtask wch-protocols-sync`), so the tests never depend on a neighbour checkout.
 //!
-//! ja: ch32rv が送る request frame を wch-protocols の `protocols/data/wchlink-commands.csv`
-//! (`protocols/pc-to-link.ja.md#commands` の表の正本)と突き合わせる。CSV は `$WCH_PROTOCOLS_DIR`、
-//! 無ければ workspace の隣の `../wch-protocols` から読む。見つからなければその旨を出して通す
-//! (隣の repo が無い CI を止めない)。
+//! ja: ch32rv が送る request frame と family の名前を、wch-protocols の表の写し
+//! (`crates/wchlink/wch-protocols/`。元の commit は `WCH_PROTOCOLS_COMMIT`、`cargo xtask
+//! wch-protocols-sync` で更新)と突き合わせる。隣の checkout には頼らない。
 
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 use crate::probe::{Request, Speed};
 
 /// `(csv id or id#name, the request, the CSV's variable fields)`.
 type Case = (&'static str, Request, Vec<(&'static str, u32)>);
 
-const CSV_PATH: &str = "protocols/data/wchlink-commands.csv";
-
-fn csv_file() -> PathBuf {
-    let dir = std::env::var_os("WCH_PROTOCOLS_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            // en: CARGO_MANIFEST_DIR is crates/wchlink; the workspace root is two levels up.
-            // ja: CARGO_MANIFEST_DIR は crates/wchlink。workspace root はその 2 つ上。
-            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../wch-protocols")
-        });
-    dir.join(CSV_PATH)
-}
+/// The copy of wch-protocols' tables, and the commit it is.
+const COMMANDS: &str = include_str!("../wch-protocols/wchlink-commands.csv");
+const FAMILIES: &str = include_str!("../wch-protocols/families.csv");
+const COMMIT: &str = include_str!("../wch-protocols/WCH_PROTOCOLS_COMMIT");
 
 /// en: Minimal RFC 4180 reader: quoted fields may hold commas, `""` and newlines.
 /// ja: RFC 4180 の最小限の読み取り(引用符の中の `,`・`""`・改行に対応)。
@@ -188,15 +179,7 @@ fn cases() -> Vec<Case> {
 
 #[test]
 fn request_frames_match_wch_protocols_csv() {
-    let path = csv_file();
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        eprintln!(
-            "skip: {} not found (set WCH_PROTOCOLS_DIR to a wch-protocols checkout)",
-            path.display()
-        );
-        return;
-    };
-    let rows = parse_csv(&text);
+    let rows = parse_csv(COMMANDS);
     let header = &rows[0];
     let col = |name: &str| {
         header
@@ -241,10 +224,36 @@ fn request_frames_match_wch_protocols_csv() {
     }
     assert!(
         mismatches.is_empty(),
-        "frames that differ from {}:\n{}",
-        path.display(),
+        "frames that differ from wch-protocols {}:\n{}",
+        COMMIT.trim(),
         mismatches.join("\n")
     );
+}
+
+/// en: `family_name` and wch-protocols' family table name the same bytes the same way.
+/// ja: `family_name` と wch-protocols の family の表は、同じ byte に同じ名前を付ける。
+#[test]
+fn family_names_match_wch_protocols_csv() {
+    let rows = parse_csv(FAMILIES);
+    assert_eq!(rows[0], ["byte", "family", "core", "status", "note"]);
+    let mut listed = Vec::new();
+    for r in &rows[1..] {
+        let byte = u8::from_str_radix(r[0].trim_start_matches("0x"), 16).unwrap();
+        listed.push(byte);
+        assert_eq!(
+            crate::probe::family_name(byte),
+            Some(r[1].as_str()),
+            "family 0x{byte:02X} (wch-protocols {})",
+            COMMIT.trim()
+        );
+    }
+    for byte in 0..=u8::MAX {
+        assert!(
+            crate::probe::family_name(byte).is_none() || listed.contains(&byte),
+            "family 0x{byte:02X} is named in ch32rv but not in wch-protocols {}",
+            COMMIT.trim()
+        );
+    }
 }
 
 #[test]
