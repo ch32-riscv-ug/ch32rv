@@ -26,6 +26,9 @@ pub enum OepError {
         /// What the holder called itself in its open (core §6.4), if it did.
         owner: Option<String>,
     },
+    /// no_session (core §6.2): the session this host had is gone.
+    #[error("the probe's session ended: another host took its lock (force), or the lease lapsed")]
+    SessionEnded,
     #[error("the probe rejected the request: reason 0x{reason:02x}")]
     Rejected { reason: u8, payload: Vec<u8> },
     #[error("the request failed on the probe (outcome 0x{outcome:02x})")]
@@ -572,6 +575,9 @@ pub fn check(r: Reply) -> Result<Vec<u8>, OepError> {
                 remaining_ms,
                 owner,
             })
+        }
+        Resolution::Rejected(reason) if reason == reject_reasons::NO_SESSION => {
+            Err(OepError::SessionEnded)
         }
         Resolution::Rejected(reason) => Err(OepError::Rejected {
             reason,

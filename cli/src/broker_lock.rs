@@ -164,8 +164,9 @@ impl CoreLock {
         }
     }
 
-    /// An open (core §6.2, §6.4) by `client`, past step 2. `shared` is whether the ch32rv tools
-    /// share the lock now (then any open here is locked, host guide §7). A new session's open
+    /// An open (core §6.2, §6.4) by `client`, past step 2. `shared` is the lease left while the
+    /// ch32rv tools share the lock (host guide §7: they are one holder): an open is locked, and
+    /// a forced one takes it - the caller then ends the shared sessions. A new session's open
     /// starts the resend state with itself (`corr`, `request`).
     #[allow(clippy::too_many_arguments)]
     pub fn open(
@@ -187,7 +188,7 @@ impl CoreLock {
         }
         .clamp(1000, 60_000);
         let lease = Duration::from_millis(u64::from(lease_ms));
-        if let Some(ms) = shared {
+        if let Some(ms) = shared.filter(|_| !force) {
             return Opened::Refused(Access::Locked(ms, None));
         }
         let mut stolen = None;
@@ -269,10 +270,17 @@ mod tests {
             opened(&mut l, 6, 2, false, t),
             Opened::Refused(Access::NoSession)
         );
-        // While the ch32rv tools share it, an open is locked.
+        // While the ch32rv tools share it, an open is locked; a forced one takes it.
+        assert!(matches!(
+            l.open(7, 2, 0, false, None, Some(10_000), 1, vec![], t),
+            Opened::Refused(Access::Locked(10_000, None))
+        ));
         assert!(matches!(
             l.open(7, 2, 0, true, None, Some(10_000), 1, vec![], t),
-            Opened::Refused(Access::Locked(10_000, None))
+            Opened::Held {
+                lease_ms: 10_000,
+                stolen: None
+            }
         ));
     }
 

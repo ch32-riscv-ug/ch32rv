@@ -1991,6 +1991,21 @@ impl Broker {
                             if let Some(c) = stolen {
                                 self.release_quiet(c, "force");
                             }
+                            // A force took the lock from the ch32rv tools that shared it: their
+                            // sessions end, and their next requests are told so (host guide §7).
+                            if busy.is_some() {
+                                let shared: Vec<u64> =
+                                    self.sessions.drain().map(|(c, _)| c).collect();
+                                for c in shared {
+                                    self.release_quiet(c, "force");
+                                }
+                                broker_log(
+                                    &self.key,
+                                    &format!(
+                                        "client {id} forced the lock: the shared sessions end"
+                                    ),
+                                );
+                            }
                             self.awaiting.insert((id, req.corr), sid);
                             let mut a = lease_ms.to_le_bytes().to_vec();
                             a.extend_from_slice(&boot);

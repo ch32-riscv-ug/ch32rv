@@ -575,12 +575,21 @@ fn a_client_without_the_share_meets_one_lock() {
     };
     let sid = ch32rv_oep::session::random_session_id;
     let locked = |r| matches!(r, Err(ch32rv_oep::session::OepError::Locked { .. }));
-    // While a ch32rv tool shares the lock, a plain open is locked, even forced.
+    // While a ch32rv tool shares the lock, a plain open is locked; a forced one takes it, and
+    // the tool hears it on its next request.
     let mut tool = client(&ep);
     let mut plain = Probe::connect(open_tcp(&ep).unwrap()).unwrap();
     assert!(locked(plain.open(sid(), 3000, false, None)));
-    assert!(locked(plain.open(sid(), 3000, true, None)));
-    tool.end().unwrap();
+    plain.open(sid(), 3000, true, None).unwrap();
+    assert!(matches!(
+        tool.keepalive(),
+        Err(ch32rv_oep::session::OepError::Locked { .. })
+    ));
+    plain.end().unwrap();
+    assert!(matches!(
+        tool.keepalive(),
+        Err(ch32rv_oep::session::OepError::SessionEnded)
+    ));
     // Once it is free, the plain client holds the one lock, and a tool's open is locked.
     plain.open(sid(), 3000, false, Some("plain")).unwrap();
     let mut other = Probe::connect(open_tcp(&ep).unwrap()).unwrap();
