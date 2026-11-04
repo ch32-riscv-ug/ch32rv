@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.28.0 - 2026-11-04
+
 - (EN) Fix: CH32V003 over a WCH-Link writes again with `--erase sector` and the default `keep-store` (0.27.0 failed with `program failed at 0x08000000: transfer timed out`; `--erase chip` worked). 0.27.0's FLASH_CTLR check before a write put the Link's PROGBUF0/1 back on every family, which CH32V103 needs, but with them back V003's stub does not erase the pages it writes. They are put back on V103 only now. Measured: LinkE 2.22 + V003F4P6 (sector, keep-store, chip), LinkE 2.12 + V103R8T6 (sector, chip), V203 / V307 / L103 (sector). A replay of the V003 keep-store flash (`tests/fixtures/replay/flash-v003-keep-store.ndjson`) checks it offline; `flash-v203.ndjson` was captured again.
 - (JA) 修正: WCH-Link での CH32V003 の書き込みが、`--erase sector` と既定の `keep-store` でまた通る(0.27.0 は `program failed at 0x08000000: transfer timed out` で失敗し、`--erase chip` だけ通った)。0.27.0 の書く前の FLASH_CTLR の確かめは、Link の PROGBUF0/1 をどの family でも元に戻していた。V103 にはそれが要るが、戻すと V003 の stub は書く page を消さない。戻すのを V103 だけにした。実測: LinkE 2.22 + V003F4P6(sector、keep-store、chip)、LinkE 2.12 + V103R8T6(sector、chip)、V203 / V307 / L103(sector)。V003 の keep-store の書き込みの replay(`tests/fixtures/replay/flash-v003-keep-store.ndjson`)で実機なしに確かめる。`flash-v203.ndjson` は録り直した。
 
