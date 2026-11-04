@@ -130,7 +130,7 @@ flag > 環境変数 > 設定ファイル > 既定値。
 [probes]
 bench-01 = "1a86:8010:434A124C5596"
 bench-02 = "topology:3-1.4.2"
-bench-03 = "oep://50029191fe34/v003?via=tcp:192.168.1.40:4242"
+bench-03 = "oep://50029191fe34/v003?via=tcp:192.168.1.40:7450"
 
 [defaults]
 chip = "CH32V203C8T6"
