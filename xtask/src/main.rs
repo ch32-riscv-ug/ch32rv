@@ -319,8 +319,10 @@ fn generate(data: &Path) -> Result<Vec<(&'static str, String)>, String> {
         );
     }
 
-    // Temperature grades share silicon IDs. Preserve both catalog names: the resolver
-    // returns Family with candidates rather than guessing a grade. Reject other collisions.
+    // Several parts can share one silicon ID (temperature grades such as CH32L103K8U6/K8U7;
+    // CH32V103C8T6 and R8T6, measured in docs/data-requests/0011). Keep every name: the resolver
+    // returns Family with the candidates rather than guessing. The parts must agree on family,
+    // series, ID address and geometry, since the ID is all a live chip tells; reject the rest.
     let mut by_masked: BTreeMap<u32, &String> = BTreeMap::new();
     for (pn, s) in &skus {
         let Some(id) = s.device_id else { continue };
@@ -329,11 +331,7 @@ fn generate(data: &Path) -> Result<Vec<(&'static str, String)>, String> {
             && prev != pn
         {
             let previous = &skus[prev];
-            let grade_siblings = pn.get(..pn.len() - 1) == prev.get(..prev.len() - 1)
-                && pn.ends_with(['6', '7'])
-                && prev.ends_with(['6', '7']);
-            if grade_siblings
-                && previous.family == s.family
+            if previous.family == s.family
                 && previous.series == s.series
                 && previous.id_addr == s.id_addr
                 && previous.flash_bytes == s.flash_bytes
@@ -1053,6 +1051,7 @@ const DONT_CARE_MASK: u32 = 0xFFFF_FF0F; // bits [7:4] are silicon revision (don
 /// These are marked `verified` in the generated DB; everything else is datasheet/reference data.
 const MEASURED: &[&str] = &[
     "CH32V003F4P6",
+    "CH32V103C8T6",
     "CH32V103R8T6",
     "CH32V203C8T6",
     "CH32V307VCT6",

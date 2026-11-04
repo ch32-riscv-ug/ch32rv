@@ -857,6 +857,24 @@ impl Db {
         })
     }
 
+    /// en: [`Self::resolve_by_chip_id`], then narrowed by the part the user named: when the ID
+    /// leaves several candidates (parts that share one ID, data request 0011) and `--chip` names
+    /// one of them, that part is the answer. A family or series name narrows nothing.
+    /// ja: `resolve_by_chip_id` の結果を、利用者が名指した型番で絞る。ID が複数の候補を残し
+    /// (1 つの ID を共有する型番、依頼 0011)、`--chip` がその 1 つなら、それを答えにする。
+    /// family / series の名前では絞らない。
+    pub fn resolve_with_chip(&self, chip_id: u32, chip: Option<&str>) -> Resolution<'_> {
+        match (self.resolve_by_chip_id(chip_id), chip) {
+            (Resolution::Family(fam, cands), Some(name)) => {
+                match cands.iter().find(|s| s.sku.eq_ignore_ascii_case(name)) {
+                    Some(one) => Resolution::Sku(one),
+                    None => Resolution::Family(fam, cands),
+                }
+            }
+            (r, _) => r,
+        }
+    }
+
     /// en: Resolve a live `chip_id` (AttachChip response) to a SKU. Silicon-revision bits `[7:4]` are
     /// masked out. Fail-closed: an ambiguous multi-family match returns `Unknown` rather than a
     /// guess; a same-family ambiguity returns `Family` with the candidates.
@@ -991,7 +1009,6 @@ mod tests {
             (0x2031_0500, "CH32V203C8T6"),
             (0x0351_0601, "CH32X035C8T6"),
             (0x0030_0500, "CH32V003F4P6"),
-            (0x2500_410f, "CH32V103R8T6"),
             (0x2051_0510, "CH32V205RCT6"), // EVT 0x205105x0, measured rev nibble 0x1
             (0x3150_0000, "CH32X315MCU6"), // EVT 0x315000x0, measured
         ];
@@ -1020,6 +1037,35 @@ mod tests {
             }
             other => panic!("shared ID should return family candidates: {other:?}"),
         }
+    }
+
+    /// en: CH32V103C8T6 and R8T6 read the same ID (data request 0011): the ID names the family
+    /// and both parts, and `--chip` of either part passes the SKU check on that chip.
+    /// ja: V103 の C8T6 と R8T6 は同じ ID(依頼 0011)。ID は family と両型番を返し、どちらの
+    /// `--chip` もその chip で SKU 照合を通る。
+    #[test]
+    fn v103_c8t6_and_r8t6_share_one_id() {
+        let db = Db::builtin();
+        match db.resolve_by_chip_id(0x2500_410f) {
+            Resolution::Family(family, candidates) => {
+                assert_eq!(family, "CH32V103");
+                let names: Vec<_> = candidates.iter().map(|s| s.sku.as_str()).collect();
+                assert_eq!(names, ["CH32V103C8T6", "CH32V103R8T6"]);
+            }
+            other => panic!("the V103 ID should return both parts: {other:?}"),
+        }
+        assert_eq!(db.sku_conflict("CH32V103C8T6", 0x2500_410f), None);
+        assert_eq!(db.sku_conflict("CH32V103R8T6", 0x2500_410f), None);
+        for name in ["CH32V103C8T6", "ch32v103r8t6"] {
+            match db.resolve_with_chip(0x2500_410f, Some(name)) {
+                Resolution::Sku(s) => assert!(s.sku.eq_ignore_ascii_case(name)),
+                other => panic!("--chip {name} should pick its part: {other:?}"),
+            }
+        }
+        assert!(matches!(
+            db.resolve_with_chip(0x2500_410f, Some("CH32V103")),
+            Resolution::Family(..)
+        ));
     }
 
     /// The overlay is a gap-filler, not a second source of truth: a row that the generated table

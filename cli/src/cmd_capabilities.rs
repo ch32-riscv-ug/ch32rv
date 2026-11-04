@@ -243,7 +243,7 @@ fn live_capabilities(cli: &Cli, cmd: &str, entry: &crate::cmd_probe::Entry) -> E
         session.probe_info.fw_major, session.probe_info.fw_minor
     );
     let db = ch32rv_target::Db::builtin();
-    let (sku, series) = match db.resolve_by_chip_id(session.attach.chip_id) {
+    let (sku, series) = match db.resolve_with_chip(session.attach.chip_id, cli.chip.as_deref()) {
         ch32rv_target::Resolution::Sku(s) => (Some(s.sku.clone()), Some(s.series.clone())),
         _ => (None, None),
     };

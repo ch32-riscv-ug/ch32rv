@@ -49,5 +49,5 @@ ch32rv が必要とするデータは ch32rv 内部で作らず、**資料の持
 | [0007](0007-ch32v205-device-id.ja.md) | ch32-device-data | CH32V205 / CH32V203CCT6 のID収載、RCT6実測 | 納品受け入れ・消費済 (773f929、暫定登録削除済み) | 高 |
 | [0008](0008-ch32x315-device-id.ja.md) | ch32-device-data | CH32X315 / CH32X305 のID収載、MCU6実測 | 納品受け入れ・消費済 (773f929、暫定登録削除済み) | 高 |
 | [0009](0009-h417-core-selection.ja.md) | wch-protocols | H417 / LinkE hartsel 0・1 の選択と CSR 読み出し実測 | draft（引き渡し用資料作成済み） | 高 |
-| [0011](0011-ch32v103-device-id.ja.md) | ch32-device-data | CH32V103 の chip ID が C8T6 と R8T6 を分けない(実測 C8T6 = `0x2500410f`) | 依頼済 | **高**(IDE の C8T6 選択で書けない) |
+| [0011](0011-ch32v103-device-id.ja.md) | ch32-device-data | CH32V103 の chip ID が C8T6 と R8T6 を分けない(実測 C8T6 = `0x2500410f`) | 納品受け入れ・消費済(443f544) | 高 |
 

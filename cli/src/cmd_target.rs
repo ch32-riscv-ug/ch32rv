@@ -77,7 +77,8 @@ pub fn info(cli: &Cli) -> ExitCode {
     // Resolve the SKU from the live chip_id against the generated DB (device_ids join, rev [7:4]
     // masked). Fail-closed: an unknown or cross-family-ambiguous id shows no SKU rather than a guess.
     let db = session.db();
-    let resolution = db.resolve_by_chip_id(session.attach.chip_id);
+    // A `--chip` part among several that share the ID is the part (data request 0011).
+    let resolution = db.resolve_with_chip(session.attach.chip_id, cli.chip.as_deref());
     let mut sku_provisional = None;
     let (sku, sku_verified, sku_line): (Option<String>, Option<bool>, String) = match &resolution {
         ch32rv_target::Resolution::Sku(s) => {

@@ -241,8 +241,15 @@ fn flash_capacity(
     if let Some(bytes) = chip.and_then(reported_flash_bytes) {
         return (Some(bytes), "probe");
     }
+    // Parts that share an ID share their geometry too (db-gen refuses anything else).
     match db.resolve_by_chip_id(chip_id) {
         ch32rv_target::Resolution::Sku(s) if s.flash_bytes > 0 => (Some(s.flash_bytes), "db"),
+        ch32rv_target::Resolution::Family(_, c)
+            if c.first().is_some_and(|s| s.flash_bytes > 0)
+                && c.windows(2).all(|w| w[0].flash_bytes == w[1].flash_bytes) =>
+        {
+            (Some(c[0].flash_bytes), "db")
+        }
         _ => (None, "unavailable"),
     }
 }

@@ -1,7 +1,7 @@
 # 依頼 0011: CH32V103 の chip ID は C8T6 と R8T6 を分けない
 
 - **依頼先**: ch32-device-data
-- **状態**: 依頼済
+- **状態**: 納品受け入れ・消費済(ch32-device-data 443f544。C8T6 と R8T6 が `0x2500410F` を共有し、C8T6 の行は `conflict`)
 - **優先度**: 高(Arduino IDE で CH32V103C8T6 を選ぶと、本物の C8T6 に書けない)
 
 ## 背景
