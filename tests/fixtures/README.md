@@ -87,6 +87,7 @@ replay/<name>.ndjson` を録れば再生成できる)。
 | `read-v307.ndjson` | `read --range` | バルク read(SetReadMemoryRegion + ReadMemory) |
 | `flash-v203.ndjson` | `flash --erase chip --confirm-run pc`(LinkE + V203、`runtest-ch32v203.bin`) | FLASH_CTLR の確かめ → stub upload → 全消去 → program → readback verify → reset → confirm-run |
 | `flash-v103-keep-store.ndjson` | `flash`(既定の keep-store。LinkE 2.12 + V103R8T6、`runtest-ch32v103.bin`) | FLASH_CTLR の確かめ(program buffer を戻す)→ 書く 8 page を DMI で消す → attach し直す → stub upload → program → readback verify。V103 の stub は自分で消さず、Link が attach で入れた program buffer を使う |
+| `flash-v003-keep-store.ndjson` | `flash`(既定の keep-store。LinkE 2.22 + V003F4P6、書き込み済みの flash に `runtest-ch32v003.bin`) | FLASH_CTLR の確かめ(program buffer は戻さない)→ stub upload → program(stub が page を消す)→ readback verify。Link の program buffer を戻すと、V003 の stub は page を消さず timeout になる |
 | `hid-flash-v003.ndjson` | `boot hid flash` | B803 HID feature report → 64 byte page erase/program → readback verify → user app起動 |
 | `run-semihosting-v203.ndjson` | `run --exit-on semihosting` | reset → resume → dmdata 出力 decode → semihosting host(SYS_WRITE0 出力・SYS_EXIT の code 42 伝搬) |
 

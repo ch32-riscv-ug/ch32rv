@@ -930,13 +930,19 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// ja: 止まった操作が FLASH_CTLR に残した消去・書き込みのモードのビットを下ろし、見つけたビットを
     /// 返す。FTER を立てて下ろす前に止まると FTER が残り、WCH の stub は以後 1 ページ目しか書かない。
     ///
-    /// The program buffer is put back as it was: this runs right before the WCH-Link's own erase
-    /// and stub, and on CH32V103 those use the instructions the Link loaded into PROGBUF0/1 at
-    /// attach - overwritten, the Link refuses them (`81 55 01 02`, LinkE 2.12 / CH549 Link 2.12).
-    /// ja: program buffer は元に戻す。V103 では Link の消去と stub が、attach で Link が入れた
-    /// PROGBUF0/1 の命令を使い、上書きされると断る。
-    pub fn flash_clear_stale_mode(&mut self) -> Result<u32, DmiError> {
-        let kept = self.program_buffer()?;
+    /// `keep_program_buffer`: put PROGBUF0/1 back as they were. This runs right before the
+    /// WCH-Link's own erase and stub; on CH32V103 those use the instructions the Link loaded there
+    /// at attach (overwritten, the Link refuses them: `81 55 01 02`), while on CH32V003 the stub
+    /// does not erase the pages it writes with them in place (`transfer timed out`), so the caller
+    /// decides per family.
+    /// ja: `keep_program_buffer` なら PROGBUF0/1 を元に戻す。V103 では Link の消去と stub が attach で
+    /// 入れた命令を使い、V003 ではそれが残っていると stub が書く page を消さない。family で呼び手が決める。
+    pub fn flash_clear_stale_mode(&mut self, keep_program_buffer: bool) -> Result<u32, DmiError> {
+        let kept = if keep_program_buffer {
+            Some(self.program_buffer()?)
+        } else {
+            None
+        };
         let stale = self.read_mem32(FLASH_CTLR).and_then(|ctlr| {
             let stale = ctlr & FLASH_MODE_BITS;
             if stale != 0 {
@@ -944,7 +950,9 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
             }
             Ok(stale)
         });
-        self.put_program_buffer(kept)?;
+        if let Some(kept) = kept {
+            self.put_program_buffer(kept)?;
+        }
         stale
     }
 
@@ -1437,12 +1445,16 @@ mod tests {
         }
     }
 
-    /// en: The FLASH_CTLR check before a write leaves the program buffer as the WCH-Link loaded
-    /// it: on CH32V103 the Link's own erase and stub use those instructions, and overwritten
-    /// they refuse (`81 55 01 02`). Checked whether the read goes through or fails.
-    /// ja: 書く前の FLASH_CTLR の確かめは、Link が入れた program buffer を元に戻す。
+    /// en: Asked to, the FLASH_CTLR check before a write leaves the program buffer as the
+    /// WCH-Link loaded it (CH32V103's Link uses those instructions), whether the read goes through
+    /// or fails; not asked, it leaves its own there (CH32V003's stub needs them gone).
+    /// ja: 求められれば、書く前の FLASH_CTLR の確かめは Link が入れた program buffer を元に戻す。
     #[test]
-    fn the_flash_mode_check_puts_the_program_buffer_back() {
+    fn the_flash_mode_check_puts_the_program_buffer_back_when_asked() {
+        let mut m = MockDtm::default();
+        m.set(DMPROGBUF0, 0xffc5_f613);
+        let _ = DebugModule::new(&mut m).flash_clear_stale_mode(false);
+        assert_eq!(m.regs[&DMPROGBUF0], 0x0002_a303);
         for fails in [false, true] {
             let mut m = MockDtm::default();
             m.set(DMPROGBUF0, 0xffc5_f613);
@@ -1451,7 +1463,7 @@ mod tests {
                 // An abstract command that errs: cmderr stays set on ABSTRACTCS.
                 m.set(DMABSTRACTCS, 2 << ABSTRACTCS_CMDERR_SHIFT);
             }
-            let _ = DebugModule::new(&mut m).flash_clear_stale_mode();
+            let _ = DebugModule::new(&mut m).flash_clear_stale_mode(true);
             // The check used the program buffer, and put it back last.
             assert!(m.writes.contains(&(DMPROGBUF0, 0x0002_a303)));
             assert_eq!(m.regs[&DMPROGBUF0], 0xffc5_f613, "fails = {fails}");

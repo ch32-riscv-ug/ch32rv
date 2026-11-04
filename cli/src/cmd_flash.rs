@@ -123,6 +123,8 @@ fn planned_writes(programmer: &Programmer, image: &Image) -> Vec<Segment> {
 /// ja: 書く前に、止まった前の書き込みが FLASH_CTLR に残したビットを下ろす。見つけたら warning。
 /// 走っていた hart は走らせ直す。
 pub(crate) fn clear_stale_flash_mode(session: &mut Session, warnings: &mut Vec<Warning>) {
+    // The Link's own flash work follows: leave it the program buffer it needs.
+    let keep = ch32rv_flash::erase_plan::link_uses_program_buffer(session.attach.family_byte);
     let mut dm = session.dm();
     let Ok(was_halted) = dm.is_halted() else {
         return;
@@ -130,7 +132,7 @@ pub(crate) fn clear_stale_flash_mode(session: &mut Session, warnings: &mut Vec<W
     if !was_halted && dm.halt().is_err() {
         return;
     }
-    if let Ok(stale) = dm.flash_clear_stale_mode()
+    if let Ok(stale) = dm.flash_clear_stale_mode(keep)
         && stale != 0
     {
         warnings.push(Warning {

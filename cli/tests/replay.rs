@@ -154,6 +154,37 @@ fn v103_keep_store_erases_first_and_keeps_the_links_program_buffer() {
 }
 
 #[test]
+fn v003_keep_store_leaves_the_program_buffer_to_the_stub() {
+    // CH32V003's stub erases the pages it writes only when the FLASH_CTLR check left its own
+    // instructions in PROGBUF0/1: with the Link's put back it times out (0.27.0). The default
+    // keep-store runs the stub with no DMI pre-erase (LinkE 2.22 + V003F4P6 capture, flash
+    // already programmed), and the whole exchange must replay as recorded.
+    let out = Command::new(bin())
+        .args([
+            "flash",
+            &input("runtest-ch32v003.bin"),
+            "--progress",
+            "ndjson",
+            "--replay",
+            &fixture("flash-v003-keep-store.ndjson"),
+        ])
+        .output()
+        .expect("run ch32rv");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "exit failure; stderr: {stderr}");
+    assert!(stdout.contains("readback matches"), "stdout: {stdout}");
+    assert!(
+        !stderr.contains(r#""name":"erase""#),
+        "a DMI pre-erase on a stub that erases; stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("diverged"),
+        "unexpected divergence: {stderr}"
+    );
+}
+
+#[test]
 fn flash_erase_none_is_refused_on_the_stub_path() {
     // V20x's stub erases every page it writes: `--erase none` is refused (exit 24) once the
     // attach shows that family, before anything is erased or written.

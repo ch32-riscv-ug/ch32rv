@@ -70,6 +70,17 @@ pub fn stub_erases_pages(family_byte: u8) -> bool {
     page_self_erase(family_byte).is_some()
 }
 
+/// en: Whether the WCH-Link's own erase and stub on this family use the instructions the Link
+/// loaded into PROGBUF0/1 at attach, so a DMI memory access before them must put those back
+/// (measured: CH32V103, LinkE 2.12 and CH549 Link 2.12 answer `81 55 01 02` otherwise). On
+/// CH32V003 putting them back makes the stub skip its page erase (LinkE 2.22, `--erase sector`
+/// over a programmed chip: `transfer timed out`); V20x, V30x and L103 work either way.
+/// ja: この family で Link の消去と stub が、attach で入れた PROGBUF0/1 の命令を使うか(実測: V103)。
+/// V003 では戻すと stub が page を消さない。V20x・V30x・L103 はどちらでも動く。
+pub fn link_uses_program_buffer(family_byte: u8) -> bool {
+    family_byte == 0x01
+}
+
 /// en: Fixed cost of way (b) beyond a plain chip-erase flash, in ms: the backup read, the second
 /// loader upload and run, the extra verify, the extra attach cycles. From the V307 measurement of
 /// backup + chip + restore of a 4 KB STORE (~5.9 s against chip 4.0 s), less the per-byte part.
@@ -199,6 +210,15 @@ mod tests {
         // V103's stub does not erase (measured); X035's was never measured: ch32rv erases first.
         for byte in [0x01, 0x0C, 0x0D, 0x49] {
             assert!(!stub_erases_pages(byte), "0x{byte:02x}");
+        }
+    }
+
+    #[test]
+    fn only_v103_keeps_the_links_program_buffer() {
+        // V103's Link needs its PROGBUF0/1 back; V003's stub skips its erase with them back.
+        assert!(link_uses_program_buffer(0x01));
+        for byte in [0x09, 0x05, 0x06, 0x0E] {
+            assert!(!link_uses_program_buffer(byte), "0x{byte:02x}");
         }
     }
 
