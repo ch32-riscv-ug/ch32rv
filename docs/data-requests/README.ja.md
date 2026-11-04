@@ -1,8 +1,7 @@
 # 外部リポジトリへのデータ・調査依頼
 
-- 運用開始: 2026-09-01
 - 方針の根拠: [architecture.ja.md §3](../architecture.ja.md)(データ調達の原則)
-- **読む場所(2026-10-01〜)**: ch32-device-data は公開面 `index/` の下だけを読む(ch32-device-data febe61f の契約: 列は名前で、固定は commit と `index/manifest.csv` の sha256。列が消えたり改名されたりすれば、名前で引く所で db-gen が止まる)。`cargo xtask db-gen` は `index/` の device_ids / parts / debug_interfaces / flash_geometry / flash_program_method / option_bytes / option_byte_fields / conflicts / esig / link_firmware / link_firmware_issues を読み、生成物の `# source:` 行に表ごとの sha256 を記録する。下の各依頼書に出てくる `evidence/` の path は、納品された時点の置き場所の記録
+- **読む場所**: ch32-device-data は公開面 `index/` の下だけを読む(ch32-device-data febe61f の契約: 列は名前で、固定は commit と `index/manifest.csv` の sha256。列が消えたり改名されたりすれば、名前で引く所で db-gen が止まる)。`cargo xtask db-gen` は `index/` の device_ids / parts / debug_interfaces / flash_geometry / flash_program_method / option_bytes / option_byte_fields / conflicts / esig / link_firmware / link_firmware_issues を読み、生成物の `# source:` 行に表ごとの sha256 を記録する。下の各依頼書に出てくる `evidence/` の path は、納品された時点の置き場所の記録
 
 ## 位置づけ
 
@@ -51,4 +50,3 @@ ch32rv が必要とするデータは ch32rv 内部で作らず、**資料の持
 | [0008](0008-ch32x315-device-id.ja.md) | ch32-device-data | CH32X315 / CH32X305 のID収載、MCU6実測 | 納品受け入れ・消費済 (773f929、暫定登録削除済み) | 高 |
 | [0009](0009-h417-core-selection.ja.md) | wch-protocols | H417 / LinkE hartsel 0・1 の選択と CSR 読み出し実測 | draft（引き渡し用資料作成済み） | 高 |
 
-将来の依頼候補(まだ依頼書にしない): WCH-Link firmware の hash→版対応の継続拡充(既存 `evidence/link_firmware.csv` の新版追従)、UF2 family ID / DFU VID:PID 等の bootloader 識別子表(P2 の `boot` 実装時)。

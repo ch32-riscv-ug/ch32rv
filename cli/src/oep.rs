@@ -236,7 +236,7 @@ pub(crate) fn open_net(addr: &str, unit: &str) -> Result<Probe, String> {
 }
 
 /// en: Whether the probe just opened (confirmed) is the unit an address named: fn 0 describe's
-/// unit_id, case aside (oep-core §3.3). Every route checks this before the probe is used (host
+/// unit_id, case aside (oep-transports §3). Every route checks this before the probe is used (host
 /// guide §5.3: a route never makes another probe acceptable). ja: 開いた probe が名指した unit か
 /// (fn 0 describe の unit_id、大小は区別しない)。どの経路でも使う前に確かめる。
 pub(crate) fn verify_unit(p: &mut Probe, unit: &str) -> Result<(), String> {
@@ -257,7 +257,7 @@ pub(crate) fn verify_unit(p: &mut Probe, unit: &str) -> Result<(), String> {
     }
 }
 
-/// en: The one place that decides what an OEP probe is (oep-core §3.3): a USB device with the
+/// en: The one place that decides what an OEP probe is (oep-transports §3): a USB device with the
 /// project's VID:PID (1209:4F45, registry `usb`), read without opening it. Any other device is
 /// used only when the user names it (`oep://<unit_id>`, compared with its serial) or picks its
 /// port. iProduct is display text and never decides it.
@@ -312,7 +312,7 @@ pub(crate) fn probe_id(dev: &ch32rv_usb::UsbDeviceInfo) -> String {
         .unwrap_or_else(|| dev.topology())
 }
 
-/// The serial port that carries OEP: every CDC interface of an OEP probe takes OEP (core §3.3),
+/// The serial port that carries OEP: every CDC interface of an OEP probe takes OEP (oep-transports §3),
 /// so the first.
 pub(crate) fn oep_port(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<String> {
     dev.serial_ports().into_iter().next()
@@ -320,7 +320,7 @@ pub(crate) fn oep_port(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<String> {
 
 /// en: The probe opened on some port is also on USB as an OEP device that discovery lists (its
 /// ports are the IDE's ports): its describe unit_id is the serial number of one of
-/// [`oep_devices`] (oep-core §3.3 / §7.5, compared case aside). `discoverable` cannot tell this
+/// [`oep_devices`] (oep-transports §3 / oep-core §7.5, compared case aside). `discoverable` cannot tell this
 /// until the project's VID:PID exists (oep-spec 2108125).
 /// ja: どこかの口で開いた probe が、discovery の一覧に出る USB の OEP の device でもあるか(describe の
 /// unit_id が USB の serial と同じか、大小は区別しない)。
@@ -342,7 +342,7 @@ fn listed_on_usb(p: &mut Probe) -> bool {
     unit_among(&unit, &serials)
 }
 
-/// Whether `unit_id` is one of `serials`, case aside (oep-core §3.3).
+/// Whether `unit_id` is one of `serials`, case aside (oep-transports §3).
 fn unit_among(unit_id: &str, serials: &[String]) -> bool {
     !unit_id.is_empty() && serials.iter().any(|s| s.eq_ignore_ascii_case(unit_id))
 }
@@ -356,7 +356,7 @@ fn port_of_oep_device(path: &str) -> bool {
         .any(|(i, d)| sel.matches(d, i))
 }
 
-/// An OEP vendor bulk pair as a link's byte stream (`length(u16)` framing, oep-core §3.1).
+/// An OEP vendor bulk pair as a link's byte stream (`length(u16)` framing, oep-transports §1).
 struct VendorBulk(ch32rv_usb::BulkPipe);
 
 impl ch32rv_oep::link::ByteStream for VendorBulk {
@@ -372,7 +372,7 @@ impl ch32rv_oep::link::ByteStream for VendorBulk {
 }
 
 /// An OEP HID interface as a link's byte stream: the length-framed stream packed into its vendor
-/// reports (oep-core §3.1).
+/// reports (oep-transports §1).
 struct OepHid {
     dev: hidapi::HidDevice,
     shape: ch32rv_oep::hid::ReportShape,
@@ -440,7 +440,7 @@ impl ch32rv_oep::link::ByteStream for OepHid {
 }
 
 /// en: Connect (confirm) to the probe behind the serial port `path` by the transports in the order
-/// oep-core §3.3 gives: the vendor bulk pair of the OEP device that owns the port, its vendor HID,
+/// oep-transports §3 gives: the vendor bulk pair of the OEP device that owns the port, its vendor HID,
 /// then the port itself. `via` keeps to the route an address picked (`bulk`, `hid`, `cdc` /
 /// `tty:` the port itself; none or `usb` any). `timeout` shortens each reply wait (discovery).
 /// Returns the probe and the transport's name.
@@ -504,7 +504,7 @@ fn connect_ordered(
         }
         if bulk
             && let Some(p) = d
-                // class 0xFF, subclass 'O', protocol 'E' (oep-core §3.3)
+                // class 0xFF, subclass 'O', protocol 'E' (oep-transports §3)
                 .open_vendor_bulk(
                     ch32rv_oep::registry::usb::VENDOR_BULK_SUBCLASS,
                     ch32rv_oep::registry::usb::VENDOR_BULK_PROTOCOL,
@@ -678,7 +678,9 @@ fn oep_fail(cli: &Cli, cmd: &str, e: OepError) -> ExitCode {
     let (kind, hint) = match &e {
         OepError::Locked { .. } => (
             ErrorKind::DeviceBusy,
-            Some("another host holds the probe; wait for it, or retry with --force-lock"),
+            Some(
+                "another host holds the probe; wait for it to finish, or give a longer --lock-timeout",
+            ),
         ),
         OepError::Link(ch32rv_oep::link::LinkError::NotOep(_)) => (
             ErrorKind::DeviceNotFound,

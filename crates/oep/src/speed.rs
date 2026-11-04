@@ -1,4 +1,4 @@
-//! en: `port_speed` (oep-core §3.5): raise the serial link to a UART-bridge probe above its boot
+//! en: `port_speed` (oep-if-link §3): raise the serial link to a UART-bridge probe above its boot
 //! speed for a long session (the broker), the way the reference client's `raise_speed` does: try
 //! (answered at the speed now) -> switch the host side, 20 ms, confirm -> verify both ways with
 //! max_frame-sized frames (oep.link source / sink), pipelined first, then one at a time when that
@@ -107,13 +107,13 @@ impl SpeedReport {
 }
 
 /// en: The broker's candidates when the user names none: nothing above 500000 (oep-if-link §3
-/// host obligation 7, oep-spec 32260e5): a CH340 at 921600 passed the verify and still broke
+/// leaves the candidates to the host): a CH340 at 921600 passed the verify and still broke
 /// 491-byte answers on every upload, while 500000 was clean on it and on a CH552. A faster rate
 /// only by the user's explicit choice (`CH32RV_PORT_SPEED`), then with the longer verify.
 /// ja: 利用者が選ばないときの候補: 500000 より上は試さない。速い速さは利用者が明示したときだけ。
 pub const DEFAULT_RATES: &[u32] = &[500_000];
 
-/// The fastest rate tried without the user's explicit choice (oep-if-link §3 host obligation 7).
+/// The fastest rate tried without the user's explicit choice.
 pub const DEFAULT_MAX_RATE: u32 = 500_000;
 
 const STEP_TRY: u8 = 0x00;
@@ -181,8 +181,8 @@ fn port_speed_body(rate: u32, step: u8, verify_ms: u16) -> Vec<u8> {
 /// at neither the tried rate nor the boot speed.
 /// ja: `rates` を順に試し、最初に通ったものに決める。link はその速さ(か起動時の速さ)のまま。
 /// `budget` bounds the whole: no new rate is tried after it (each takes about 1.3 s).
-/// `by_share`: judge each flow by its share of broken frames (at most 5 %, at least 16 frames;
-/// host guide §7.4) instead of failing at the first one - right for a probe that goes back on its
+/// `by_share`: judge each flow by its share of broken frames (at most 5 %, at least 16 frames)
+/// instead of failing at the first one - right for a probe that goes back on its
 /// own only at 3 broken frames in a row (oep-probe-arduino 0.0.27 and up).
 pub fn raise_speed(
     p: &mut Probe,
@@ -384,7 +384,7 @@ fn verify(
     let mut sink: Vec<u8> = (n_out as u16).to_le_bytes().to_vec();
     sink.extend((0..n_out).map(|k| (k * 7) as u8));
     // In, out, then both at once: a line may carry each way alone and break when both run
-    // (oep-core §3.5; a CH340 at 921600 under a fixture UART's stream, 2026-10-01).
+    // (oep-if-link §3; a CH340 at 921600 under a fixture UART's stream, 2026-10-01).
     for phase in [Phase::In, Phase::Out, Phase::Both] {
         if phase != Phase::In && p.keepalive().is_err() {
             return false;
@@ -488,7 +488,7 @@ fn verify(
     true
 }
 
-/// en: Back to the boot speed together with the probe (oep-core §3.5: the host, which counts the
+/// en: Back to the boot speed together with the probe (oep-if-link §3: the host, which counts the
 /// broken frames, lowers first): port_speed revert at the speed now (answered there, lost is
 /// fine: the probe goes back on its own too), then the host side, confirmed. True when the link
 /// answers at the boot speed. ja: probe と揃って起動時の速さに戻る(戻すを今の速さで送り、host も

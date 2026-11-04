@@ -1,7 +1,6 @@
 # ch32rv CLI 仕様: コマンド体系
 
-- 作成日: 2026-09-01
-- 状態: 凍結候補(v1 の凍結で確定。契約は docs/freeze-decisions.ja.md が決める)。**全機能を最終的に実装する前提の完成形**を先に固定する。優先度(P0/P1/P2)は実装順であって体系の一部ではない
+- 状態: 凍結候補(v1 の凍結で確定。契約は docs/freeze-decisions.ja.md が決める)。ch32rv のコマンド体系、共通の契約(global、出力、exit)、コマンドごとの動きを書く。ここに書いたコマンドと flag は、すべて今の CLI にある
 - 根拠: [requirements.ja.md](requirements.ja.md) の吸収マップ
 
 ## 1. 設計原則
@@ -17,60 +16,61 @@
 
 ```text
 ch32rv
-├─ flash <file>                書き込み(erase/verify/reset/confirm-run policy)     P0  [probe-rs download, wlink flash, LinkUtility]
-├─ verify <file>               照合のみ                                            P0  [probe-rs verify]
-├─ read                        メモリ/flash 読み出し・dump・blank check            P1  [wlink dump, minichlink -r, LinkUtility]
-├─ write                       生メモリ/領域書き込み(上級)                        P1  [minichlink -w, wlink write-mem]
-├─ erase                       消去(chip/region/range)                            P0  [各 tool]
-├─ reset                       リセット(run/halt/dm) + --confirm-run              P0  [wlink reset]
-├─ run <elf>                   書き込み+実行+出力監視+target の結果(exit 0 / 60)       P1  [probe-rs run/attach]
-├─ recover                     診断+復旧(auto/power-off/nrst/unprotect/unbrick) P0  [wlink erase --method, minichlink -u, LinkUtility]
+├─ flash <file>                書き込み(erase/verify/reset/confirm-run policy)     [probe-rs download, wlink flash, LinkUtility]
+├─ verify <file>               照合のみ                                            [probe-rs verify]
+├─ read                        メモリ/flash 読み出し・dump・blank check            [wlink dump, minichlink -r, LinkUtility]
+├─ write                       生メモリ/領域書き込み(上級)                        [minichlink -w, wlink write-mem]
+├─ erase                       消去(chip/region/range)                            [各 tool]
+├─ reset                       リセット(run/halt/dm) + --confirm-run              [wlink reset]
+├─ run <elf>                   書き込み+実行+出力監視+target の結果(exit 0 / 60)  [probe-rs run/attach]
+├─ recover                     診断+復旧(auto/power-off/nrst/unprotect/unbrick) [wlink erase --method, minichlink -u, LinkUtility]
 │
 ├─ probe                       probe 本体の管理
-│  ├─ list                     一覧(型番/FW版/mode/serial/使用中/driver)          P0  [wlink list, probe-rs list]
-│  ├─ info                     詳細 + 既知不良 FW 判定 + IAP 滞留検出              P0  [wlink status]
-│  ├─ power <3v3|5v> <on|off>  電源出力                                            P0  [wlink set-power, minichlink -3/-5/-t/-f]
-│  ├─ power cycle              電源再投入                                          P0
-│  ├─ mode <get|set>           RISC-V / DAP 切替                                   P1  [wlink mode-switch]
-│  └─ firmware <info|check|update>  版の解釈・不良版検出・IAP 書込                 P0/P0/P1  [wlink-iap, LinkUtility]
+│  ├─ list                     一覧(型番/FW版/mode/serial/使用中/driver)          [wlink list, probe-rs list]
+│  ├─ info                     詳細 + 既知不良 FW 判定 + IAP 滞留検出              [wlink status]
+│  ├─ power <3v3|5v> <on|off>  電源出力                                            [wlink set-power, minichlink -3/-5/-t/-f]
+│  ├─ power cycle              電源再投入
+│  ├─ mode <get|set>           RISC-V / DAP 切替                                   [wlink mode-switch]
+│  └─ firmware <info|check|update|exit-iap>  版の解釈・不良版検出・IAP 書込・IAP から出る  [wlink-iap, LinkUtility]
 │
 ├─ target                      target の識別と不揮発設定
-│  ├─ info                     chip ID/SKU 候補/UID/容量/保護/option 要約          P0  [minichlink -i, LinkUtility]
-│  ├─ option <get|set|reset|write-raw>  構造化 option bytes                        P1  [minichlink -d/-D/-S/-N/-n, LinkUtility]
-│  └─ protect <on|off>         読み出し保護                                        P0  [wlink protect/unprotect, minichlink -p/-P]
+│  ├─ list                     target に届く場所の一覧(既定では attach しない)
+│  ├─ info                     chip ID/SKU 候補/UID/容量/保護/option 要約          [minichlink -i, LinkUtility]
+│  ├─ option <get|set|reset|write-raw>  構造化 option bytes                        [minichlink -d/-D/-S/-N/-n, LinkUtility]
+│  └─ protect <on|off>         読み出し保護                                        [wlink protect/unprotect, minichlink -p/-P]
 │
 ├─ dbg                         実行制御ワンショット
-│  ├─ halt [--reset] / resume / step [N]                                           P1  [wlink halt/resume, minichlink -a/-A/-e]
-│  ├─ regs / reg <read|write> <name>                                               P1  [wlink regs]
-│  └─ dmi <read|write>         DM レジスタ直接操作(expert)                        P2  [minichlink -s/-m, wlink write-reg]
+│  ├─ halt [--reset] / resume / step [N]                                           [wlink halt/resume, minichlink -a/-A/-e]
+│  ├─ regs / reg <read|write> <name>                                               [wlink regs]
+│  └─ dmi <read|write>         DM レジスタ直接操作(expert)                        [minichlink -s/-m, wlink write-reg]
 │
-├─ monitor [--source uart|sdi|dmdata|rtt]   実行時 I/O(uart/dmdata/rtt は双方向)      P0(uart)/P1(sdi,dmdata,rtt)
-│  ├─ list                     monitor 候補 port の列挙                            P1
-│  └─ sdi <on|off>             SDI print の有効/無効                               P1  [wlink sdi-print]
+├─ monitor [--source uart|sdi|dmdata|dmseq|rtt|fixture-uart]   実行時 I/O(sdi 以外は双方向)
+│  ├─ list                     monitor 候補 port の列挙
+│  └─ sdi <on|off>             SDI print の有効/無効                               [wlink sdi-print]
 │
-├─ gdb                         GDB server(attach 時 flash 非改変)                P1  [WCH OpenOCD, minichlink -G, probe-rs gdb]
+├─ gdb                         GDB server(attach 時 flash 非改変)                [WCH OpenOCD, minichlink -G, probe-rs gdb]
 │
-├─ isp                         factory ISP 経路                                    P2  [wchisp, WCHISPTool_CMD]
+├─ isp                         factory ISP 経路                                    [wchisp, WCHISPTool_CMD]
 │  ├─ list / info / enter / reset
 │  ├─ flash <file> / verify <file> / erase
 │  └─ config <get|set>
 │
-├─ boot                        custom bootloader 経路                              P2  [dfu-util, rv003usb]
+├─ boot                        custom bootloader 経路                              [dfu-util, rv003usb]
 │  ├─ dfu <flash|info>
 │  └─ hid flash <file>
 │
 ├─ db                          target DB の閲覧
-│  ├─ list                     SKU 一覧(verified 区別)                           P1  [probe-rs chip list]
-│  └─ info <sku>               geometry/領域/option layout/provenance              P1  [probe-rs chip info]
+│  ├─ list                     SKU 一覧(verified 区別)                           [probe-rs chip list]
+│  └─ info <sku>               geometry/領域/option layout/provenance              [probe-rs chip info]
 │
-├─ capabilities                probe×FW×target×operation の可否 matrix             P0
-├─ doctor                      環境診断と次の一手(--emit-udev)                   P0
-├─ version                     tool/contract/DB/stub の版(--json)                 P0
-├─ complete <shell>            shell 補完                                          P2
+├─ capabilities                probe×FW×target×operation の可否 matrix
+├─ doctor                      環境診断と次の一手(--emit-udev)
+├─ version                     tool/contract/DB/stub の版(--json)
+├─ complete <shell>            shell 補完
 │
 ├─ arduino                     Arduino IDE 統合(machine 向け)
-│  ├─ discovery                Pluggable Discovery(stdio JSON)                   P1
-│  └─ monitor                  Pluggable Monitor(stdio JSON)                     P1
+│  ├─ discovery                Pluggable Discovery(stdio JSON)
+│  └─ monitor                  Pluggable Monitor(stdio JSON)
 │
 └─ broker                      probe ごとのブローカー(§4.12)
    └─ endpoint                 ブローカーの待ち受けの場所(--json)
@@ -83,7 +83,7 @@ ch32rv
 | flag | 値 | 既定 | 説明 |
 |---|---|---|---|
 | `--probe <selector>` | §3.4 | (一意なら自動) | probe の選択。複数一致は exit 14 |
-| `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed)。`Session::attach` が chip_id と `--chip` 名を DB family へ解決し、要求名が DB にあり検出 family と不一致なら `target-ambiguous`(23)。**名前は SKU / family / series の完全一致(大小無視)だけ**(docs/freeze-decisions.ja.md §1。型番の前方一致はしない)。family / series は family で、SKU はその SKU の device id で照合する(DB に device id の無い SKU は family で)。**空の `--chip` は usage(exit 2)**。**`--chip auto`(大小無視)は「`--chip` 無し」と同じ**(常に `--chip {build.ch32rv_chip}` を渡す recipe が、DB に無い板で自動判定を値として頼めるように。`CH32RV_CHIP` と config の `[defaults] chip` でも同じ)。自動判定での失敗: debug の pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。monitor の `chip` 設定も同じ照合(`auto` が既定)。**DB に無い名前は `target-not-in-db`(exit 20)で停止する**(検証できない名前を受理すると、`--chip` を付けたのに刺さっている別チップへ黙って書くことになるため)。未発売の gap series はここに落ちる。省略すれば従来どおり自動検出 |
+| `--chip <SKU\|family>` | 例 `CH32V203C8T6` | 自動検出 | 検出と矛盾したら exit 23(fail-closed)。`Session::attach` が chip_id と `--chip` 名を DB family へ解決し、要求名が DB にあり検出 family と不一致なら `target-ambiguous`(23)。**名前は SKU / family / series の完全一致(大小無視)だけ**(docs/freeze-decisions.ja.md §1。型番の前方一致はしない)。family / series は family で、SKU はその SKU の device id で照合する(DB に device id の無い SKU は family で)。**空の `--chip` は usage(exit 2)**。**`--chip auto`(大小無視)は「`--chip` 無し」と同じ**(常に `--chip {build.ch32rv_chip}` を渡す recipe が、DB に無い板で自動判定を値として頼めるように。`CH32RV_CHIP` と config の `[defaults] chip` でも同じ)。自動判定での失敗: debug の pin に何も居ない → `target-no-response`(20)、読んだ chip id が DB に無い → `target-not-in-db`(20)、見つけた family を書く手段が無い → `capability-unsupported`(24)。monitor の `chip` 設定も同じ照合(`auto` が既定)。**DB に無い名前は `target-not-in-db`(exit 20)で停止する**(検証できない名前を受理すると、`--chip` を付けたのに刺さっている別チップへ黙って書くことになるため)。未発売の gap series はここに落ちる。省略すれば自動検出 |
 | `--db <FILE>` | `CH32RV_DB` | 内蔵 DB のみ | 内蔵 device DB に CSV overlay を重ねる(列は `generated/skus.csv` と同じ)。**同名 SKU / 同一マスク device_id は overlay が勝つ**(in-tree `provisional/skus.csv` は穴埋め専用で逆)。overlay 行は `provisional: true` + `sku-provisional` warning。読めない/有効行なしは usage(2)。出荷テーブルに無い部品を試す逃げ道 |
 | `--core <n>` | 0.. | 0 | H417 の core 選択。直接 WCH-Link 接続で `--core 1` は `dbg`（`halt --reset` 除く）と `read` に対応。その他の操作・OEP・index 2 以上は exit 24。実測根拠: [H417 コア選択](data-requests/0009-h417-core-selection.ja.md) |
 | `--speed <low\|medium\|high\|kHz>` | | high | kHz 指定は近い段階に丸めて warn(段階の公称値 6000 / 4000 / 400 kHz で判定)。**公称値は線上の速さではない**: WCH-LinkE fw 2.22 + CH32L103 の実測(wch-protocols E163)では high = flash の Program 経路だけ速く(L103 約 2.5 MHz、V203 約 10 MHz)それ以外約 0.89 MHz、medium = 約 0.89 MHz、low = 約 0.47 MHz(V203 も medium / low は同じ)。high と medium の差は flash 書込みの速さだけ(pattern-4k の全体で L103 0.48 s / 0.63 s / 0.87 s、V203 high 0.40 s)。debug の線を使わない `isp`(`--entry probe` を除く)と `boot` には当てはまらない |
@@ -98,7 +98,6 @@ ch32rv
 | `--lock-timeout <s>` | | 10 | probe が使用中のときの待ち時間(§3.7)。WCH-Link は device lock、OEP の probe は他の host の session の lock(lease)を待つ。取れなければ exit 13 |
 | `--timeout <s>` | | 3秒 | transport timeout(probe との転送 1 回の上限)の上書き。WCH-Link、OEP の probe(コマンドとブローカーの間、そのコマンドが起動したブローカーと probe の間)、`isp`。`boot` には当てはまらない |
 | `--duration <s>` | | Ctrl-C まで | streaming コマンド(`monitor` / `run`、`flash --monitor`)の実行時間。ほかのコマンドには当てはまらない |
-| `--db <path>` | | 内蔵 | target DB の overlay(新 SKU の試行用) |
 | `--capture <path>` | | - | USB transaction（bulkおよびHID feature report）をNDJSONで記録(replay fixture用) |
 | `--replay <path>` | | - | 記録した capture を HW 無しで再生(`enumerate`〜転送を fixture から供給)。`--capture` と排他。CI/バグ再現用 |
 | `--dry-run` | | off | device を開かず計画のみ表示。対応は `probe firmware update`(image の版・USB id・frame 数を出して終了)と `boot hid flash` だけ。**ほかのコマンドは device に触れる前に exit 2(usage)で断る** |
@@ -119,7 +118,7 @@ flag > 環境変数 > 設定ファイル > 既定値。
 
 | 変数 | 働き |
 |---|---|
-| `CH32RV_PORT_SPEED` | `off`、または速さの並び(`921600,500000`): ブローカーが UART bridge の probe との serial を上げるとき(oep-core §3.5 port_speed)に試す速さ。未設定は 500000 だけ(oep-if-link §3 の host の義務 7: 利用者が明示しなければ 500000 より上を試さない)。500000 より上を並べたときは、各方向 1 秒の確かめを通ったときだけ使う。切り分け用で、契約の外 |
+| `CH32RV_PORT_SPEED` | `off`、または速さの並び(`921600,500000`): ブローカーが UART bridge の probe との serial を上げるとき(oep-if-link §3 port_speed)に試す速さ。未設定は 500000 だけ(利用者が明示しなければ 500000 より上を試さない。候補は host が決める、oep-if-link §3)。500000 より上を並べたときは、各方向 1 秒の確かめを通ったときだけ使う。切り分け用で、契約の外 |
 | `CH32RV_USB_TRACE` | file の path: OEP の vendor bulk の書き込みと IN の完了を 1 行ずつ記録する |
 | `CH32RV_OEP_TRACE` | file の path: OEP の要求と答えを 1 行ずつ記録する(時刻、pid、向き、corr、fn / op / session_id / payload の長さ、payload の先頭)。ブローカーの上流の分は、ブローカーを起動したプロセスの環境に置く(切り分け用、契約の外) |
 
@@ -167,11 +166,11 @@ chip = "CH32V203C8T6"
 - ブローカーの key(この PC での probe の持ち主)は unit_id で決まり、`via` によらない(docs/oep-host.ja.md §7.2)。すでに動いているブローカーが別の経路で probe を持っているとき、`via` を付けた住所はその経路を守れないので exit 13 で断る(`via` 無しならそのブローカーを使う)。
 - `probe list` / `target list` / discovery は、`via` の無い形を 1 つの場所につき 1 行出す。
 - unit_id を知らないときは、serial port の path をそのまま `--probe` に渡してよい(道具の便利機能)。WCH-Link のものでない serial port は OEP の probe として開く(unit_id は確かめない)。
-- 無くなった形は、代わりの書き方を添えて exit 2 で断る: `port:<住所>` → 住所をそのまま、`tcp:<host>:<port>` / `tcp://<host>:<port>` → `oep://<unit_id>?via=tcp:<host>:<port>`、`tcp:<unit_id>` → `oep://<unit_id>?via=net`、`oep-net://<probe>[/<port>]` → `oep://<probe>[/<port>]?via=net`、`usb:<bus>-<ports>` → `topology:<bus>-<ports>`、`hid://<bus>-<ports>` → `ch32rv-hid://<bus>-<ports>`(`--device` でも)。環境変数 `CH32RV_OEP_TRANSPORT` も無い(`via=bulk|hid|cdc` で選ぶ)。
+- 次の形は受けず、代わりの書き方を添えて exit 2 で断る: `port:<住所>` → 住所をそのまま、`tcp:<host>:<port>` / `tcp://<host>:<port>` → `oep://<unit_id>?via=tcp:<host>:<port>`、`tcp:<unit_id>` → `oep://<unit_id>?via=net`、`oep-net://<probe>[/<port>]` → `oep://<probe>[/<port>]?via=net`、`usb:<bus>-<ports>` → `topology:<bus>-<ports>`、`hid://<bus>-<ports>` → `ch32rv-hid://<bus>-<ports>`(`--device` でも)。環境変数 `CH32RV_OEP_TRANSPORT` も無い(`via=bulk|hid|cdc` で選ぶ)。
 
 - **`index:` は無い**: 一覧の順番で選ぶ書き方は、機器の増減で別の probe を指しうるので持たない。`probe list` / `target list` の ADDRESS をそのまま渡す。
-- **OEP の復旧**: `--connect-under-reset` は、リセットを押さえたままの attach を最大 4 回やり直し、族が分からない rvswd では SWCLK の休ませ方を probe の自動と low の両方で試す(CH32L103 は high で休ませると DM がリセットされる。離した直後に止められるかは firmware との競争で、1 回では通らないことがあった)。`recover --method nrst [--image <FILE>]`(OEP)は、NRST を押さえて止めたあと、リセットベクタのページを先に DMI で消し(壊れた firmware がもう起動しない)、残りを RAM loader で書く: `--image` を渡せばそのイメージ、無ければ消去済みの値(DB の erased_word)で code flash 全体。読み出し保護があれば、従来どおり外して全消去する。実機: L103(RP2350、`--pins swdio=0,swclk=1,nrst=2`)で `--connect-under-reset target info` 3 回とも通り、`recover --method nrst --image` も 1 回で書けた。
-- **OEP の口と `--pins`(oep-spec cc82b5e)**: 口は `channel.{}.label` の `S.N` だけが名付ける(`S` は英字で始まる英字・数字・`-` の 1〜16 文字、`N` は英字・数字・`-`・`_`)。ラベルは書いたとおりの大小文字で表示し、比べるときは ASCII の大小文字を区別しない。名前の無い口と `any` は無くなった(住所はいつも全部を書く)。名前つきの口が無い probe は `target list` と discovery に出ない。住所でないシリアルポートの path を渡したときは、名前つきの口がちょうど 1 つならそれを使う(道具の便利機能)。ラベルの無い probe には `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]`(1 線は `swio=<pin>`、UART は `rx` / `tx`)でピンを直接指定する。ピンは probe の channel の名前(fn 0 の describe の `channel_name`、`GPIO0` など)か番号。`--pins` を付けるとラベルは読まず、`oep://<probe>`(probe 自身)とも組み合わせられる。
+- **OEP の復旧**: `--connect-under-reset` は、リセットを押さえたままの attach を最大 4 回やり直し、族が分からない rvswd では SWCLK の休ませ方を probe の自動と low の両方で試す(CH32L103 は high で休ませると DM がリセットされる。離した直後に止められるかは firmware との競争で、1 回では通らないことがあった)。`recover --method nrst [--image <FILE>]`(OEP)は、NRST を押さえて止めたあと、リセットベクタのページを先に DMI で消し(壊れた firmware がもう起動しない)、残りを RAM loader で書く: `--image` を渡せばそのイメージ、無ければ消去済みの値(DB の erased_word)で code flash 全体。読み出し保護があれば、外して全消去する。実機: L103(RP2350、`--pins swdio=0,swclk=1,nrst=2`)で `--connect-under-reset target info` 3 回とも通り、`recover --method nrst --image` も 1 回で書けた。
+- **OEP の口と `--pins`**: 口は `channel.{}.label` の `S.N` だけが名付ける(`S` は英字で始まる英字・数字・`-` の 1〜16 文字、`N` は英字・数字・`-`・`_`)。ラベルは書いたとおりの大小文字で表示し、比べるときは ASCII の大小文字を区別しない。名前の無い口と `any` は無い(住所はいつも全部を書く)。名前つきの口が無い probe は `target list` と discovery に出ない。住所でないシリアルポートの path を渡したときは、名前つきの口がちょうど 1 つならそれを使う(道具の便利機能)。ラベルの無い probe には `--pins swdio=<pin>,swclk=<pin>[,nrst=<pin>]`(1 線は `swio=<pin>`、UART は `rx` / `tx`)でピンを直接指定する。ピンは probe の channel の名前(fn 0 の describe の `channel_name`、`GPIO0` など)か番号。`--pins` を付けるとラベルは読まず、`oep://<probe>`(probe 自身)とも組み合わせられる。
 - **OEP の一覧**: `probe list` / `target list` / discovery は、USB に無い OEP の probe も `oep://<unit id>[/<port>]` で出し、TOPOLOGY は `network`、MODEL は describe の model(`OEP probe (esp32)`)。両方から届く probe は `oep://` と USB の位置の 1 行で、JSON の `tcp` にネットワークの経路も出す。
 - **IDE の住所はそのまま**: IDE の port の住所は、形で見分けられる(`://` を含む URL、`/` で始まる path、`COM<n>`、`\\.\…`)ので、前置き無しでそのまま `--probe`(debug probe)/ `--device`(書き込み先)に渡す(recipe は `--probe "{upload.port.address}"` か `--device "{upload.port.address}"`)。`wchlink://<serial>` は `serial:`、`wchlink://usb-<bus>-<ports>` は `topology:` と同じ。serial port の path は `probe list` の `ports` から逆引きする(Linux は sysfs で USB の位置まで辿るので serial 番号の無い Link でも決まる。Windows / macOS は OS が port の裏の USB を VID/PID/serial でしか教えないので、serial 番号の無い同 VID:PID が 2 台あると曖昧 = exit 14)。比較は unix で symlink を解き(`/dev/serial/by-id/…` 可)、Windows で `\\.\` を外して大文字小文字を畳む。`wchlink://` は serial で device を直接指す。どの probe の port でもなければ exit 10。
 
@@ -184,7 +183,7 @@ chip = "CH32V203C8T6"
 - **stdout**: 結果。`--json` 時は単一の JSON object のみ。human 出力時も結果のみ。
 - **stderr**: log・進捗・警告。`--progress ndjson` 時は 1 行 1 event の NDJSON。
 - **streaming command(`monitor` / `run` / `flash --monitor`)の target 出力**: human 時は stdout へ生 byte。`--json` 時は stdout を envelope に譲り、stderr へ `{"ev":"output","source":"<uart|sdi|dmdata|rtt|semihosting>","data":"<text>"}` を 1 chunk 1 行で流す(`data` は UTF-8 文字境界で分割、不正列は U+FFFD)。envelope は stream の終わり(`--duration` 満了 / semihosting exit)に 1 つ。
-- JSON には必ず `contract`(契約版)と `ok` を含む。schema は `docs/contract/` に置き、CLI の版とは独立に versioning する。`result` を出すコマンドは、すべて `docs/contract/commands.schema.json` に形がある(`cmd` で引く)。
+- JSON には必ず `contract`(契約版。`ch32rv-contract` の `CONTRACT_VERSION`。下の例の値はその一例)と `ok` を含む。schema は `docs/contract/` に置き、CLI の版とは独立に versioning する。`result` を出すコマンドは、すべて `docs/contract/commands.schema.json` に形がある(`cmd` で引く)。
 - `flash` の結果は経路(`isp flash`、`boot dfu flash`、`boot hid flash` を含む)によらず `result.flash` の 1 つの形。検証の結果はどのコマンドでも `verified`(bool。検証しなかったら null)。
 
 ```json
@@ -226,15 +225,15 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 | 24 | capability 不足(probe×FW×target×operation で不可)。各コマンドが、その操作に要るものが無いと分かった所で出す |
 | 30 | verify 不一致 / blank check 失敗 |
 | 40 | 転送/DMI 操作の失敗、または真の transport timeout。JSON `kind` で `transfer-failed` と `transport-timeout` を区別 |
-| 41 | probe が固まっており USB 再接続が必要**(予約: 現状は未発行)** |
+| 41 | probe が固まっており USB 再接続が必要**(予約。発行しない)** |
 | 50 | 書けたが target が走っていない(`--confirm-run` 失敗) |
 | 60 | `run`: target が 0 以外で終わった(`target-exit`。target のコードは `result.exit`) |
 | 61 | `run`: `--duration` の間に終わりも止まりもしなかった(`run-timeout`) |
 | 62 | `run`: semihosting でない理由で止まった(`target-halted`。breakpoint、例外。`result.dpc`) |
 | 70 | 内部エラー(bug。report 情報を出す) |
-| 71 | 欠番。0.24 までは予約だけのコマンドが出した(`unimplemented`)。別の意味では使わない |
+| 71 | 欠番。別の意味では使わない |
 
-10-14 は「経路の入口 device」、20-24 は「target」、30-41 は「転送・検証」、50 は「実行確認」、60-69 は「`run` での target 自身の結果」、70-79 は「tool 自身」。将来の追加は各帯の空き番号のみ使い、欠番(71)は使い回さない。
+10-14 は「経路の入口 device」、20-24 は「target」、30-41 は「転送・検証」、50 は「実行確認」、60-69 は「`run` での target 自身の結果」、70-79 は「tool 自身」。追加は各帯の空き番号のみ使い、欠番(71)は使い回さない。
 
 ### 3.7 排他制御と再試行
 
@@ -244,7 +243,7 @@ NDJSON event(stderr)の例。**再試行は必ず event として可視化する
 - **別の版の ch32rv のブローカー**: probe のブローカーが別の版の ch32rv のもの(IDE 同梱と PATH のものなど)なら、使用中と同じに扱う。client はそのブローカーと話さず、`--lock-timeout` まで待つ(ブローカーは最後の client が抜けると終わるので、そのあと自分の版のブローカーを起動して続ける)。待っても終わらなければ exit 13(`device-busy`)で、msg に相手の版と PID を出す(`the probe's broker is ch32rv 0.24.0 (pid 1234), not ch32rv 0.25.0, …`)。版を持たない古いブローカーも別の版として扱う。
 - **open 再試行**: 挿抜直後は CDC interface が vendor interface より先に見える(実測)。open 失敗は 1 秒間隔で計 3 回まで再試行してから exit する。
 - **転送再試行**: chunk 単位の timeout→再試行(既定 3 回)。再試行が起きた事実は NDJSON event(`retry`)に必ず出す。
-- **固まり**: 再試行が尽きて probe が応答しないときは、今は exit 40(`transfer-failed`)で終わる。`USBDEVFS_RESET` は使わない。固まりを見分けて再接続手順(usbipd / 物理挿抜)を示す exit 41(`probe-wedged`)は予約で、まだ出さない。
+- **固まり**: 再試行が尽きて probe が応答しないときは、exit 40(`transfer-failed`)で終わる。`USBDEVFS_RESET` は使わない。固まりを見分けて再接続手順(usbipd / 物理挿抜)を示す exit 41(`probe-wedged`)は予約で、出さない。
 - **capture(`--capture <file>`)**: `ch32rv-usb::capture`。`main` が `--capture` 時に一度 sink を設定し、`UsbInterface` の全 bulk 転送(cmd EP 0x01/0x81・data EP 0x02/0x82)とbootloaderのHID feature reportをNDJSON 1行ずつ追記する。bulk行は`{seq,t_us,ep,chan(cmd|data),dir(out|in),len,ok,data(hex)}`、HID行は`ep:"feature",chan:"hid"`。先頭に `{"_meta":{"format":1,"unit":"us"}}` と `{"_device":{…}}` を持つ。**bulkの`ep`は生のendpoint番地**(`"0x01"`等)で、こちらが正: 複数の列挙をまたぐsession(`probe firmware update`のIAP modeなど)では`chan`だけで役割が決まらない。行ごとflush(途中クラッシュでもそこまで残る)。flag無しはno-op。HIDを含め`--replay`可能。実機検証: `target info --capture`のGetProbeInfo/SetSpeed/AttachChip、および`boot hid flash --capture`のB803 erase/program/verify/runを記録・再生済み。
 
 ## 4. コマンド詳細
@@ -265,11 +264,11 @@ ch32rv flash <FILE>
   --sdi on|off                       書込後に SDI print を設定(capability 判定込み)
   --monitor uart|sdi|dmdata|rtt      書込後そのまま monitor へ移行
   --restore-unwritten                image が覆う page の中の image の外の byte を残す(--erase sector|keep-store)
-  --repeat                           target の再接続を検知して連続書込(量産)P2
+  --repeat                           target の再接続を検知して連続書込(量産)
 ```
 
 - **経路ごとに守れないフラグは断る**(exit 24 `capability-unsupported`。何も書く前): ch32rv の RAM loader で書く経路(OEP の probe と、WCH の stub が無い WCH-Link の family: CH32H417 / V407 / X315 など)は、image が触れる page を消し、その page の image の外の byte を残し、全 page を読み戻す。そのため `--erase sector|keep-store`、`--verify readback`、`--restore-unwritten` は受け、`--erase chip` は loader の前に DM で全消去する(下の表)。`--erase none`(loader は書く page を必ず消す)、`--verify none`、`--sdi`、`--monitor` は断る。WCH-Link の loader の経路は `--preverify` も断る(OEP は守る)。OEP の probe はさらに `--reset halt`、`--repeat`(次の target を待つのは WCH-Link 越しだけ)、`--connect-under-reset`、`--attach-wait`(flash は自分の止める attach を使う)を、つなぐ前に断る。WCH-Link の loader の経路の `--confirm-run` は確かめないが断らない(Arduino の recipe が常に渡す。止めて確かめると、debug の pin を USB に取る H417 の sketch で失敗する)。結果の `running` は null。
-- 書き込み先は code flash だけ。system 領域(bootloader)への書き込みと target の上の CRC での照合は、実装したときに `--region` と `--verify crc` として足す。
+- 書き込み先は code flash だけ。system 領域(bootloader)への書き込みと、target の上の CRC での照合は持たない。
 - ELF/ihex はセグメントの物理アドレスを使い、`--at` は無視して warn(bin のみ有効)。セグメントが DB 上の書込可能領域に収まらなければ実行前に exit 2。
 - `--confirm-run=status` は DM の running 状態のみ確認。`=pc` はさらに瞬間 halt→dpc 読取→resume で PC を採取し、flash 領域内かを判定する。SRAM 先頭(`0x2000_0018` 型)で止まっていれば「BOOT ピン疑い」を hint に出す。
 - 対応 SKU でも **DB 上 verified でない場合は warn を出して続行**する(「実装済み」と「実機確認済み」の区別)。
@@ -309,9 +308,9 @@ ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指�
 
 領域名は `code` / `system`(bootloader)/ `option` / `eeprom` / `ram`。minichlink の `flash` / `bootloader` 名は別名として受ける。**`option` は family 依存**(CH32M030 = `0x1FFF_F300`)なので、`read --region option` と `write --at option` は**attach 後に DB の base で解決し直す**(`erase` は option 領域を拒否するので影響なし)。
 
-**`flash` の書込経路は 2 本ある**: 既定は probe へ WCH の flash loader stub を載せて image を流す経路。**stub が存在しない family(V00x = family byte `0x4E`)では、検証済み FLASH-controller profile があれば §4.2.1 の直接 controller 経路で page 単位に書く**。page の埋まっていない部分は `0xff` を書く(消去直後の page の値なので stub 経路と同じ結果)。`--restore-unwritten` は従来どおり program 前に page を合成するので、どちらの経路でも意味が変わらない。**stub 経路より遅い**(word ごとに write + BUFLOAD + busy 待ちの DMI 往復が要る): 2.5 KiB の sketch で通し ~17 秒、62 KiB 全面で ~6 分。
+**WCH-Link での `flash` の書込経路**: 既定は probe へ WCH の flash loader stub を載せて image を流す経路。**stub が無い family では、DB に loader の plan があれば ch32rv の RAM loader で書き**([oep-host.ja.md](oep-host.ja.md) §5。DMI で 1 語ずつ書くより数倍速い。H417 の 64 KiB で 8 秒と 61 秒)、**無ければ検証済み FLASH-controller profile で、下の直接 FLASH controller 経路で page 単位に書く**。page の埋まっていない部分は `0xff` を書く(消去直後の page の値なので stub 経路と同じ結果)。`--restore-unwritten` は program 前に page を合成するので、どの経路でも意味が変わらない。直接 FLASH controller 経路は **stub 経路より遅い**(word ごとに write + BUFLOAD + busy 待ちの DMI 往復が要る)。
 
-**`erase --range` / `--region`**: `--all`(chip 全消去)に加え、**page 単位の部分消去**を持つ。WCH-Link stub の write 経路は部分書き込みを受け付けない(probe が reason 0x55 で拒否)ため、**FLASH controller(0x4002_2000)を DMI 経由で直接叩く**経路を使う(`DebugModule::flash_page_erase` / `flash_program_page`。KEYR/MODEKEYR unlock → FTER/FTPG + STRT/PGSTART → STATR busy 待ち)。消去は page 粒度なので **start と length を page 境界に揃えることを必須**とし(fail-closed。ズレは Usage error + page サイズを提示)、隣接 page を巻き込まない。`--region code[+off[+len]]` は probe 報告の flash サイズから解決。program は family 別に 3 方式(PgStart=V20x/V30x、Buffered=V003/V00x/X035/L103、V103=標準 16bit halfword+commit。§4.2.1)。**対応 family: V20x/V30x・V003/CH641(64B)・V00x(256B)・X035/CH643・L103・V103(128B)**。実機検証: V307 で page1 だけ消去し page0(reset vector)/page2 無傷、V003 で 64B page、V103 で 128B page 消去(隣接無傷)、**L103 で 256B page を surgical に消去(先頭 firmware・中間 blank 域とも無傷、program/verify 往復 OK)**。**注意: 消去済みセルの read 値は family 差あり(RM の系統 B=V20x/V30x=`0xe339e339`、系統 A=X035/V003=`0xff`)**ので、erase 完了判定は read でなく controller の STATR(BUSY クリア + WPRERR 無し)で行う。この直接 FLASH controller 経路は flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台にもなっている。
+**`erase --range` / `--region`**: `--all`(chip 全消去)に加え、**page 単位の部分消去**を持つ。WCH-Link stub の write 経路は部分書き込みを受け付けない(probe が reason 0x55 で拒否)ため、**FLASH controller(0x4002_2000)を DMI 経由で直接叩く**経路を使う(`DebugModule::flash_page_erase` / `flash_program_page`。KEYR/MODEKEYR unlock → FTER/FTPG + STRT/PGSTART → STATR busy 待ち)。消去は page 粒度なので **start と length を page 境界に揃えることを必須**とし(fail-closed。ズレは Usage error + page サイズを提示)、隣接 page を巻き込まない。`--region code[+off[+len]]` は probe 報告の flash サイズから解決。program は family 別に 3 方式(PgStart=V20x/V30x、Buffered=V003/V00x/X035/L103、V103=標準 16bit halfword+commit)。**対応 family: V20x/V30x・V003/CH641(64B)・V00x(256B)・X035/CH643・L103・V103(128B)**。実機検証: V307 で page1 だけ消去し page0(reset vector)/page2 無傷、V003 で 64B page、V103 で 128B page 消去(隣接無傷)、**L103 で 256B page を surgical に消去(先頭 firmware・中間 blank 域とも無傷、program/verify 往復 OK)**。**注意: 消去済みセルの read 値は family 差あり(RM の系統 B=V20x/V30x=`0xe339e339`、系統 A=X035/V003=`0xff`)**ので、erase 完了判定は read でなく controller の STATR(BUSY クリア + WPRERR 無し)で行う。この直接 FLASH controller 経路は flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台にもなっている。
 
 #### reset / run / recover
 
@@ -329,11 +328,11 @@ ch32rv recover --method power-off|nrst|unprotect|unbrick
 
 - **`recover` の診断(method 省略)**: 指定 `--speed` で attach し、応答が無ければ low で再試行 → halt → option bytes を 2 回読む → resume。書込は一切しない。状態は `healthy`(保護 off、DB が定義する USER bit が復位値)/ `read-protected`(RDPR≠`0xA5`)/ `option-nonstandard`(DB 定義の USER bit が復位値と違う。違う field 名を表示)/ `option-unreadable`(2 回の読みが不一致、または RDPR・USER の補数が合わない)/ `unreachable`(どの speed でも応答なし)。推奨はそれぞれ なし / `recover --method unprotect` / `target option reset` / `recover --method unprotect`(一律 image へ fallback)/ `recover --method power-off --chip <family>`(LinkE/LinkW のみ。それ以外の probe では手動の電源サイクル)。low でしか応答しなかった場合はその旨を note に出し、推奨コマンドに `--speed low` を付ける。JSON は `result.state` / `result.recommendation.{action,command}` / `notes` / `caveats`。exit は診断ができれば状態によらず 0。
 - **`--method auto`**: 診断の推奨をそのまま実行する(`unprotect` / `option reset` は診断で応答した speed で attach、power-off は `--chip` 必須で確認プロンプト付き)。`healthy` と手動しかない場合は診断結果を出して何もしない。`option reset` は Data0/1 と WRP も工場値(`0xff`)に戻す点に注意(DB が知らない多 bit の USER field は保持)。
-- **power-off の注意(診断・auto が表示)**: 名前に反し、WCH-LinkE fw 2.22 はこの消去の間も 3V3 を切らず、RST を pulse していた(target なしの実測、wch-protocols E167)。RST を target の NRST に配線すると確実になる可能性がある。NRST 未配線でも電源は落ちない(RAM の目印が残る。wch-protocols E168)。正常な target なら約 20 ms で halt を取って全消去する。attach で止まった target では halt が取れず `0x00` になるが、その間に電源が落ちないまま reset がかかり(出どころは未確定)、アプリが起動し直してから、次の回で halt を取って消える(推定、E168)。ch32rv が `0x00` のときに繰り返すのはこのため。reset を起こしているのは 0f のコマンドそのもので、待っても AttachChip を繰り返しても target は戻らない(E169)。1 回目の `0x00` の直後は flash を消さないまま AttachChip が通り、hart は halt している(E169)— 消さずに直す経路の候補だが未実装。attach で止まった CH32X035 ではこれで戻ったが、通るかは target の状態による。結果は `read --blank-check` か通常の attach で確かめる。
+- **power-off の注意(診断・auto が表示)**: 名前に反し、WCH-LinkE fw 2.22 はこの消去の間も 3V3 を切らず、RST を pulse していた(target なしの実測、wch-protocols E167)。RST を target の NRST に配線すると確実になる可能性がある。NRST 未配線でも電源は落ちない(RAM の目印が残る。wch-protocols E168)。正常な target なら約 20 ms で halt を取って全消去する。attach で止まった target では halt が取れず `0x00` になるが、その間に電源が落ちないまま reset がかかり(出どころは未確定)、アプリが起動し直してから、次の回で halt を取って消える(推定、E168)。ch32rv が `0x00` のときに繰り返すのはこのため。reset を起こしているのは 0f のコマンドそのもので、待っても AttachChip を繰り返しても target は戻らない(E169)。1 回目の `0x00` の直後は flash を消さないまま AttachChip が通り、hart は halt している(E169)。ch32rv はこれを使って消さずに直す経路を持たない。attach で止まった CH32X035 ではこれで戻ったが、通るかは target の状態による。結果は `read --blank-check` か通常の attach で確かめる。
 - **特殊消去(`power-off` / `nrst`)の確認**: probe の応答 status を見て、`0x00`(消えていない)なら最大 3 回まで繰り返す。`0x0f`(CH32X035 で消去を確認した値)が返れば完了、返らなければ warning `special-erase-unconfirmed` を出して `read --blank-check` を案内する(他 family の応答は未記録なので exit は 0)。JSON は `attempts` / `answers` / `confirmed`。
 - **止まった書き込みの後始末**: WCH-Link で `flash` / `erase` / `write` を始める前に FLASH_CTLR を読み、前の書き込みが残した消去・書き込みのモードのビット(PG、PER、MER、OBPG、OBER、STRT、FTPG、FTER、BUFLOAD、BUFRST、PGSTART)を下ろす。見つけたら warning `flash-controller-reset`(`flash` と `erase --all`)。理由: DMI でページを消している途中でプロセスが止まると FTER が立ったまま残り、WCH の stub はチップが reset されるまで、どの image も 1 ページ目しか書けない(CH32V003、chip erase でも同じ)。走っていた hart は確かめた後に走らせ直す。
 - **CH32X035 の attach 停止**: HPRE の bit 3(CFGR0 bit 7: HCLK /2 や /4)を立てて走る X035 は WCH-LinkE の attach で止まり、以後 no target になる(option bytes は変わらない。wch-protocols `protocols/pc-to-link.ja.md#x035-hpre-stop`)。診断は `--chip` 無しか X035 のとき、`unreachable` の note でこれを挙げる。復旧は power-off。
-- 診断が見ない brick: `RST_MODE` 等の**多 bit USER field は DB に無い**ため `option-nonstandard` として検出できない(CH32X035 の `RST_MODE=00` で PA21 を外部 reset にして保持され attach 不能になった例は `unreachable` 扱い)。reset 直後/電源投入直後に attach して消去せずに option を直す経路(第 2 段)は、**host が自分で窓を作ることは WCH-LinkE(fw 2.22)ではできない**(wch-protocols E166 / E167): 応答しない target に halt を取るまで食い下がるのは特殊消去の中だけで(その中で flash は消える)、`probe power 3v3 off` は target の電源を切らず、AttachChip が成功していないと DmiOp は target に届かない(`0xffffffff` / status 3)。なお特殊消去は「電源を入れ直した直後の起動の窓」を使っているのではない。電源は一度も落ちず(E168 の RAM の目印)、正常な target は reset もされない。ただし E169 で、止まった X035 では 1 回目の特殊消去(`0x00`、消えない)が target を reset し、その直後の AttachChip が flash を消さないまま通ると分かった — これが LinkE で消さずに直す唯一の候補(未実装。仕様が見えてから判断)。それ以外で消さずに直すには、NRST の配線か、host が target の電源を切れる配線が要る(OEP probe など)。
+- 診断が見ない brick: `RST_MODE` 等の**多 bit USER field は DB に無い**ため `option-nonstandard` として検出できない(CH32X035 の `RST_MODE=00` で PA21 を外部 reset にして保持され attach 不能になった例は `unreachable` 扱い)。reset 直後/電源投入直後に attach して消去せずに option を直す経路(第 2 段)は、**host が自分で窓を作ることは WCH-LinkE(fw 2.22)ではできない**(wch-protocols E166 / E167): 応答しない target に halt を取るまで食い下がるのは特殊消去の中だけで(その中で flash は消える)、`probe power 3v3 off` は target の電源を切らず、AttachChip が成功していないと DmiOp は target に届かない(`0xffffffff` / status 3)。なお特殊消去は「電源を入れ直した直後の起動の窓」を使っているのではない。電源は一度も落ちず(E168 の RAM の目印)、正常な target は reset もされない。ただし E169 で、止まった X035 では 1 回目の特殊消去(`0x00`、消えない)が target を reset し、その直後の AttachChip が flash を消さないまま通る。ch32rv はこれを使う経路を持たない。それ以外で消さずに直すには、NRST の配線か、host が target の電源を切れる配線が要る(OEP probe など)。
 
 - **`recover` の option 書込**: `unprotect` と `unbrick` の保護解除は、**現在の option bytes を読んで RDPR だけ `0xA5` に差し替える**(他の byte は一切変えない)。読めない/補数が整合しない場合のみ一律 image(RDPR off + `0xff`)へ fallback し、警告を出す。保護解除が SRAM 分割や NRST の機能を書き換えないための措置。
 - `recover` の method は別 operation として固定する: `power-off`(給電断 erase)、`nrst`(RST ピン erase。配線要件を事前表示)、`unprotect`(RDP 解除 = 全消去。確認プロンプト)、`unbrick`(電源サイクル + DM 連打 + option 工場値 + 全消去。minichlink 手順の移植)。
@@ -358,10 +357,10 @@ ch32rv probe power <3v3|5v> <on|off>
 ch32rv probe power cycle [--off-ms 300]
 ch32rv probe mode get
 ch32rv probe mode set <riscv|dap> [--yes]
-ch32rv probe firmware info                        版(0 埋めしない "2.22"、WCH 表記 v42、raw 0216)、variant、mode、既知不良の判定(ch32-device-data の `index/link_firmware_issues.csv` から生成した表を variant・mode・版で照合。hash では照合しない。probe が mode を返さないときは mode を問わず当てる。今の行は CH549 の WCH-Link の RISC-V 2.11 だけ。文面(warning `fw-known-bad` の msg、`known_bad_reason`)は表の symptom と works_in から作り、約束しない)
-ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12(実装済。実機: LinkE 2.22 は --min 2.20 通過/2.30 で exit12、CH549 2.12 は --min 2.20 で exit12)
-ch32rv probe firmware update --image <FILE> [--yes]  IAP 経由で probe 自身の firmware を書換(実装済。実機: LinkE 2.22 ⇔ 2.13 を相互に更新し版を確認)
-ch32rv probe firmware exit-iap                     IAP mode の probe を、何も書かずに今入っている app で起動させる(実装済)
+ch32rv probe firmware info                        版(0 埋めしない "2.22"、WCH 表記 v42、raw 0216)、variant、mode、既知不良の判定(ch32-device-data の `index/link_firmware_issues.csv` から生成した表を variant・mode・版で照合。hash では照合しない。probe が mode を返さないときは mode を問わず当てる。文面(warning `fw-known-bad` の msg、`known_bad_reason`)は表の symptom と works_in から作り、約束しない)
+ch32rv probe firmware check [--min <ver>]         CI 用。不良版・版不足なら exit 12(実機: LinkE 2.22 は --min 2.20 通過/2.30 で exit12、CH549 2.12 は --min 2.20 で exit12)
+ch32rv probe firmware update --image <FILE> [--yes]  IAP 経由で probe 自身の firmware を書換(実機: LinkE 2.22 ⇔ 2.13 を相互に更新し版を確認)
+ch32rv probe firmware exit-iap                     IAP mode の probe を、何も書かずに今入っている app で起動させる
 ```
 
 - **`probe power` は target の電源を切れないことがある**: WCH-LinkE fw 2.22 は `3v3 off` / `5v off` を受理する(rc 0)が、LinkE から給電している CH32L103 / V203 / V003 / X035 で、off の間も target は走り続けた(UART が途切れず、X035 は loop counter も連続。wch-protocols E166)。**回り込みではなく、出力がそもそも切れていない**: target をつながない LinkE の 3V3 を ADC で測ると、`3v3 off`(`0a`)の後も `5v off`(`0c`)の後も 3.24 V のままだった(最小 3.1 V、E167)。`probe power` は off / cycle のたびに warning `power-off-unverified` を出す。特殊消去の中でも 3V3 は切れず、RST が pulse する(E167。§4.3)。RST 未配線のとき、正常な target は特殊消去で reset されない(havereset なし、RAM の目印が残る。E168)。attach で止まった target では、電源が落ちないまま reset がかかる(出どころは未確定)。
@@ -370,7 +369,7 @@ ch32rv probe firmware exit-iap                     IAP mode の probe を、何�
 - **image は同梱しない**。WCH の [WCH-LinkUtility](https://www.wch.cn/downloads/WCH-LinkUtility_ZIP.html)(**中文サイトのみ**。英語サイトの同名ページは開いても内容が出ない)を展開した `Firmware_Link/` に平文で入っている(WCH-LinkE = `FIRMWARE_CH32V305.bin`)。MounRiver Studio 同梱版でも同じ。`--help`・エラー hint からもこの入手先を案内する。
 - **IAP entry は不揮発**: probe を IAP に入れると、app が無傷でも電源再投入では戻らない(protocol §6.1)。抜けるのは終了 frame だけなので、`firmware exit-iap` を脱出口として持つ。中断した更新は `firmware update` の再実行でそのまま復旧する(どの時点で切れても IAP に残る)。
 - image は渡された時点で検査する: **BL 付き `*_APP_IAP.bin` は拒否**(外部書込機用。IAP に流すと app 領域に BL を書く)、非 RISC-V image は拒否、版は image 内の `bcdDevice` から読む。
-- **image の型番は sha256 で照合する**。WCH-LinkUtility が配る 10 本の image を ch32-device-data の `index/link_firmware.csv` から `cargo xtask db-gen` が `crates/target/generated/link_firmware.csv` に作り、image の sha256 で引く。表の語彙:
+- **image の型番は sha256 で照合する**。WCH-LinkUtility が配る image を ch32-device-data の `index/link_firmware.csv` から `cargo xtask db-gen` が `crates/target/generated/link_firmware.csv` に作り、image の sha256 で引く。表の語彙:
   - `device`: probe の製品名(`WCH-LinkE` / `WCH-Link`(CH549)/ `WCH-LinkW` / `WCH-DAPLink`)。probe の variant と照らす(`linke` = `WCH-LinkE` など。対応は `crates/target/src/link_variant.rs` の 1 か所)。
   - `mode`: CH549 の WCH-Link の image だけが持つ `RISC-V` / `ARM`。ほかの型番は空(1 本で両方)。CH549 はこのコマンドで更新しないので照合には使わない。
   - `role`: `application` = `FIRMWARE_*.bin`(application だけ。IAP 経路で書くのはこれ)、`with-bootloader` = `*APP_IAP*.bin`(IAP bootloader の後に application。外部書込機用)。
@@ -385,7 +384,7 @@ ch32rv probe firmware exit-iap                     IAP mode の probe を、何�
   | probe が IAP mode に居る(型番を返さない) | 型番は照合できないので warning `image-model-unverified`(表にあれば、どの型番の image かを書く) |
 
   `--dry-run` と `--json` の `result.image` は `sha256` と `known`(表の行。無ければ `null`)を出す。上書きの flag は無い。
-- 対応 probe: WCH-LinkE / LinkW / LinkS / 旧 Link(CH549)を型番として区別し、非対応 operation は capability で事前に弾く。互換 probe(funprog HID / NHC-Link042 / ardulink / rv003usb 系)は P2 の backend として同じ体系に入る。
+- 対応 probe: WCH-LinkE / LinkW / LinkS / CH549 の WCH-Link を型番として区別し、非対応 operation は capability で事前に弾く。互換 probe(funprog HID / NHC-Link042 / ardulink)は扱わない(rv003usb 系の HID bootloader は `boot hid`)。
 
 ### 4.3 target
 
@@ -446,7 +445,7 @@ WCH-Link の `target info` は未登録チップでも接続成功とDB照合結
 - `user.<field>` は `option` の無い field だけに使う(いまは V103 の `user.PORCTR`)。意味名のある bit を `user.STOPRST` / `user.CFGCANM` や素の `STOPRST` で書くと、意味名での書き方(値の語と EVT の定数)を示して usage error。DB が復位値を持たない意味名の field(V006 の RST_MODE、V407 の RAM_CODE_MOD)も同じ。field 名の大小文字は区別しない。
 - 資料の食い違いは ch32-device-data の `index/conflicts.csv` で見る(`table` = `option_byte_fields` の行。`field` が争点の列)。**`field` が `bits` か `default`(書く値そのもの)、または空(争点の列を 1 つに決められない)の行があれば db-gen が止まり**、family・subject・残した値・異議の値を出す(ch32-device-data に解決を頼む)。`field` が `field`(field 名の綴りだけ。いまは M030 の RST_MODE、V003 / V205 の IWDG で、RM の中国語版と英語版の綴り違い。bit の位置と `option` / `evt_*` 列は一致)の行では止まらず、その行はほかの行と同じに使う。db-gen は `option_byte_fields` の `confidence` を読まない。
 - `get` は 2 つのコマンドで同じ形(`docs/contract/commands.schema.json` の `option_bytes`): `family`、`db_family`、`raw`(読んだ byte の hex。debug 線は補数込み 16 byte、ISP は config 12 byte)、`read_protected`、`write_protected`、`options`。`options` は `set` が受ける key ごとに `{"value": "<値の語>", "raw": <生の値>}`(例 `"stop-reset": {"value": "on", "raw": 0}`、`"user.PORCTR": {"value": "1", "raw": 1}`)。`value` はそのまま `set` に渡せる。文字の出力も `key=value` を 1 行ずつ出す。USER の配置を知らない family は `read-protect` / `write-protect` / `data0` / `data1` だけを出し、`warning[option-decode-interim]`。
-- `target option set` は現在値を読み → 指定の field だけ変え → **補数を全部計算し直し** → §4.2.1 の直接 controller で erase+program → reset してから read-back で照合(違えば exit 30)。反映は system reset 後。変更は必ず確認する(`--yes`)。**保護中の `read-protect=off` は全消去、`read-protect=on` は読めなくなる**旨を確認文に出す。実機(L103、意味名にする前の RM 名の経路): STOPRST の bit を 0 にして USER `0xff→0xfd`(補数 `00→02`)、read-back で反映、1 に戻して復元。
+- `target option set` は現在値を読み → 指定の field だけ変え → **補数を全部計算し直し** → 直接 FLASH controller 経路(§4.1 の `erase --range`)で erase+program → reset してから read-back で照合(違えば exit 30)。反映は system reset 後。変更は必ず確認する(`--yes`)。**保護中の `read-protect=off` は全消去、`read-protect=on` は読めなくなる**旨を確認文に出す。実機(L103、意味名にする前の RM 名の経路): STOPRST の bit を 0 にして USER `0xff→0xfd`(補数 `00→02`)、read-back で反映、1 に戻して復元。
 - 「未対応 SKU」と「DB に無い SKU」は JSON で区別する(exit 20 の detail)。
 - `option get` は option bytes(DB の base から 16 byte)を DMI で読む(読み取り専用)。実機: V203 / V307 / V003 / X035 で RDPR=`0xA5`(保護なし)と補数の整合を確認。
 - **option 書込 `write-raw` / `reset` / `protect`**: option-byte programming を `DebugModule::flash_program_option_bytes`(minichlink の option 経路から転記)で実装。手順: FLASH_KEYR + OBKEYR(`0x4002_2008`=STM32F1 系 OPTKEYR)+ MODEKEYR unlock → CTLR の OPTER+OPTWRE+STRT で **全 option byte 消去** → 8 halfword を OPTPG+OPTWRE+STRT で書込(value+complement をそのまま。complement は呼び出し側責任)。**RDPR(halfword0)を最初に書く**ことで消去〜再書込の read-protect 窓を最小化。反映は system reset 後。**verify は soft reset を挟んでから read-back する**: V103 は option 領域を reset まで書込前の像で読み続けるため、直後に読むと**書けているのに `verify-mismatch`(exit 30)**を返す(CH549 Link + V103 で実測)。`option get` と同じ 16 byte レイアウト。**`write-raw <hex>`**(expert、16 byte)は RDPR≠`0xA5` なら「読み出し保護 ON になる」警告して `--yes` 必須。**`reset`** は「工場デフォルト」を**一律 `0xff` で作らない**: 現在値を読み、**DB が定義する USER bit だけ RM の復位値へ戻し、DB が知らない bit は現在値を保つ**。Data/WRP は `0xff` にクリア。理由は実測([measured/option-bytes-2026-09-06.md](data-requests/measured/option-bytes-2026-09-06.md)): 出荷値は V003=`0xf7`(`RST_MODE`=`10b`)・V20x=`0x3f`・V307=`0xbf`(`RAM_CODE_MOD` は個体差)で、**`0xff` を書くと NRST の機能や SRAM/flash 分割が変わる**。**`protect on|off`** は現在値を読んで RDPR のみ変更(on=`0xFF`、off=`0xA5`)、他 byte 保持。**`off` は全 flash mass erase を伴う**旨・**`on` は読めなくなる**旨を明示し `--yes`/確認必須。既に目的状態なら no-op。**OB base は DB 由来**: `option_bytes.csv` の family 別 base を生成 DB 経由で引く。**共通番地ではない**(CH32M030 = `0x1FFF_F300`)ため決め打ちせず、**DB に無い family は fail-closed**(capability-unsupported。推測して別番地を読み書きしない)。読み(`option get`)・書き(`write-raw`/`reset`/`set`/`protect`)・`recover` の RDPR 判定と工場値書込のすべてがこの base を使う。なお DB は L103/M030/V006/V205/X035 の option 書込を fast page(FTPG)手順に分類しているが、**本実装の half-word(OPTPG)経路は L103 実機で動作確認済み**なので分類では gate せず、未検証の FTPG 分類 family でのみ警告を出す。実機検証(L103): `write-raw` に現在値を round-trip 書込 → 不変・RDPR=`0xA5` 維持・flash 無傷・走行復帰、`reset` も同様、fail-closed(bad length / RDP-danger without --yes / protect off 既off の no-op / protect on without --yes 拒否)。`protect on/off` の実トグルは破壊的(on=保護・off=全消去)のため実機未トグル(primitive は round-trip で検証済み)。programming 失敗時は option が消去済み=read-protect の可能性を error に明示し `recover` を案内。
@@ -477,7 +476,7 @@ ch32rv monitor sdi <on|off>
 - **出力**: stdout へ生 byte。`--json` 時は §3.5 の `output` event(stderr)。
 - **終了**: Ctrl-C か `--duration`。device 喪失(CDC の EOF / DMI 失敗)は exit 0 ではなく 10 / 40 で終わる(wrapper が再起動を判断できるように)。再 enumeration の追従は持たない。
 - **attach は target のクロックを変える**: WCH-Link の AttachChip は、**CH32L103 / V20x / V30x / X035 では**クロックを系統ごとの決まった設定に組み直し、**元に戻さない**(L103 / V20x / V30x は PLL の設定へ、X035 は AHB の分周を外して flash の wait を 2 に。L103 / V203 / X035 は線上で、V307 は target 自身に UART で報告させた試験で確認し、L103 / V203 / V307 ではアプリの UART が実際に化けた。**V003 は RCC に触れない**。その他の family は未観測。protocol §7a)。`dmdata` / `dmseq` / `rtt` / `sdi` はどれも attach を通るので、観測中の firmware は **次の reset まで probe のクロックで走る**(UART の baud・タイマ・PWM がずれる。V20x / V30x で HSE + PREDIV / PLL2 を使う firmware は PLL の入力も変わる)。元の値は AttachChip の中で上書きされるので ch32rv は戻せない。monitor は開始時に、**全 target で** warning `attach-reclocks-target` を「クロックが変わっている可能性がある」という形で出す(family ごとの全体像はまだ埋まっておらず、断定すると外れた family で誤りになるため)。**firmware 自身のクロックのまま見たいときは attach のあとに reset する**: `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`(接続 → DMI reset-halt → 流す。firmware は再起動する)か、ボードの reset。attach しないのは `uart` だけ。同じことは `target info` / `read` / `dbg` / `arduino monitor` にも当てはまる(警告は monitor だけが出す)。
-- **rtt の channel**: control block の up[0] / down[0] のみ流す。複数 channel を持つ block は warning `rtt-channels` を出す(選択機能は需要待ち。release-plan.ja.md §3)。
+- **rtt の channel**: control block の up[0] / down[0] のみ流す。複数 channel を持つ block は warning `rtt-channels` を出す(channel を選ぶ機能は無い)。
 
 5 つの `--source` は「5 本の並列 port」ではなく、**2 種類の host 機構**に分かれる(ArduinoCore-CH32RV の Serial / SerialSDI / SerialDMDATA / SerialRTT ライブラリが target 側の一次仕様)。
 
@@ -505,9 +504,9 @@ ch32rv gdb [--listen 127.0.0.1:3333] [--reset-halt] [--no-flash]
 ```
 
 - `--reset-halt`: GDB がつながったら target を reset し、リセットベクタで止めてから相手をする(probe-rs の `gdb --reset-halt` と同じ意味)。WCH-Link は DMI の reset-halt、OEP の probe とブローカー経由の WCH-Link は riscv-dm の reset(halt)。
-- `--no-flash`: `load`(vFlash)を受けない。gdb は今 vFlash を出さないので、付けても付けなくても同じ。
+- `--no-flash`: `load`(vFlash)を受けない。gdb server は vFlash を持たないので、付けても付けなくても同じ。
 
-- **attach 時に target flash を書き換えない**(WCH OpenOCD の挙動を再現しない)。`load`(vFlash)には対応するが必須にしない。
+- **attach 時に target flash を書き換えない**(WCH OpenOCD の挙動を再現しない)。`load`(vFlash)は持たない(書き込みは `flash`)。
 - HW breakpoint(RISC-V trigger module)は **core が実際に trigger slot を持つ場合のみ GDB に広告する**(minichlink の `hwbreak+` 偽装をしない)。**有無は misa や core 世代と一致しない**ので、attach 時に tselect/tdata1 を実際に叩いて**動的に**数える(下表)。`support_hw_breakpoint` は slot>0 のときだけ `Some`、attach ログにも実 slot 数を出す。
 
   | 実測 | core | family | trigger slot |
@@ -522,9 +521,9 @@ ch32rv gdb [--listen 127.0.0.1:3333] [--reset-halt] [--no-flash]
   ※ V203 と X035 は misa 完全一致(`0x40901105`)なのに trigger 有無は逆 → **misa では判別不可、動的検出が必須**。
 - GDB が SW(Z0)で要求した `break` は、**動く中で最も安い手段の順**で張る: **(1) RAM の `ebreak` memory patch → (2) 空き HW trigger〔摩耗なし〕→ (3) flash page 書き換えの flash SW breakpoint〔trigger 無し core 用、flash 摩耗あり〕**。attach 時に dcsr の ebreakm/ebreaks/ebreaku を立て `ebreak` を Debug Mode 突入(halt)にする(無いと暴走)。patch 後に read-back で着弾を確認。
   - **HW trigger フォールバック**: RAM patch が着弾しない flash 番地で、空き trigger があれば透過的に使う → V307/X035 は通常 `break` が flash で発火(摩耗なし)。
-  - **flash SW breakpoint フォールバック**: trigger の無い core でも、検証済み FLASH-controller profile(256byte family)なら **§4.2.1 の直接 FLASH controller で page を read-modify-write** して `ebreak` を焼く。code は低位 alias(0x0000_0000)で走るが FLASH controller には物理 flash 番地(0x0800_0000+off)を渡す。同一 page 内の複数 breakpoint に対応し、page 内容が変わらない set/clear は書き込みを省く。detach 時に全 page を pristine へ復元(途中終了でも `ebreak` を焼き残さない)。**注意: set/clear ごとに flash を書くため摩耗する**(gdb の step-over は remove+再 insert で 2 回書く)。attach ログで警告し `set breakpoint always-inserted on` を勧める。program 方式は family 別(PgStart=V20x/V30x、Buffered=V003/V00x/X035/L103。§4.2.1)。**対応: V20x/V30x・V003/CH641・V00x・X035/CH643・L103・V103**。**V103 は attach quirk の対処が前提**: WCH-Link の AttachChip が生きた GPR s1/x9 を chip id で上書きし(元値は保存されない)、resume 後に program が s1 を使う瞬間 fault する(mcause=4 load-misaligned)。→ attach 後に soft-reset して program にレジスタを再構築させてから halt する(profile の `attach_corrupts_regs`。target は再起動する)。実機検証: V103 で flash 上コードへの通常 `break` が複数 `continue` で発火。
+  - **flash SW breakpoint フォールバック**: trigger の無い core でも、検証済み FLASH-controller profile(256byte family)なら **直接 FLASH controller 経路(§4.1 の `erase --range`)で page を read-modify-write** して `ebreak` を焼く。code は低位 alias(0x0000_0000)で走るが FLASH controller には物理 flash 番地(0x0800_0000+off)を渡す。同一 page 内の複数 breakpoint に対応し、page 内容が変わらない set/clear は書き込みを省く。detach 時に全 page を pristine へ復元(途中終了でも `ebreak` を焼き残さない)。**注意: set/clear ごとに flash を書くため摩耗する**(gdb の step-over は remove+再 insert で 2 回書く)。attach ログで警告し `set breakpoint always-inserted on` を勧める。program 方式は family 別(PgStart=V20x/V30x、Buffered=V003/V00x/X035/L103。§4.1 の `erase --range`)。**対応: V20x/V30x・V003/CH641・V00x・X035/CH643・L103・V103**。**V103 は attach quirk の対処が前提**: WCH-Link の AttachChip が生きた GPR s1/x9 を chip id で上書きし(元値は保存されない)、resume 後に program が s1 を使う瞬間 fault する(mcause=4 load-misaligned)。→ attach 後に soft-reset して program にレジスタを再構築させてから halt する(profile の `attach_corrupts_regs`。target は再起動する)。実機検証: V103 で flash 上コードへの通常 `break` が複数 `continue` で発火。
 - RV32E core(CH32V003、misa.E=bit4)対応: GPR は x0-x15 のみ存在し、x16-x31 を abstract command で読むと cmderr が出て session が落ちる。gdb server と `dbg regs` は misa.E を見て x0-x15 だけを扱う。**GDB にも 16 本 + pc で見せる**: RV32E の ELF を読んだ GDB は 68 byte を待ち、`g` に 33 本(132 byte)を返すと `Remote 'g' packet reply is too long` で止まる。RV32E の hart では x0-x15 と pc だけを返し、target description(`org.gnu.gdb.riscv.cpu`、pc は番号 32)も 16 本 + pc を出すので、ELF が無くても同じ形になる。実機確認: V006(LinkE、ブローカー経由、dmseq の monitor を開いたまま)で ELF ありの break / step / x / detach、ELF 無しで `info registers`。
-- gdbstub ベースの GDB server が **register/memory R/W・halt/continue/step・Ctrl-C・SW(RAM+flash)/HW breakpoint** を実機で end-to-end 動作(riscv-none-embed-gdb)。検証: V003/V203 で RAM SW breakpoint が `continue` を停止、V307/X035/**L103** で flash 上の通常 `break` が HW trigger で発火(L103 は step も毎命令前進・attach でレジスタ非破壊を確認)、**V203(trigger 無し)で flash 上の通常 `break` が flash-patch で発火(複数 `continue`・detach で flash が pristine 復元)**。RV32 arch は x0-x31+pc の整数のみ(V4F FPU は後続)。**V003/V103 の flash SW breakpoint は controller profile 未検証で後続**。`load`(vFlash)は未実装。
+- gdbstub ベースの GDB server が **register/memory R/W・halt/continue/step・Ctrl-C・SW(RAM+flash)/HW breakpoint** を実機で end-to-end 動作(riscv-none-embed-gdb)。検証: V003/V203 で RAM SW breakpoint が `continue` を停止、V307/X035/**L103** で flash 上の通常 `break` が HW trigger で発火(L103 は step も毎命令前進・attach でレジスタ非破壊を確認)、**V203(trigger 無し)で flash 上の通常 `break` が flash-patch で発火(複数 `continue`・detach で flash が pristine 復元)**。RV32 arch は x0-x31+pc の整数のみ(V4F の FPU の register は見せない)。
 
 ### 4.7 isp(factory ISP 経路)
 
@@ -534,7 +533,7 @@ ch32rv isp [--transport usb|uart] [--device <住所>] [--port <serial port>] [--
            --device: ch32rv-isp://<bus>-<ports> | topology:<bus>-<ports> | <serial port> | ch32rv-app://<id> | VID:PID[:SN]
 ch32rv isp list                                     ISP mode device の列挙。Identify に答えない device(LinkE IAP 等)は区別して表示
 ch32rv isp info                                     chip/BTVER/UID/保護状態/config 12 B
-ch32rv isp enter [--via probe]                      --probe の debug 線で boot mode を立てて reset(CH32X03x)
+ch32rv isp enter [--via probe]                      --probe の debug 線で boot mode を立てて reset(CH32X03x、CH32H417)
 ch32rv isp flash <FILE> [--erase chip|sector|keep-store|none] [--verify on|none] [--reset run|none]
 ch32rv isp verify <FILE>                            bootloader が照合(不一致 exit 30)
 ch32rv isp erase                                    code flash 全消去(確認あり、--yes で省略)
@@ -543,7 +542,7 @@ ch32rv isp config get                               option bytes を解いて表
 ch32rv isp config set <key>=<v>...                  option bytes を変更して読み直しで照合
 ```
 
-- **USB transport は実装済み**。CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で info / flash / verify / erase / reset を実機確認し、書いた内容は RVSWD の読み出しで照合した。byte の記録は wch-protocols `protocols/pc-to-device-isp.ja.md#x035-bytes`、replay fixture は `tests/fixtures/replay/isp-*-x035.ndjson`。
+- **USB transport**: CH32X035F8U6(BTVER 2.60、`1a86:55e0`)で info / flash / verify / erase / reset を実機確認し、書いた内容は RVSWD の読み出しで照合した。byte の記録は wch-protocols `protocols/pc-to-device-isp.ja.md#x035-bytes`、replay fixture は `tests/fixtures/replay/isp-*-x035.ndjson`。
 - **UART transport(実機未確認)**: `--transport uart --port <serial port>`(`--baud` 既定 115200、8N1)。frame は USB と同じで、request を `57 ab` + frame + byte 和、reply を `55 aa` + frame + byte 和で包む(先行実装からの転記)。reply の前の余計な byte は読み飛ばし、和が合わなければ transfer-failed。UART には「現れる」が無いので、`--wait`(entry をしたなら最低 5 s)の間 Identify を繰り返し、答えなければ exit 10。`--entry` は USB と同じ入り方をしてから port を開く。出力の位置は `uart:<port>`(JSON は `at`、`usb` / `topology` は null)。auto-baud と `0xC5` SetBaud は使わない(`--baud` は port の速さだけ)。疑似 bootloader(pty)で info を通した。
 - ISP device は USB serial を持たないため、既定は「1 台のみ」の fail-closed(2 台以上は exit 14 で位置の候補を出す)。複数台は `--device` で選ぶ。
 - `--device <住所>`: 書く device を 1 つの option で名指す。`--probe` は `--entry probe` の debug probe だけ。
@@ -552,7 +551,7 @@ ch32rv isp config set <key>=<v>...                  option bytes を変更して
   - アプリ: serial port の path(IDE が渡す serial port。裏の USB device を引く。Linux では上流の hub も同じ tty を持つので、他の一致の下に居ないものを本体とする)、`ch32rv-app://<id>`、`VID:PID[:SERIAL]`。先にその device を引き、**その USB の位置の ISP device だけ** を使う。居なければ `--entry` で頼む。アプリが居ない、または複数に当たるとき(チップがもう bootloader に居ると、IDE が選んだままのアプリの port はこう見える)は、`--device` 無しと同じに唯一の ISP device を使う(2 台以上は exit 14 で `ch32rv-isp://` を選ぶよう hint)。ISP device も居なければ、`--entry` がアプリを引けずに exit 10(hint に、今の板の port を選び直すよう出す)。形の誤りと USB の列挙の失敗は止める(exit 2 / 11)。
   - 別の経路の bootloader(`ch32rv-hid://`)と無くなった形(`usb:`、`hid://`、`port:`)は exit 2。`--app-device` は受けない(exit 2、hint に `--device <その値>`)。
 - `--wait <SECS>`(既定 0): device が無ければその秒数だけ待つ。最初に、入り方(Boot キーを押したまま USB を接続、または `--entry probe`)を stderr に 1 回出す。期限切れは exit 10。
-- `--entry probe`: ISP device が無ければ、`--probe` の debug 線で hart を reset vector で止め、`FLASH_KEYR` と `FLASH_BOOT_MODEKEYR` を外し、`FLASH_STATR.BOOT_MODE` を立てて reset してから、最大 5 s 待つ。flash の中身を先に走らせないので、壊れた image が入っていても入れる。OEP の probe と WCH-Link の両方で使える(WCH-Link は DMI の reset-halt で捕まえ、最後は probe の system reset)。family は CH32X033 / X035 だけ(他は exit 24)。WCH-LinkE(fw 2.22)+ CH32X035C8T6 でも、reset 後に `FLASH_STATR` = `0xF000`・PC が BOOT 領域になることを確認した(この板の USB は PC に未接続)。入れたのに ISP device が現れないときは、チップの USB の接続を疑うよう hint を出す。読み出し保護中のチップ(`FLASH_OBR.RDPRT`)には入れず exit 21(bootloader が走らないため。`recover --method unprotect` を hint に出す)。`isp enter` は `--entry probe` で開いて Identify / ReadConfig までして終わる。
+- `--entry probe`: ISP device が無ければ、`--probe` の debug 線で hart を reset vector で止め、`FLASH_KEYR` と `FLASH_BOOT_MODEKEYR` を外し、`FLASH_STATR.BOOT_MODE` を立てて reset してから、最大 5 s 待つ。flash の中身を先に走らせないので、壊れた image が入っていても入れる。OEP の probe と WCH-Link の両方で使える(WCH-Link は DMI の reset-halt で捕まえ、最後は probe の system reset)。family は CH32X033 / X035 / H417 だけ(他は exit 24。H417 は RM 46.4 の同じ register と鍵による。H417 の ROM が USBFS(PA11 / PA12)で download を受けるのは、USER の USBFSDLEN が立っているときだけ)。WCH-LinkE(fw 2.22)+ CH32X035C8T6 でも、reset 後に `FLASH_STATR` = `0xF000`・PC が BOOT 領域になることを確認した(この板の USB は PC に未接続)。入れたのに ISP device が現れないときは、チップの USB の接続を疑うよう hint を出す。読み出し保護中のチップ(`FLASH_OBR.RDPRT`)には入れず exit 21(bootloader が走らないため。`recover --method unprotect` を hint に出す)。`isp enter` は `--entry probe` で開いて Identify / ReadConfig までして終わる。
 - `--entry` は ISP device が居ないときの入り方(既定 `none`)。どれも、入れた後は最大 5 s(`--wait` が長ければそれ)待つ。
   - **DFU について**: ここで使う DFU は、DFU 1.1 の **run-time interface と DFU_DETACH 要求だけ**(アプリに「bootloader へ再起動して」と頼む標準の合図)。その後に現れるのは WCH の factory ISP(`1a86:55e0`、独自 protocol)で、DFU mode の device ではない。**DFU の download(DNLOAD)は使わず、dfu-util では書けない**。DFU mode で書く DFU の device は別の経路(`boot dfu`)。
   - `dfu-detach`: アプリの DFU 1.1 run-time interface(class `0xfe`/`0x01`/`0x01`)へ DFU_DETACH(`21 00`、`wValue` 1000、`wIndex` = interface)。`--device` が無ければ、run-time interface を持つ device がちょうど 1 台のときだけそれを使う(0 台 exit 10、2 台以上 exit 14)。アプリは status stage の前に切れることがあり(Linux では stall)、それでも detach するので、エラーは `warning[dfu-detach]` にとどめて待つ。
@@ -584,7 +583,7 @@ ch32rv boot hid flash <FILE> [--usb-id <VID:PID>] [--wait <SECS>] [--device <住
 - `boot dfu` の `--device`: serial port の path、`ch32rv-app://<id>`、`topology:<bus>-<ports>`、`VID:PID[:SERIAL]`(`isp --device` のアプリの書き方と同じ)。無ければ DFU の interface を持つ唯一の device(0 台 exit 10、2 台以上 exit 14)。bootloader の住所(`ch32rv-isp://`、`ch32rv-hid://`)は exit 2。
 - `boot hid flash` の `--device`: 位置だけ。`ch32rv-hid://<bus>-<ports>`(discovery の住所)か `topology:<bus>-<ports>`。無ければ最初に見つかった 1 台。`hid://<bus>-<ports>` は `ch32rv-hid://<bus>-<ports>` を添えて exit 2。
 
-HID flashは実装済み。既定で`1209:b803`（UIAPduino）→`1209:b003`（rv003usb）の順に探索し、
+HID flashは、既定で`1209:b803`（UIAPduino）→`1209:b003`（rv003usb）の順に探索し、
 64 byte page単位でpreverify・erase・program・read-back verifyを行ってuser appを起動する。
 `--capture` / `--replay`もHID feature reportを含めて対応する。
 
@@ -594,10 +593,10 @@ hostが列挙をあきらめる)をstderrへ1回出す。IDEの出力欄には�
 待っている間に現れた直後のopen失敗(OSがノードの権限を付ける前)も再試行する。期限切れはexit 10で、
 同じ入り方をhintに出す。`--replay`中は待たない。
 
-**任意 VID/PID 指定(実装済み)**: bootloader 系は vendor/build ごとに USB VID:PID が異なる(rv003usb/b003fun 系は既定 `0x1209:0xb003` だが、**UIAPduino は `0x1209:0xb803`** = ボードごとに変わる)。minichlink は PID をソースに **ハードコード**しており、UIAPduino に書くには PID を書き換えて **リビルドが必要**だった(参照: <https://qiita.com/tomorrow56/items/6cae8ddc7470cb64ad7d>)。ch32rv は同じ轍を踏まない:
+**任意 VID/PID 指定**: bootloader 系は vendor/build ごとに USB VID:PID が異なる(rv003usb/b003fun 系は既定 `0x1209:0xb003` だが、**UIAPduino は `0x1209:0xb803`** = ボードごとに変わる)。minichlink は PID をソースに **ハードコード**しており、UIAPduino に書くには PID を書き換えて **リビルドが必要**だった(参照: <https://qiita.com/tomorrow56/items/6cae8ddc7470cb64ad7d>)。ch32rv は同じ轍を踏まない:
 
 - **known table**: UIAPduino(CH32V003・16KB・b003fun HID bootloader・`0x1209:0xb803`)とrv003usb (`0x1209:0xb003`)を既定で発見する。
-- **`--usb-id <VID:PID>` 上書き**: known table に無い未知 PID でも、`--usb-id 1209:b803` のようにCLIからVID:PIDを直接指定して書ける(**リビルド不要の逃げ道**)。現時点では`boot hid flash`に実装済み。
+- **`--usb-id <VID:PID>` 上書き**: known table に無い未知 PID でも、`--usb-id 1209:b803` のようにCLIからVID:PIDを直接指定して書ける(**リビルド不要の逃げ道**)。`boot hid flash` が受ける。
 - 設計原則: **単一 PID をコードに焼き込まない**。発見は「known table + ユーザー指定 VID:PID」の二段で、知らない PID にも到達できる状態を既定にする。
 
 ### 4.9 db
@@ -607,9 +606,9 @@ ch32rv db list [--family <f>] [--verified-only]
 ch32rv db info <SKU>            geometry(page/fast/block)、領域、option layout、chip ID、生成元 revision、verified 根拠
 ```
 
-- **`db list` / `db info`**(cmd_db.rs、デバイス不要)。生成済み DB(`crates/target/generated/skus.csv` を `include_str!` で埋め込み)を列挙/表示。`db list --family <f>` は family/SKU prefix で絞り込み、`--verified-only` は実機確認済み(実測6台)のみ。`db info <SKU>` は family/device_id/flash/sram/verified を表示。JSON 可。DB は `cargo xtask db-gen` が ch32-device-data(pinned)から生成し commit する(§4.3 target info の chip_id→SKU 解決、§4.3 option get の family-aware USER decode もこの DB を使う)。geometry は flash/sram に加え **page/fast erase・fast program・block erase**(`flash_geometry.csv`、`db info` で表示)。`db info` は **消去済み word の読み出し値**(`erased:` 行。系統 A `0xffffffff` / B `0xe339e339`)と **FLASH controller の書込方式**(`flash prog:` 行。`buffered`/`direct` + commit bit + buffer load 幅 + DB の confidence)も出す。`flash_controller_profile`(§4.2.1 の直接 controller 経路)は手写しを持たず**この DB から導出**する。cli テストは、実機で駆動している 6 family について **DB 側に page 消去粒度・消去後の値・`conflict` でない書込手順が揃っている**ことを検査する(納品でどれかが欠けると `erase --range` / flash breakpoint が黙って無効化されるため)。方式・粒度が実機検証値と一致することは `ch32rv-flash` の単体テストで固定。option layout は register 系 CSV 取り込みで後続。
+- **`db list` / `db info`**(cmd_db.rs、デバイス不要)。生成済み DB(`crates/target/generated/skus.csv` を `include_str!` で埋め込み)を列挙/表示。`db list --family <f>` は family/SKU prefix で絞り込み、`--verified-only` は実機確認済みのみ。`db info <SKU>` は family/device_id/flash/sram/verified を表示。JSON 可。DB は `cargo xtask db-gen` が ch32-device-data(pinned)から生成し commit する(§4.3 target info の chip_id→SKU 解決、§4.3 option get の family-aware USER decode もこの DB を使う)。geometry は flash/sram に加え **page/fast erase・fast program・block erase**(`flash_geometry.csv`、`db info` で表示)。`db info` は **消去済み word の読み出し値**(`erased:` 行。系統 A `0xffffffff` / B `0xe339e339`)と **FLASH controller の書込方式**(`flash prog:` 行。`buffered`/`direct` + commit bit + buffer load 幅 + DB の confidence)も出す。`flash_controller_profile`(§4.2.1 の直接 controller 経路)は手写しを持たず**この DB から導出**する。cli テストは、実機で駆動している family について **DB 側に page 消去粒度・消去後の値・`conflict` でない書込手順が揃っている**ことを検査する(納品でどれかが欠けると `erase --range` / flash breakpoint が黙って無効化されるため)。方式・粒度が実機検証値と一致することは `ch32rv-flash` の単体テストで固定。
 
-DB は ch32-device-data からの生成物で手書き YAML を持たない(architecture.ja.md §4)。device_id は WCH EVT の ChipID 一覧と実測だけから作られ(第三者 DB の ch32-data は使わない)、1 つに決まらない型番(例: EVT が 2 つ書く CH32V203F6P6)は ID 無しで載る。ID 無しの型番を `--chip` で指定すると family だけを照合する(書く前の ID 照合はできない)。`--db <path>` overlay で新 SKU を再ビルドなしに試せる。
+DB は ch32-device-data からの生成物で手書き YAML を持たない(architecture.ja.md §3)。device_id は WCH EVT の ChipID 一覧と実測だけから作られ(第三者 DB の ch32-data は使わない)、1 つに決まらない型番(例: EVT が 2 つ書く CH32V203F6P6)は ID 無しで載る。ID 無しの型番を `--chip` で指定すると family だけを照合する(書く前の ID 照合はできない)。`--db <path>` overlay で新 SKU を再ビルドなしに試せる。
 
 ### 4.10 capabilities / doctor / version / complete
 
@@ -621,9 +620,9 @@ ch32rv version [--json]                              tool 版 / git rev / contra
 ch32rv complete <bash|zsh|fish|powershell>          補完スクリプトを stdout へ(clap_complete で clap tree から生成=CLI と常に一致)
 ```
 
-すべての操作 command は実行前に capabilities と同じ判定を通り、不可なら exit 24 で同じ構造の理由を返す。`tool supports LinkE` の boolean は存在しない。
+操作 command は、その操作に要るものが無いと分かった所で exit 24 を返す(`capabilities` の判定とは別に、各コマンドが持つ)。`tool supports LinkE` の boolean は存在しない。
 
-- **`capabilities`**: cmd_capabilities.rs。attach して **probe variant(LinkE/CH549/…)+ FW + target family/SKU/配線(DB)** を読み、operation ごとに可否+理由を出す(human 表 + JSON)。判定(`build_matrix`、単体テストあり): `connect`(**1線 target × CH549 = 不可**。CH549 は 1線 SWIO 非対応、`Variant` + debug_wiring から)、`flash`(family stub 有無)、`erase --range / flash-bp`(FLASH-controller profile 有無。page サイズ+方式を理由に表示)、`gdb HW breakpoints`(attach 時に動的検出=V4C/V4F は 4)、`monitor sdi`(**LinkE 限定**)、`monitor dmdata`(任意 probe)、`recover power-off`(**LinkE/LinkW 限定**=target 電源制御)。**2 モード**: `--chip` 無し=attach して live target を判定、`--chip <SKU/family>` 有り=**probe info のみで静的判定(target 未接続でも可=pre-flight プランナ)**。static は probe を attach せず `probe_info()` で variant/FW を取り、`--chip` を family_byte(`family_byte_from_name`)+ series/配線(DB)へ解決。実機検証: L103(LinkE)全 yes、**V103(CH549 probe)は sdi/power-off が NO**、V003(LinkE,1線)connect yes、**静的 `--probe <CH549> --chip CH32V003` が target 未接続で `connect NO`(1線×CH549)を予測**、未知 `--chip` は usage error。各操作 command 側の統一 gating(exit 24)への配線は後続。
+- **`capabilities`**: cmd_capabilities.rs。attach して **probe variant(LinkE/CH549/…)+ FW + target family/SKU/配線(DB)** を読み、operation ごとに可否+理由を出す(human 表 + JSON)。判定(`build_matrix`、単体テストあり): `connect`(**1線 target × CH549 = 不可**。CH549 は 1線 SWIO 非対応、`Variant` + debug_wiring から)、`flash`(family stub 有無)、`erase --range / flash-bp`(FLASH-controller profile 有無。page サイズ+方式を理由に表示)、`gdb HW breakpoints`(attach 時に動的検出=V4C/V4F は 4)、`monitor sdi`(**LinkE 限定**)、`monitor dmdata`(任意 probe)、`recover power-off`(**LinkE/LinkW 限定**=target 電源制御)。**2 モード**: `--chip` 無し=attach して live target を判定、`--chip <SKU/family>` 有り=**probe info のみで静的判定(target 未接続でも可=pre-flight プランナ)**。static は probe を attach せず `probe_info()` で variant/FW を取り、`--chip` を family_byte(`family_byte_from_name`)+ series/配線(DB)へ解決。実機検証: L103(LinkE)全 yes、**V103(CH549 probe)は sdi/power-off が NO**、V003(LinkE,1線)connect yes、**静的 `--probe <CH549> --chip CH32V003` が target 未接続で `connect NO`(1線×CH549)を予測**、未知 `--chip` は usage error。
 
 ### 4.11 arduino
 
@@ -641,12 +640,12 @@ ch32rv arduino monitor [--protocol <p>]
 
 Arduino 専用の書き込みロジックは持たない。recipe は §5 の通常 command を呼ぶ。
 
-- **discovery**: HELLO/START/LIST/START_SYNC/STOP/QUIT。**USB descriptor だけから列挙**し AttachChip しない(同一 probe への upload/monitor 中でも乱さない。LinkE の attach は target のクロックを組み替える)。**普通の serial port は開かない**(組み込みの serial discovery が出す)。START_SYNC は現在の port を `add` で一度出す(hotplug 監視は後続、IDE の再 LIST に委ねる)。
-  - `wchlink://<serial>`: protocol `wchlink`、properties に serial / vid / pid / mode。Windows で device に ch32rv が開けない driver が付いている Link(usbipd の stub など)は、label を `WCH-Link <serial> (cannot open: driver <name>)` にし、properties に `driver` を足す(一覧からは消さない)。実機確認(0.12.1 のリリースの zip、Windows): usbipd で WSL に attach 中の LinkE 7 台がすべて `WCH-Link <sn> (cannot open: driver VBoxUSB)`(usbipd-win の stub は `VBoxUSB` の名で見える)。
-  - `oep://<probe>/<port>`(oep-spec host ガイド §5.3): OEP の probe(`is_oep_device` = USB ID 1209:4F45 の device。oep-core §3.3)の口ごとに 1 つ。口は probe に保存した label `S.N`(`S.swdio` / `S.swclk` / `S.swio` / `S.nrst` / `S.rx` / `S.tx`)の `S` で、名前つきの口が無い probe は probe 自身の `oep://<probe>` で出す(線は `--pins` で指す)。`<probe>` は USB の serial(= OEP の unit_id、oep-spec v1-freeze #3。serial の無い device だけ位置)。attach しないので target は出さない。label は lock 無しで読む(その port のブローカーが動いていればブローカー経由、ここでは起動しない。無ければ HID、vendor bulk、CDC の順に短く開く(HID は他の道具と取り合わない)。応答待ちは 0.3 秒)。読めなければ前回の一覧(runtime dir の `<key>.ports.json`)。properties に vid / pid / port_name(`oep://<probe>` では null)/ port。普通の serial port は開かない。
+- **discovery**: HELLO/START/LIST/START_SYNC/STOP/QUIT。**USB descriptor だけから列挙**し AttachChip しない(同一 probe への upload/monitor 中でも乱さない。LinkE の attach は target のクロックを組み替える)。**普通の serial port は開かない**(組み込みの serial discovery が出す)。START_SYNC は現在の port を `add` で一度出す(hotplug の監視は持たず、IDE の再 LIST に委ねる)。
+  - `wchlink://<serial>`: protocol `wchlink`、properties に serial / vid / pid / mode。Windows で device に ch32rv が開けない driver が付いている Link(usbipd の stub など)は、label を `WCH-Link <serial> (cannot open: driver <name>)` にし、properties に `driver` を足す(一覧からは消さない)。実機確認(Windows): usbipd で WSL に attach 中の LinkE 7 台がすべて `WCH-Link <sn> (cannot open: driver VBoxUSB)`(usbipd-win の stub は `VBoxUSB` の名で見える)。
+  - `oep://<probe>/<port>`(oep-spec host ガイド §5.3): OEP の probe(`is_oep_device` = USB ID 1209:4F45 の device。oep-transports §3)の口ごとに 1 つ。口は probe に保存した label `S.N`(`S.swdio` / `S.swclk` / `S.swio` / `S.nrst` / `S.rx` / `S.tx`)の `S` で、名前つきの口が無い probe は probe 自身の `oep://<probe>` で出す(線は `--pins` で指す)。`<probe>` は USB の serial(= OEP の unit_id。serial の無い device だけ位置)。attach しないので target は出さない。label は lock 無しで読む(その port のブローカーが動いていればブローカー経由、ここでは起動しない。無ければ HID、vendor bulk、CDC の順に短く開く(HID は他の道具と取り合わない)。応答待ちは 0.3 秒)。読めなければ前回の一覧(runtime dir の `<key>.ports.json`)。properties に vid / pid / port_name(`oep://<probe>` では null)/ port。普通の serial port は開かない。
   - `ch32rv-hid://<topology>`(protocol `ch32rv-hid`): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --device ch32rv-hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology。monitor は無い(断る)。
 - **monitor(ArduinoCore-CH32RV `docs/oep-workflow.ja.md` §6)**: platform.txt の `pluggable_monitor.pattern.<protocol>` に登録し、protocol を `--protocol` で渡す(既定 `serial`)。arduino-cli 1.3.1 は DESCRIBE の `protocol` を port の protocol と照合し、違うと OPEN の前に止まる(ArduinoCore-CH32RV の実測)。
-  - **DESCRIBE**: キーは `port_description`、列挙の値は `value`(arduino-cli が読むキー。0.10.1 までの `port_descriptor` / `values` は arduino-cli に読まれなかった)。設定は `source` / `baudrate` / `dtr` / `rts` / `chip`。
+  - **DESCRIBE**: キーは `port_description`、列挙の値は `value`(arduino-cli が読むキー)。設定は `source` / `baudrate` / `dtr` / `rts` / `chip`。
     - `source`(凍結の表、docs/freeze-decisions.ja.md §3。先頭が既定):
 
       | protocol | source |
@@ -655,7 +654,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
       | `wchlink` | `dmdata`、`dmseq`、`sdi`、`rtt` |
       | `oep` | `dmseq`、`dmdata`、`sdi`、`fixture-uart`、`rtt` |
 
-      `wchlink` に `uart` と `fixture-uart` は無い(uart は Link の CDC を `serial` で開く)。`--protocol` はこの 3 つだけを受け、ほかは usage(exit 2)。
+      `wchlink` に `uart` と `fixture-uart` は無い(uart は Link の CDC を `serial` で開く)。`ch32rv-app` / `ch32rv-isp` / `ch32rv-hid` の source は `serial` と同じ並び。`--protocol` はこの 6 つだけを受け、ほかは usage(exit 2)。
     - `baudrate` / `dtr` / `rts`: `uart` 用。値と既定は組み込みの serial-monitor と同じ(9600、on、on)。他の source でも受けて無視する。開いたまま変えるとすぐ効く。
     - `chip`: `--chip` と同じ意味(板の `monitor_port.serial.chip` を IDE が渡す入口)。値は `auto`(既定、= 指定なし)と DB の family / SKU(`--chip`・core の `build.ch32rv_chip` と同じ綴り)。attach する source(sdi / dmdata / dmseq / rtt)で fail-closed に照合し、合わなければ OPEN が error。`uart` は attach しないので照合しない。
   - **OPEN の address**: `wchlink://<serial>`、`oep://<probe>[/<port>[/<target>]][?via=<経路>]`(`--probe` と同じに解く)、または serial port の path(`--probe` と同じ逆引きで WCH probe を引く)。probe の無い素の serial port は `uart` だけが使え、他の source は OPEN が error。解決・source の open・TCP 接続までを OPEN の中で済ませ、失敗は OPEN の error(arduino-cli は exit 1 で message を出す)。
@@ -664,7 +663,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
   - **`oep://<probe>/<port>`**(protocol `oep`): source は上の表のとおり。その口の label が名指すピンで attach する(下の「口の選び方」)。
   - **OEP の probe**: WCH-Link のものでない serial port で debug の source(sdi / dmdata / dmseq)を選ぶと、その port の probe のブローカー(docs/oep-host.ja.md §7.2、無ければ起動)の client として `oep.target.console` を開く(止めずに attach し、最後の reset の mark から読む。入力は console write)。**`rtt` は ch32rv が host 側で行う**: OEP の console の方式に RTT は無いので、ch32rv が probe の riscv-dm の上で、WCH-Link の時と同じく RAM の control block を探し、poll のたびに hart を一瞬止めて ring を読み書きする(止める / 走らせるは probe の op、RAM は block 読み。poll は 50 ms ごと)。CLI の `monitor --source rtt` も同じ。`uart` は OEP の probe の source ではない(CLI の monitor は exit 24 で、`--source` を省く(target の console)か dmseq / dmdata / sdi / rtt / fixture-uart を案内する)。CLI の monitor は `--source` を省くと、OEP の probe では dmseq の console を読む(mechanism は host が選ぶ)。`chip` は attach で読む chip id と照合する。WCH-Link ではないので attach のクロックの注意は出さない。`uart` は OEP の probe でも port の素通しのまま(知らない port に confirm を送らない。OEP の UART bridge の probe は、session の無い間は bind したストリームを port に生で流す)。
   - **終わり方**: **stdin の EOF で必ず終わる**(arduino-cli は CLOSE / QUIT を送らずに死ぬことがあり、tool は別のプロセスグループなので killpg も届かない)。開いた後に続けられなくなったとき(読み書きの失敗、切り替え先の source が開けない)は `\r\n[ch32rv monitor] stopped: <理由>\r\n` を data として送ってからプロセスごと終わる(arduino-cli は tool の stderr を見せず、落ちても exit 0 で終わるため)。
-  - **attach のクロックの注意**: attach する source(uart 以外)を開いたとき(OPEN と、開いたままの切り替え)に、`[ch32rv monitor] attaching may have changed the target clock (UART baud rate, millis, timers); reset the board to run at its own clock` を data の行で流す。`monitor` の warning `attach-reclocks-target` と同じく、全 target に「可能性」として出す(IDE の利用者が読むのはモニタの窓だけのため)。reset して離す設定(on-close)は入れない(要望が出たら)。
+  - **attach のクロックの注意**: attach する source(uart 以外)を開いたとき(OPEN と、開いたままの切り替え)に、`[ch32rv monitor] attaching may have changed the target clock (UART baud rate, millis, timers); reset the board to run at its own clock` を data の行で流す。`monitor` の warning `attach-reclocks-target` と同じく、全 target に「可能性」として出す(IDE の利用者が読むのはモニタの窓だけのため)。reset して離す設定(on-close)は無い。
   - **lock**: attach する source(sdi / dmdata / dmseq / rtt)は probe 単位の lock を持つ(開いている間の flash は待つか exit 13)。`uart` は lock を取らない(CDC だけを使い、tty は排他)。
   - 実機検証(WCH-LinkE fw 2.22、arduino-cli の代わりに protocol を話す試験 script): V006(K8U6)の SerialEcho を `uart` 115200 で往復、V203 の HelloSDI を `sdi`(serial port 経由・`wchlink://` 経由とも)、L103 の HelloDMDATA を `dmdata` で往復(小文字が大文字で戻る)、開いたままの `dmdata` → `uart` の切り替え、素の serial port(CH343)で `sdi` へ切り替えて理由の行を送って終わる、`chip` の不一致で OPEN が error、stdin の EOF で 0.1 秒以内に exit 0、開いている間は 2 つ目の open が EBUSY。`ch32rv-hid://` は UIAPduino が無く未検証。
 
@@ -675,7 +674,7 @@ ch32rv broker endpoint --probe <sel> [--json]   その probe のブローカー�
 ch32rv broker serve --probe <sel>               ブローカー本体(利用者向けではない。client が切り離して起動する)
 ```
 
-- **ブローカー**(docs/oep-host.ja.md §7.2): probe ごとに 1 つの、誰の子でもないプロセス。probe の transport と session を持ち、ch32rv のコマンドと pytest の `oep_host` は 127.0.0.1 の TCP で OEP を話す client になる。client の session の要求はブローカーが自分で答え、残りは 1 回の pipeline にまとめて probe に送る。接続と plan は client ごとの台帳に持ち、抜けた client の分だけ外す。最後の client が抜けたらすぐ終わる。起動の取り合いは runtime dir の flock で 1 つに、待ち受けは `<runtime>/<key>.oep`(0600)。
+- **ブローカー**(docs/oep-host.ja.md §7.2): probe ごとに 1 つの、誰の子でもないプロセス。probe の transport と session を持ち、ch32rv のコマンドと pytest の `oep_host` は 127.0.0.1 の TCP で OEP を話す client になる。client の session の要求はブローカーが自分で答え、残りは 1 回の pipeline にまとめて probe に送る。接続と plan は client ごとの台帳に持ち、抜けた client の分だけ外す。最後の client が抜けてから 3 秒で終わる(IDE がモニターを閉じてからアップロードを始めるまでの間を保つ)。起動の取り合いは runtime dir の flock で 1 つに、待ち受けは `<runtime>/<key>.oep`(0600)。
   - **公開の口**: `broker endpoint --json` の `result`(`endpoint`、`pid`、`transport`、`version`。ブローカーが動いていなければどれも null。`version` は版を持たない古いブローカーでも null)と、そのブローカーの TCP(127.0.0.1、素の OEP)。runtime dir のファイル(`<key>.oep`、`.broker.lock`、`.sid`、`.broker.log`、`.ports.json`、`.unit`、`<key>.lock`)は内部のもので、名前も中身も約束しない。
   - **ロック**: ブローカーのロックは 1 つ。ch32rv の道具は、open に名前つき拡張 `io.github.ch32-riscv-ug.share`(critical)を付けて相乗りする(monitor、gdb、flash を同時に使える)。拡張の無い OEP の host には、1 つの probe として core のとおりに答える(相乗りの間は locked、force なら相乗りから奪う。詳しくは docs/oep-host.ja.md §7.2)。
   - **版**: ブローカーは自分の ch32rv の版と、client との取り決めの番号(OEP の外の部分。変えたら上げる)を `<key>.oep` に書く。ch32rv の client は、番号と版の両方が自分と同じブローカーとだけ話す。合わなければ §3.7 の「別の版の ch32rv のブローカー」のとおり待って exit 13。この PC のブローカー自身を `oep://<unit_id>?via=tcp:127.0.0.1:<port>` で名指したときも、その port の `<key>.oep` で決め、別の版ならすぐ exit 13。WCH-Link を借りる直接のコマンド(flash など)も同じ。一覧(`probe list`、`arduino discovery`)は別の版のブローカーにはつながず、ブローカーが無いときと同じに扱う。confirm の答えには版を付けない(confirm の答えは 64 byte に収まる、oep-core §7.1)。ch32rv の外の利用者には、WCH-Link のブローカーは fn 0 の describe の `firmware` に `ch32rv-broker <版> protocol <番号>` と書く(WCH-Link を OEP の probe として見せているのはブローカー自身なので)。OEP の probe の前のブローカーは中継なので、`firmware` は probe のものをそのまま返す。
@@ -687,14 +686,14 @@ ch32rv broker serve --probe <sel>               ブローカー本体(利用者�
 - **OEP の probe で使えるコマンド**: `flash`(ch32rv の RAM loader)、`verify`、`read`、`reset`、`target info`、`gdb`(§4.6。止めずに attach し、GDB がつながったら止める。終わったら flash の breakpoint を外し、止まっていれば走らせてから detach)、`arduino monitor`(console / fixture-uart)、`arduino discovery`(`oep://`)。`--probe` は `oep://<probe>[/<port>[/<target>]][?via=<経路>]`(§3.4)、または WCH-Link のものでない serial port の path。**TCP の probe の発見(oep-spec transports §3)**: TCP で待ち受ける probe は DNS-SD の `_oep._tcp` を mDNS で名乗る(TXT `unit_id=`、port は SRV)。ch32rv は 1 回の問い合わせ(224.0.0.251:5353 へ、unicast で答えを受ける。IPv4 だけ)を、IPv4 のすべての口からそれぞれ出して引く(Windows では 0.0.0.0 のソケットだと WSL などの仮想アダプタから出て、Wi-Fi の probe に届かない。Windows で ATOM の probe を見つけて確認済み)。USB に無い probe の `oep://<unit_id>/<port>` と `?via=net` はこれで見つけ、開いた後に describe の unit_id が同じときだけ使う。`probe list` は USB にもある probe に `tcp`(`<address>:<port>`)を足し、ネットワークだけの probe を `network` に出す。`_oep._tcp` は IANA に登録しない名前で他のサービスも名乗りうるので(oep-spec host ガイド §4.1)、名乗った unit_id に短い confirm と describe で答えたものだけを出し、ほかは警告 `oep-tcp-unverified` をつけて除く。`arduino discovery` はネットワークだけの probe の口も `oep://<unit_id>/<port>` で出す(properties の `tcp`)。mDNS は同じリンクの中だけなので、NAT の裏(WSL 2 の既定、VM)では見つからない: そのときは `oep://<unit_id>/<port>?via=tcp:<host>:<port>` で名指す。target の family は attach で読む chip id から引く。
   - **口の選び方**(oep-spec host ガイド §5.3 の解決): attach せずに分かること(probe の unit_id、保存した label が名指す口の名前)だけで 1 つに絞り、残りが 1 つでなければ止める。家系(`--chip`)で口を選ぶことはしない(家系は、口の label から wire が決まらないときに wire を決めるのにだけ使う)。
     - `oep://<probe>/<port>`: その口。その名前の口が無ければ exit 10(口の一覧つき)。
-    - `oep://<probe>` だけ: probe 自身を指す。「どれでも」を表す書き方は無い。候補が 1 つのときに口を省くのは、この道具の便利さ(§5.3 が許す)。
+    - `oep://<probe>` だけ: probe 自身を指す。「どれでも」を表す書き方は無い。候補が 1 つのときに口を省くのは、この道具の便利さ(host ガイド §5.3 が許す)。
       - 名前つきの口がちょうど 1 つなら、そこを使う。
       - 名前つきの口が無ければ、`--pins` で線を指す(無ければ exit 2)。
       - 2 つ以上なら exit 23(一覧つき)。
     - `oep://<probe>/<port>/<target>`(target は `<family 小文字>-<UID の 16 進>`): その口で作業に使う接続を作り、書き込みなどの前に同じ接続で UID を読んで照合する。違えば何もせず exit 23。
     - アドレスではない serial port の path は、口が 1 つならそこを使い、2 つ以上なら一覧つきで exit 23。
     - wire は口の label で決める(`S.swio` があれば swio、`S.swclk` があれば rvswd)。決まらなければ `--chip` の家系から。ピンはその口の `S.swdio` / `S.swclk` / `S.swio`。probe が組を 1 つだけ許す wire はピンを付けずに attach し、host がピンを選ぶ wire で label が無ければ「ピンを名指して」と止める(scan で組を探すことはしない)。fixture の UART は `S.rx` / `S.tx`、NRST は `S.nrst`(口が 1 つなら素の `nrst` も、最後に firmware の label)。
-    - rvswd の線の休ませ方(oep-spec debug §3.1、3b32b12): `--chip`(またはアドレスの target)が CH32L103 なら idle_clock low を明示する。指定が無ければ probe が決め(設定 `rvswd-rest`、無ければ target_id の系統)、attach の応答の休ませ方を読む。L103 なのに low でない接続(設定で自動を切った probe や古い firmware)は、low を明示して attach し直す。
+    - rvswd の線の休ませ方(oep-spec oep-if-debug §3): `--chip`(またはアドレスの target)が CH32L103 なら idle_clock low を明示する。指定が無ければ probe が決め(設定 `channel.{}.rest`、無いか auto なら target_id の系統)、attach の応答の休ませ方を読む。L103 なのに low でない接続(設定で自動を切った probe や古い firmware)は、low を明示して attach し直す。
 
 ## 5. 呼び出し例
 
@@ -735,20 +734,19 @@ ch32rv doctor                             # 動かない時の一手目
 ## 7. 参照
 
 - [requirements.ja.md](requirements.ja.md)(吸収マップと根拠)
-- [原設計案 §4・§6](../../note/research/new-programming-tool-design.ja.md)
 - `../../ArduinoCore-CH32RV/platform.txt`(recipe 制約の現物)
 - [Arduino Pluggable Discovery / Monitor specification](https://arduino.github.io/arduino-cli/latest/pluggable-discovery-specification/)
 
 ### H417 のコア選択
 
-`ch32rv --probe serial:49808F06CE30 --core 1 dbg reg read csr:0xf14` は core 1 の mhartid を読む。`dbg regs` / `dbg halt` / `dbg resume` / `dbg step` / `dbg reg` / `dbg dmi` と `read` は、同じ attach セッションで選択した hart を扱う。DMCONTROL の halt / resume / reset-ack 書き込みでも選択を保持する。`--core 0` は従来の経路を使う。
+`ch32rv --probe serial:49808F06CE30 --core 1 dbg reg read csr:0xf14` は core 1 の mhartid を読む。`dbg regs` / `dbg halt` / `dbg resume` / `dbg step` / `dbg reg` / `dbg dmi` と `read` は、同じ attach セッションで選択した hart を扱う。DMCONTROL の halt / resume / reset-ack 書き込みでも選択を保持する。`--core 0` は通常の経路を使う。
 
-core 1 の `read` は、LinkE の bulk read による暗黙のコア切替を避けるため DMI 経由で行う。RAM は `--range` で実アドレスを指定する（H417 の各 RAM bank を単一の `--region ram` で表す対応は別課題）。Flash・option byte の変更、システム reset、GDB・monitor 等の core 1 対応はまだ含まない。raw `dbg dmi write` は expert 操作で、DMCONTROL の直接変更も transport が保持する hartsel に反映する。
+core 1 の `read` は、LinkE の bulk read による暗黙のコア切替を避けるため DMI 経由で行う。RAM は `--range` で実アドレスを指定する(H417 の RAM bank を `--region ram` では指せない)。Flash・option byte の変更、システム reset、GDB・monitor などは core 1 に対応しない(exit 24)。raw `dbg dmi write` は expert 操作で、DMCONTROL の直接変更も transport が保持する hartsel に反映する。
 
 WCH-Link の AttachChip / DetachChip は probe firmware 自身の操作を含む。`--core 1` はその副作用や他コアの状態を完全に隔離する保証ではない。選択していないコアを halt / resume しないことを USB 上の host 発行 DMCONTROL で検証する。
 
 選ばなかったコアの扱い: LinkE の AttachChip は、選ばなかった hart も止め、DetachChip では放さない。そのままでは `--core 0 read` の後に core 1(V5F)が、`--core 1 dbg resume` の後に core 0(V3F)が止まったまま残る。
 
-- `dbg` 以外のコマンド(`read`、`flash`、`reset`、`target info` など)は、接続した直後に各 hart を調べ、終わるときに「接続する前に走っていた hart」だけを resume する。走っていたとみなすのは、走っている hart と、pc が 0 でない所で止まっている hart(AttachChip に止められたもの)。DMSTATUS の `allhavereset` は判定に使わない(reset の後に core 0 の WAKEIP で起きた core 1 は、立てたまま走る。resume のときに ack する)。終わるときにも同じ条件をもう一度確かめる。core 0 を選んだときの core 0 は従来どおり LinkE に任せる(`flash --reset none` などはそのまま止めておく)。**reset から止まっている hart は resume しない**: H417 の core 1 は reset の後 pc 0(V3F の image)で止まっていて、resume すると両コアが core 0 のスケッチを走らせた(7b42aff の `--release-dm reset` で ArduinoCore-CH32RV が実測)。そのため、別の session の `dbg halt` で止めた hart も、`dbg` 以外のコマンドの後には走り出す。
+- `dbg` 以外のコマンド(`read`、`flash`、`reset`、`target info` など)は、接続した直後に各 hart を調べ、終わるときに「接続する前に走っていた hart」だけを resume する。走っていたとみなすのは、走っている hart と、pc が 0 でない所で止まっている hart(AttachChip に止められたもの)。DMSTATUS の `allhavereset` は判定に使わない(reset の後に core 0 の WAKEIP で起きた core 1 は、立てたまま走る。resume のときに ack する)。終わるときにも同じ条件をもう一度確かめる。core 0 を選んだときの core 0 は LinkE に任せる(`flash --reset none` などはそのまま止めておく)。**reset から止まっている hart は resume しない**: H417 の core 1 は reset の後 pc 0(V3F の image)で止まっていて、resume すると両コアが core 0 のスケッチを走らせた(7b42aff の `--release-dm reset` で ArduinoCore-CH32RV が実測)。そのため、別の session の `dbg halt` で止めた hart も、`dbg` 以外のコマンドの後には走り出す。
 - `dbg` のコマンドは、選ばなかったコアに触らない(上の約束どおり)。両方を走らせるには `dbg resume --all` を使う。選んだ hart を resume し、終わるときに他方も resume する。
 - デバッガの状態を残さずに試すには `--release-dm`(§2 の表)を使う。

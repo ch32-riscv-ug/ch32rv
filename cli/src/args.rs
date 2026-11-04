@@ -608,7 +608,7 @@ pub enum IspCmd {
     /// Chip / BTVER / UID / protection state
     Info,
     /// Put the chip in its bootloader: `--via probe` sets the boot mode over the debug wire
-    /// of `--probe` and resets (CH32X03x)
+    /// of `--probe` and resets (CH32X03x, CH32H417)
     Enter {
         #[arg(long, value_enum, default_value = "probe")]
         via: IspVia,

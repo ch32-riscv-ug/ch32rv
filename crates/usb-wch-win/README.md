@@ -44,7 +44,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 ## Verified
 
 - WCH-Link (CH549, fw 2.12) and WCH-LinkE (fw 2.22), Windows 11 x64, driver
-  `wchlinkwdm.inf` / `WCHLinkW64.SYS` (2026-09-02).
+  `wchlinkwdm.inf` / `WCHLinkW64.SYS`.
 - Interface GUID `{F8D5EDCA-B647-4E9C-9BD3-A5BD2328D55C}` (`GUID_CH375`).
 
 ## Caveats

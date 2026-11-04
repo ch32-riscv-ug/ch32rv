@@ -1,8 +1,8 @@
 //! en: A minimal RISC-V RV32 architecture for gdbstub: 32 integer GPRs plus the PC, all u32,
 //! in the order GDB's `riscv:rv32` core.xml expects (x0..x31, then pc). FPU/CSR registers are
-//! not exposed yet (docs/architecture.ja.md §1.3 notes V4F FPU needs a custom Arch later).
+//! not exposed.
 //! ja: gdbstub 用の最小 RISC-V RV32 定義。GPR 32 本 + PC(すべて u32)を GDB の core.xml 順
-//! (x0..x31, pc)で並べる。FPU/CSR は未対応(V4F FPU は将来の課題)。
+//! (x0..x31, pc)で並べる。FPU/CSR は出さない。
 
 use core::num::NonZeroUsize;
 

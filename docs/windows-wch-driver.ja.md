@@ -1,231 +1,102 @@
-# Windows で WCH 標準ドライバ経由アクセス(WinUSB 非依存)— 作業引き継ぎ
+# Windows: WCH 純正ドライバのまま WCH-Link を使う(CH375 IOCTL 経路)
 
-- 状態: **実装・実機検証完了(2026-09-02)**。スパイク成功(§5.1)→ `ch32rv-usb-wch-win` crate 化 →
-  `ch32rv-usb` へのフォールバック統合(§4.2)→ **全 5 target で backup / chip erase / flash /
-  readback verify 成功(§4.3)**。残: 安定後の英語 main + `.ja` twin 化。
-- 対象読者: Windows ネイティブ(Rust 導入済み)で VSCode を開いて続きを実装・検証する人。
-- 目的: **ユーザーが既に入れている WCH 標準ドライバ(`WCHLink_A64`)のまま、Zadig/WinUSB 置換なしで** ch32rv が WCH-Link と通信できる経路を追加する。ArduinoCore-CH32RV 依頼 B-2 の Windows 対応の核。
+Windows で、利用者が既に入れている WCH 純正ドライバを WinUSB に置き換えずに(Zadig 不要)、ch32rv が WCH-Link と通信する経路。実装は `ch32rv-usb-wch-win`(`crates/usb-wch-win`)で、`ch32rv-usb`(`crates/usb`)が Windows でだけフォールバックとして使う。
 
-## 1. なぜ必要か(WSL 側で実測した事実)
+## 1. なぜこの経路があるか
 
-- ch32rv は USB を **nusb(Windows では WinUSB 専用)**で叩く。
-- WCH-LinkUtility を入れた Windows では、WCH-Link の **vendor interface(MI_00)に WCH 純正ドライバ `WCHLink_A64`(class `WCH`, oem91.inf)** が当たる(MI_01 CDC は `usbser`=COM)。
-- そのため nusb は `failed to open device: incompatible driver is installed for this interface` で **開けない**。libusb(WinUSB/libusbK/libusb-win32 のみ対応)も同様に不可。
-- Zadig で WinUSB/libusbK に**置き換えれば**開けるが、それは標準ドライバの上書き = 避けたい方向(WCH-LinkUtility が使えなくなる)。
-- → 標準ドライバのまま喋る道は **WCH の CH375 系ドライバの IOCTL を直接叩く**こと。**proprietary DLL は不要**(標準 Win32 + WCH の IOCTL 定数 + GUID のみ)。
+- ch32rv は USB を nusb で開く。nusb は Windows では WinUSB 専用。
+- WCH-LinkUtility(または WCH のドライバパッケージ)を入れた Windows では、WCH-Link の vendor interface(MI_00)に WCH 純正ドライバ(`wchlinkwdm.inf`、カーネルドライバ `WCHLinkW64.SYS`、class `WCH`)が付く。CDC の MI_01 は `usbser`(COM)。
+- その interface は nusb では開けない(`incompatible driver is installed for this interface`)。libusb も WinUSB / libusbK / libusb-win32 しか扱えないので同じ。
+- Zadig で WinUSB に置き換えれば開けるが、今度は WCH-LinkUtility が使えなくなる。WCH 純正ドライバと WinUSB は排他。
+- 純正ドライバのまま話す方法は、WCH の CH375 系ドライバの IOCTL を `DeviceIoControl` で直接出すこと。必要なのは標準の Win32 API と、WCH ドライバの IOCTL 番号・interface GUID だけ。
 
-現状の Windows での ch32rv 挙動(nusb 経路、リリース 0.2.0 exe を interop 実行で確認済み):
-- `probe list` = 列挙は成功(serial/topology 出る)。
-- `probe info` / `target info` = `incompatible driver ... for this interface` で失敗(上記のとおり)。
+### 1.1 DLL ではなく IOCTL を使う理由
 
-## 2. 先行事例サーベイ(2026-09-02、実ソース確認)
+WCH は `WCHLinkDLL.dll`(`CH375OpenDevice` / `CH375ReadEndP` / `CH375WriteEndP` などの stdcall API)も配る。wlink はこの DLL を読み込む方式で、そのため 32bit(x86)ビルドでしか使えない。
 
-**「有名ツールは WCH 標準ドライバ非対応」は誤りだった。wlink は対応済み。** まとめ:
+`WCHLinkDLL.dll` はドライバパッケージ内(`DriverStore\FileRepository\wchlinkwdm.inf_amd64_*\`)にも `SysWOW64\` にもあるが、PE はどちらも x86 で、64bit 版は無い(amd64 パッケージでも 64bit なのはカーネルドライバ `WCHLinkW64.SYS` だけ)。64bit プロセスは 32bit DLL を読めない。
 
-| ツール | 言語 | WCH 標準ドライバ経路 | 方式 |
-|---|---|---|---|
-| **wlink**(ch32-rs/wlink) | **Rust** | **対応済み** | **`WCHLinkDLL.dll`(WCH の DLL)を libloading で読み込み、CH375* stdcall API。`USBDeviceBackend` trait で nusb 系と切替。`cfg(target_os="windows", target_arch="x86")`= 32bit 限定** |
-| minichlink fork(cw2/ch32v003fun `experimental/...`) | C | 対応(WIP) | **DLL 不要**。WCH ドライバの **IOCTL を DeviceIoControl 直叩き**(§4) |
-| minichlink 上流(cnlohr/ch32fun) | C | ✕ | libusb のみ(`CH375`/`DeviceIoControl` 参照 0、`libusb_open` のみ) |
-| probe-rs | Rust | ✕ | nusb=WinUSB のみ(公式ドライバでは動かず Zadig 必須と明記) |
-| wchisp | Rust | ✕ | WinUSB/libusb |
+ch32rv は x86_64 で配るので、DLL を使わず IOCTL を直接出す(minichlink の実験ブランチ `cw2/ch32v003fun` の `experimental/minichlink-wchlinkdll-driver` と同じ方式)。DLL が要らず、bitness にも依存しない。
 
-- wlink #37「Official Windows Driver support」(ユーザー要望「libusb/winusb のインストールは受け入れられない」)→ maintainer が **「The basic Windows driver is done.」で実装・close**。→ **ch32rv は Rust なので wlink が直接の参照実装**になる。
-- 生態系の共通認識:**WCH 純正ドライバと WinUSB は排他**(片方を Zadig で入れると WCH-LinkUtility 側が使えなくなる)。だから「標準ドライバのまま使いたい」需要が実在し、wlink がそれに応えた。
+## 2. 構成
 
-### 2 つの実装アプローチ
-- **A) WCH の DLL(`WCHLinkDLL.dll`)経由**(= wlink)。API は明快・WCH 提供で安定。**ただし DLL が 32bit stdcall = 呼ぶ側も 32bit(x86)でないとロード不可**(64bit プロセスは 32bit DLL を読めない)。ch32rv は x86_64 配布なので、この経路のために 32bit ビルドを別途出すか、**64bit の WCHLinkDLL が提供されているか要確認**。
-- **B) IOCTL 直叩き(`DeviceIoControl`)**(= minichlink fork)。**DLL 不要・arch 非依存(64bit で動く)**。ただし IOCTL 定数は WCH ドライバのリバース(§4)。**ch32rv の 64bit 配布と相性が良いのはこちら。**
+| 層 | 場所 | 役割 |
+|---|---|---|
+| `ch32rv-usb-wch-win` | `crates/usb-wch-win` | CH375 系ドライバの device interface の列挙、open、endpoint 番号指定の bulk 転送。WCH-Link の protocol は持たない |
+| `ch32rv-usb` | `crates/usb/src/device.rs` | `UsbInterface` の backend の 1 つ(`Ch375`)。nusb で開けない device に限ってこちらを使う |
+| 上位(`ch32rv-wchlink` / `ch32rv-dmi` / `ch32rv-flash` ほか) | | 変更なし。差し替わるのは USB の bulk トランスポートだけ |
 
-判断材料: **64bit のまま出したいなら B、WCH の supported API に乗るなら A(要 32bit or 64bit DLL 確認)**。まず A の DLL の bitness と 64bit 版有無を実機で確認するのが早い。
+## 3. 仕組み
 
-**→ 確認済み(2026-09-02、実機)**: `WCHLinkDLL.DLL` は
-`C:\WINDOWS\System32\DriverStore\FileRepository\wchlinkwdm.inf_amd64_28c146f8d6c53b69\`(ドライバパッケージ同梱)と
-`C:\WINDOWS\SysWOW64\`(= 32bit 配置)の 2 箇所にあり、**PE ヘッダはどちらも x86(32bit)。64bit 版は存在しない**
-(amd64 パッケージでもカーネルドライバ `WCHLinkW64.SYS` だけが 64bit で、DLL は 32bit のまま)。→ **B(IOCTL 直叩き)を採用**。
+### 3.1 列挙と open
 
-### wlink の DLL API(A を採る場合の参照)
-`WCHLinkDLL.dll`(全て `extern "stdcall"`):
-- `CH375OpenDevice(iIndex: u32) -> handle(u32)` / `CH375CloseDevice(iIndex)`
-- `CH375GetDeviceDescr(iIndex, *UsbDeviceDescriptor, *len) -> bool`(VID/PID で選別)
-- `CH375ReadEndP(iIndex, ep: u32, *buf, *len) -> bool` / `CH375WriteEndP(iIndex, ep: u32, *buf, *len) -> bool`(ep に 0x81/0x01/0x82/0x02 を渡す)
-- `CH375SetTimeoutEx(...)` / `CH375GetVersion()` / `CH375GetDrvVersion()`
-- wlink 実装: `src/usb_device.rs` の `mod ch375_driver`(<https://github.com/ch32-rs/wlink/blob/main/src/usb_device.rs>)。`USBDeviceBackend { open_nth, read_endpoint(ep,buf), write_endpoint(ep,buf), ... }` trait で nusb backend と統一。
-
-**注**: `CH375*` は WCH の CH375 汎用 USB ドライバ API。EP 番号ベースなので ch32rv の `UsbInterface`(EP 0x01/0x81/0x02/0x82)にほぼ 1:1 で対応する。
-
-## 3. アプローチ B の詳細(IOCTL 直叩き、DLL 不要・64bit 可)
-
-### 3.1 デバイスを開く(SetupAPI + CreateFile)
-- device interface GUID: **`{F8D5EDCA-B647-4E9C-9BD3-A5BD2328D55C}`**(WCH CH375 系の interface)。
-  **→ 実機確認済み(2026-09-02)**: `pnputil /enum-interfaces` で、接続中の全 WCH-Link MI_00 にこの GUID の
-  interface が Enabled で存在(5 台分)。なお INF(`wchlinkwdm.inf`)はレジストリ経由で第 2 の GUID
-  `{CDB3B5AD-293B-4663-AA36-1AAE46463776}`(`DeviceInterfaceGUIDs`)も登録するが、F8D5EDCA 側で動作する。
-- `SetupDiGetClassDevs(&GUID, NULL, NULL, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)`
-  → `SetupDiEnumDeviceInterfaces(..., index, ...)`(index=0,1,... で複数 probe)
-  → `SetupDiGetDeviceInterfaceDetail`(DevicePath 取得)
-  → `CreateFileW(DevicePath, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)` → `HANDLE`
+- device interface GUID: `{F8D5EDCA-B647-4E9C-9BD3-A5BD2328D55C}`(`GUID_CH375`)。WCH の CH375 系ドライバが登録する interface で、接続中の WCH-Link の MI_00 ごとに 1 つある。
+- `wchlinkwdm.inf` はレジストリ(`DeviceInterfaceGUIDs`)経由でもう 1 つの GUID `{CDB3B5AD-293B-4663-AA36-1AAE46463776}`(`GUID_WCHLINK_INF`)も登録する。ch32rv が使うのは `GUID_CH375` で、もう一方は定数として置いてあるだけ。
+- 列挙は cfgmgr32 の `CM_Get_Device_Interface_List_SizeW` → `CM_Get_Device_Interface_ListW`(`CM_GET_DEVICE_INTERFACE_LIST_PRESENT`。抜いた device は返らない)。サイズ取得と取得の間に hotplug があると `CR_BUFFER_SMALL` になるので、数回やり直す。
+- open は `CreateFileW(path, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)`。handle は drop で `CloseHandle` する。管理者権限は要らない。
+- serial との対応: interface の instance ID(`USB\VID_1A86&PID_8010&MI_00\6&27b6deca&0&0000` など)には serial が入らない。serial は composite の親が持つ。`parent_instance_id()` が `CM_Locate_DevNodeW` → `CM_Get_Parent` → `CM_Get_Device_IDW` で親の `USB\VID_xxxx&PID_xxxx\<SERIAL>` を返す。
 
 ### 3.2 bulk 転送(DeviceIoControl)
-- `IOCTL_CH375_COMMAND = 0x223CDC`
-  (= `CTL_CODE(FILE_DEVICE_UNKNOWN=0x22, 0x0f37, METHOD_BUFFERED=0, FILE_ANY_ACCESS=0)`
-   = `(0x22<<16)|(0<<14)|(0x0f37<<2)|0`)
-- コマンド構造体(C):
+
+- IOCTL: `IOCTL_CH375_COMMAND = 0x223CDC`(`CTL_CODE(FILE_DEVICE_UNKNOWN=0x22, 0x0f37, METHOD_BUFFERED, FILE_ANY_ACCESS)`)。
+- 入出力は同じ構造体(先頭 8 byte がヘッダ、payload は最大 64 byte):
+
   ```c
-  #define mCH375_PACKET_LENGTH 64
   typedef struct _WIN32_COMMAND {
-      ULONG mFunction;                 // 方向|パイプ
-      ULONG mLength;                   // データ長
-      UCHAR mBuffer[mCH375_PACKET_LENGTH]; // 64
-  } WIN32_COMMAND;                     // 先頭 8 byte がヘッダ
+      ULONG mFunction;   // 方向 | pipe
+      ULONG mLength;     // データ長
+      UCHAR mBuffer[64];
+  } WIN32_COMMAND;
   ```
-- `mFunction = (pipe - 1) | 方向フラグ`(方向: **write=`0x20000`, read=`0x10000`**)。pipe は endpoint 番号:
+
+- `mFunction = 方向 | (endpoint 番号 - 1)`。方向は write = `0x20000`、read = `0x10000`。endpoint の方向 bit(0x80)は見ず、方向は write / read の呼び分けで決まる(`CH375WriteEndP` / `CH375ReadEndP` と同じ)。
+
   | 論理 | endpoint | mFunction |
   |---|---|---|
-  | cmd out (0x01) | pipe 1 | `0x20000` |
-  | cmd in  (0x81) | pipe 1 | `0x10000` |
-  | data out(0x02) | pipe 2 | `0x20001` |
-  | data in (0x82) | pipe 2 | `0x10001` |
-- **Write**: `mLength=len; memcpy(mBuffer, data, len);` → `DeviceIoControl(h, IOCTL, pCmd, mLength+8, pCmd, 64, &ret, NULL)`
-  (事例の出力バッファ長 `64` は構造体 72B と不整合に見えるが、**スパイクでは `64+8` を渡して動作確認済み**。write の `ret` は 12 = ヘッダ 8 + 送信 4 だった)
-- **Read**:  `mLength=64;` → `DeviceIoControl(h, IOCTL, pCmd, 8, pCmd, 64+8, &ret, NULL)`; `ret>8 && mLength` なら受信 = `mBuffer[..mLength]`
-- **64byte packet 制約**: WCH-Link の data EP は 1 転送最大 4096B。IOCTL は 64B/回なので **64B 単位に chunk 分割**が要る(cmd EP は元々 ~小さいので影響小、data EP=flash 書込で要対応)。要実測(1 IOCTL で 64 超を扱えるか確認)。
+  | cmd out | 0x01 | `0x20000` |
+  | cmd in | 0x81 | `0x10000` |
+  | data out | 0x02 | `0x20001` |
+  | data in | 0x82 | `0x10001` |
 
-## 4. ch32rv への実装方針
+- write(`write_pipe`): `mLength` = 送る長さ、`mBuffer` にデータを入れ、入力長 `8 + mLength`、出力バッファ 72 byte で出す。戻り値 `ret` は `8 + 受け付けた長さ`。送った長さと違えば `ShortWrite` エラー。
+- read(`read_pipe`): `mLength` = 欲しい長さ(64 以下)、入力長 8、出力バッファ 72 byte で出す。返った `mLength` の分が `mBuffer` に入る。
+- 64 byte 単位: 1 回の IOCTL は payload 64 byte まで。`write_pipe` は 64 byte ごとに分けて出す。`read_pipe` は、バッファが埋まるか short packet(64 byte 未満)が来るまで繰り返す。WCH-Link の flash 書込は data endpoint に 128 / 256 byte(family の packet サイズ)を送るが、この分割で正しく届く。
 
-- **参照実装 = wlink**(Rust、同じ EP ベース)。`USBDeviceBackend { open_nth, read_endpoint(ep,buf), write_endpoint(ep,buf), .. }` trait 構成をほぼ踏襲できる。**A/B は B(IOCTL)に確定**(DLL は 32bit のみ、§2。feasibility は §5.1 で実証済み)。
-- **上位(`ch32rv-wchlink` / `ch32rv-dmi` / `ch32rv-flash`)は無改変**。差し替えるのは USB bulk トランスポートだけ。
-- **`ch32rv-usb::UsbInterface` を enum 化**して 2 経路を dispatch(最小改修):
-  ```
-  enum UsbInterface { Nusb(NusbInterface), Ch375(Ch375Device) }   // write/read/write_data/read_data を分岐
-  ```
-- **unsafe FFI の隔離**: CH375 コードは `unsafe` 必須。workspace lint は `unsafe_code = forbid`(inner `#[allow]` では外せない)。→ **Windows 専用の別 crate** に閉じ込め、`ch32rv-usb` が cfg(windows) で依存する。architecture §2 の「別バックエンド crate は core 依存を増やさず隔離」枠に合致(旧「nusb のみ/libusb 不採用」規定は新条件で更新可、とユーザー合意済み)。
-  **この crate は ch32rv 専用にせず、他の Rust 製ツールからも使える汎用粒度で公開する(2026-09-02 ユーザー決定)** — 詳細は §4.1。
-- **ランタイム選択(Windows)**: まず nusb(WinUSB)で open を試し、`incompatible driver` かつ CH375 GUID で当該 serial が見つかるなら CH375 経路にフォールバック。Linux/macOS は従来どおり nusb のみ。
-- 依存: `windows-sys`(SetupAPI / ioapiset DeviceIoControl / fileapi CreateFileW / handleapi CloseHandle。features を追加)。既に依存ツリーに `windows-sys` あり。
+## 4. ch32rv での使い方
 
-### 4.1 汎用 crate として公開(検討中 → 方針決定 2026-09-02)
+### 4.1 `ch32rv-usb-wch-win` crate
 
-WCH-Link 専用ではなく「**WCH 標準ドライバ(CH375 系 IOCTL)で USB device を叩く汎用 crate**」として
-切り出し、crates.io に公開する。wlink / wchisp / minichlink 系など、同じ「Zadig 非依存で Windows 対応
-したい」需要を持つツールが 64bit のまま使える(= `WCHLinkDLL.dll` の 64bit Rust 代替)。
+- protocol に依存しない部品: 列挙(`list_interfaces(&guid)` → `DeviceInterface`)、`DeviceInterface::{path, instance_id, parent_instance_id, open}`、`Ch375Device::{write_pipe, read_pipe}`、GUID 定数(`GUID_CH375` / `GUID_WCHLINK_INF`)。GUID は `windows-sys` の型でなく独自の `InterfaceGuid`。
+- WCH-Link のフレームなどは持たない。他のツールも WCH の device を純正ドライバのまま開くのに使える。ただし他の ch32rv の crate と同じく CLI の部品として publish しており、API と semver は約束しない(crate の README)。
+- 名前は suite の prefix に揃えて `ch32rv-usb-wch-win`([naming.ja.md](naming.ja.md))。見つけやすさは keywords(`wch`, `ch375`, `wch-link`, `usb`, `windows`)と README で補う。
+- version は workspace と共通。publish の順は `ch32rv-usb` より前([release-plan.ja.md](release-plan.ja.md))。
+- `unsafe` はこの crate に閉じ込める。workspace の lint は `unsafe_code = forbid`(内側の `#[allow]` では外せない)なので、この crate だけ `[lints]` を workspace から継承せず、clippy の deny(`unwrap_used` / `expect_used` / `todo` / `unimplemented` / `panic`)を手で同じに保つ([architecture.ja.md](architecture.ja.md) §2)。
+- 依存は `windows-sys`(cfgmgr32、`DeviceIoControl`、`CreateFileW`、`CloseHandle`)。Windows 以外では空の crate としてコンパイルされる(IOCTL の番号と計算だけは全 OS で unit test する)。使う側は `[target.'cfg(windows)'.dependencies]` で依存する。
+- 実機での最小確認: `examples/wch_probe_info.rs` が、見つかった各 WCH-Link に GetProbeInfo(`81 0d 01 01`)を 1 往復送って応答を出す。
 
-- **crate 名(確定 2026-09-02、ユーザー決定)**: **`ch32rv-usb-wch-win`**(directory `crates/usb-wch-win`)。
-  suite prefix の一貫性(naming.ja.md)を優先し、汎用利用の発見性は keywords(`wch`, `ch375`,
-  `wch-link`, `usb`, `windows`)と README で確保する。独立名候補(`wch-ch375` / `ch375` /
-  `ch375-driver`、いずれも 2026-09-02 時点で crates.io 空き)は不採用。naming.ja.md への追記は統合時。
-- **API 粒度**(WCH-Link 固有の知識を持たない層):
-  - interface GUID 定数(`{F8D5EDCA-...}` と INF 登録の `{CDB3B5AD-...}`)+ 任意 GUID での列挙
-    (`CM_Get_Device_Interface_ListW`)。
-  - `open(path)` / `open_nth(guid, n)` → `Ch375Device`(RAII で CloseHandle)。
-  - `write_pipe(ep: u8, data)` / `read_pipe(ep: u8, buf)`(EP 番号 → pipe 変換と §3.2 の
-    WIN32_COMMAND/IOCTL を内包。64B 超は crate 内で chunk 処理 — 上限挙動は §5.1 の残項目)。
-  - **serial との対応付け**: interface path の instance ID(`6&27b6deca&0&0000` 等)には serial が
-    含まれない(composite 親が持つ)ため、`CM_Locate_DevNodeW` → `CM_Get_Parent` → `CM_Get_Device_IDW`
-    で親の `USB\VID_xxxx&PID_xxxx\<SERIAL>` を引くヘルパを crate 側に置く。ch32rv 側はこれで
-    nusb 列挙(serial 基準)と突き合わせる。
-  - protocol(WCH-Link フレーム等)は一切持たない。wlink 的 trait 統合も利用側の仕事。
-- **配置と版**: 当面この repo の workspace member(`crates/usb-wch-win`)。`[lints]` は workspace を
-  継承せず crate 独自(`unsafe` 許可)。**version は workspace 共有(2026-09-02 ユーザー決定)** —
-  suite として統一し、他ツールからは単に部品として使えればよい。release-plan §1 の
-  publish 依存順には `ch32rv-usb` より前に追加。
-- **cfg**: crate 自体を Windows 専用とし(他 OS ではコンパイル対象外)、利用側が
-  `[target.'cfg(windows)'.dependencies]` で gate する。
+### 4.2 `ch32rv-usb` のフォールバック
 
-### 4.2 統合結果(2026-09-02、実装・実機検証済み)
+- `UsbInterface` の backend は `Nusb` / `Ch375`(Windows のみ)/ `Replay`。`write` / `read` / `write_data` / `read_data` が backend で分かれる。`--capture` の記録は backend の外側で取るので、どちらの経路でも同じ fixture になる。
+- `open_interface` はまず nusb で開く。失敗したら(Windows のみ)CH375 側を試す。「incompatible driver」の文言は安定した API ではないので、文言は見ず、nusb の open の失敗全般で試す。
+- CH375 側の条件: interface 0(MI_00)であること、device が serial を持つこと。`GUID_CH375` の interface を列挙し、`parent_instance_id()` の末尾の serial が一致する(大文字小文字は区別しない)ものを開く。endpoint は claim せず、転送ごとに渡す。
+- 見つからない・開けないときは、nusb の元のエラーをそのまま返す(ドライバ以外の原因も分かるように)。
+- Linux / macOS は nusb だけ。
+- device 全体に `usbccgp` / WinUSB / CH375 系以外のドライバが付いている(WSL に共有中の usbipd の stub など)device は、どちらの経路でも開けない。`arduino discovery` はこれを「WCH-Link <sn> (cannot open: driver <name>)」と出し、properties に `driver` を入れる(`UsbDeviceInfo::foreign_driver`)。
 
-- `crates/usb-wch-win` = `ch32rv-usb-wch-win`(§4.1 の API どおり)+ `crates/usb` の
-  `UsbInterface` を enum backend 化(`Nusb`(Box)/ `Ch375`、後者は cfg(windows) のみ)。
-  capture 記録は enum の外側で従来どおり両経路に効く。
-- フォールバック条件: `open_interface` で **nusb open が失敗したら**(「incompatible driver」
-  メッセージ文字列は安定 API でないため failure 全般で)、CH375 側を列挙し
-  `parent_instance_id()` の serial 一致で同一 device を特定して open。不成立なら nusb の
-  一次エラーをそのまま返す。interface 0(MI_00)以外はフォールバック対象外。
-- CH375 経路は timeout 制御なし(ブロッキング)。呼び出し元は全て request/reply パターン
-  なので許容(`UsbInterface` の doc に明記)。
-- **実機検証(WCH 純正ドライバのまま、Zadig なし)**: `probe list`(firmware 列まで取得)、
-  `probe info`(CH549 + LinkE)、**`target info` がフルスタックで成功**
-  (attach → DMI → ChipInfo: CH32V307VCT6、UID・flash 容量・配線まで正常)。
+## 5. 制約と注意
 
-### 4.3 flash 実書込の検証(2026-09-02、全 5 target 成功)
+- **timeout が無い**: CH375 経路の転送はブロックする。ドライバに検証済みの timeout 制御が無いため。呼び出し側はすべて request / reply の形で、応答が来ると決まっているときだけ読むので問題にならない。投機的な read はこの経路ではできない(`UsbInterface` の doc に書いてある)。
+- **遅い**: 1 回の IOCTL は 64 byte まで。往復の回数がそのまま時間になるので、WinUSB の経路より遅い。
+- **usbipd**: WCH-Link を WSL に attach していると、usbipd の stub が device を持つので CH375 経路も使えない。`usbipd detach --busid <X>` で Windows に返す(`usbipd list` の状態が `Shared` になれば WCH ドライバの持ち物)。detach の直後は再列挙でしばらく不安定なので、`Shared` に落ち着いてから使う。`usbipd bind --force` は stub を恒久的に上書きするので使わない。
+- **WinUSB が付いた device**: WCH ドライバが入っていない機器などで interface に WinUSB が付いていれば、従来どおり nusb の経路で開く。CH375 経路は WCH ドライバが先に入っている機器との共存のためのもの。
+- **上位は変えない**: 違いは USB の bulk トランスポートの境界だけに閉じる。
 
-各 target を「read ×2(ハッシュ一致確認)→ chip erase → 書き戻し(verify=readback)」で往復。
-**Link(CH549)と LinkE の差は出なかった。**
+Windows 11 の WCH 純正ドライバ(Zadig なし)で、WCH-Link(CH549、fw 2.12)と WCH-LinkE(fw 2.22)を使い、`probe list` / `probe info` / `target info` と、CH32V003 / V103 / L103 / V203 / V307 の flash 往復(読み出し → chip erase → 書込 → readback verify)を確認している(CHANGELOG)。
 
-| target | probe | flash | read 1 回 | flash(erase+program+verify) |
-|---|---|---|---|---|
-| CH32V003F4P6 | LinkE | 16 KiB | 数秒 | 数秒 |
-| CH32V103R8T6 | **Link(CH549)fw2.12** | 64 KiB | 38s | 50s |
-| CH32L103C8T6 | LinkE | 64 KiB | 28s | 36s |
-| CH32V203C8T6 | LinkE | 64 KiB | 28s | 34s |
-| CH32V307VCT6 | LinkE | 288 KiB | 125s | 152s |
+## 6. 参照
 
-- **64B 超の data EP 転送は解決済み**: capture 実測で `write_data` 呼び出しは V103=最大 128B、
-  V307=最大 256B(family の data_packet_size)。CH375 backend が 64B/ioctl に chunk 分割し、
-  readback verify が全台一致 = 分割転送は正しく機能する(§3.2 の「要実測」は解消)。
-- **既知の特性: 転送が遅い**(read ~2.3 KiB/s)。1 ioctl = 最大 64B の駆動なので DMI 読みの
-  往復回数がそのまま効く。まず動くこと優先。高速化(まとめ読み等)は必要になったら別途。
-- capture 証跡: `--capture` の NDJSON(cmd+data 全転送)を取得済み(V003/V103/V307)。
-
-## 5. 最小スパイク(まずここだけ、Windows ネイティブ)
-
-目的: 「WCH 標準ドライバ経由で WCH-Link と 1 往復できる」を実機で確定する(統合前の feasibility)。
-**→ 完了(2026-09-02)。結果は §5.1。**
-
-0. **A/B を決める**: `WCHLinkDLL.dll` の有無と bitness を確認(`where WCHLinkDLL.dll`、`dumpbin /headers <dll> | findstr machine`。WCH-LinkUtility 導入で入る)。**32bit のみなら B(IOCTL、64bit ch32rv でそのまま可)**、64bit DLL もあるなら A(wlink 実装をほぼ移植)。A なら wlink `src/usb_device.rs` の `ch375_driver` を Rust でそのまま参考にできる(ただし 32bit ビルドが要る)。以下は B(IOCTL)での最小確認手順。
-   **→ 済: 32bit のみ(§2)= B 採用。**
-1. 単体の小プログラム(examples/ か別 bin)で:
-   - GUID `{F8D5EDCA-...}` を `SetupDiGetClassDevs` で列挙 → 見つかった DevicePath を print(見つからなければ GUID 特定からやり直し)。
-   - `CreateFileW` で open。
-   - **GetProbeInfo を 1 往復**: cmd out(pipe1 write)で `81 0d 01 01`(= GetProbeInfo。`ch32rv-wchlink` の `probe_info()` と同一バイト列。crates/wchlink/src/probe.rs 参照)→ cmd in(pipe1 read)で応答 `82 0d 04 ..` が返るか。
-   - 返れば OK。応答バイトを hex で出す。
-2. 返らない/開けない場合の切り分け: GUID 違い / IOCTL 値 / pipe 番号 / 64B 制約 / 事例の `-5`(この事例自体 WIP)。
-
-### 5.1 スパイク結果(2026-09-02、Windows 11 実機)
-
-**成功。接続中 5 probe すべてで、WCH 標準ドライバ(`WCHLinkW64.SYS`)経由の GetProbeInfo 1 往復が成立した。**
-64bit(x86_64-pc-windows-msvc)プロセス・WinUSB 置換なし・DLL なし・管理者権限なし。
-
-| probe | 応答(hex) | firmware |
-|---|---|---|
-| WCH-Link(CH549)×1 | `82 0d 04 02 0c 01 00` | v2.12(variant 0x01) |
-| WCH-LinkE ×4 | `82 0d 04 02 16 12 00` | v2.22(variant 0x12) |
-
-確定した事実(§3 の「要確認」への回答):
-- GUID `{F8D5EDCA-...}` で列挙・`CreateFileW` open とも成功(全台)。列挙は SetupDi ではなく
-  cfgmgr32 の `CM_Get_Device_Interface_ListW` でも同等に動く(コード量が少ない。実装時はどちらでも可)。
-- `IOCTL_CH375_COMMAND = 0x223CDC`、`mFunction`(write=`0x20000`/read=`0x10000`、pipe-1 加算)、
-  ヘッダ 8B の構造体レイアウトは §3.2 のとおりで正しい。
-- write の DeviceIoControl は `ret = 8 + 送信長` を返す。read は `ret = 8 + mLength` で
-  `mBuffer[..mLength]` が応答フレームそのもの。
-- probe は usbipd `Shared` 状態(WSL 未 attach)なら WCH ドライバが所有しており、detach 操作は不要だった。
-- ~~未確認のまま残る項目: data EP(pipe2)の 64B 超転送~~ → **解消(同日)**: §4.3 のとおり
-  全 5 target の flash 往復で検証済み。64B 超は crate 内の 64B chunk 分割で正しく動く。
-
-## 6. 検証手順(usbipd の状態が肝)
-
-- **probe を「WCH ドライバが所有」状態にする**: WSL に attach していると usbipd スタブ(VirtualBox USB)が握るので CH375 経路も NG。**`usbipd detach --busid <X>`** で Windows に返す(state=`Shared` = `WCHLink_A64` が当たる。これが CH375 経路のテスト対象)。
-- 現状の probe(2026-09-02、`usbipd list`):
-  | BUSID | serial | 種別 |
-  |---|---|---|
-  | 9-2 | 434A124C5596 | CH549 WCH-Link (fw2.12) |
-  | 9-3/9-4/11-1/11-2 | 38EF8F06BDC2 ほか | WCH-LinkE (fw2.22) |
-  (BUSID→serial は detach して Windows 側 `probe list` に "WCH-Link" ドライバで出た serial で確認。11-2=38EF8F06BDC2 は確認済み。)
-- テスト後は **`usbipd attach --wsl --busid <X>`** で WSL に戻す(bench 復旧)。detach 直後は再列挙で一時 flapping するので、`usbipd list` が安定 `Shared` になってから作業する。
-- **`--force`(`usbipd bind --force`)は使わない**(スタブを恒久上書きするため。標準状態でない)。
-- ネイティブビルド: Windows の Rust で `cargo build -p ch32rv`(msvc)。WSL からのクロスは不要。
-
-## 7. 注意点まとめ
-
-- 事例は WIP。完動保証なし = スパイクで可否を先に固める。
-- 64B packet の chunk 分割(特に flash data EP)。
-- `unsafe`/`windows-sys` は Windows 専用 crate に隔離(workspace forbid を汚さない)。
-- クリーンな Windows(WCH ドライバ未導入)では LinkE が MS OS descriptor で **WinUSB 自動 bind** される可能性が高く、その場合は従来 nusb 経路でそのまま動く。CH375 経路は「WCH ドライバが先に入っている機器」向けの共存策。両対応にしておくと親切。
-- 上位プロトコル層は無改変を維持(トランスポート境界だけ差し替える)。
-
-## 8. 参照
-
-- 事例: cw2/ch32v003fun `experimental/minichlink-wchlinkdll-driver` `minichlink/pgm-wch-linke.c`
-- ch32rv 既存トランスポート: `crates/usb/src/device.rs`(`UsbInterface::{write,read,write_data,read_data}`、EP 0x01/0x81・0x02/0x82)
-- WCH-Link ハンドシェイク: `crates/wchlink/src/probe.rs`(`probe_info`/`attach` の実バイト列)
-- architecture §2(別バックエンド crate 方針)、B-2(`../../ArduinoCore-CH32RV/docs/ch32rv-requests.ja.md` — ArduinoCore-CH32RV repo 側の依頼文書)
+- `crates/usb-wch-win/src/sys.rs`(列挙・open・転送)、`crates/usb-wch-win/src/proto.rs`(IOCTL 番号と `mFunction`)
+- `crates/usb/src/device.rs`(`UsbDeviceInfo::open_interface`、`UsbInterface`)
+- `crates/wchlink/src/probe.rs`(GetProbeInfo などの実バイト列)
+- [architecture.ja.md](architecture.ja.md) §2(crate 構成)
+- 先行例: [wlink](https://github.com/ch32-rs/wlink)(`src/usb_device.rs` の `ch375_driver`、`WCHLinkDLL.dll` 経由)、cw2/ch32v003fun の `experimental/minichlink-wchlinkdll-driver`(`minichlink/pgm-wch-linke.c`、IOCTL 直接)

@@ -1,6 +1,6 @@
 //! en: The Windows implementation: cfgmgr32 enumeration, `CreateFileW` open, and bulk
 //! transfers through `IOCTL_CH375_COMMAND`. All byte layouts and codes were verified
-//! against live WCH-Link probes (docs/windows-wch-driver.ja.md §5.1, 2026-09-02).
+//! against live WCH-Link probes (docs/windows-wch-driver.ja.md §3).
 //! ja: Windows 実装。cfgmgr32 での列挙、`CreateFileW` open、`IOCTL_CH375_COMMAND` での
 //! bulk 転送。レイアウトと定数は実機で検証済み(§5.1)。
 

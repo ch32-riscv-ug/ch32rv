@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn function_codes_match_verified_capture() {
-        // Verified live on 2026-09-02 (docs/windows-wch-driver.ja.md §5.1).
+        // Verified live (docs/windows-wch-driver.ja.md §3).
         assert_eq!(function_write(0x01).unwrap(), 0x2_0000);
         assert_eq!(function_read(0x81).unwrap(), 0x1_0000);
         assert_eq!(function_write(0x02).unwrap(), 0x2_0001);

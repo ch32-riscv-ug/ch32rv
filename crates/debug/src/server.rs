@@ -6,16 +6,15 @@
 //! triggerless cores, at the cost of flash wear). Hardware breakpoints use the RISC-V trigger
 //! module (measured: 4 slots on QingKe V4F/CH32V307 and V4C/CH32X035, live-fire confirmed; 0 on
 //! V4B/CH32V203, V2A/CH32V003, V3/CH32V103 - detected dynamically). Flash software breakpoints
-//! need a verified FLASH-controller page profile (256-byte families for now; V003/V103 are a
-//! follow-up). Attach does not modify flash; flash breakpoints are removed and pages restored on
+//! need a verified FLASH-controller page profile; a family without one refuses them. Attach does not modify flash; flash breakpoints are removed and pages restored on
 //! detach (docs/cli.ja.md §4.6).
 //! ja: [`DtmAccess`] 上の CH32 RISC-V core 用 gdbstub Target。register・memory R/W・
 //! halt/continue/step・breakpoint。GDB が software(Z0)で要求した `break` は、動く中で最も安い
 //! 手段の順(RAM `ebreak` patch → 空き HW trigger〔摩耗なし〕→ flash page 書き換えの flash SW
 //! breakpoint〔trigger 無し core でも効くが flash 摩耗あり〕)で張る。hardware breakpoint は
 //! RISC-V trigger module(実測: V4F/V307・V4C/X035 は 4 slot 実発火、V4B/V203・V2A/V003・V3/V103 は
-//! 0。動的検出)。flash SW breakpoint は検証済み FLASH-controller profile が必要(現状 256byte
-//! family、V003/V103 は後続)。attach で flash を書き換えず、flash breakpoint は detach 時に外して
+//! 0。動的検出)。flash SW breakpoint は検証済み FLASH-controller profile が必要(無い family では
+//! 断る)。attach で flash を書き換えず、flash breakpoint は detach 時に外して
 //! page を復元する。
 
 use ch32rv_dmi::{DebugModule, DmiError, DtmAccess, FlashProgMode, RegName};

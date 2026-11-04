@@ -149,7 +149,7 @@ fn browse_at(to: SocketAddr, wait: Duration, enough: &dyn Fn(&[Found]) -> bool) 
     st.found()
 }
 
-/// The probe whose TXT unit_id is `unit_id` (case aside, oep-core §3.3), browsing up to `wait`.
+/// The probe whose TXT unit_id is `unit_id` (case aside, oep-transports §3), browsing up to `wait`.
 pub(crate) fn find_unit(unit_id: &str, wait: Duration) -> Option<Found> {
     let unit = |f: &Found| {
         f.unit_id

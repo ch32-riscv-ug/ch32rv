@@ -78,7 +78,7 @@ pub struct Limits {
     pub window: u32,
     /// The most requests that may be outstanding.
     pub max_inflight: u8,
-    /// Changes on every boot of the probe (core §5.2): a host without the lock learns a restart.
+    /// Changes on every boot of the probe (oep-core §6.5): a host without the lock learns a restart.
     pub boot_id: u32,
 }
 
@@ -236,7 +236,7 @@ pub struct Link {
     pub resends: u64,
     /// COBS frames that broke on the line (bad encoding or CRC), a part of `dropped`.
     pub broken: u64,
-    /// Frames that decoded (answers and pushes): the "good" of oep-spec's host guide §7.4.
+    /// Frames that decoded (answers and pushes): the "good" of the speed watch.
     pub good: u64,
     /// Requests whose answer did not come within the wait (the guide's "lost").
     pub lost: u64,
@@ -245,7 +245,7 @@ pub struct Link {
     resend: bool,
     /// en: Resend at once when a frame breaks while an answer is awaited, instead of waiting out
     /// the timeout. Right only while this host's session holds the port (then every frame on it is
-    /// an answer or a push, never the probe's raw output, oep-core §3.5).
+    /// an answer or a push, never the probe's raw output, oep-if-link §3).
     /// ja: 答えを待つ間にフレームが壊れたら、時間切れを待たずにすぐ送り直す。session が口を持っている
     /// 間だけ正しい(その口のフレームは答えか通知で、raw の出力ではない)。
     pub resend_on_broken: bool,
@@ -256,7 +256,7 @@ pub struct Link {
     /// while both ways carried at once is used one request at a time.
     pub inflight_cap: usize,
     /// Times the probe was found back at the boot speed by itself (diagnostics; the owner of the
-    /// link then stays there for the session, oep-core §3.5).
+    /// link then stays there for the session, oep-if-link §3).
     pub speed_fallbacks: u64,
     /// The boot_id of the last confirm answer seen (a changed one means the probe restarted).
     pub last_boot_id: Option<u32>,
@@ -317,7 +317,7 @@ impl Link {
     pub fn confirm(&mut self) -> Result<Limits, LinkError> {
         // en: A serial port just opened may find the probe still at a speed the previous host
         // raised it to (that host gone): it goes back after at most port_speed_idle_max_ms of
-        // silence, so confirm is tried that long and a bit (oep-core §3.5). Not for a quick look
+        // silence, so confirm is tried that long and a bit (oep-if-link §3). Not for a quick look
         // (discovery's short timeout).
         // ja: 開いたばかりの serial では、前の host が上げた速さが残っていることがある。probe は
         // 最長 3 秒の黙りで戻るので、その間 confirm を繰り返す。discovery の短い待ちでは行わない。
@@ -452,9 +452,9 @@ impl Link {
             // boot speed before the host resent - six times in one bench window, each costing the
             // raised speed for the rest of the session (2026-10-07). The resend at the raised
             // speed is a good frame to the probe and keeps it up; only when the resend too gets
-            // nothing does host duty 5 take the link down.
+            // nothing does the link go back to the boot speed (oep-if-link §3, a lost answer).
             // ja: 上げた速さでは最初の待ちを短く(idle の上限の半分)する。全部待つと probe が自分の idle
-            // の規則で先に戻ってしまう。上げた速さのまま送り直し、それにも答えが無いときだけ義務 5。
+            // の規則で先に戻ってしまう。上げた速さのまま送り直し、それにも答えが無いときだけ起動時の速さに戻る。
             let quick = self.baud != self.base_baud && !resent.timeout && self.resend;
             let full = self.timeout;
             if quick {
@@ -476,12 +476,12 @@ impl Link {
                         self.resync()?;
                     }
                 }
-                // en: Above the boot speed and no answer (oep-core §3.5, host duty 5): back to the
+                // en: Above the boot speed and no answer (oep-if-link §3, host): back to the
                 // boot speed, confirm until port_speed_idle_max_ms + 1000 ms. It converges either
                 // way - a probe still up there takes these confirms as broken and goes back after
                 // three - and passing, the rest is sent again there for the session. Not passing
                 // is a link failure (no going back up to wait again).
-                // ja: 上げた速さで答えが無い(義務 5): 起動時の速さに戻り、上限まで confirm を繰り返す。
+                // ja: 上げた速さで答えが無い(oep-if-link §3): 起動時の速さに戻り、上限まで confirm を繰り返す。
                 // probe がまだ上に居ても、この confirm が壊れ 3 つになって戻るので収束する。通れば残りを
                 // そこで送り直す。通らなければリンクの失敗(上げた速さに戻って待ち直さない)。
                 Err(LinkError::Timeout(_)) if *fallbacks < 1 && self.baud != self.base_baud => {
@@ -521,7 +521,7 @@ impl Link {
             inflight = inflight.min(self.inflight_cap);
         }
         // en: On a serial port, keep the answers that may come back at once within
-        // ANSWER_BURST_MAX (oep-core §3.4): the probe's limits are what it can take, not what the
+        // ANSWER_BURST_MAX: the probe's limits are what it can take, not what the
         // host's tty path can - Linux's cdc_acm dropped 20-30 % of 8 x 1008-byte answers in
         // flight on an ESP32-P4's HS CDC, none at 7 (dev-oep, 2026-10-02).
         // ja: serial の口では、同時に返りうる答えの量を ANSWER_BURST_MAX 以内にする(probe の上限は
@@ -716,7 +716,7 @@ impl Link {
     }
 
     /// en: The host side of the serial port to `rate`: after the switch, 20 ms for both ends to
-    /// settle (the bytes in flight meanwhile break, oep-core §3.5), then what was read dropped.
+    /// settle (the bytes in flight meanwhile break, oep-if-link §3), then what was read dropped.
     /// ja: host 側の serial の速さを変える。両端が落ち着くまで 20 ms 待ち、読んだものを捨てる。
     pub fn set_baud(&mut self, rate: u32) -> Result<(), LinkError> {
         self.stream.set_baud(rate)?;
@@ -785,8 +785,8 @@ impl Link {
         }
     }
 
-    /// en: After restart's answer (oep-core §6.6): back to the boot speed (oep-if-link §3 host duty
-    /// 6), wait `restart_after_answer_ms`, then confirm until one answers or `wait` (the probe's
+    /// en: After restart's answer (oep-if-restart §2): back to the boot speed (oep-if-link §3 host
+    /// 2), wait `restart_after_answer_ms`, then confirm until one answers or `wait` (the probe's
     /// restart_max_ms) has passed since the answer. The probe answers nothing between its answer
     /// and its restart, so a confirm that answers is the new boot's (its boot_id is then
     /// `last_boot_id`). False: the probe did not come back (the caller treats it as gone).

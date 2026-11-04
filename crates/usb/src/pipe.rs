@@ -1,4 +1,4 @@
-//! en: A byte stream over a vendor-class bulk pair (the OEP vendor bulk transport, oep-core §3.1 /
+//! en: A byte stream over a vendor-class bulk pair (the OEP vendor bulk transport, oep-transports §1 /
 //! §3.3). IN is drained by a thread of its own, always, whatever the reader is doing: a probe's
 //! send FIFO that nobody empties stops it taking OUT too (a P4 over usbip with a 4 KiB vendor FIFO
 //! and a pipelined host deadlocked that way, E160), and a read never cancels a transfer (which

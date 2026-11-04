@@ -1,19 +1,18 @@
 //! en: Flash loader stubs (RISC-V machine code) run in target RAM to program flash.
-//! PROVENANCE / INTERIM: these byte arrays are transcribed verbatim from wlink's
-//! `src/flash_op.rs` (MIT OR Apache-2.0), which in turn derives them from WCH's EVT flash
-//! routines. docs/architecture.ja.md §3 calls for building stubs from in-repo source and
-//! hashing them into `version --json`; until that sub-project exists, these vetted blobs let
-//! the flash path be verified on real hardware. Do not hand-edit; regenerate from source.
+//! PROVENANCE: these byte arrays are transcribed verbatim from wlink's `src/flash_op.rs`
+//! (MIT OR Apache-2.0), which in turn derives them from WCH's EVT flash routines; their digest
+//! goes into `version --json`. ch32rv's own RAM loader is built from in-repo source instead
+//! (`crates/flash/loader/`). Do not hand-edit.
 //!
-//! ja: flash loader stub(RISC-V 機械語)。target RAM に載せて flash を書く。暫定措置として
-//! wlink `src/flash_op.rs`(MIT/Apache-2.0、元は WCH EVT)から逐語転記した。将来は
-//! docs/architecture.ja.md §3 のとおり in-repo source から build して hash を出す。手編集禁止。
-//! 着手前の下調べとして、他 host tool の loader との突き合わせ(同一 blob か / 何本が等価か / stub の
-//! ABI)を `wch-protocols` の stub 目録へ依頼してある: docs/data-requests/0005-flash-stub-inventory.ja.md
+//! ja: flash loader stub(RISC-V 機械語)。target RAM に載せて flash を書く。wlink
+//! `src/flash_op.rs`(MIT/Apache-2.0、元は WCH EVT)から逐語転記したもので、digest を
+//! `version --json` に出す。ch32rv 自前の RAM loader は in-repo の source から作る
+//! (`crates/flash/loader/`)。手編集禁止。他 host tool の loader との突き合わせは
+//! docs/data-requests/0005-flash-stub-inventory.ja.md。
 #![allow(clippy::all)]
 
 /// en: A stable FNV-1a 64-bit digest of every stub, for `version --json` reproducibility
-/// (docs/architecture.ja.md §3). Not cryptographic - just an identity fingerprint.
+/// Not cryptographic - just an identity fingerprint.
 /// ja: 全 stub の FNV-1a 64bit ダイジェスト。`version --json` の再現性表示用の同一性指紋。
 pub fn stub_digest() -> String {
     let mut h: u64 = 0xcbf29ce484222325;

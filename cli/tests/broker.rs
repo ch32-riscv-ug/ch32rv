@@ -238,7 +238,7 @@ fn the_broker_opens_a_new_session_after_the_probe_restarts() {
 
 #[test]
 fn a_client_restarts_the_probe_through_the_broker() {
-    // oep.probe.restart's restart from a client (oep-if-restart §3): the broker forwards it under
+    // oep.probe.restart's restart from a client (host guide §5.2): the broker forwards it under
     // its own session, passes the success answer on, then closes its transport to the probe and
     // ends (transports §1). The client waits for the probe and starts over: a new broker finds
     // the probe with a new boot_id, and attach works there.

@@ -5,16 +5,15 @@
 [![crates.io](https://img.shields.io/crates/v/ch32rv.svg)](https://crates.io/crates/ch32rv)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-**WCH CH32 RISC-V マイコン**を WCH-Link / WCH-LinkE 経由で**書き込み・デバッグ**する単一の CLI(と、再利用可能な Rust crate 群)。
+**WCH CH32 RISC-V マイコン**を WCH-Link / WCH-LinkE、OEP(Open Embedded Probe)の probe、チップ自身の bootloader 経由で**書き込み・デバッグ**する単一の CLI(と、再利用可能な Rust crate 群)。
 probe-rs / wlink / minichlink / WCH OpenOCD / WCH-LinkUtility / wchisp などに分散していた機能を 1 つに統合する:
 書き込み、verify/read/write、erase、復旧、option byte、run 制御 + GDB server、runtime monitor、probe 管理、
 内蔵デバイス DB、Arduino IDE 統合プロトコル。
 
 > **β版。** `0.x` は下流プロジェクト(例: ArduinoCore-CH32RV)が統合するためのβで、`1.0` の正式リリースまでに CLI/ライブラリ API は変わりうる。
 >
-> **検証範囲。** 7台ベンチ(CH32V003 / V00x(V006) / V103 / V203 / V307 / X035 / L103)で end-to-end 検証済み。
-> V00x 系は WCH の flash loader stub が存在しないため、target 側の FLASH controller を debug 経由で
-> 直接叩いて書く(結果はバイト一致で同じだが遅い: 2.5 KiB の sketch で ~17 秒、62 KiB 全面で ~6 分)。
+> **検証範囲。** ベンチの CH32V003 / V006 / V103 / V203 / V205 / V307 / X035 / X315 / L103 / H417 で end-to-end 検証済み。
+> WCH の flash loader stub が無い family は、ch32rv 自前の RAM loader で書く(OEP の probe でも同じ loader で書く)。
 > Linux / macOS / Windows のバイナリを配布。**Linux x86_64 と Windows x86_64 = verified**、
 > macOS と arm は **experimental**(実機未検証)。Windows は WCH-LinkUtility が入れる **WCH 純正ドライバのまま動く**
 > (**Zadig / WinUSB 置換は不要**。[Windows](#windows-usb-ドライバ) 参照)。
@@ -33,7 +32,7 @@ cargo install ch32rv
 
 ### Linux: USB 権限(udev)
 
-WCH-Link への非 root アクセスには udev ルールが要る。配布 tar には `60-ch32rv.rules` を同梱:
+probe と bootloader(WCH-Link、OEP の probe、ISP と HID の bootloader)への非 root アクセスには udev ルールが要る。配布 tar には `60-ch32rv.rules` を同梱:
 
 ```sh
 sudo cp 60-ch32rv.rules /etc/udev/rules.d/            # 展開した tar 内から
@@ -63,7 +62,7 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ## クイックスタート
 
 ```sh
-ch32rv probe list                       # 接続中の WCH-Link を探す
+ch32rv probe list                       # 接続中の debug probe(WCH-Link、OEP)を探す
 ch32rv target info                      # target を識別(SKU / family / 配線 / 容量)
 
 ch32rv flash firmware.elf               # 書き込み(format 自動、erase + verify + reset + run)
@@ -75,7 +74,7 @@ ch32rv erase --all
 ch32rv reset
 
 ch32rv gdb                              # GDB server を 127.0.0.1:3333 で(HW + flash BP)
-ch32rv monitor --source dmdata          # runtime I/O(uart / sdi / dmdata / rtt)
+ch32rv monitor --source dmdata          # runtime I/O(uart / sdi / dmdata / dmseq / rtt)
 ch32rv capabilities                     # この probe + target の組で何ができるか
 ```
 
@@ -95,26 +94,30 @@ ch32rv capabilities                     # この probe + target の組で何が�
 | `probe` | probe 管理: `list`、`info`、firmware `info` / `check` / `update`(IAP 経由で probe 自身の firmware を書換)/ `exit-iap`、`mode get` |
 | `target` | `info`、構造化 `option` byte(`get` / `set` / `write-raw` / `reset`)、`protect` |
 | `dbg` / `gdb` | ワンショット制御(halt / resume / step / regs / reg / dmi)· GDB server |
-| `monitor` | runtime I/O: uart / sdi / dmdata / rtt(uart / dmdata / rtt は stdin を target へ) |
+| `monitor` | runtime I/O: uart / sdi / dmdata / dmseq / rtt(uart / dmdata / dmseq / rtt は stdin を target へ) |
 | `db` / `capabilities` | 内蔵デバイス DB の閲覧 · probe×firmware×target の可否マトリクス |
 | `doctor` / `version` / `complete` | 環境診断 · バージョン · shell 補完 |
 | `arduino` | Arduino IDE 統合(`discovery` / `monitor` Pluggable プロトコル) |
 
-`isp`(チップの factory USB bootloader)は CH32X035 だけで実機確認済み。`--entry probe` で OEP の probe の debug 線から bootloader へ入れる。`--help` に出るほかの経路 — `dap`・`boot` の残り — は後の `0.x` 予定で、まだ検証範囲外。
+`isp` はチップの factory bootloader(USB または UART)で書く。`isp enter --via probe` は CH32X03x / CH32H417 を debug 線から bootloader へ入れる。`boot` は独自 bootloader(DFU、HID)で書く。`broker` は 1 つの OEP の probe を開いたまま、複数の ch32rv のコマンドに使わせる。
 
 ## ライブラリ crate
 
-`ch32rv` は、他ツールが再利用できるよう独立 publish された crate から構成される:
+`ch32rv` は crates.io に publish した crate からなる。どれも CLI の部品で、crate ごとの API や semver の約束は無い:
 
 | Crate | 提供内容 |
 |---|---|
 | [`ch32rv-contract`](https://crates.io/crates/ch32rv-contract) | exit code、JSON result envelope、NDJSON progress event、operation policy |
 | [`ch32rv-usb`](https://crates.io/crates/ch32rv-usb) | USB 列挙、probe selector、デバイス単位 lock、transaction capture(nusb) |
+| [`ch32rv-usb-wch-win`](https://crates.io/crates/ch32rv-usb-wch-win) | Windows: WCH 純正ドライバの device を使う(WinUSB 置換なし) |
 | [`ch32rv-wchlink`](https://crates.io/crates/ch32rv-wchlink) | WCH-Link USB protocol(bulk protocol + IAP) |
+| [`ch32rv-oep`](https://crates.io/crates/ch32rv-oep) | OEP v1 の host: wire の符号、transport、session |
 | [`ch32rv-dmi`](https://crates.io/crates/ch32rv-dmi) | RISC-V Debug Module Interface + 直接 FLASH controller アクセス |
 | [`ch32rv-target`](https://crates.io/crates/ch32rv-target) | 生成 CH32 device DB: chip 検出、flash geometry、option byte 配置 |
 | [`ch32rv-flash`](https://crates.io/crates/ch32rv-flash) | erase / program / verify / confirm-run オーケストレーション |
 | [`ch32rv-debug`](https://crates.io/crates/ch32rv-debug) | run 制御、breakpoint、GDB server |
+| [`ch32rv-isp`](https://crates.io/crates/ch32rv-isp) | WCH の factory ISP bootloader の client(USB と UART) |
+| [`ch32rv-boot`](https://crates.io/crates/ch32rv-boot) | 独自 bootloader の client(DFU、UF2、UART / RS-485、HID) |
 
 ## Arduino IDE
 
@@ -123,7 +126,7 @@ Discovery / Monitor プロトコルを実装する。upload 自体は通常の `
 
 ## ドキュメント
 
-設計は spec-first。仕様の索引は [docs/README.ja.md](docs/README.ja.md)(現状は日本語。内容が固まり次第、英語版を主として追加)。
+仕様の索引は [docs/README.ja.md](docs/README.ja.md)(日本語)。
 リリース計画は [docs/release-plan.ja.md](docs/release-plan.ja.md)、変更履歴は [CHANGELOG.md](CHANGELOG.md)(英日併記)。
 
 ## ソースからビルド
@@ -131,7 +134,7 @@ Discovery / Monitor プロトコルを実装する。upload 自体は通常の `
 ```sh
 cargo build
 cargo test
-cargo clippy --all-targets --all-features   # warning-free
+cargo clippy --all-targets -- -D warnings
 ```
 
 Linux ではビルドに `libudev-dev` と `pkg-config` が要る(serial monitor で使用):

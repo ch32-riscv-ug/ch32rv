@@ -1,12 +1,11 @@
 # リリース計画・手順
 
-- 状態: **運用中**。安定したら英語 main + `.ja` twin に整える。
-- 方針: 「WCH-LinkE 経路で 6台ベンチ実機検証済みのもの」を軸に、crates.io へ library crate、全対象 OS のバイナリ、Arduino 対応込みで配布。重い/未検証/非LinkE/電源系は後続。
-- **0.x はβ位置づけ**: 依存プロジェクト(ArduinoCore-CH32RV 等)に先行利用してもらい、要望・不足機能を取り込んでから **1.0 で正式リリース**。CHANGELOG は初回だけスナップショット、以降は差分。
+- 方針: ベンチで実機検証したものを、crates.io の crate、全対象 OS のバイナリ、Arduino 対応込みで配布する。
+- **0.x はβ位置づけ**: 依存プロジェクト(ArduinoCore-CH32RV 等)に先に使ってもらい、要望・不足機能を取り込んでから **1.0 で正式リリース**。CHANGELOG は版ごとの差分。
 
 ## 1. 配布する crate(crates.io、依存順に publish)
 
-version は workspace 一括、リリースごとに`release.sh`がbump、license MIT。**12 crate、publish順は依存順**(先に出したものがindexに載ってから次。`ch32rv-usb-wch-win`は`ch32rv-usb`のcfg(windows)依存なのでusbより前):
+version は workspace 一括、リリースごとに`release.sh`がbump、license MIT。**publish順は依存順**(先に出したものがindexに載ってから次。`ch32rv-usb-wch-win`は`ch32rv-usb`のcfg(windows)依存なのでusbより前):
 
 1. `ch32rv-contract`(exit code / JSON envelope / policy 語彙)
 2. `ch32rv-usb-wch-win`(Windows の WCH 純正ドライバ経路。`ch32rv-usb` より先)
@@ -23,7 +22,7 @@ version は workspace 一括、リリースごとに`release.sh`がbump、licens
 
 各 library に keywords / categories / README を付ける。
 
-**publish しない**(空スタブ、`publish = false`): `ch32rv-monitor`。monitor の実体は現状cli側。`ch32rv-isp` は CLI が依存するので公開する。
+**publish しない**(空スタブ、`publish = false`): `ch32rv-monitor`。monitor の実体は cli 側にある。
 
 ### publish のやり方(3段階)
 
@@ -64,12 +63,12 @@ Rust/crates.io は、あなたの他プロジェクトの分類にこう対応�
 要対応(ユーザー):
 
 - **スクリプトは 2 本**(役割が別):
-  - `scripts/release.sh <patch|minor|major|X.Y.Z>` = **毎回**の bump フック。workspace `version` と Cargo.toml 内部 pin(全メンバーは `version.workspace=true` 継承なのでルートのみ)+ Cargo.lock を bump、CHANGELOG の `Unreleased` を新 version に切る。実装済み。他プロジェクトの慣習に合わせて調整可。
+  - `scripts/release.sh <patch|minor|major|X.Y.Z>` = **毎回**の bump フック。workspace `version` と Cargo.toml 内部 pin(全メンバーは `version.workspace=true` 継承なのでルートのみ)+ Cargo.lock を bump、CHANGELOG の `Unreleased` を新 version に切る。
   - `scripts/first-publish.sh` = **初回一度きり**の crates.io ブートストラップ(名前のとおり初回専用)。§1 手順 1 の crate 確保を実行。以後は使わない。
 - **初回の crate 確保 + Trusted Publisher 登録**(§1 の手順 1・2)を済ませないと `crates-io` job は通らない。
 - `ubuntu-24.04-arm`(GitHub の arm64 ランナー)が使えない環境なら、その行を外すか cross に差し替える。
 - main が **branch protection** だと Actions からの bump commit push がブロックされうる。bot に例外を許すか、専用リリースブランチ運用にする。
-- **cargo-dist は不採用**(タグ起点で UI-bump フローに噛み合わないため手書きにした)。将来インストーラ(shell/powershell one-liner)や自動更新が欲しくなったら dist へ移行を再検討。
+- **cargo-dist は使わない**(タグ起点で UI-bump フローに噛み合わないため手書きにした)。
 - **`prepare` の Verify が `cargo deny check` で落ちたら yank を疑う**: 依存 crate が crates.io で yank されると `error[yanked]: detected yanked crate (try cargo update -p <crate>)` で止まる。直前までローカルで通っていても CI は最新 index を見るので起こる。対処は提案どおり `cargo update -p <crate>`(patch 版へ)→ ゲート再実行 → lock を commit → workflow 再起動。CI 側は `Commit, tag, push` に達していないので remote に半端な状態は残らない。
 - **注意**: 開発機は Linux(WSL2)+ usbipd 越しの Windows ネイティブ。**Linux x64 = verified**。**Windows x64 = verified**(WCH 純正ドライバ経路 `ch32rv-usb-wch-win` で全5 probe の flash 往復まで実機確認。Zadig 不要)。**macOS / arm = experimental**(未実機)。Release ノートにこの verified 状況を明記する。
 
@@ -80,40 +79,28 @@ binary と GitHub Release は揃っても、crates.io への公開が途中で�
 - 公開の loop は、同じ版が crates.io にある crate を飛ばし、失敗した crate は 0 / 60 / 120 / 240 / 480 秒あけて最大 5 回やり直す(index の遅れはこれで吸収する)。
 - 途中で止まったら、Actions の「Release」を **`republish_tag=v<版>`**(`publish_crates=true`)で起動する。版を上げず、tag も binary も作らず、その tag の source で残りの crate だけを出す(Trusted Publishing は `release.yml` に結び付いているので、同じ workflow の中でやる)。
 
-## 3. 後続(未実装/重い/未検証)
-
-- `isp`(factory ISP 4348:55e0)、`boot`(UIAPduino/DFU/UF2/HID、後日実機)、`dap`(DAP server)
-- gap 7 series(V205/V407/V467/X305/X315/M030/M103)device 対応 ← データ側未発売でブロック
-- option layout(register CSV)、multi-bit option、`option set` の構造化別名(`nrst=`/`split=` 等)、V4F FPU レジスタ、vFlash(load)
-- macOS の実機 verified 昇格、arduino discovery の USB hotplug 追随
-- - `monitor --source sdi` の in-process forward 起動不良(enable は成功するのに CDC へ流れない。wlink との usbmon 差分要)
-- RTT channel 選択(`--channel`)← **需要待ち**。warning `rtt-channels`(方向あたり 2 本以上)に当たる利用者が出たら
-- `monitor` の外部出口(TCP `--listen` / pty)← **需要待ち**。dmdata/rtt を標準シリアルツール(screen/minicom/PlatformIO/serial GUI)へ繋ぐ IF 候補。IDE は pluggable monitor、端末・CI は stdio で足りるため保留。要るなら TCP(全 OS、std のみ、OpenOCD `rtt server` 同型、channel→port)→ pty(Linux/macOS 限定、pty crate 依存、symlink 管理、読み手不在時は target から汲み続けて host で捨てる)の順。unix の代替: `socat pty,raw,echo=0,link=/tmp/ch32rv0 exec:'ch32rv monitor --source rtt'`
-
-## 4. リリース前チェック
+## 3. リリース前チェック
 
 ブートストラップ(新規 crate ごと一度きり):
 
 - [ ] 新規 crate を `scripts/first-publish.sh` で初回トークン publish + TP 登録(`cargo login` のトークンが切れていれば更新する)
-- [x] `scripts/release.sh` 動作確認済み
 
 毎回:
 
-- [ ] `cargo fmt --check` / `cargo clippy --all-targets --all-features`(warning 0)/ `cargo test` / `cargo deny check`
+- [ ] `cargo fmt --all --check`(出力 0 行)/ `cargo clippy --all-targets -- -D warnings` / `cargo test` / `cargo deny check`
 - [ ] `cargo xtask db-check`(埋め込み device DB が `ch32-device-data` と一致。ずれていれば `db-gen` して commit。**release workflow でも版 bump 前に検査される**)
-- [ ] `cargo xtask db-check`(生成物が pinned data と一致)
-- [ ] 7台ベンチ(V003 / V00x / V103 / V203 / V307 / X035 / L103)で代表フロー(flash→verify、gdb、monitor、target info、capabilities)を再確認
+- [ ] ベンチの各 family で代表フロー(flash→verify、gdb、monitor、target info、capabilities)を再確認
 - [ ] **Windows(WCH 純正ドライバ経路)で probe list / target info / flash 往復を再確認**: probe を `usbipd detach` で Windows へ戻し、Windows ネイティブビルドで確認する。**detach 対象は `usbipd list` の DEVICE 欄が `WCH-Link SERIAL` の個体のみ**(docs/testing.ja.md)
 - [ ] CHANGELOG の `Unreleased` を新 version に切る(= release.sh がやる)
 - [ ] README(repo)に crates.io バッジ / インストール手順 / verified OS 明記
-- [ ] Actions「Release」をUI起動 → crates.io publish（12 crate）と全OSバイナリ添付を確認
+- [ ] Actions「Release」をUI起動 → crates.io publish（全 crate）と全OSバイナリ添付を確認
 
-## 5. リリース実行順
+## 4. リリース実行順
 
 1. **未コミット分をコミット & push**(ワークフローは `main` の release.yml を使う)。
 2. **新規 crate があれば bootstrap**: `cargo login <token>` → `scripts/first-publish.sh`（既存 crate は skip）。
 3. **その crate の Trusted Publisher 登録**（§1手順2）。
-4. **リリース起動**: Actions「Release」を **`level=minor` / `publish_crates=true`** で起動 → version bump → 12 crateをトークンレスpublish → 全OSバイナリ添付。
+4. **リリース起動**: Actions「Release」を **`level=minor` / `publish_crates=true`** で起動 → version bump → 全 crate をトークンレスpublish → 全OSバイナリ添付。
 5. これ以降は新規 crate を足さない限り **手順 4 だけ**(bootstrap 不要)。
 
 > メモ: 新規 crate を追加した回だけ手順 2・3 が要る(crates.io は新規 crate の初回 publish にトークンが要り、TP は後付けだから)。既存 crate の版上げは常にトークンレス。

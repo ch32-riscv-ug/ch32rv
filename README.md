@@ -6,7 +6,8 @@ English | [日本語](README.ja.md)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A single CLI (and a set of reusable Rust crates) to **flash and debug WCH CH32 RISC-V
-microcontrollers** over WCH-Link / WCH-LinkE. It consolidates functionality otherwise spread across
+microcontrollers** over WCH-Link / WCH-LinkE, OEP (Open Embedded Probe) probes, and the chips' own
+bootloaders. It consolidates functionality otherwise spread across
 probe-rs, wlink, minichlink, WCH OpenOCD, WCH-LinkUtility, and wchisp into one tool: programming,
 verify/read/write, erase, recovery, option bytes, run-control + a GDB server, runtime monitors, probe
 management, a built-in device database, and the Arduino IDE integration protocols.
@@ -14,10 +15,9 @@ management, a built-in device database, and the Arduino IDE integration protocol
 > **Beta.** The `0.x` line is a beta for downstream projects (e.g. ArduinoCore-CH32RV) to integrate
 > against; the CLI and library APIs may still change before the `1.0` formal release.
 >
-> **Verified scope.** Exercised end-to-end on a seven-board bench — CH32V003, V00x (V006), V103,
-> V203, V307, X035, and L103. The V00x line has no WCH flash loader stub, so it is programmed by
-> driving the target's own FLASH controller over the debug link: same byte-exact result, but slower
-> (a 2.5 KiB sketch ~17 s, a full 62 KiB image ~6 min).
+> **Verified scope.** Exercised end-to-end on the bench with CH32V003, V006, V103, V203, V205,
+> V307, X035, X315, L103 and H417. A family without WCH's flash loader stub is programmed with
+> ch32rv's own RAM loader (the same loader writes through OEP probes).
 > Prebuilt binaries are provided for Linux / macOS / Windows; **Linux x86_64 and Windows
 > x86_64 are verified**, macOS and the arm targets are **experimental** (not yet validated on real
 > hardware). On Windows it works with WCH's stock driver as installed by WCH-LinkUtility — **no Zadig
@@ -38,7 +38,7 @@ Each archive ships with a `.sha256` checksum.
 
 ### Linux: USB permissions (udev)
 
-Non-root access to the WCH-Link needs a udev rule. The prebuilt tarball bundles `60-ch32rv.rules`:
+Non-root access to the probes and bootloaders (WCH-Link, OEP probes, ISP and HID bootloaders) needs a udev rule. The prebuilt tarball bundles `60-ch32rv.rules`:
 
 ```sh
 sudo cp 60-ch32rv.rules /etc/udev/rules.d/            # from the extracted tarball
@@ -70,7 +70,7 @@ if a probe is not found.
 ## Quick start
 
 ```sh
-ch32rv probe list                       # find connected WCH-Link probes
+ch32rv probe list                       # find connected debug probes (WCH-Link, OEP)
 ch32rv target info                      # identify the target (SKU / family / wiring / sizes)
 
 ch32rv flash firmware.elf               # program (auto format, erase + verify + reset + run)
@@ -82,7 +82,7 @@ ch32rv erase --all
 ch32rv reset
 
 ch32rv gdb                              # GDB server on 127.0.0.1:3333 (HW + flash breakpoints)
-ch32rv monitor --source dmdata          # runtime I/O (uart / sdi / dmdata / rtt)
+ch32rv monitor --source dmdata          # runtime I/O (uart / sdi / dmdata / dmseq / rtt)
 ch32rv capabilities                     # what this probe + target combination supports
 ```
 
@@ -103,27 +103,33 @@ a device. Exit codes and the JSON envelope are defined by the `ch32rv-contract` 
 | `probe` | Manage the probe: `list`, `info`, firmware `info` / `check` / `update` (rewrite the probe's own firmware over IAP) / `exit-iap`, `mode get` |
 | `target` | `info`, structured `option` bytes (`get` / `set` / `write-raw` / `reset`), `protect` |
 | `dbg` / `gdb` | One-shot control (halt / resume / step / regs / reg / dmi) · GDB server |
-| `monitor` | Runtime I/O: uart / sdi / dmdata / rtt (stdin goes to the target on uart / dmdata / rtt) |
+| `monitor` | Runtime I/O: uart / sdi / dmdata / dmseq / rtt (stdin goes to the target on uart / dmdata / dmseq / rtt) |
 | `db` / `capabilities` | Inspect the built-in device DB · probe×firmware×target capability matrix |
 | `doctor` / `version` / `complete` | Environment diagnosis · versions · shell completions |
 | `arduino` | Arduino IDE integration (`discovery` / `monitor` Pluggable protocols) |
 
-`isp` (the chip's factory USB bootloader) is verified on CH32X035 only; `--entry probe` puts
-the chip in its bootloader over an OEP probe's debug wire.
+`isp` writes through the chip's factory bootloader (USB or UART); `isp enter --via probe` puts
+CH32X03x / CH32H417 in it over the debug wire. `boot` writes through custom bootloaders (DFU, HID).
+`broker` keeps one OEP probe open for several ch32rv commands at once.
 
 ## Library crates
 
-`ch32rv` is built from crates that are published independently so other tools can reuse them:
+`ch32rv` is built from crates published on crates.io. They are parts of the CLI, with no API or
+semver promise of their own:
 
 | Crate | What it provides |
 |---|---|
 | [`ch32rv-contract`](https://crates.io/crates/ch32rv-contract) | Exit codes, JSON result envelope, NDJSON progress events, operation policies |
 | [`ch32rv-usb`](https://crates.io/crates/ch32rv-usb) | USB enumeration, probe selectors, per-device locking, transaction capture (nusb) |
+| [`ch32rv-usb-wch-win`](https://crates.io/crates/ch32rv-usb-wch-win) | Windows: devices bound to WCH's stock driver (no WinUSB swap) |
 | [`ch32rv-wchlink`](https://crates.io/crates/ch32rv-wchlink) | WCH-Link USB protocol (bulk protocol + IAP) |
+| [`ch32rv-oep`](https://crates.io/crates/ch32rv-oep) | OEP v1 host: wire codec, transports, session |
 | [`ch32rv-dmi`](https://crates.io/crates/ch32rv-dmi) | RISC-V Debug Module Interface + direct FLASH-controller access |
 | [`ch32rv-target`](https://crates.io/crates/ch32rv-target) | Generated CH32 device DB: chip detection, flash geometry, option-byte layouts |
 | [`ch32rv-flash`](https://crates.io/crates/ch32rv-flash) | Erase / program / verify / confirm-run orchestration |
 | [`ch32rv-debug`](https://crates.io/crates/ch32rv-debug) | Run control, breakpoints, GDB server |
+| [`ch32rv-isp`](https://crates.io/crates/ch32rv-isp) | WCH factory ISP bootloader client (USB and UART) |
+| [`ch32rv-boot`](https://crates.io/crates/ch32rv-boot) | Custom bootloader clients (DFU, UF2, UART / RS-485, HID) |
 
 ## Arduino IDE
 
@@ -132,8 +138,7 @@ implement the Pluggable Discovery / Monitor protocols; upload itself is a plain 
 
 ## Documentation
 
-The design is spec-first. The specification index is [docs/README.ja.md](docs/README.ja.md) (currently
-Japanese; English mains are added as documents stabilize). The release plan is
+The specification index is [docs/README.ja.md](docs/README.ja.md) (Japanese). The release plan is
 [docs/release-plan.ja.md](docs/release-plan.ja.md); the changelog is [CHANGELOG.md](CHANGELOG.md)
 (English / Japanese paired).
 
@@ -142,7 +147,7 @@ Japanese; English mains are added as documents stabilize). The release plan is
 ```sh
 cargo build
 cargo test
-cargo clippy --all-targets --all-features   # warning-free
+cargo clippy --all-targets -- -D warnings
 ```
 
 On Linux the build needs `libudev-dev` and `pkg-config` (used by the serial monitor):

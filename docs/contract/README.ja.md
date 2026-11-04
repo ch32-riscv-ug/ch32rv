@@ -1,14 +1,13 @@
 # ch32rv JSON contract
 
-- 契約版: `5`
-- 状態: 凍結候補。v1 の凍結で確定する。CLI の版とは独立に versioning する([cli.ja.md §6](../cli.ja.md))。凍結までは破壊的変更をまとめて入れ、版を上げる
+- 契約版: `ch32rv-contract` の `CONTRACT_VERSION`(JSON の envelope の `contract`)。CLI の版とは独立に上げる([cli.ja.md §6](../cli.ja.md))。破壊的変更のときだけ上げる
 
 ## 構成
 
 | ファイル | 内容 |
 |---|---|
 | [result.schema.json](result.schema.json) | `--json` 時に stdout へ出る単一 result object の envelope。`result` は commands.schema.json で引く |
-| [commands.schema.json](commands.schema.json) | コマンドごとの `result` の形。`$defs` のコマンドの名前(envelope の `cmd`)の項。`result` を出すコマンドはすべてここにある(50 個。`gdb`、`broker serve`、`arduino discovery` / `monitor`、`complete`、`isp reset` は `result` を出さない) |
+| [commands.schema.json](commands.schema.json) | コマンドごとの `result` の形。`$defs` のコマンドの名前(envelope の `cmd`)の項。`result` を出すコマンドはすべてここにある(`gdb`、`broker serve`、`arduino discovery` / `monitor`、`complete`、`isp reset` は `result` を出さない) |
 | [events.schema.json](events.schema.json) | `--progress ndjson` 時に stderr へ流れる 1 行 1 event |
 
 ## ルール

@@ -1,4 +1,4 @@
-//! en: The OEP HID transport's report packing (oep-core §3.1): the length-framed byte stream goes
+//! en: The OEP HID transport's report packing (oep-transports §1): the length-framed byte stream goes
 //! into vendor-defined reports as `[report id] count(u16) bytes... zero padding`, the report size
 //! being what the report descriptor declares. Opening the HID device is the caller's (hidapi).
 //! ja: OEP の HID の経路の report の詰め方。長さ見出しのバイト列を vendor 定義の report に

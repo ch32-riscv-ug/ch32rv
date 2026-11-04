@@ -45,7 +45,7 @@ const RESPAWN_EVERY: Duration = Duration::from_millis(400);
 /// The broker's own lease on the probe, renewed by keepalive while no client talks.
 /// en: The broker's lease: long enough that a raised port speed that stopped answering can be
 /// noticed and brought back to the boot speed (a timeout, then a confirm there) before it lapses
-/// (oep-core §3.5); a broker that dies still frees a raised port within 3 s (the probe's
+/// (oep-if-link §3); a broker that dies still frees a raised port within 3 s (the probe's
 /// silence rule), and its lock goes with the lease. ja: ブローカーの lease。上げた速さで答えが
 /// 止まったとき、気づいて起動時の速さへ戻すまで切れない長さ。
 const LEASE_MS: u32 = 10_000;
@@ -141,7 +141,7 @@ fn key_for(path: &str) -> String {
     }
 }
 
-/// The key of the probe with unit id `unit`, whatever the route (case aside, oep-core §3.3).
+/// The key of the probe with unit id `unit`, whatever the route (case aside, oep-transports §3).
 fn unit_key(unit: &str) -> String {
     ch32rv_usb::sanitize_key(&format!("oep-{}", unit.to_ascii_lowercase()))
 }
@@ -928,7 +928,7 @@ fn serve_target(
     let (tx, rx) = mpsc::channel::<Ev>();
     let max_frame = usize::from(up.limits().max_frame);
     std::thread::spawn(move || accept_loop(listener, tx, max_frame));
-    // en: A UART bridge's link is raised for the broker's long session (oep-core §3.5, by default
+    // en: A UART bridge's link is raised for the broker's long session (oep-if-link §3, by default
     // since 2026-10-01: "a feature that is not used breaks"), every trial logged so the rates can
     // be decided from what is seen. Clients that connect meanwhile wait (their TCP wait is 15 s).
     // ja: UART bridge の link を、ブローカーの長い session の間だけ上げる(既定、2026-10-01)。試した
@@ -1086,7 +1086,7 @@ impl Upstream {
     }
 
     /// en: After a request went unanswered: does the probe still answer? A confirm at the speed
-    /// now, then (raised) at the boot speed (oep-core §3.5 host duty 5). ja: probe がまだ答えるか。
+    /// now, then (raised) at the boot speed (oep-if-link §3 host). ja: probe がまだ答えるか。
     fn recheck(&mut self) -> bool {
         match self {
             Upstream::Oep(p) => {
@@ -1243,7 +1243,7 @@ struct Broker {
     /// (when, good, broken + lost) at the raised speed, the last few seconds' worth.
     speed_window: std::collections::VecDeque<(Instant, u64, u64)>,
     /// The probe goes back only at 3 broken frames in a row (oep-probe-arduino 0.0.27 and up):
-    /// judge by the share over 3 s (host guide §7.4) instead of 2 broken in 5 s.
+    /// judge by the share over 3 s instead of 2 broken in 5 s.
     speed_ratio_rule: bool,
     /// The link's `speed_fallbacks` already logged.
     fallbacks_seen: u64,
@@ -1464,7 +1464,7 @@ impl Broker {
         self.flush(&mut pending, &mut calls)
     }
 
-    /// en: A client's restart (oep-if-restart §2, §3): forwarded under the broker's session like
+    /// en: A client's restart (oep-if-restart §2, host guide §5.2): forwarded under the broker's session like
     /// any locking op, its answer passed on; after a success the broker closes its transport to
     /// the probe and ends (transports §1: the transport to the probe is gone), so every client
     /// starts over - the one that restarted the probe waits for it (restart_max_ms) and its next
@@ -1606,11 +1606,11 @@ impl Broker {
     }
 
     /// en: While the port speed is raised, watch how the frames fare and lower it together with
-    /// the probe when they fare badly (oep-core §3.5: the host notices first; the probe's own
+    /// the probe when they fare badly (oep-if-link §3: the host notices first; the probe's own
     /// fallback is the last resort); and note when the link found the probe back at the boot speed
     /// by itself. Either way the session stays at the boot speed. The rule depends on the probe:
     /// from oep-probe-arduino 0.0.27 (it goes back only at 3 broken frames in a row) the share of
-    /// broken and lost frames over the last 3 s above 10 % (host guide §7.4, base 0, not judged
+    /// broken and lost frames over the last 3 s above 10 % (base 0, not judged
     /// under 50 frames); before it (3 in 1 s) 2 broken frames in 5 s, so as to lower first.
     /// ja: 上げた速さの間、フレームの様子を見て、悪ければ probe と揃えて下げる。0.0.27 以降の probe
     /// では直近 3 秒の(壊れ + 失われ)の割合が 10 % を超えたら(50 フレーム未満は判定しない)、それより
@@ -1629,7 +1629,7 @@ impl Broker {
             self.lowered();
             broker_log(
                 &self.key,
-                "port_speed: a request at the raised speed got no answer (even resent), and the probe answered confirm at the boot speed (link duty 5): at the boot speed for now",
+                "port_speed: a request at the raised speed got no answer (even resent), and the probe answered confirm at the boot speed (oep-if-link §3): at the boot speed for now",
             );
             return;
         }
@@ -1737,7 +1737,7 @@ impl Broker {
     }
 
     /// en: A confirm the link sent (a speed fallback, a recheck) answered another boot_id than the
-    /// broker's open: the probe restarted (oep-core §6.5, §3.5 host duty 5). Say so and open a new
+    /// broker's open: the probe restarted (oep-core §6.5, oep-if-link §3 host). Say so and open a new
     /// session, rather than wait for the next request's no_session.
     /// ja: link の confirm の boot_id が open と違う: probe が再起動した。log に出し、開き直す。
     fn watch_restart(&mut self) -> Result<(), String> {

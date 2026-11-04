@@ -1,17 +1,17 @@
 # 開発ルール(ch32rv)
 
-ch32rv = WCH CH32 RISC-V MCU の書き込み・デバッグツール(Rust)。**spec-first**: コードより先に docs を固める。仕様索引は [README.ja.md](README.ja.md)。
+ch32rv = WCH CH32 RISC-V MCU の書き込み・デバッグツール(Rust)。CLI の形と契約は docs に書き、実装を合わせる。仕様索引は [README.ja.md](README.ja.md)。
 
 ## 1. 言語ポリシー
 
 - **ソース**: 英語のみ、または `// en:` / `// ja:` マーカー付きの英語+日本語(module doc・設計制約コメントは併記、些末なコメントは英語のみ)。
 - **CLI `--help` とユーザー向けメッセージ**: 英語。
-- **ドキュメント**: 英語を主とし、相互リンクした `.ja.md` twin を置く。**例外: 内容が変わりうる検討中の文書は、固まるまで日本語のみ**にし、安定したら英語主版を追加する(本 `docs/` 群は現在この段階)。
-- **CHANGELOG.md**: 1 ファイルに `- (EN)` / `- (JA)` を対で併記。**分割しない**。初回だけ「何が入っているか」のスナップショット、以降は差分。変わりうること(将来予定・未確定)は書かない。
+- **ドキュメント**: `docs/` の仕様は日本語のみ(`.ja.md`)。repository と crate の README は英語(トップの README は相互リンクした `README.ja.md` を持つ)。
+- **CHANGELOG.md**: 1 ファイルに `- (EN)` / `- (JA)` を対で併記。**分割しない**。版ごとの差分を書く。変わりうること(予定・未確定)は書かない。
 
 ## 2. ワークフロー規約
 
-- **git コミット / push は、ユーザーが明示的に指示するまでしない**(ユーザーが増分コミットする)。
+- **commit は main に、区切りごとに置く。push とリリースはユーザーが行う**。
 - **システム変更(apt / driver / udev / usbipd bind 等)はユーザーが実行**する。こちらは**コマンドを依頼形式で提示**する(勝手に実行しない)。
 - **device データ(CSV)はこのリポジトリ内で作らない**: [ch32-device-data](https://github.com/ch32-riscv-ug/ch32-device-data) への作成依頼を第一とする(`docs/data-requests/`、1 依頼 1 ファイル=ファイル自体が依頼)。納品までの暫定 overlay は可([architecture.ja.md](architecture.ja.md) §3)。
 - **ライセンス**: MIT 単独(dual ではない)。
@@ -22,8 +22,8 @@ ch32rv = WCH CH32 RISC-V MCU の書き込み・デバッグツール(Rust)。**s
 ```sh
 cargo build
 cargo test
-cargo clippy --all-targets --all-features   # warning ゼロ必須
-cargo fmt
+cargo clippy --all-targets -- -D warnings   # warning ゼロ必須
+cargo fmt --all --check                    # 出力 0 行
 cargo deny check
 ```
 
@@ -39,7 +39,7 @@ cargo deny check
 
 ## 5. ライブラリ API 規約
 
-公開 crate は crates.io の安定契約。破壊的変更は 0.x の minor でまとめて行い([consistency-audit.ja.md](consistency-audit.ja.md))、以下の規約に従う。
+公開 crate は CLI の部品で、crate ごとの API と semver は約束しない(各 crate の README と Cargo.toml の description)。それでも API は以下の規約に従う。
 
 - **エラー型**: 1 crate 1 エラー enum(`〜Error` 接尾辞)+ `thiserror` + `#[non_exhaustive]`。分類は Display 文字列でなく**型付き variant** で行う(部分文字列マッチ禁止)。`ch32rv-usb` だけは境界の性質上 4 エラー型(`UsbError`/`LockError`/`ResolveError`/`SelectorParseError`)を意図的に持つ。CLI 側の exit code 分類は `cmd_probe::session_error` に集約。
 - **戻り値**: 到達可否・欠損が「データ」なら status enum(`ChipInfoStatus`/`DmiStatus`/`target::Resolution`)、失敗が「エラー」なら `Result`。public 経路に `unwrap`/`expect`/`panic` を置かない。

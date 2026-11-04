@@ -210,7 +210,7 @@ impl Selector {
                         }
                     }
             }
-            // Case aside: some OSes and tools show a serial in capitals (oep-core §3.3 compares unit_id
+            // Case aside: some OSes and tools show a serial in capitals (oep-transports §3 compares unit_id
             // and serial the same way).
             Selector::Serial(sn) => dev.serial().is_some_and(|d| d.eq_ignore_ascii_case(sn)),
             Selector::Topology(t) => dev.topology() == *t,
