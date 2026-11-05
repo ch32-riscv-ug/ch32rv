@@ -418,6 +418,20 @@ impl SdiError {
     }
 }
 
+/// en: One DMI read (dmstatus) between the attach and the SDI enable. Without it, a LinkE 2.22
+/// on a running CH32V307VCT6 took the enable (answer `00`) but about every other time did not
+/// forward: it printed "Please check the SDI, and Enable this function through the upper
+/// computer software" on its CDC instead. With the read, 16 of 16 enables forwarded (a 50 ms
+/// sleep in its place did not help). wlink's sequence has no such read; on V003 / V203 / L103 it
+/// is not needed, and a read changes nothing there.
+/// ja: attach と SDI の有効化の間に DMI の読み取り(dmstatus)を 1 回挟む。挟まないと LinkE 2.22 +
+/// 走っている CH32V307VCT6 で、有効化は `00` で通るのに 2 回に 1 回ほど転送せず、CDC に
+/// "Please check the SDI, ..." を出した。挟むと 16 回中 16 回転送した(50 ms 待つだけでは直らない)。
+fn settle_before_sdi_enable(link: &mut ch32rv_wchlink::WchLink) {
+    // dmstatus (Debug Spec 0x11).
+    let _ = ch32rv_dmi::DtmAccess::dmi_read(link, 0x11);
+}
+
 /// en: Turn on the LinkE's SDI print forwarding to its CDC (shared by `monitor --source sdi` and
 /// `arduino monitor`). Returns the warnings to report.
 /// ja: LinkE の SDI print の CDC への転送を有効にする(`monitor --source sdi` と `arduino monitor` が共用)。
@@ -469,6 +483,7 @@ pub(crate) fn enable_sdi(
             return Err(SdiError::new(ErrorKind::TargetAmbiguous, e.to_string()));
         }
         let _ = link.set_speed(attach.family_byte, speed);
+        settle_before_sdi_enable(&mut link);
         let warnings = vec![attach_reclocks_warning(
             "press the board's reset, or use `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`",
         )];
@@ -731,6 +746,9 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
     let _ = link.set_speed_default(speed);
     if let Ok(attach) = link.attach_chip() {
         let _ = link.set_speed(attach.family_byte, speed);
+    }
+    if on {
+        settle_before_sdi_enable(&mut link);
     }
     if let Err(e) = link.set_sdi_print_enabled(on) {
         return fail(
