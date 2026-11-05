@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.29.1 - 2026-11-05
+
 - (EN) Fix: `monitor --source sdi` (and the Arduino monitor's sdi) on a CH32V307 over a WCH-LinkE forwards every time. About every other run the LinkE took the SDI print enable (answer `00`) but did not forward, and printed "Please check the SDI, and Enable this function through the upper computer software" on its CDC instead (only its tail, "er computer software", reached the monitor). One DMI read (dmstatus) between the attach and the enable makes it forward. Measured: LinkE 2.22 + V307VCT6 with a SerialSDI sketch, 12 of 12 runs (before: about half, falling to none on repeated runs); a 50 ms wait in its place did not help.
 - (JA) 修正: WCH-LinkE での CH32V307 の `monitor --source sdi`(Arduino の monitor の sdi も)が毎回出力を流す。2 回に 1 回ほど、LinkE は SDI print の有効化を `00` で受けるのに転送せず、CDC に "Please check the SDI, and Enable this function through the upper computer software" を出していた(monitor には末尾の "er computer software" だけが届いた)。attach と有効化の間に DMI の読み取り(dmstatus)を 1 回挟むと転送する。実測: LinkE 2.22 + V307VCT6(SerialSDI のスケッチ)で 12 回中 12 回(直す前は半分ほどで、続けると 1 回も通らなくなった)。代わりに 50 ms 待つだけでは直らなかった。
 
