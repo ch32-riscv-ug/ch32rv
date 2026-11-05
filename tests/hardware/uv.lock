@@ -13,7 +13,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "oep-client-python", specifier = "==0.0.41" },
+    { name = "oep-client-python", specifier = "==0.0.47" },
     { name = "pytest", specifier = ">=8" },
 ]
 
@@ -37,15 +37,15 @@ wheels = [
 
 [[package]]
 name = "oep-client-python"
-version = "0.0.41"
+version = "0.0.47"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pyserial" },
     { name = "pyusb" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c9/a3/53d4ffd732d2b68c1cea5018ba92d99413038f2b2405d57549208ec2f9ef/oep_client_python-0.0.41.tar.gz", hash = "sha256:ee421803a0700d846f610fdf51a80e35ccb4d2c346f2886bccc032202fd3f7f9", size = 2001266, upload-time = "2026-10-31T21:46:51.154Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/dd/ee/09bfaf75cf9bd7db74fa8d2fbe1d4fbcbfa550fbdf48f7137979963ed2e1/oep_client_python-0.0.47.tar.gz", hash = "sha256:347d571a98ec904d1373631ed0689a8ccaf7285243c02d3017a05723099fa153", size = 2022814, upload-time = "2026-11-05T05:56:15.956Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f0/f6/39522e5eee770cc38b7585a428a996cabc6612297d7917487b78c5805d24/oep_client_python-0.0.41-py3-none-any.whl", hash = "sha256:5d85cfcc70c57f043db4318656a6c3f83614a1b7daa6030b101c94a4c1e451c8", size = 915831, upload-time = "2026-10-31T21:46:49.038Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/f2/9dd1fdb7f00c6f1e1f0e2018ca17e756754bb9755bd418b66f7952bdd6eb/oep_client_python-0.0.47-py3-none-any.whl", hash = "sha256:f0946a61374a03d01004b8435a0b1a0e26e02e64d53912f9ed6380f513b76eeb", size = 928759, upload-time = "2026-11-05T05:56:14.092Z" },
 ]
 
 [[package]]

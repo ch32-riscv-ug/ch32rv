@@ -7,7 +7,7 @@ use std::sync::OnceLock;
 
 /// The oep-client-python version tests/oep-virtual pins (its uv.lock): part of the venv's name, so
 /// a new pin never reuses a venv built for an older client.
-const BENCH_REV: &str = "0.0.41";
+const BENCH_REV: &str = "0.0.47";
 
 fn target_dir() -> PathBuf {
     let exe = std::env::current_exe().unwrap_or_default();

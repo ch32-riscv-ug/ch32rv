@@ -183,6 +183,36 @@ pub enum Push {
     },
 }
 
+impl Push {
+    /// The fn the push came from.
+    pub fn func(&self) -> u16 {
+        match self {
+            Push::Event { func, .. } | Push::Data { func, .. } => *func,
+        }
+    }
+
+    /// en: The message as the probe sent it (core §10.2): `0x03 fn seq kind payload` or
+    /// `0x04 fn seq payload`. ja: probe が送ったとおりのメッセージ。
+    pub fn encode(&self) -> Vec<u8> {
+        let (role, func, seq, kind, payload) = match self {
+            Push::Event {
+                func,
+                seq,
+                kind,
+                payload,
+            } => (registry::roles::EVENT, func, seq, Some(*kind), payload),
+            Push::Data { func, seq, payload } => (registry::roles::DATA, func, seq, None, payload),
+        };
+        let mut out = Vec::with_capacity(6 + payload.len());
+        out.push(role);
+        out.extend_from_slice(&func.to_le_bytes());
+        out.extend_from_slice(&seq.to_le_bytes());
+        out.extend(kind);
+        out.extend_from_slice(payload);
+        out
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum LinkError {
     #[error("transport: {0}")]
@@ -311,6 +341,37 @@ impl Link {
     /// Take the pushes received so far.
     pub fn take_pushes(&mut self) -> Vec<Push> {
         self.pushes.drain(..).collect()
+    }
+
+    /// en: Read what arrived within `wait` with no request outstanding, and queue its pushes
+    /// ([`Self::take_pushes`]). A result that turns up (a late answer to an earlier try) is
+    /// dropped, as while waiting for an answer. For a host that relays pushes between requests
+    /// (the broker), so the probe's push queue never backs up (core §10.4).
+    /// ja: 要求を待っていない間に `wait` だけ読み、通知をためる。来た応答(前の試みの遅い答え)は捨てる。
+    /// 要求の合間に通知を中継する host(ブローカー)のためで、probe の通知を詰まらせない。
+    pub fn poll_pushes(&mut self, wait: Duration) -> Result<(), LinkError> {
+        self.fill(wait)?;
+        while let Some(m) = self.inbox.pop_front() {
+            self.good += 1;
+            match Incoming::decode(&m) {
+                Ok(Incoming::Event {
+                    func,
+                    seq,
+                    kind,
+                    payload,
+                }) => self.pushes.push_back(Push::Event {
+                    func,
+                    seq,
+                    kind,
+                    payload,
+                }),
+                Ok(Incoming::Data { func, seq, payload }) => {
+                    self.pushes.push_back(Push::Data { func, seq, payload })
+                }
+                Ok(Incoming::Result { .. }) | Err(_) => self.dropped += 1,
+            }
+        }
+        Ok(())
     }
 
     /// `confirm`: learn the revision and the limits. Refuses a probe that is not v1.
@@ -962,6 +1023,52 @@ pub fn open_tcp(addr: &str) -> Result<Link, LinkError> {
 mod tests {
     use super::*;
     use crate::codec::{cobs_decode, encode_result};
+
+    /// A relayed push is the message the probe sent (core §10.2): decoding it gives it back.
+    #[test]
+    fn a_push_encodes_back_to_the_probes_message() {
+        let pushes = [
+            Push::Event {
+                func: 7,
+                seq: 0xfffe,
+                kind: 3,
+                payload: vec![1, 2, 3],
+            },
+            Push::Data {
+                func: 0x0102,
+                seq: 5,
+                payload: (0..40).collect(),
+            },
+            Push::Data {
+                func: 1,
+                seq: 0,
+                payload: Vec::new(),
+            },
+        ];
+        for p in pushes {
+            let back = match Incoming::decode(&p.encode()).unwrap() {
+                Incoming::Event {
+                    func,
+                    seq,
+                    kind,
+                    payload,
+                } => Push::Event {
+                    func,
+                    seq,
+                    kind,
+                    payload,
+                },
+                Incoming::Data { func, seq, payload } => Push::Data { func, seq, payload },
+                Incoming::Result { .. } => Push::Data {
+                    func: u16::MAX,
+                    seq: 0,
+                    payload: Vec::new(),
+                },
+            };
+            assert_eq!(back, p);
+            assert_eq!(back.func(), p.func());
+        }
+    }
 
     /// A serial port to a probe that breaks the CRC of its first `breaks` answers, after losing
     /// its first `silent` requests outright (no answer at all).

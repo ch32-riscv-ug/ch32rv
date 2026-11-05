@@ -661,3 +661,91 @@ fn a_wchlink_broker_shares_one_lock_with_its_tools() {
     let (_broker, ep) = serve(&format!("wchlink://{serial}"));
     shares_one_lock(&ep);
 }
+
+/// en: The broker relays pushes (core §10.3 / §10.4): a client subscribes through it to the fake
+/// probe's logic capture and streams, while it sends requests on the same session (the
+/// ArduinoCore's capture-while-driving-the-console). oep-client-python's own stream does the
+/// subscribe, the collecting and the unsubscribe; the broker passes the subscribe on and sends
+/// the fn's data pushes to that client only.
+/// ja: ブローカーは通知を中継する。client がブローカー越しに偽の probe の logic の取り込みを購読し、
+/// 同じ session で要求を送りながら stream する(oep-client-python の stream を使う)。
+#[test]
+fn a_stream_capture_runs_through_the_broker_while_the_session_is_used() {
+    let Some((_fake, pty)) = fake_pty() else {
+        return;
+    };
+    let _broker = Kill(
+        uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
+            .args(["broker", "serve", "--probe", pty.as_str()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let ep = loop {
+        if let Some(ep) = endpoint(&pty) {
+            break ep;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the broker published no endpoint"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    // The client names the probe by its unit_id and checks it (host guide §5.3).
+    let unit = {
+        let mut p = Probe::connect(open_tcp(&ep).unwrap()).unwrap();
+        let d = p.describe(0).unwrap();
+        let t = d
+            .iter()
+            .find(|t| t.tag == ch32rv_oep::registry::core::tlvs::describe::UNIT_ID)
+            .expect("describe's unit_id");
+        String::from_utf8(t.value.clone()).unwrap()
+    };
+    let dir = uv::client_dir().expect("oep-client-python");
+    let spool = std::env::temp_dir().join(format!("ch32rv-broker-stream-{}", std::process::id()));
+    std::fs::create_dir_all(&spool).unwrap();
+    let script = r#"
+import sys
+from oep_client import acquire, core, link
+hst = link.open_host(f"oep://{sys.argv[3]}?via=tcp:{sys.argv[1]}")
+try:
+    core.take(hst, 30_000, owner="ch32rv broker test")
+    seen = []
+    def steps(wait):
+        for _ in range(3):
+            seen.append(hst.clock_best(2).uptime_ns)
+            wait(0.1)
+    req = acquire.Request([("A", "GPIO10")], 100_000, 0, mode="stream", during=steps, spool_dir=sys.argv[2])
+    res = acquire.capture(hst, req)
+    n = sum(p.channels[0].n for p in res.parts)
+    assert res.complete and res.parts and n > 0, (res.complete, len(res.parts), n)
+    assert len(seen) == 3 and seen == sorted(seen), seen
+    again = acquire.capture(hst, acquire.Request([("A", "GPIO10")], 100_000, 0, mode="stream", seconds=0.1,
+                                                 spool_dir=sys.argv[2]))
+    assert again.complete
+    print("STREAMED", n)
+finally:
+    hst.end()
+    hst.link.close()
+"#;
+    let out = uv::uv_run(&dir)
+        .args([
+            "python",
+            "-c",
+            script,
+            ep.as_str(),
+            &spool.to_string_lossy(),
+            unit.as_str(),
+        ])
+        .output()
+        .unwrap();
+    let _ = std::fs::remove_dir_all(&spool);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success() && stdout.contains("STREAMED"),
+        "stdout: {stdout}\nstderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}

@@ -202,7 +202,7 @@ ch32rv は attach せずに分かること(unit_id、口の名前)だけで口�
 - source `uart` は、OEP の probe の port でも素通しのまま。どの device か分からない port に OEP の confirm を送らないため。
 - **source `fixture-uart`**: ブローカー経由の session で `oep.fixture.uart` を開き、monitor の `baudrate` を configure で送る(OPEN のときと、開いたまま変わったとき)。ストリームを読み、入力は書き戻す。probe の CDC の line coding を target の UART に写す機能は spec に無いので、UART の速さはこの configure で決める。fixture の UART にピンの plan が無ければ、OPEN が理由つきの error。
 - **`oep://<probe>/<port>` の port**(protocol `oep`): source は dmseq(既定)/ dmdata / sdi / fixture-uart / rtt。console はその口の label のピンで attach する(§6)。
-- console は read を poll する(ブローカーは通知を中継しない)。読み出しは lock-free。
+- console は read を poll する(購読は使わない)。読み出しは lock-free。
 - 読み始める位置は、最後の reset mark から(書き込みの直後に開いたとき、最初の行を落とさない)。
 - IDE の入力は console write で送る(dmseq は 1 回に 2 byte まで。残りは送り直す)。
 - 接続を失う(link-lost の mark、boot_id が変わる、transport が消える)と、`[ch32rv monitor] stopped: …` を流して終わる。
@@ -226,10 +226,12 @@ ch32rv は attach せずに分かること(unit_id、口の名前)だけで口�
   - 拡張を知らない相手(OEP の probe、ほかのブローカー)は、critical の拡張を unsupported(0xFF)で断る。ch32rv の client はそれを見て、拡張の無い open をやり直す。
   - confirm / list / describe は、ブローカーが持っている写しで答える(boot_id が変わったら取り直す)。
   - 1 つの client の要求の並びは崩さない(probe は順に処理する)。client をまたいだ並びは到着順。
+  - **通知(push)を中継する**(core §10.3 / §10.4): client の subscribe / unsubscribe(どの fn でも op 0x01 / 0x02)をブローカーの session で probe へ通し、成功したらその fn の通知(role 0x03 の出来事と 0x04 のデータ)を subscribe を送った client へ、届いたとおりのメッセージで送る。1 つの fn の購読は 1 つで、別の client が同じ fn を subscribe したら置き換わり、前の client にはもう送らない。購読のある間は、要求の合間も probe の link を 4 ms ずつ読んで通知をすぐ送り、ためない(probe は送れない通知を捨てる)。答えを待つ間に読んだ通知は、その答えより先に送る。購読者の居ない fn の通知は捨てる。WCH-Link のブローカーには購読が無い。
 - **client ごとの資源の台帳**:
   - 接続: attach の応答の connection。参照は client ごとに数え、使う client がいなくなったときだけ detach する。同じピンへの 2 つ目の attach には、その接続を貸す(名前つき拡張 `io.github.ch32-riscv-ug.shared`。§9 の「接続とストリーム」)。
   - plan(plan_apply の fn)。
-  - client が落ちたら、その client の分だけ外す(使う client のいない接続は detach、plan は plan_release)。昇格や台帳の申告し直しは無い。
+  - 購読(fn ごとに、subscribe を送った client)。
+  - client が落ちたら、その client の分だけ外す(その client の購読は unsubscribe、使う client のいない接続は detach、plan は plan_release)。昇格や台帳の申告し直しは無い。
 - **WCH-Link もブローカーの裏に置く**。ブローカーが Link の debug の口(vendor)を持ち、client には OEP を見せて、interface を WCH-Link の操作に写す。
   - `oep.wire.rvswd` / `swio` の attach は AttachChip(target_id は chip_id)。
   - `oep.target.riscv-dm` の dmi / halt / resume / reset / block / run は DmiOp と DebugModule(`DmTarget`)。
@@ -258,7 +260,7 @@ ch32rv が仕様の主な決まりにどう合わせているか。
 - **message と TLV**: 要求の見出しは常に 10 byte で session_id を持つ(0 = session なし)。TLV は `tag len(u16) value` の 1 つの形で、TLV 番号 0 は壊れたもの。並び(list、scan、marks)は要素の長さを持たない(要素の形は revision で決まる)。confirm は boot_id を返す。corr は open をまたいで続く。どの要求も max_op_ms を待つ。
 - **session**: 再開は無い。end・lease 切れ・force で session の資源はすべて外れ、その id は no_session になる(ブローカーは `no_session` で新しい session を開く)。
 - **任意の op**: 各 fn の describe の `ops`(base + bitmap)だけで知る(features では知らない)。describe の ops は core §7.4 の符号だけを受ける(`session::decode_ops`、試験は spec の ops_encoding.json)。
-- **fn の名前**: core は名前の無い fn 0 で、list に出ない(版は confirm の revision だけ)。plan は `oep.probe.plan`、restart は `oep.probe.restart`(op 0x01、describe 0x40 restart_max_ms)、port_speed と線の試験は `oep.probe.link`(source は len(u16) data、最大 max_frame − 26 byte、sink は count(u16) data)。ブローカーは plan と restart を名前で探した fn で見分ける。購読は通知を送るインターフェースの 0x30 / 0x32 で、ブローカーはどの fn でも断る(通知を中継しない)。fn 0 の `clock`(op 0x04、ロックも session も要らない、答えは boot_id と uptime_ns)はブローカーが中継する(ブローカーが自分で答えるのは confirm / open / end / keepalive / lock_state の 5 つ)。
+- **fn の名前**: core は名前の無い fn 0 で、list に出ない(版は confirm の revision だけ)。plan は `oep.probe.plan`、restart は `oep.probe.restart`(op 0x01、describe 0x40 restart_max_ms)、port_speed と線の試験は `oep.probe.link`(source は len(u16) data、最大 max_frame − 26 byte、sink は count(u16) data)。ブローカーは plan と restart を名前で探した fn で見分ける。購読はどのインターフェースでも op 0x01 subscribe / 0x02 unsubscribe(core §10.3)で、ブローカーは probe へ通し、通知を頼んだ client へ中継する(§7.2)。fn 0 の `clock`(op 0x04、ロックも session も要らない、答えは boot_id と uptime_ns)はブローカーが中継する(ブローカーが自分で答えるのは confirm / open / end / keepalive / lock_state の 5 つ)。
 - **restart**: ブローカーは client の restart を自分の session で送り、答えを返したら probe への経路を閉じて終わる(transports §1)。client は restart_max_ms まで待ってやり直す(新しいブローカーが起動する)。ブローカーが中継しなかった再起動(電源、watchdog、他の host)のときは、ブローカーがその場で立て直す: 起動時の速さで confirm を restart_max_ms まで繰り返し、新しい session を開く(client の session は終わる)。
 - **接続とストリーム**: 番号は u32 で、接続とストリームで 1 つの空間(WCH のブローカーは connection 1、ストリームは 2 から)。attach は method 0 / 1 の 1 つの形で、毎回新しい接続を作る(同じピンの 2 つ目は unavailable cause 1)。ブローカーは 1 本を client に貸す(名前つき拡張 `io.github.ch32-riscv-ug.shared`)。max_speed は必須なので ch32rv は常に送る(呼び出し側の値、無ければ線の describe の max_clock_hz、無ければ 1 MHz)。応答の flags は `attach_flags` で、bit3 で TLV 0x11 dpc。scan の skip は TLV 0x02。スロットは無い(§6)。
 - **riscv-dm と console**: dmi の nvals は u16、run の nvals は u8 で stopped 2。reset の mode は 0 run / 1 halt_at_reset。write_block は送り直さない。read の応答は len を持つ(console / fixture UART)。マークの time_ns は 22 byte の形。console の mechanism は名前の一覧で、開き直しは新しいストリーム。probe は op の外に target の状態を持ち越さないので、ch32rv の OEP の resume は dpc を読むたびに DATA0 / DATA1 を戻す。

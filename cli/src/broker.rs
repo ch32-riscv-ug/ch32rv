@@ -768,6 +768,9 @@ struct Ledger {
     conns: HashMap<u32, (u16, BTreeSet<u64>, Vec<u8>)>,
     /// client -> the fns it has plans on
     plans: HashMap<u64, BTreeSet<u16>>,
+    /// fn -> the client whose subscribe is the fn's one subscription (core §10.3: one per fn, a
+    /// second subscribe replaces it): that fn's pushes go to that client.
+    subs: HashMap<u16, u64>,
 }
 
 /// What to answer, in the client's order.
@@ -1073,6 +1076,21 @@ impl Upstream {
         }
     }
 
+    /// en: The pushes that came, after reading for at most `wait` (none for a WCH-Link, which has
+    /// no subscribe). ja: 来た通知(`wait` まで読む)。WCH-Link は購読が無いので無い。
+    fn pushes(&mut self, wait: Duration) -> Result<Vec<ch32rv_oep::link::Push>, String> {
+        match self {
+            Upstream::Oep(p) => {
+                let l = p.link();
+                if !wait.is_zero() {
+                    l.poll_pushes(wait).map_err(|e| e.to_string())?;
+                }
+                Ok(l.take_pushes())
+            }
+            Upstream::Wch(_) => Ok(Vec::new()),
+        }
+    }
+
     /// The upstream link's resends and dropped frames so far (diagnostics for the log).
     /// The upstream link's (resends, broken, good, lost) so far (for the log and port_speed).
     fn losses(&mut self) -> (u64, u64, u64, u64) {
@@ -1254,6 +1272,10 @@ struct Broker {
     raises_left: u32,
 }
 
+/// How long one read of the probe's link waits for pushes between requests while a fn is
+/// subscribed: also how late a client's request can be picked up.
+const PUSH_POLL: Duration = Duration::from_millis(4);
+
 /// How long a broker about to end still takes a new connection (after its endpoint is gone).
 const LEAVE_GRACE: Duration = Duration::from_millis(150);
 
@@ -1272,7 +1294,18 @@ impl Broker {
         // Since when no client is connected (after one had been).
         let mut empty_since: Option<Instant> = None;
         loop {
-            let wait = self.up.tick();
+            // en: While a fn is subscribed, the probe's link is read between requests too, a few
+            // ms at a time, and its pushes relayed (core §10.4: the probe drops what it cannot
+            // send). ja: 購読がある間は、要求の合間も probe の link を数 ms ずつ読み、通知を中継する。
+            let streaming = !self.ledger.subs.is_empty();
+            if streaming && carried.is_none() {
+                self.relay_after(PUSH_POLL)?;
+            }
+            let wait = if streaming {
+                Duration::from_millis(1)
+            } else {
+                self.up.tick()
+            };
             let got = match carried.take() {
                 Some(ev) => Ok(ev),
                 None => rx.recv_timeout(wait),
@@ -1591,6 +1624,11 @@ impl Broker {
             broker_log(&self.key, "upstream: no_session - opening a new session");
             self.restart_session()?;
         }
+        // en: Pushes read while the answers were awaited came before them on the probe's link;
+        // they go out first (a subscribe's answer lands after the pushes of the subscription it
+        // replaced, as on the probe's own path, core §10.3).
+        // ja: 答えを待つ間に読んだ通知は、答えより先に来たもの。先に送る。
+        self.relay()?;
         let mut replies = replies.into_iter();
         for p in pending {
             match p {
@@ -1603,6 +1641,26 @@ impl Broker {
             }
         }
         Ok(())
+    }
+
+    /// en: Send the pushes the link holds to the fns' subscribers, reading for at most `wait`
+    /// first (zero: only what an exchange already read). A push of a fn nobody here subscribed
+    /// to (a subscription that ended, its last frames still on the way) is dropped. Nothing is
+    /// held back: a stream's pushes go on at once, so the probe's queue never backs up (core
+    /// §10.4). ja: link にある通知を購読者へ送る(先に `wait` まで読む)。購読者の居ない fn の通知は
+    /// 捨てる。ためずにすぐ送る。
+    fn relay_after(&mut self, wait: Duration) -> Result<(), String> {
+        let pushes = self.up.pushes(wait)?;
+        for push in pushes {
+            if let Some(&id) = self.ledger.subs.get(&push.func()) {
+                self.send(id, &push.encode());
+            }
+        }
+        Ok(())
+    }
+
+    fn relay(&mut self) -> Result<(), String> {
+        self.relay_after(Duration::ZERO)
     }
 
     /// en: While the port speed is raised, watch how the frames fare and lower it together with
@@ -2041,14 +2099,6 @@ impl Broker {
                 _ => None,
             };
         }
-        // Pushes are not relayed: a subscribe to any interface (0x01 / 0x02 in every interface's op
-        // space, core §10.3) is refused here.
-        if req.func != oep_core::FN
-            && (req.op == registry::constants::OP_SUBSCRIBE
-                || req.op == registry::constants::OP_UNSUBSCRIBE)
-        {
-            return Some(refuse(reject_reasons::UNAVAILABLE));
-        }
         // en: The broker shares one connection to the probe among its clients (an attach creates
         // a new connection on the probe, and a second one on the same pins is refused, oep-if-debug
         // §1): an attach on a wire where the broker holds one is answered here with that
@@ -2185,6 +2235,30 @@ impl Broker {
         if !r.succeeded() {
             return;
         }
+        // en: A subscribe (0x01 / 0x02 in every interface's op space, core §10.3) goes to the
+        // probe under the broker's one session, so the probe sees one subscriber per fn; the
+        // broker keeps who asked and sends that fn's pushes there. Another client's subscribe
+        // replaces it, as at the probe; an unsubscribe from anyone ends it.
+        // ja: subscribe はブローカーの 1 つの session で probe へ行く。誰が頼んだかを覚え、その fn の
+        // 通知をその client へ送る。別の client の subscribe は置き換え、unsubscribe は誰からでも外す。
+        if req.func != oep_core::FN && req.op == registry::constants::OP_SUBSCRIBE {
+            if let Some(prev) = self.ledger.subs.insert(req.func, id)
+                && prev != id
+            {
+                broker_log(
+                    &self.key,
+                    &format!(
+                        "fn {}: client {id}'s subscribe replaces client {prev}'s",
+                        req.func
+                    ),
+                );
+            }
+            return;
+        }
+        if req.func != oep_core::FN && req.op == registry::constants::OP_UNSUBSCRIBE {
+            self.ledger.subs.remove(&req.func);
+            return;
+        }
         if self.wires.contains(&req.func) {
             match req.op {
                 o if o == wire_rvswd::op::ATTACH => {
@@ -2267,6 +2341,29 @@ impl Broker {
         }
         for c in dead {
             self.ledger.conns.remove(&c);
+        }
+        // Its subscriptions end at the probe too, before anything else it held goes.
+        let subscribed: Vec<u16> = self
+            .ledger
+            .subs
+            .iter()
+            .filter(|(_, c)| **c == id)
+            .map(|(f, _)| *f)
+            .collect();
+        for func in subscribed {
+            self.ledger.subs.remove(&func);
+            calls.insert(
+                0,
+                (
+                    id,
+                    Call {
+                        func,
+                        op: registry::constants::OP_UNSUBSCRIBE,
+                        session: Some(self.sid),
+                        payload: Vec::new(),
+                    },
+                ),
+            );
         }
         // No plan interface, nothing to release (op 0x11 on fn 0 would be the core's end).
         if let Some(fns) = self.ledger.plans.remove(&id)
