@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.29.0 - 2026-11-05
+
 - (EN) The broker relays pushes (core §10.3 / §10.4). A client's subscribe / unsubscribe (op 0x01 / 0x02 of any fn; they were refused with `unavailable`) goes to the probe under the broker's session. Once it succeeds, that fn's events and data go to the client that subscribed, as the probe sent them. A fn has one subscription: another client's subscribe moves it. While a fn is subscribed, the broker reads the probe's link between requests too (4 ms at a time) and sends the pushes on at once, so the probe's queue does not back up. Pushes read while an answer was awaited go out before that answer. A client's subscriptions are unsubscribed when it leaves, like its connections and plans. So a client can stream a logic capture and send requests (a console) on the same session through the broker, as the ArduinoCore's tests do with oep-client-python 0.0.47's `stream` + `during`. Checked by a test on the virtual probe (`cli/tests/broker.rs`).
 - (JA) ブローカーが通知(push)を中継する(core §10.3 / §10.4)。client の subscribe / unsubscribe(どの fn でも op 0x01 / 0x02。これまでは `unavailable` で断っていた)をブローカーの session で probe へ通し、成功したら、その fn の出来事とデータを、subscribe した client へ probe が送ったとおりに送る。1 つの fn の購読は 1 つで、別の client が subscribe すれば移る。購読のある間は、要求の合間も probe の link を 4 ms ずつ読み、通知をためずにすぐ送る(probe の送り待ちを詰まらせない)。答えを待つ間に読んだ通知は、その答えより先に送る。client が抜けたら、接続や plan と同じく、その購読も unsubscribe する。これで client は、ブローカー越しに同じ session で logic の取り込みを流しながら要求(console)を送れる(ArduinoCore の試験が oep-client-python 0.0.47 の `stream` + `during` でするもの)。偽の probe の試験(`cli/tests/broker.rs`)で確かめる。
 - (EN) Tests: the virtual probe and the hardware tests use oep-client-python 0.0.47 (was 0.0.41), the virtual one with its `acquire` extra (numpy) for streams.
