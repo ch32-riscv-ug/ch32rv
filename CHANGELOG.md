@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Fix: on an OEP probe, `target info` (and the FLASH / SRAM columns of `target list --identify`) gives the flash and SRAM size of a chip whose ID several parts share, and `--chip` naming one of them makes it the part, as through a WCH-Link. A CH32V006K8U6 (chip ID `0x00600620`, shared with K8U7) showed no sku, flash or SRAM; it now shows both candidates and 62 KiB / 8 KiB. `read --region` takes that size too. Measured: CH32V006K8U6 evaluation board on an OEP probe (ESP32-P4, 0.0.51).
+- (JA) 修正: OEP の probe で、ID を複数の型番が共有する chip の `target info`(と `target list --identify` の FLASH / SRAM の列)が flash と SRAM の大きさを出し、`--chip` で候補の 1 つを名指せばその型番になる(WCH-Link の側と同じ)。CH32V006K8U6(chip ID `0x00600620`、K8U7 と共有)は sku も flash も SRAM も空だった。今は候補 2 つと 62 KiB / 8 KiB を出す。`read --region` もその大きさを使う。実測: OEP の probe(ESP32-P4、0.0.51)の先の CH32V006K8U6 評価ボード。
+
 ## 0.29.1 - 2026-11-05
 
 - (EN) Fix: `monitor --source sdi` (and the Arduino monitor's sdi) on a CH32V307 over a WCH-LinkE forwards every time. About every other run the LinkE took the SDI print enable (answer `00`) but did not forward, and printed "Please check the SDI, and Enable this function through the upper computer software" on its CDC instead (only its tail, "er computer software", reached the monitor). One DMI read (dmstatus) between the attach and the enable makes it forward. Measured: LinkE 2.22 + V307VCT6 with a SerialSDI sketch, 12 of 12 runs (before: about half, falling to none on repeated runs); a 50 ms wait in its place did not help.

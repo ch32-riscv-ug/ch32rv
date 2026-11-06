@@ -695,6 +695,24 @@ pub enum Resolution<'a> {
     Unknown,
 }
 
+impl Resolution<'_> {
+    /// en: Flash and SRAM bytes of the matched part: one SKU's, or those every candidate sharing
+    /// the id has (a temperature grade, CH32V006K8U6/U7). None when unknown or when they differ.
+    /// ja: 一致した型番の flash と SRAM のバイト数。ID を共有する候補が皆同じならその値。
+    pub fn geometry(&self) -> Option<(u32, u32)> {
+        match self {
+            Resolution::Sku(s) => Some((s.flash_bytes, s.sram_bytes)),
+            Resolution::Family(_, c) => {
+                let first = c.first()?;
+                c.iter()
+                    .all(|s| s.flash_bytes == first.flash_bytes && s.sram_bytes == first.sram_bytes)
+                    .then_some((first.flash_bytes, first.sram_bytes))
+            }
+            Resolution::Unknown => None,
+        }
+    }
+}
+
 /// en: Parse one `sku,family,series,device_id,id_addr,flash_bytes,sram_bytes,verified[,...]`
 /// table. Trailing columns are ignored, so the provisional overlay can carry its request number
 /// without a second parser. Malformed rows are skipped rather than failing the whole table.
@@ -1066,6 +1084,18 @@ mod tests {
             db.resolve_with_chip(0x2500_410f, Some("CH32V103")),
             Resolution::Family(..)
         ));
+    }
+
+    /// The V006 evaluation board's K8U6 read 0x00600620 (revision 2) through an OEP probe; it
+    /// shares its id with K8U7, and both are 62 KiB flash / 8 KiB SRAM, so the size is known
+    /// although the part is not.
+    #[test]
+    fn parts_sharing_an_id_report_their_shared_size() {
+        let db = Db::builtin();
+        let r = db.resolve_by_chip_id(0x0060_0620);
+        assert!(matches!(&r, Resolution::Family(f, c) if f == "CH32V006" && c.len() == 2));
+        assert_eq!(r.geometry(), Some((63488, 8192)));
+        assert_eq!(db.resolve_by_chip_id(0xdead_beef).geometry(), None);
     }
 
     /// The overlay is a gap-filler, not a second source of truth: a row that the generated table

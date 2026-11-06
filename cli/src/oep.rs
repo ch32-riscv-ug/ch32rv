@@ -2167,10 +2167,37 @@ pub(crate) fn gdb(cli: &Cli, args: &crate::args::GdbArgs, a: &OepAddr) -> ExitCo
 }
 
 /// The DB SKU of a chip id (flash / SRAM sizes).
-fn sku_of(chip_id: Option<u32>) -> Option<ch32rv_target::SkuRecord> {
-    match ch32rv_target::Db::builtin().resolve_by_chip_id(chip_id?) {
-        ch32rv_target::Resolution::Sku(s) => Some(s.clone()),
-        _ => None,
+/// en: What the DB says of the chip: its part (the one SKU, or the `--chip` one among parts that
+/// share the id), the candidates when it stays ambiguous, and the flash / SRAM bytes, which the
+/// candidates share (a temperature grade, CH32V006K8U6/U7).
+/// ja: DB から見た chip。型番(1 つ、または ID を共有する中の `--chip`)、決まらないときの候補、
+/// 候補が共有する flash / SRAM のバイト数。
+struct DbPart {
+    sku: Option<ch32rv_target::SkuRecord>,
+    candidates: Vec<String>,
+    geometry: Option<(u32, u32)>,
+}
+
+fn part_of(cli: &Cli, chip_id: Option<u32>) -> DbPart {
+    let db = ch32rv_target::Db::builtin();
+    let Some(id) = chip_id else {
+        return DbPart {
+            sku: None,
+            candidates: Vec::new(),
+            geometry: None,
+        };
+    };
+    let r = db.resolve_with_chip(id, cli.chip.as_deref());
+    DbPart {
+        sku: match &r {
+            ch32rv_target::Resolution::Sku(s) => Some((*s).clone()),
+            _ => None,
+        },
+        candidates: match &r {
+            ch32rv_target::Resolution::Family(_, c) => c.iter().map(|s| s.sku.clone()).collect(),
+            _ => Vec::new(),
+        },
+        geometry: r.geometry(),
     }
 }
 
@@ -2328,10 +2355,7 @@ pub(crate) fn verify(
 pub(crate) fn read(cli: &Cli, args: &crate::args::ReadArgs, a: &OepAddr) -> ExitCode {
     const CMD: &str = "read";
     with_attached(cli, CMD, a, true, |x| {
-        let sku = sku_of(x.chip_id);
-        let (flash, sram) = sku
-            .as_ref()
-            .map_or((0, 0), |s| (s.flash_bytes, s.sram_bytes));
+        let (flash, sram) = part_of(cli, x.chip_id).geometry.unwrap_or((0, 0));
         let option_base = x
             .family
             .as_deref()
@@ -2528,30 +2552,34 @@ fn target_name(x: &mut Attached<'_>) -> Option<String> {
 pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
     const CMD: &str = "target.info";
     with_attached(cli, CMD, a, false, |x| {
-        let sku = sku_of(x.chip_id);
+        let part = part_of(cli, x.chip_id);
+        let sku = part.sku.as_ref();
+        let flash = part.geometry.map(|g| g.0);
+        let sram = part.geometry.map(|g| g.1);
         let uid = read_uid(x);
         if cli.json {
             let mut env = ResultEnvelope::success(CMD);
             // The same `target` block the WCH-Link path fills, so a caller reads one place.
             env.target = Some(ch32rv_contract::envelope::TargetReport {
-                sku: sku.as_ref().map(|s| s.sku.clone()),
+                sku: sku.map(|s| s.sku.clone()),
                 family: x.family.clone(),
                 chip_id: x.chip_id.map(|c| format!("0x{c:08x}")),
                 uid: uid.clone(),
-                verified: sku.as_ref().map(|s| s.verified),
-                provisional: sku.as_ref().map(|s| s.provisional),
+                verified: sku.map(|s| s.verified),
+                provisional: sku.map(|s| s.provisional),
                 protected: None,
-                flash_bytes: sku.as_ref().map(|s| s.flash_bytes),
+                flash_bytes: flash,
             });
             env.result = Some(serde_json::json!({
                 "probe": { "kind": "oep" },
                 "target": {
                     "chip_id": x.chip_id.map(|c| format!("0x{c:08x}")),
                     "family": x.family,
-                    "sku": sku.as_ref().map(|s| s.sku.clone()),
+                    "sku": sku.map(|s| s.sku.clone()),
+                    "sku_candidates": part.candidates,
                     "uid": uid,
-                    "flash_bytes": sku.as_ref().map(|s| s.flash_bytes),
-                    "sram_bytes": sku.as_ref().map(|s| s.sram_bytes),
+                    "flash_bytes": flash,
+                    "sram_bytes": sram,
                 },
             }));
             crate::print_envelope(&env)
@@ -2563,10 +2591,17 @@ pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
             }
             println!("family:   {}", x.family.as_deref().unwrap_or("unknown"));
             println!("uid:      {}", uid.as_deref().unwrap_or("-"));
-            if let Some(s) = &sku {
+            if let Some(s) = sku {
                 println!("sku:      {}", s.sku);
-                println!("flash:    {} KiB", s.flash_bytes / 1024);
-                println!("sram:     {} KiB", s.sram_bytes / 1024);
+            } else if !part.candidates.is_empty() {
+                println!(
+                    "sku:      - (one of {}; --chip names it)",
+                    part.candidates.join(", ")
+                );
+            }
+            if let Some((f, r)) = part.geometry {
+                println!("flash:    {} KiB", f / 1024);
+                println!("sram:     {} KiB", r / 1024);
             }
             ExitCode::SUCCESS
         }

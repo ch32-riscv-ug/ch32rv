@@ -146,15 +146,7 @@ pub fn info(cli: &Cli) -> ExitCode {
 
     let identification = identification_status(&resolution);
     // Candidates that share an id (a temperature grade, CH32V006K8U6/U7) share the size too.
-    let sram_bytes = match &resolution {
-        ch32rv_target::Resolution::Sku(s) => Some(s.sram_bytes),
-        ch32rv_target::Resolution::Family(_, c)
-            if c.windows(2).all(|w| w[0].sram_bytes == w[1].sram_bytes) =>
-        {
-            c.first().map(|s| s.sram_bytes)
-        }
-        _ => None,
-    };
+    let sram_bytes = resolution.geometry().map(|g| g.1);
     let sku_candidates: Vec<&str> = match &resolution {
         ch32rv_target::Resolution::Family(_, c) => c.iter().map(|s| s.sku.as_str()).collect(),
         _ => Vec::new(),
