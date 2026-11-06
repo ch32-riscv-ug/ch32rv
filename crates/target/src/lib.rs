@@ -695,6 +695,29 @@ pub enum Resolution<'a> {
     Unknown,
 }
 
+impl Db {
+    /// en: The device id read from memory, for a probe whose attach gave none (a CH32V103 over
+    /// an OEP probe: its debug module has no WCH id register). Each address some part keeps its id
+    /// at is read in turn, and a value is taken only when it names a part that keeps it there.
+    /// ja: attach が ID を返さない probe 向けに、メモリから ID を読む。型番が ID を置く番地を順に
+    /// 読み、その番地に ID を置く型番を名指す値だけを採る。
+    pub fn chip_id_from_memory(&self, mut read: impl FnMut(u32) -> Option<u32>) -> Option<u32> {
+        let mut addrs: Vec<u32> = self.skus.iter().filter_map(|s| s.id_addr).collect();
+        addrs.sort_unstable();
+        addrs.dedup();
+        addrs.into_iter().find_map(|at| {
+            let id = read(at)?;
+            self.skus
+                .iter()
+                .any(|s| {
+                    s.id_addr == Some(at)
+                        && s.device_id.map(|d| d & DEVICE_ID_MASK) == Some(id & DEVICE_ID_MASK)
+                })
+                .then_some(id)
+        })
+    }
+}
+
 impl Resolution<'_> {
     /// en: Flash and SRAM bytes of the matched part: one SKU's, or those every candidate sharing
     /// the id has (a temperature grade, CH32V006K8U6/U7). None when unknown or when they differ.
@@ -745,14 +768,17 @@ fn parse_sku_table(csv: &str, provisional: bool) -> Vec<SkuRecord> {
         else {
             continue;
         };
-        let device_id = device_id
-            .strip_prefix("0x")
-            .and_then(|h| u32::from_str_radix(h, 16).ok());
+        let hex = |v: &str| {
+            v.strip_prefix("0x")
+                .and_then(|h| u32::from_str_radix(h, 16).ok())
+        };
+        let device_id = hex(device_id);
         out.push(SkuRecord {
             sku: (*sku).to_owned(),
             family: (*family).to_owned(),
             series: (*series).to_owned(),
             device_id,
+            id_addr: f.get(4).and_then(|a| hex(a)),
             flash_bytes: flash.parse().unwrap_or(0),
             sram_bytes: sram.parse().unwrap_or(0),
             // `verified` = the device_id was confirmed on real silicon by this project; the rest
@@ -929,6 +955,10 @@ pub struct SkuRecord {
     pub series: String,
     /// device_id read from memory (from measured evidence).
     pub device_id: Option<u32>,
+    /// en: Where the part keeps its device_id in memory (`id_addr`).
+    /// ja: device_id を置く番地。
+    #[serde(default)]
+    pub id_addr: Option<u32>,
     pub flash_bytes: u32,
     pub sram_bytes: u32,
     /// en: Verified on real silicon (kept distinct from merely "implemented").
@@ -1084,6 +1114,18 @@ mod tests {
             db.resolve_with_chip(0x2500_410f, Some("CH32V103")),
             Resolution::Family(..)
         ));
+    }
+
+    /// A CH32V103 over an OEP probe gives no id at attach; its id is read where the DB keeps it
+    /// (0x1FFFF884), and a value found at another part's address does not count.
+    #[test]
+    fn a_chip_id_is_taken_from_memory_only_where_its_part_keeps_it() {
+        let db = Db::builtin();
+        let v103 = |at: u32| Some(if at == 0x1fff_f884 { 0x2500_410f } else { 0 });
+        assert_eq!(db.chip_id_from_memory(v103), Some(0x2500_410f));
+        let elsewhere = |at: u32| Some(if at == 0x1fff_f704 { 0x2500_410f } else { 0 });
+        assert_eq!(db.chip_id_from_memory(elsewhere), None);
+        assert_eq!(db.chip_id_from_memory(|_| None), None);
     }
 
     /// The V006 evaluation board's K8U6 read 0x00600620 (revision 2) through an OEP probe; it

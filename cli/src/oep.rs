@@ -2054,18 +2054,32 @@ pub(crate) fn with_attached_reset(
             Ok(a) => a,
             Err(e) => return oep_fail(cli, cmd, e),
         };
-        let family = match check_family_text(at.wch_chip_id, cli.chip.as_deref()) {
-            Ok(f) => f,
-            Err(m) => {
-                let _ = detach(&mut p, wire, at.connection);
-                return fail(cli, cmd, ErrorKind::TargetAmbiguous, m, None);
-            }
-        };
         let r = match OepDtm::new(&mut p, at.connection) {
-            Ok(t) => {
+            Ok(mut t) => {
+                // en: An attach that gave no id (a CH32V103: no WCH id register in its debug
+                // module) is completed from memory, where the DB says parts keep it.
+                // ja: ID を返さない attach(CH32V103)は、DB の番地のメモリから補う。
+                let chip_id = at.wch_chip_id.or_else(|| {
+                    let mut halted = at.halted.is_some();
+                    let id = ch32rv_target::Db::builtin().chip_id_from_memory(|addr| {
+                        read_words_halting(&mut t, &mut halted, addr, 1)
+                            .and_then(|w| w.first().copied())
+                    });
+                    if halted && at.halted.is_none() {
+                        resume_after(&mut t);
+                    }
+                    id
+                });
+                let family = match check_family_text(chip_id, cli.chip.as_deref()) {
+                    Ok(f) => f,
+                    Err(m) => {
+                        let _ = detach(&mut p, wire, at.connection);
+                        return fail(cli, cmd, ErrorKind::TargetAmbiguous, m, None);
+                    }
+                };
                 let mut x = Attached {
                     t,
-                    chip_id: at.wch_chip_id,
+                    chip_id,
                     family,
                     existing: at.existing,
                     halted_at: at.halted,
@@ -2514,6 +2528,26 @@ pub(crate) fn write(cli: &Cli, addr: u32, bytes: &[u8], a: &OepAddr) -> ExitCode
 /// `None` when unreadable or erased-looking. A test harness matches DUTs by it, and a WCH-Link
 /// behind its broker answers `target info` through this path (ArduinoCore-CH32RV, 2026-10-15).
 /// ja: ESIG の 64 bit の UID(WCH-Link の ChipInfo と同じ表記)。止めずに読めなければ一瞬止めて読む。
+/// en: `count` words at `addr`; a target that does not answer a read while it runs is halted
+/// (`halted` then turns true) and read again. The caller resumes a hart it found running.
+/// ja: 走ったままで読めなければ止めて読み直す(`halted` が true になる)。再開は呼び手。
+fn read_words_halting(
+    t: &mut OepDtm<'_>,
+    halted: &mut bool,
+    addr: u32,
+    count: usize,
+) -> Option<Vec<u32>> {
+    match t.read_words(addr, count) {
+        Ok(w) => Some(w),
+        Err(_) if !*halted => {
+            t.halt().ok()?;
+            *halted = true;
+            t.read_words(addr, count).ok()
+        }
+        Err(_) => None,
+    }
+}
+
 fn read_uid(x: &mut Attached<'_>) -> Option<String> {
     // Most families keep it at 0x1FFFF7E8; CH32M030 at 0x1FFFF3A8 (ch32-device-data esig).
     let at = x
@@ -2521,18 +2555,12 @@ fn read_uid(x: &mut Attached<'_>) -> Option<String> {
         .as_deref()
         .and_then(ch32rv_target::uid_addr)
         .unwrap_or(0x1FFF_F7E8);
-    let words = match x.t.read_words(at, 2) {
-        Ok(w) => w,
-        Err(_) => {
-            let was_running = x.halted_at.is_none();
-            x.t.halt().ok()?;
-            let w = x.t.read_words(at, 2);
-            if was_running {
-                resume_after(&mut x.t);
-            }
-            w.ok()?
-        }
-    };
+    let mut halted = x.halted_at.is_some();
+    let words = read_words_halting(&mut x.t, &mut halted, at, 2);
+    if halted && x.halted_at.is_none() {
+        resume_after(&mut x.t);
+    }
+    let words = words?;
     let [w0, w1] = words[..] else {
         return None;
     };
