@@ -666,9 +666,14 @@ fn a_wchlink_broker_shares_one_lock_with_its_tools() {
 /// probe's logic capture and streams, while it sends requests on the same session (the
 /// ArduinoCore's capture-while-driving-the-console). oep-client-python's own stream does the
 /// subscribe, the collecting and the unsubscribe; the broker passes the subscribe on and sends
-/// the fn's data pushes to that client only.
+/// the fn's data pushes to that client only. The stream runs at 10 kHz: what is checked is the
+/// relay, and the fake probe (a Python process) drops a segment it could not send while it was
+/// starved of the CPU - at 100 kHz on a loaded host (load 13-16 on 4 cores) 4-8 runs in 12 lost
+/// one, the broker reading the link throughout; at 10 kHz none in 12.
 /// ja: ブローカーは通知を中継する。client がブローカー越しに偽の probe の logic の取り込みを購読し、
-/// 同じ session で要求を送りながら stream する(oep-client-python の stream を使う)。
+/// 同じ session で要求を送りながら stream する(oep-client-python の stream を使う)。速さは 10 kHz:
+/// 確かめるのは中継で、偽の probe は CPU を待つ間に送れなかった segment を捨てる(負荷の高い host で
+/// 100 kHz だと 12 回中 4〜8 回、10 kHz では 0 回)。
 #[test]
 fn a_stream_capture_runs_through_the_broker_while_the_session_is_used() {
     let Some((_fake, pty)) = fake_pty() else {
@@ -717,12 +722,12 @@ try:
         for _ in range(3):
             seen.append(hst.clock_best(2).uptime_ns)
             wait(0.1)
-    req = acquire.Request([("A", "GPIO10")], 100_000, 0, mode="stream", during=steps, spool_dir=sys.argv[2])
+    req = acquire.Request([("A", "GPIO10")], 10_000, 0, mode="stream", during=steps, spool_dir=sys.argv[2])
     res = acquire.capture(hst, req)
     n = sum(p.channels[0].n for p in res.parts)
-    assert res.complete and res.parts and n > 0, (res.complete, len(res.parts), n)
+    assert res.complete and res.parts and n > 0, (res.lost, len(res.parts), n)
     assert len(seen) == 3 and seen == sorted(seen), seen
-    again = acquire.capture(hst, acquire.Request([("A", "GPIO10")], 100_000, 0, mode="stream", seconds=0.1,
+    again = acquire.capture(hst, acquire.Request([("A", "GPIO10")], 10_000, 0, mode="stream", seconds=0.1,
                                                  spool_dir=sys.argv[2]))
     assert again.complete
     print("STREAMED", n)
