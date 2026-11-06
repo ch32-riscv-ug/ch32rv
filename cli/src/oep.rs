@@ -1368,6 +1368,19 @@ fn flash_attached(
     log_hint: Option<String>,
 ) -> ExitCode {
     const CMD: &str = "flash";
+    let mut t = match OepDtm::new(p, connection) {
+        Ok(t) => t,
+        Err(e) => return oep_fail(cli, CMD, e),
+    };
+    // en: An attach that gave no id (a CH32V103) is completed from memory, as for the other
+    // commands ([`with_attached_reset`]); the flash attached halted, so the read needs no halt.
+    // ja: ID を返さない attach(CH32V103)は、ほかのコマンドと同じくメモリから補う(halt 済み)。
+    let chip_id = chip_id.or_else(|| {
+        let mut halted = true;
+        ch32rv_target::Db::builtin().chip_id_from_memory(|addr| {
+            read_words_halting(&mut t, &mut halted, addr, 1).and_then(|w| w.first().copied())
+        })
+    });
     let family = match family(cli, CMD, chip_id) {
         Ok(f) => f,
         Err(c) => return c,
@@ -1397,10 +1410,6 @@ fn flash_attached(
     ) {
         Ok(i) => i,
         Err(e) => return fail(cli, CMD, ErrorKind::Usage, e.to_string(), None),
-    };
-    let mut t = match OepDtm::new(p, connection) {
-        Ok(t) => t,
-        Err(e) => return oep_fail(cli, CMD, e),
     };
     // Halt before the first instruction, so a running watchdog cannot reset the part mid-write.
     if let Err(e) = t.reset(ResetMode::HaltAtReset) {
