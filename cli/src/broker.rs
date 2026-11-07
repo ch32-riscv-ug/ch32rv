@@ -19,6 +19,8 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::ExitCode;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -1192,6 +1194,62 @@ impl Upstream {
     }
 }
 
+/// How much a client may have queued and unread before its pushes are dropped.
+const CLIENT_BACKLOG: usize = 32 << 20;
+
+/// en: What goes out to one client: its own writer thread, so a client that stops reading (one
+/// blocked in a call of its own, waiting for another client the broker serves) never stalls the
+/// broker and every other client with it. Results are always queued; a push (event or data)
+/// past [`CLIENT_BACKLOG`] unread bytes is dropped, as the probe drops what it cannot send
+/// (core §10.4: the client sees the gap in its positions). Measured: a client streaming a
+/// capture through the broker that waited for a `ch32rv reset --halt` of its own stopped
+/// reading; the broker's write to it blocked for 44.5 s, so the reset's answer never went out
+/// and the probe's lease lapsed (no_session).
+/// ja: client ごとの書込み thread。読まない client が broker と他の client を止めない。結果は必ず
+/// 送り、通知は未読が上限を超えたら捨てる(probe と同じ)。
+struct ClientOut {
+    tx: mpsc::Sender<Vec<u8>>,
+    queued: Arc<AtomicUsize>,
+    /// Pushes dropped so far.
+    dropped: u64,
+}
+
+impl ClientOut {
+    fn spawn(mut s: TcpStream) -> Self {
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let queued = Arc::new(AtomicUsize::new(0));
+        let q = queued.clone();
+        std::thread::spawn(move || {
+            for frame in rx {
+                let n = frame.len();
+                let ok = s.write_all(&frame).is_ok();
+                q.fetch_sub(n, Ordering::Relaxed);
+                if !ok {
+                    // Its reader sees the end and says it is gone.
+                    let _ = s.shutdown(std::net::Shutdown::Both);
+                    break;
+                }
+            }
+        });
+        Self {
+            tx,
+            queued,
+            dropped: 0,
+        }
+    }
+
+    /// Queue `frame`; false when it was a push dropped for the backlog.
+    fn queue(&mut self, frame: Vec<u8>, push: bool) -> bool {
+        if push && self.queued.load(Ordering::Relaxed) > CLIENT_BACKLOG {
+            self.dropped += 1;
+            return false;
+        }
+        self.queued.fetch_add(frame.len(), Ordering::Relaxed);
+        let _ = self.tx.send(frame);
+        true
+    }
+}
+
 fn accept_loop(listener: TcpListener, tx: mpsc::Sender<Ev>, max_frame: usize) {
     for (id, stream) in listener.incoming().flatten().enumerate() {
         let id = id as u64 + 1;
@@ -1238,7 +1296,7 @@ struct Broker {
     up: Upstream,
     sid: u32,
     wires: BTreeSet<u16>,
-    clients: HashMap<u64, TcpStream>,
+    clients: HashMap<u64, ClientOut>,
     /// The ch32rv tools' shared sessions (opened with `SHARE_EXTENSION`), by client.
     sessions: HashMap<u64, u32>,
     /// The one lock for everyone else, as at a probe (core §5.1, §6).
@@ -1348,7 +1406,7 @@ impl Broker {
                 match ev {
                     Ev::Connected(id, s) => {
                         broker_log(&self.key, &format!("client {id} connected"));
-                        self.clients.insert(id, s);
+                        self.clients.insert(id, ClientOut::spawn(s));
                     }
                     // A client counts once it has asked something: a connection that only checks
                     // the broker is alive (`broker endpoint`) and leaves must not end it.
@@ -1859,8 +1917,19 @@ impl Broker {
                 self.core.answered(sid, corr, msg, Instant::now());
             }
         }
-        if let Some(s) = self.clients.get_mut(&id) {
-            let _ = s.write_all(&length_frame(msg));
+        if let Some(c) = self.clients.get_mut(&id) {
+            // A push to a client that has stopped reading is dropped past its backlog (a
+            // result is always queued): see [`ClientOut`].
+            let push = msg.first() != Some(&registry::roles::RESULT);
+            if !c.queue(length_frame(msg), push) && c.dropped == 1 {
+                broker_log(
+                    &self.key,
+                    &format!(
+                        "client {id} is not reading: its pushes past {} MiB are dropped",
+                        CLIENT_BACKLOG >> 20
+                    ),
+                );
+            }
         }
     }
 
@@ -2517,6 +2586,35 @@ pub(crate) fn hand_back_with_reset() -> Option<bool> {
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
     use super::*;
+
+    /// A client that stops reading never blocks the broker: pushes past its backlog are
+    /// dropped at once, and a result is still queued (it goes out once the client reads).
+    #[test]
+    fn a_client_that_stops_reading_does_not_block_the_broker() {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let peer = TcpStream::connect(l.local_addr().unwrap()).unwrap();
+        let (s, _) = l.accept().unwrap();
+        let mut c = ClientOut::spawn(s);
+        let push = vec![registry::roles::DATA; 64 << 10];
+        let started = Instant::now();
+        let mut queued = 0usize;
+        for _ in 0..((CLIENT_BACKLOG >> 16) * 4) {
+            if c.queue(push.clone(), true) {
+                queued += 1;
+            }
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "queueing blocked"
+        );
+        assert!(c.dropped > 0, "nothing dropped past the backlog");
+        assert!(queued >= CLIENT_BACKLOG >> 16, "the backlog was not used");
+        assert!(
+            c.queue(vec![registry::roles::RESULT, 1, 0], false),
+            "a result was dropped"
+        );
+        drop(peer);
+    }
 
     #[test]
     fn only_a_broker_of_this_protocol_and_version_is_ours() {
