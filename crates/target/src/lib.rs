@@ -1033,11 +1033,11 @@ mod tests {
 
     #[test]
     fn link_firmware_by_sha256() {
-        let e = link_firmware("9c1cd70565ee339409f8bf1f9e466ed0495e0e903fab4fd1044ac55ceb5d6695")
+        let e = link_firmware("acff78ad06feea305f341081c7ba166f9b4e90028dcfda0b11dde58624201e3b")
             .expect("FIRMWARE_CH32V305.bin");
         assert_eq!(
             (e.device, e.role, e.file, e.version),
-            ("WCH-LinkE", "application", "FIRMWARE_CH32V305.bin", "2.22")
+            ("WCH-LinkE", "application", "FIRMWARE_CH32V305.bin", "2.23")
         );
         let e = link_firmware("3CF143A3B6061E8F6A4CA7EE809FFFE007219CAD062ADCA259D245F996662284")
             .expect("WCH-Link_APP_IAP_ARM.bin");

@@ -1732,8 +1732,8 @@ mod tests {
     #![allow(clippy::panic)]
     use super::*;
 
-    const LINKE_APP: &str = "9c1cd70565ee339409f8bf1f9e466ed0495e0e903fab4fd1044ac55ceb5d6695";
-    const LINKE_APP_IAP: &str = "62e2e3a3854dbafdfea4ed73f5a070314f5ff8174c797016ac7f91685ad3de72";
+    const LINKE_APP: &str = "acff78ad06feea305f341081c7ba166f9b4e90028dcfda0b11dde58624201e3b";
+    const LINKE_APP_IAP: &str = "0574b481202829b5498d09ceb2d95790f21a731765d61bda270d6a1a56a6d535";
     const LINKW_APP: &str = "5c59f42e7d14b4681de89e35860a36915a89a099fdafedba236c622d84152bc8";
 
     #[test]
