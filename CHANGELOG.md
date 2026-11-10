@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `probe firmware update` knows every WCH probe image WCH shipped, not only today's WCH-LinkUtility's: ch32-device-data 81d595e adds the 76 images of MounRiver Studio 1.7.0-3.0.0 (86 in all; WCH-LinkE 2.22 and 2.13 among them). Images are matched to the probe by device and MCU: the early WCH-LinkE built on a CH32V307 (MRS 1.8.x's FIRMWARE_CH32V307.bin, 2.4-2.7) reports the same variant as today's (CH32V305), so its images are known but refused on any WCH-LinkE, with FIRMWARE_CH32V305.bin as the hint. A row whose version the data does not know shows `?` (JSON null).
+- (JA) `probe firmware update` が、今の WCH-LinkUtility の分だけでなく、WCH が配った probe の image をすべて知る。ch32-device-data 81d595e が MounRiver Studio 1.7.0〜3.0.0 の 76 本を足した(全 86 本。WCH-LinkE の 2.22 や 2.13 も入る)。image と probe は device と MCU で照らす。CH32V307 で動く初期の WCH-LinkE(MRS 1.8.x の FIRMWARE_CH32V307.bin、2.4〜2.7)は今の LinkE(CH32V305)と同じ variant を返すので、その image は既知だが、どの LinkE にも書かずに断る(hint に FIRMWARE_CH32V305.bin)。版の分からない行は `?`(JSON は null)。
+
 - (EN) Fix (0.30.0): a client that asks the probe to restart through the broker gets the answer again. Since 0.30.0 each client has its own writer thread, and the broker, which ends right after passing a restart's answer on, could end before that thread wrote it: the client saw the connection close with no answer. The broker now lets every client's queue go out (2 s at most for a client that does not read) before it ends. Test: a_client_restarts_the_probe_through_the_broker, which failed 3 in 3 on a 0.30.0 build and passes 5 in 5.
 - (JA) 修正(0.30.0): ブローカー越しに probe の再起動を頼んだ client が、また答えを受け取る。0.30.0 から client ごとに書き込みの thread を持つようになり、再起動の答えを渡した直後に終わるブローカーが、その thread が書く前に終わることがあった(client は答えの無いまま接続が閉じるのを見た)。ブローカーは、終わる前に各 client のキューを送り切る(読まない client は 2 s まで)。試験: a_client_restarts_the_probe_through_the_broker(0.30.0 のビルドで 3 回中 3 回落ち、直して 5 回中 5 回通る)。
 

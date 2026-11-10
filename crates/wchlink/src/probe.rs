@@ -1169,9 +1169,11 @@ mod tests {
                 v.id()
             );
         }
+        // Probes no variant byte tells apart: their images are known, and refused on any probe.
+        let undetected = ["linke-v307"];
         for (device, mcu, id) in ch32rv_target::LINK_VARIANTS {
             assert!(
-                known.iter().any(|v| v.id() == *id),
+                known.iter().any(|v| v.id() == *id) || undetected.contains(id),
                 "{device}/{mcu} maps to `{id}`, which is no Variant"
             );
         }

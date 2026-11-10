@@ -345,7 +345,8 @@ pub fn uid_addr(family: &str) -> Option<u32> {
     })
 }
 
-/// en: A WCH probe firmware image WCH-LinkUtility ships (ch32-device-data `index/link_firmware.csv`).
+/// en: A WCH probe firmware image WCH shipped (WCH-LinkUtility, MounRiver Studio; ch32-device-data
+/// `index/link_firmware.csv`).
 /// ja: WCH-LinkUtility 同梱の probe firmware の 1 本。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LinkFirmware {
@@ -361,7 +362,7 @@ pub struct LinkFirmware {
     pub role: &'static str,
     /// File name in WCH-LinkUtility.
     pub file: &'static str,
-    /// The version the probe reports with this image (`2.22`).
+    /// The version the probe reports with this image (`2.22`); empty when the data does not know it.
     pub version: &'static str,
 }
 

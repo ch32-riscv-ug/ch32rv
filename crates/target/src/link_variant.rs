@@ -10,6 +10,10 @@
 pub const LINK_VARIANTS: &[(&str, &str, &str)] = &[
     ("WCH-Link", "CH549", "link-ch549"),
     ("WCH-LinkE", "CH32V305", "linke"),
+    // The early WCH-LinkE built on a CH32V307 (MounRiver Studio 1.8.x shipped its
+    // FIRMWARE_CH32V307.bin, 2.4-2.7). It reports the same variant byte as today's LinkE, so
+    // ch32rv never detects it: its images are known by sha256 and refused on any LinkE.
+    ("WCH-LinkE", "CH32V307", "linke-v307"),
     ("WCH-LinkS", "CH32V203", "links"),
     ("WCH-DAPLink", "CH32V203", "daplink"),
     ("WCH-LinkW", "CH32V208", "linkw"),
