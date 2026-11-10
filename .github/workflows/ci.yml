@@ -1,8 +1,10 @@
 # CI: the release workflow's verify gates (fmt / clippy / test / deny) on every push and pull
 # request, so a slip shows up at push time instead of when a release is cut.
 #
-# Not here: `xtask db-check` against ch32-device-data. It compares with another repo's HEAD, so an
-# upstream commit alone would turn this repo's pushes red; it stays a release gate (release.yml).
+# `xtask db-check` against ch32-device-data runs here as a warning only (job db-drift): it compares
+# with another repo's HEAD, so an upstream commit alone must not turn this repo's pushes red, but a
+# drift should show at push time rather than first stop a release. The release still refuses a
+# stale DB (release.yml).
 name: CI
 
 on:
@@ -56,3 +58,26 @@ jobs:
         run: cargo test --locked --workspace
       - name: deny
         run: cargo deny check
+
+  # A warning, never a failure: the embedded device DB against ch32-device-data's HEAD. On a drift
+  # the run shows an annotation saying which generated files differ; regenerate with
+  # `cargo xtask db-gen` (the release refuses a stale DB).
+  db-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out ch32-device-data (drift check only)
+        uses: actions/checkout@v4
+        with:
+          repository: ch32-riscv-ug/ch32-device-data
+          path: .ch32-device-data
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Compare the embedded device DB with ch32-device-data
+        run: |
+          if out=$(cargo run -q -p xtask -- db-check .ch32-device-data 2>&1); then
+            echo "$out"
+          else
+            echo "$out"
+            echo "::warning title=Device DB drift::${out//$'\n'/ } (the release refuses a stale DB)"
+          fi
