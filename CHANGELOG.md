@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.30.1 - 2026-11-10
+
 - (EN) `probe firmware update` knows every WCH probe image WCH shipped, not only today's WCH-LinkUtility's: ch32-device-data 81d595e adds the 76 images of MounRiver Studio 1.7.0-3.0.0 (86 in all; WCH-LinkE 2.22 and 2.13 among them). Images are matched to the probe by device and MCU: the early WCH-LinkE built on a CH32V307 (MRS 1.8.x's FIRMWARE_CH32V307.bin, 2.4-2.7) reports the same variant as today's (CH32V305), so its images are known but refused on any WCH-LinkE, with FIRMWARE_CH32V305.bin as the hint. A row whose version the data does not know shows `?` (JSON null).
 - (JA) `probe firmware update` が、今の WCH-LinkUtility の分だけでなく、WCH が配った probe の image をすべて知る。ch32-device-data 81d595e が MounRiver Studio 1.7.0〜3.0.0 の 76 本を足した(全 86 本。WCH-LinkE の 2.22 や 2.13 も入る)。image と probe は device と MCU で照らす。CH32V307 で動く初期の WCH-LinkE(MRS 1.8.x の FIRMWARE_CH32V307.bin、2.4〜2.7)は今の LinkE(CH32V305)と同じ variant を返すので、その image は既知だが、どの LinkE にも書かずに断る(hint に FIRMWARE_CH32V305.bin)。版の分からない行は `?`(JSON は null)。
 
