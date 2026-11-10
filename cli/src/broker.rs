@@ -986,6 +986,12 @@ fn serve_target(
     };
     b.find_fns();
     let r = b.run(&rx);
+    // What was queued for the clients goes out before the broker ends (a restart's answer is the
+    // last thing it passes on). A client that is not reading is waited for 2 s at most.
+    let deadline = Instant::now() + Duration::from_secs(2);
+    for (_, c) in b.clients.drain() {
+        c.finish(deadline);
+    }
     match &r {
         Ok(()) if b.relayed_restart => broker_log(&key, "down: the probe is restarting"),
         Ok(()) => broker_log(&key, "down: no client left"),
@@ -1209,6 +1215,7 @@ const CLIENT_BACKLOG: usize = 32 << 20;
 /// 送り、通知は未読が上限を超えたら捨てる(probe と同じ)。
 struct ClientOut {
     tx: mpsc::Sender<Vec<u8>>,
+    writer: std::thread::JoinHandle<()>,
     queued: Arc<AtomicUsize>,
     /// Pushes dropped so far.
     dropped: u64,
@@ -1219,7 +1226,7 @@ impl ClientOut {
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         let queued = Arc::new(AtomicUsize::new(0));
         let q = queued.clone();
-        std::thread::spawn(move || {
+        let writer = std::thread::spawn(move || {
             for frame in rx {
                 let n = frame.len();
                 let ok = s.write_all(&frame).is_ok();
@@ -1233,8 +1240,19 @@ impl ClientOut {
         });
         Self {
             tx,
+            writer,
             queued,
             dropped: 0,
+        }
+    }
+
+    /// en: Let what is queued go out before the broker ends, waiting at most until `deadline`
+    /// (a client that does not read is not waited for past it): an answer the broker passed on
+    /// last - a restart's, say - reaches its client. ja: 終わる前に、キューを送り切る(期限まで)。
+    fn finish(self, deadline: Instant) {
+        drop(self.tx);
+        while !self.writer.is_finished() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
         }
     }
 
