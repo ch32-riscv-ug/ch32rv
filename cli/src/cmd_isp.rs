@@ -60,6 +60,45 @@ fn open(cli: &Cli, cmd: &str, args: &IspArgs) -> Result<Opened, ExitCode> {
 }
 
 fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Opened, ExitCode> {
+    // en: The IDE's waiting port: no device named, nothing asked of a running sketch, the user
+    // puts the chip in its bootloader - unless the chip has no USB peripheral (the DB says), so no
+    // factory USB ISP, which is refused before any wait (a software-USB HID bootloader such as
+    // rv003usb is `boot hid flash`'s, not this). ja: 待つポート。USB の周辺の無いチップ(工場の
+    // USB ISP が無い)は待つ前に断る。ソフトウェア USB の HID は boot hid flash の側。
+    let waiting = match args.device.as_deref().and_then(wait_for_boot) {
+        Some(Err(m)) => return Err(fail(cli, cmd, ErrorKind::Usage, m, None)),
+        Some(Ok(())) => true,
+        None => false,
+    };
+    if waiting {
+        if args.transport == IspTransport::Uart {
+            return Err(fail(
+                cli,
+                cmd,
+                ErrorKind::Usage,
+                format!(
+                    "{BOOTLOADER_SCHEME}{WAIT_FOR_BOOT} waits for a USB bootloader, not a UART"
+                ),
+                None,
+            ));
+        }
+        if let Some(chip) = cli.chip.as_deref()
+            && ch32rv_target::Db::builtin().chip_has_usb(chip) == Some(false)
+        {
+            return Err(fail(
+                cli,
+                cmd,
+                ErrorKind::CapabilityUnsupported,
+                format!(
+                    "{chip} has no USB peripheral, so it has no factory USB ISP bootloader to wait for"
+                ),
+                Some(
+                    "pick the port of the debug probe the board is wired to (wchlink:// or oep://); a board with a software-USB HID bootloader (rv003usb, UIAPduino) is written by `boot hid flash`",
+                ),
+            ));
+        }
+        return open_usb(cli, cmd, args, IspEntry::None, None, None, true);
+    }
     if args.transport == IspTransport::Uart {
         return open_uart(cli, cmd, args, entry);
     }
@@ -73,7 +112,7 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
     // アプリ。アプリは今引いて、その位置の ISP device だけを使う。アプリが居なければ `--device` 無しと
     // 同じに選び、ISP device も居ないときだけ entry がアプリの不在で止まる。
     let mut app = None;
-    let mut want = match args.device.as_deref() {
+    let want = match args.device.as_deref() {
         None => None,
         Some(d) => match position(d) {
             Some(Ok(t)) => Some(t.to_owned()),
@@ -97,6 +136,23 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
             },
         },
     };
+    open_usb(cli, cmd, args, entry, app, want, false)
+}
+
+/// en: The ISP device over USB: at `want` (a position) or the only one, after asking `app` (or the
+/// probe) to enter when `entry` says so, waiting up to `--wait` - at least [`BOOT_WAIT`] for the
+/// IDE's waiting port (`waiting`), whose user puts the chip in its bootloader by hand.
+/// ja: USB の ISP device。待つポートでは少なくとも [`BOOT_WAIT`] 待ち、入り方と残り時間を出す。
+#[allow(clippy::too_many_arguments)]
+fn open_usb(
+    cli: &Cli,
+    cmd: &str,
+    args: &IspArgs,
+    entry: IspEntry,
+    app: Option<AppDevice>,
+    mut want: Option<String>,
+    waiting: bool,
+) -> Result<Opened, ExitCode> {
     let present = |want: &Option<String>| {
         ch32rv_isp::list().is_ok_and(|v| {
             v.iter()
@@ -104,6 +160,9 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
         })
     };
     let mut wait = Duration::from_secs(args.wait);
+    if waiting {
+        wait = wait.max(BOOT_WAIT);
+    }
     let mut entered = false;
     if entry != IspEntry::None && !ch32rv_usb::replay::active() && !present(&want) {
         let via = match entry {
@@ -128,6 +187,7 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
     }
     let deadline = Instant::now() + wait;
     let mut told = false;
+    let mut countdown = Countdown::new(deadline);
     let dev = loop {
         let found = match ch32rv_isp::list() {
             Ok(v) => v,
@@ -192,12 +252,23 @@ fn open_with(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
         // ja: debug 線で入れた後は来るのを待つだけ。それ以外は入り方を 1 回出す。
         if !told && !entered {
             told = true;
-            eprintln!(
-                "waiting up to {} s for an ISP device (1a86:55e0) ...",
-                wait.as_secs()
-            );
-            eprintln!("  {ENTRY_HINT}");
+            if waiting {
+                eprintln!(
+                    "waiting up to {} s for the board's USB bootloader (ISP, 1a86:55e0) ...",
+                    wait.as_secs()
+                );
+                eprintln!(
+                    "  put the chip in its bootloader now: hold BOOT and reset it (or plug in USB with BOOT held)"
+                );
+            } else {
+                eprintln!(
+                    "waiting up to {} s for an ISP device (1a86:55e0) ...",
+                    wait.as_secs()
+                );
+                eprintln!("  {ENTRY_HINT}");
+            }
         }
+        countdown.tick();
         std::thread::sleep(Duration::from_millis(200));
     };
     if told {
@@ -1042,6 +1113,7 @@ fn find_usb_device(sel: &str) -> Result<AppDevice, Miss> {
     for (scheme, what) in [
         (crate::cmd_boot::HID_SCHEME, "boot hid flash"),
         (ISP_SCHEME, "isp"),
+        (BOOTLOADER_SCHEME, "isp flash"),
     ] {
         if sel.starts_with(scheme) {
             return Err(Miss::new(
@@ -1485,6 +1557,54 @@ pub(crate) const APP_ENTRY_NAME: &str = "CH32RV";
 /// Discovery address schemes: a running CH32RV application, and a factory ISP bootloader.
 pub(crate) const APP_SCHEME: &str = "ch32rv-app://";
 pub(crate) const ISP_SCHEME: &str = "ch32rv-isp://";
+
+/// en: The IDE port that is always listed (docs/freeze-decisions.ja.md §2): no device yet, the
+/// board's own bootloader awaited - the factory USB ISP (`isp flash`) or, on a board with a HID
+/// bootloader, that one (`boot hid flash`; boards.txt picks the tool). The user puts the chip in
+/// its bootloader (BOOT and reset) after pressing Upload. ja: いつも一覧にある、ボードの
+/// ブートローダーを待つポート。どちらの経路かは boards.txt の道具で決まる。
+pub(crate) const BOOTLOADER_SCHEME: &str = "ch32rv-bootloader://";
+pub(crate) const WAIT_FOR_BOOT: &str = "WAIT_FOR_BOOT";
+/// How long the waiting port waits for the bootloader, at least (`--wait` may make it longer).
+pub(crate) const BOOT_WAIT: Duration = Duration::from_secs(60);
+
+/// en: Whether `d` is the waiting port: `Some(Ok)` for `ch32rv-bootloader://WAIT_FOR_BOOT` (case
+/// aside), `Some(Err)` for anything else after that scheme, `None` for another form.
+/// ja: 待つポートか。`ch32rv-bootloader://` の後ろが WAIT_FOR_BOOT 以外ならエラー。
+pub(crate) fn wait_for_boot(d: &str) -> Option<Result<(), String>> {
+    let rest = d.strip_prefix(BOOTLOADER_SCHEME)?;
+    Some(if rest.eq_ignore_ascii_case(WAIT_FOR_BOOT) {
+        Ok(())
+    } else {
+        Err(format!(
+            "--device `{d}`: {BOOTLOADER_SCHEME} takes only {WAIT_FOR_BOOT} (the IDE's waiting port)"
+        ))
+    })
+}
+
+/// en: While waiting for a bootloader: the remaining time every 10 s, on stderr (an IDE shows only
+/// that, and cannot easily cancel). ja: 待つ間、10 秒ごとに残り時間を stderr に出す。
+pub(crate) struct Countdown {
+    deadline: Instant,
+    next: Instant,
+}
+
+impl Countdown {
+    pub(crate) fn new(deadline: Instant) -> Self {
+        Self {
+            deadline,
+            next: Instant::now() + Duration::from_secs(10),
+        }
+    }
+
+    pub(crate) fn tick(&mut self) {
+        let now = Instant::now();
+        if now >= self.next && now < self.deadline {
+            self.next = now + Duration::from_secs(10);
+            eprintln!("  ... {} s left", (self.deadline - now).as_secs() + 1);
+        }
+    }
+}
 
 /// en: The id in a `ch32rv-app://<id>` address: the device's USB serial (ArduinoCore-CH32RV's
 /// default is derived from the chip's UID, so it stays the same on another USB port), or

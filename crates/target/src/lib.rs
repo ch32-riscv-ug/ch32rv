@@ -52,6 +52,9 @@ const GENERATED_DEBUG_WIRING: &str = include_str!("../generated/debug_wiring.csv
 /// The embedded generated per-family unique-ID address (produced by `cargo xtask db-gen`).
 const GENERATED_ESIG: &str = include_str!("../generated/esig.csv");
 
+/// Whether each part has a USB port (`cargo xtask db-gen`, capabilities.csv): `sku,usb`.
+const GENERATED_USB: &str = include_str!("../generated/usb.csv");
+
 /// The embedded generated per-family flash geometry (produced by `cargo xtask db-gen`).
 const GENERATED_FLASH_GEOMETRY: &str = include_str!("../generated/flash_geometry.csv");
 
@@ -106,6 +109,7 @@ pub fn provenance() -> DbProvenance {
         GENERATED_FLASH_PROGRAM_METHOD,
         GENERATED_OPTION_BYTES,
         GENERATED_ESIG,
+        GENERATED_USB,
         GENERATED_LINK_FIRMWARE,
         GENERATED_LINK_FIRMWARE_ISSUES,
     ] {
@@ -309,6 +313,19 @@ pub fn debug_wiring(series: &str) -> Option<DebugWiring> {
             swdio: (*swdio).to_owned(),
             swclk: (*swclk).to_owned(),
         })
+    })
+}
+
+/// en: Whether the part `sku` has a USB (device / host) port; `None` when the DB does not say.
+/// ja: 部品に USB があるか。DB に無ければ `None`。
+pub fn part_has_usb(sku: &str) -> Option<bool> {
+    GENERATED_USB.lines().find_map(|line| {
+        let line = line.trim();
+        if line.starts_with('#') {
+            return None;
+        }
+        let (part, usb) = line.split_once(',')?;
+        part.eq_ignore_ascii_case(sku).then_some(usb == "1")
     })
 }
 
@@ -881,6 +898,25 @@ impl Db {
         fams
     }
 
+    /// en: Whether the chip a `--chip` name means can have a USB port: `Some(true)` when any of
+    /// its parts has one, `Some(false)` when the DB says none does, `None` when the name is not in
+    /// the DB or the DB says nothing about its parts' USB. ja: `--chip` の chip に USB がありうるか。
+    pub fn chip_has_usb(&self, name: &str) -> Option<bool> {
+        let mut known = false;
+        for s in self.skus.iter().filter(|s| {
+            s.sku.eq_ignore_ascii_case(name)
+                || s.family.eq_ignore_ascii_case(name)
+                || s.series.eq_ignore_ascii_case(name)
+        }) {
+            match part_has_usb(&s.sku) {
+                Some(true) => return Some(true),
+                Some(false) => known = true,
+                None => {}
+            }
+        }
+        known.then_some(false)
+    }
+
     /// en: When `name` is a SKU with a known device id and the chip read (`chip_id`) is another
     /// part, the SKU the chip resolves to (or its id); `None` when they agree or when `name` is a
     /// family / series, or a SKU the DB has no device id for (then only the family is checked).
@@ -1084,6 +1120,24 @@ mod tests {
                 );
             }
             other => panic!("shared ID should return family candidates: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn the_db_says_which_chips_have_usb() {
+        let db = Db::builtin();
+        for (chip, usb) in [
+            ("CH32V003", Some(false)),
+            ("CH32V003F4P6", Some(false)),
+            ("CH32V006", Some(false)),
+            ("CH32X035", Some(true)),
+            ("CH32X035G8U6", Some(true)),
+            ("CH32M030", Some(true)),
+            ("CH32V203", Some(true)),
+            ("CH32H417", Some(true)),
+            ("NOPE", None),
+        ] {
+            assert_eq!(db.chip_has_usb(chip), usb, "{chip}");
         }
     }
 

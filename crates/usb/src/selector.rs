@@ -177,12 +177,22 @@ fn address(a: &str) -> Option<Result<Selector, SelectorParseError>> {
 }
 
 /// The URL forms of the addresses discovery lists (besides `wchlink://`, a serial).
-pub const ADDRESS_SCHEMES: [&str; 4] =
-    ["oep://", "ch32rv-hid://", "ch32rv-app://", "ch32rv-isp://"];
+pub const ADDRESS_SCHEMES: [&str; 5] = [
+    "oep://",
+    "ch32rv-hid://",
+    "ch32rv-app://",
+    "ch32rv-isp://",
+    "ch32rv-bootloader://",
+];
 
 /// en: The URL forms that name a write target - a bootloader or a running application - which
 /// `--device` takes and `--probe` refuses. ja: 書き込み先の URL(`--device` で渡す)。
-pub const DEVICE_SCHEMES: [&str; 3] = ["ch32rv-hid://", "ch32rv-app://", "ch32rv-isp://"];
+pub const DEVICE_SCHEMES: [&str; 4] = [
+    "ch32rv-hid://",
+    "ch32rv-app://",
+    "ch32rv-isp://",
+    "ch32rv-bootloader://",
+];
 
 fn keyword_value(v: &str, kw: &'static str) -> Result<String, SelectorParseError> {
     if v.is_empty() {

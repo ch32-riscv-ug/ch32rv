@@ -567,8 +567,10 @@ pub struct IspArgs {
     /// The device to write: the ISP bootloader (ch32rv-isp://<bus>-<ports>), or the running
     /// application that `--entry auto|dfu-detach|touch1200` asks to reboot into it (a serial port
     /// / ch32rv-app://<id> as the IDE names it | VID:PID[:SERIAL]); topology:<bus>-<ports> names
-    /// either by position (the bootloader comes up where the application was). Without it, the
-    /// only ISP device present (fail-closed; ISP devices carry no serial)
+    /// either by position (the bootloader comes up where the application was);
+    /// ch32rv-bootloader://WAIT_FOR_BOOT (the IDE's waiting port) waits at least 60 s for the one
+    /// the user brings up. Without it, the only ISP device present (fail-closed; ISP devices carry
+    /// no serial)
     #[arg(long, global = true, value_name = "ADDRESS")]
     pub device: Option<String>,
     /// Seconds to wait for the ISP device to appear, with an entry hint on stderr (0: fail at once)
@@ -782,7 +784,7 @@ pub enum ArduinoCmd {
     /// Pluggable Monitor protocol (stdio JSON)
     Monitor {
         /// The `protocol` DESCRIBE reports (the platform's `pluggable_monitor.pattern.<protocol>`)
-        #[arg(long, default_value = "serial", value_parser = ["serial", "wchlink", "oep", "ch32rv-app", "ch32rv-isp", "ch32rv-hid"])]
+        #[arg(long, default_value = "serial", value_parser = ["serial", "wchlink", "oep", "ch32rv-app", "ch32rv-isp", "ch32rv-hid", "ch32rv-bootloader"])]
         protocol: String,
     },
 }

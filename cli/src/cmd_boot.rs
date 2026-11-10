@@ -91,14 +91,23 @@ pub fn hid_flash(
     // bootloader by position; without it the first one found is used.
     // ja: `--device topology:<位置>` か IDE の `ch32rv-hid://<topology>` で位置の bootloader を選ぶ。
     // 無ければ最初の 1 台。
+    // The IDE's waiting port: no position, the user enters the bootloader after pressing Upload.
+    let waiting = match device.and_then(crate::cmd_isp::wait_for_boot) {
+        Some(Err(m)) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+        Some(Ok(())) => true,
+        None => false,
+    };
     let topology = match device {
-        None => None,
-        Some(d) => match hid_position(d) {
+        Some(d) if !waiting => match hid_position(d) {
             Ok(t) => Some(t.to_owned()),
             Err((m, hint)) => return fail(cli, CMD, ErrorKind::Usage, m, Some(&hint)),
         },
+        _ => None,
     };
-    let wait = Duration::from_secs(wait_secs);
+    let mut wait = Duration::from_secs(wait_secs);
+    if waiting {
+        wait = wait.max(crate::cmd_isp::BOOT_WAIT);
+    }
     let boot = match open_waiting(id, topology.as_deref(), wait) {
         Ok(boot) => boot,
         Err(e) => return hid_error(cli, CMD, e),
@@ -181,6 +190,7 @@ fn open_waiting(
 ) -> Result<HidBoot, HidBootError> {
     let deadline = Instant::now() + wait;
     let mut waiting = false;
+    let mut countdown = crate::cmd_isp::Countdown::new(deadline);
     loop {
         let err = match HidBoot::open_at(usb_id, topology) {
             Ok(boot) => {
@@ -213,6 +223,7 @@ fn open_waiting(
                  (holding it longer makes the host give up enumerating)"
             );
         }
+        countdown.tick();
         std::thread::sleep(Duration::from_millis(200));
     }
 }

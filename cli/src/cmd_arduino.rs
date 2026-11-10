@@ -64,7 +64,23 @@ pub(crate) fn list_ports() -> Vec<Value> {
     ports.extend(oep_ports());
     ports.extend(hid_ports());
     ports.extend(isp_route_ports());
+    ports.push(waiting_port());
     ports
+}
+
+/// en: The port that is always listed (docs/freeze-decisions.ja.md §2): uploading through it waits
+/// for the board's own USB bootloader - the factory ISP, or the HID bootloader on a board that has
+/// one (boards.txt picks the tool) - which the user brings up after pressing Upload. It is there
+/// with nothing connected, so the IDE can keep it selected; a probe is never written through it.
+/// ja: いつも一覧にある待つポート。押してから BOOT で入れたボードのブートローダーに書く。
+fn waiting_port() -> Value {
+    json!({
+        "address": format!("{}{}", crate::cmd_isp::BOOTLOADER_SCHEME, crate::cmd_isp::WAIT_FOR_BOOT),
+        "label": "USB bootloader (waits for BOOT)",
+        "protocol": "ch32rv-bootloader",
+        "protocolLabel": "CH32RV USB bootloader",
+        "properties": {},
+    })
 }
 
 /// en: OEP probes (`crate::oep::is_oep_device`) as one `oep://<probe>[/<port>]` port per port its
@@ -449,7 +465,8 @@ impl Settings {
         let sources: &'static [MonitorSource] = match protocol {
             "wchlink" => &WCHLINK_SOURCES,
             "oep" => &OEP_SOURCES,
-            // serial / ch32rv-app (its CDC) / ch32rv-isp / ch32rv-hid: the UART source only.
+            // serial / ch32rv-app (its CDC) / ch32rv-isp / ch32rv-hid / ch32rv-bootloader: the
+            // UART source only.
             _ => &SERIAL_SOURCES,
         };
         // Line settings default to the builtin serial-monitor's.
@@ -751,6 +768,12 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
     }
     if address.starts_with(crate::cmd_boot::HID_SCHEME) {
         return Err("the HID bootloader has no console to monitor".to_owned());
+    }
+    if address.starts_with(crate::cmd_isp::BOOTLOADER_SCHEME) {
+        return Err(
+            "this port waits for a bootloader to upload through; it has no console to monitor (pick the board's own port)"
+                .to_owned(),
+        );
     }
     // `oep://` with any `via`: the same resolution as `--probe`, so the monitor meets the broker
     // the upload used.

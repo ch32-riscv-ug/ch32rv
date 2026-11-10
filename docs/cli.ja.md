@@ -531,6 +531,7 @@ ch32rv gdb [--listen 127.0.0.1:3333] [--reset-halt] [--no-flash]
 ch32rv isp [--transport usb|uart] [--device <住所>] [--port <serial port>] [--baud <bps>] [--wait <SECS>]
            [--entry none|auto|probe|dfu-detach|touch1200]
            --device: ch32rv-isp://<bus>-<ports> | topology:<bus>-<ports> | <serial port> | ch32rv-app://<id> | VID:PID[:SN]
+                     | ch32rv-bootloader://WAIT_FOR_BOOT
 ch32rv isp list                                     ISP mode device の列挙。Identify に答えない device(LinkE IAP 等)は区別して表示
 ch32rv isp info                                     chip/BTVER/UID/保護状態/config 12 B
 ch32rv isp enter [--via probe]                      --probe の debug 線で boot mode を立てて reset(CH32X03x、CH32H417)
@@ -581,7 +582,11 @@ ch32rv boot hid flash <FILE> [--usb-id <VID:PID>] [--wait <SECS>] [--device <住
 書く device は `--device` で名指す。boot は debug probe を通らないので、`--probe` を付けると exit 2 で断り、hint に `--device <その値>` を出す(環境変数 `CH32RV_PROBE` は他のコマンドの probe なので、boot では見ない)。
 
 - `boot dfu` の `--device`: serial port の path、`ch32rv-app://<id>`、`topology:<bus>-<ports>`、`VID:PID[:SERIAL]`(`isp --device` のアプリの書き方と同じ)。無ければ DFU の interface を持つ唯一の device(0 台 exit 10、2 台以上 exit 14)。bootloader の住所(`ch32rv-isp://`、`ch32rv-hid://`)は exit 2。
-- `boot hid flash` の `--device`: 位置だけ。`ch32rv-hid://<bus>-<ports>`(discovery の住所)か `topology:<bus>-<ports>`。無ければ最初に見つかった 1 台。`hid://<bus>-<ports>` は `ch32rv-hid://<bus>-<ports>` を添えて exit 2。
+- `boot hid flash` の `--device`: 位置だけ。`ch32rv-hid://<bus>-<ports>`(discovery の住所)か `topology:<bus>-<ports>`。無ければ最初に見つかった 1 台。`hid://<bus>-<ports>` は `ch32rv-hid://<bus>-<ports>` を添えて exit 2。`ch32rv-bootloader://WAIT_FOR_BOOT`(待つポート)は、位置を決めずに、少なくとも 60 s 待つ(入り方と、10 s ごとに残り時間を stderr に出す)。
+- `boot dfu` の `--device` に待つポート(`ch32rv-bootloader://WAIT_FOR_BOOT`)を渡すと exit 2(hint に `isp flash`)。
+- **待つポート `ch32rv-bootloader://WAIT_FOR_BOOT`**(IDE のための住所。[freeze-decisions](freeze-decisions.ja.md) §2): 書き込みを押してから BOOT で入れる、ボードのブートローダーに書く。どのブートローダー(工場の USB ISP か、HID)かはボードで決まる(ArduinoCore-CH32RV の boards.txt が道具を選ぶ。既定は `isp flash`、HID のボードは `boot hid flash`)。
+  - `isp flash --device ch32rv-bootloader://WAIT_FOR_BOOT`: 位置を決めず、走っているアプリにも probe にも頼まず(`--entry` は使わない)、ISP device を少なくとも 60 s(`--wait` がそれより長ければその長さ)待つ。最初に入り方を、10 s ごとに残り時間を stderr に出す。現れた 1 台に書く(2 台以上は exit 14、時間切れは exit 10)。`--chip` が USB の周辺を持たないチップ(DB の capabilities で USB の行が無い部品だけの名前。V002 / V003 / V004 / V005 / V006 / V007 / M007)なら、工場の USB ISP が無いので、待つ前に exit 24(hint に、ソフトウェア USB の HID ブートローダー(rv003usb、UIAPduino)のボードは `boot hid flash` で書くことを出す。HID の経路はチップを確かめない)。`--transport uart` とは組めない(exit 2)。
+  - `WAIT_FOR_BOOT` は大小を問わない。`ch32rv-bootloader://` の後ろがほかの語なら exit 2。debug probe は待つポートの候補にならない(probe は自分の住所で一覧に出るので、待つポートで probe に書くことはない)。
 
 HID flashは、既定で`1209:b803`（UIAPduino）→`1209:b003`（rv003usb）の順に探索し、
 64 byte page単位でpreverify・erase・program・read-back verifyを行ってuser appを起動する。
@@ -631,10 +636,12 @@ ch32rv arduino discovery       Pluggable Discovery protocol(stdio JSON)。WCH-Li
                                OEP の probe の口を oep://<probe>/<port>(名前つきの口が無い probe は oep://<probe>)、
                                rv003usb / UIAPduino の HID bootloader を ch32rv-hid://<bus>-<ports>、
                                CH32RV のアプリを ch32rv-app://<serial>(無い・重なるなら usb-<bus>-<ports>)、
-                               factory ISP bootloader(1a86:55e0)を ch32rv-isp://<bus>-<ports> で出す
+                               factory ISP bootloader(1a86:55e0)を ch32rv-isp://<bus>-<ports> で出す。
+                               加えて、何もつながっていなくても、待つポート ch32rv-bootloader://WAIT_FOR_BOOT
+                               (protocol ch32rv-bootloader、label "USB bootloader (waits for BOOT)")をいつも出す
 ch32rv arduino monitor [--protocol <p>]
                                Pluggable Monitor protocol(stdio JSON)。--protocol は serial / wchlink / oep /
-                               ch32rv-app / ch32rv-isp / ch32rv-hid。serial port・wchlink://・oep://・ch32rv-app:// の port を受け、
+                               ch32rv-app / ch32rv-isp / ch32rv-hid / ch32rv-bootloader。serial port・wchlink://・oep://・ch32rv-app:// の port を受け、
                                source を双方向に wrap する
 ```
 

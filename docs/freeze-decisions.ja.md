@@ -21,6 +21,7 @@
 - topology は `<bus>-<ports>` だけ。port chain の取れない OS では位置が device address(`<bus>-addrN`、挿し直しで変わる)になるので、discovery と住所には出さない(その device は `--probe` で指定する)。
 - `oep://<probe>[/<port>[/<target>]]`: `<probe>` は describe の unit_id で、USB の probe は USB の serial number = unit_id。serial の無い device(UART bridge)だけ位置で出す。`<port>` は probe の label `S.N` の `S`(英字で始まる英字・数字・`-` の 1〜16 文字)。文字は仕様で絞られているので encode はしない。書き方の全体は cli.ja.md §3.4。
 - OEP の probe の見分けは、プロジェクトの USB ID 1209:4F45(pid.codes で取得。iProduct では判定しない)。vendor bulk の interface は class 0xFF・subclass 0x4F・protocol 0x45、HID は usage page 0xFF4F・usage 0x45 で見分ける。
+- 待つポート: `ch32rv-bootloader://WAIT_FOR_BOOT`(protocol `ch32rv-bootloader`、label "USB bootloader (waits for BOOT)")。discovery は、何もつながっていなくてもいつも出す。書き込むときにだけ現れるボードのブートローダーを、書き込みを押してから待つための住所で、`://` の後ろは個体でなく `WAIT_FOR_BOOT`(大小を問わない。ほかの語は exit 2)。どのブートローダー(工場の USB ISP か HID)かは platform の道具で決まる(既定 `isp flash`、HID のボードは `boot hid flash`)。`isp flash` は、USB の周辺を持たないチップ(工場の USB ISP が無い)を待つ前に exit 24。ソフトウェア USB の HID ブートローダー(V003 の UIAPduino の rv003usb など)は `boot hid flash` の側で、チップを確かめない。debug probe は候補にしない。ArduinoCore-CH32RV と合意(2026-11-10)。名前は、「auto」(1 台しか無いとそこに書くと読める)、「any」(住所はいつも全部を書く、の決まり)、経路ごとに 2 つ(一般の利用者は ISP と HID の違いを知らない)を避けて決めた。
 - monitor の `--port` はシリアルの口のパスだけで、どの Link かは `--probe` で選ぶ。
 
 ## 3. monitor の `source` と既定値
@@ -33,7 +34,7 @@
 
 - `wchlink` に `uart` と `fixture-uart` は無い(uart は Link の CDC を `serial` で開く)。
 - `arduino monitor` の `baudrate` の既定は 9600(組み込みの serial-monitor に合わせる)。CLI の `monitor --baud` の既定は 115200(別のもの)。
-- `--protocol` は `serial` / `wchlink` / `oep` / `ch32rv-app` / `ch32rv-isp` / `ch32rv-hid` を受ける。ほかは usage の誤り(exit 2)。後ろの 3 つの source の並びは `serial` と同じ(`ch32rv-app` はアプリの CDC を開き、`ch32rv-isp` と `ch32rv-hid` は OPEN を断る)。
+- `--protocol` は `serial` / `wchlink` / `oep` / `ch32rv-app` / `ch32rv-isp` / `ch32rv-hid` / `ch32rv-bootloader` を受ける。ほかは usage の誤り(exit 2)。後ろの 4 つの source の並びは `serial` と同じ(`ch32rv-app` はアプリの CDC を開き、`ch32rv-isp`・`ch32rv-hid`・`ch32rv-bootloader` は OPEN を断る)。
 
 ## 4. ブローカー
 

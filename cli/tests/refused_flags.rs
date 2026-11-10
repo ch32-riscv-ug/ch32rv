@@ -254,3 +254,71 @@ fn device_forms_are_checked_before_anything_is_opened() {
     let (_, hint) = usage(&["boot", "dfu", "info", "--device", "ch32rv-isp://3-2.4"]);
     assert!(hint.contains("isp --device"), "{hint}");
 }
+
+/// The IDE's waiting port (`ch32rv-bootloader://WAIT_FOR_BOOT`, docs/freeze-decisions.ja.md §2):
+/// a chip with no USB is refused before any wait, another word after the scheme is a usage
+/// error, and it is a write target - not a probe, and not `boot dfu`'s.
+#[test]
+fn the_waiting_port_refuses_what_it_cannot_wait_for() {
+    let img = image();
+    let wait = "ch32rv-bootloader://WAIT_FOR_BOOT";
+    for chip in ["CH32V003", "CH32V006"] {
+        refused(
+            &["--chip", chip, "isp", "flash", &img, "--device", wait],
+            "has no USB peripheral",
+        );
+    }
+    let (msg, _) = usage(&[
+        "isp",
+        "flash",
+        &img,
+        "--device",
+        "ch32rv-bootloader://3-2.4",
+    ]);
+    assert!(msg.contains("WAIT_FOR_BOOT"), "{msg}");
+    let (msg, _) = usage(&["target", "info", "--probe", wait]);
+    assert!(msg.contains("--device"), "{msg}");
+    let (_, hint) = usage(&["boot", "dfu", "info", "--device", wait]);
+    assert!(hint.contains("isp flash"), "{hint}");
+    let (msg, _) = usage(&[
+        "isp",
+        "flash",
+        &img,
+        "--transport",
+        "uart",
+        "--device",
+        wait,
+    ]);
+    assert!(msg.contains("UART"), "{msg}");
+}
+
+/// Discovery lists the waiting port with nothing connected, so the IDE can keep it selected.
+#[test]
+fn discovery_always_lists_the_waiting_port() {
+    use std::io::Write;
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ch32rv"))
+        .args(["arduino", "discovery"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"HELLO 1 \"test\"\nLIST\nQUIT\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let list = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["eventType"] == "list")
+        .expect("a list event");
+    let port = list["ports"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["protocol"] == "ch32rv-bootloader")
+        .expect("the waiting port");
+    assert_eq!(port["address"], "ch32rv-bootloader://WAIT_FOR_BOOT");
+}
