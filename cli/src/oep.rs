@@ -1436,7 +1436,16 @@ fn flash_attached(
         });
     if !skipped
         && args.erase == ch32rv_contract::policy::EraseMode::Chip
-        && let Err((kind, msg)) = crate::cmd_flash::loader_chip_erase(&mut t, &family)
+        && let Err((kind, msg)) = crate::cmd_flash::loader_chip_erase(
+            &mut t,
+            &family,
+            chip_id.and_then(
+                |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
+                    ch32rv_target::Resolution::Sku(s) => Some(s.flash_bytes),
+                    _ => None,
+                },
+            ),
+        )
     {
         return fail(cli, CMD, kind, msg, None);
     }

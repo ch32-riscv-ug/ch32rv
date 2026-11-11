@@ -278,8 +278,8 @@ ch32rv flash <FILE>
   |---|---|---|---|---|
   | WCH-Link + WCH の stub(V003 / V103 / V20x / V30x / X035 / L103) | Link の全消去(`Program 0x01`。LinkE が MER を叩く) | stub が書く page を自分で消す family(V003、V20x、V30x、L103。実測)では ch32rv は消さない。ほかの family(V103 の stub は消さない。測っていない X035 なども同じ扱い)では、書く page を ch32rv が DMI で先に消してから stub で書く。stub は 1 つの連続した範囲を書くので、image の先頭の page から最後の page までの隙間も書かれる | stub が自分で消す family は下の規則で (a) sector と同じ、か (b) 退避 → 全消去 → 書き戻し。ほかの family は sector と同じ(STORE には触れない) | stub が自分で消す family は断る(exit 24。stub は書く page を必ず消す)。ほかの family は消さずに書く |
   | WCH-Link + FLASH controller(stub も loader も無い family) | Link の全消去 | 覆う page を DMI で消してから書く | sector と同じ | 消さずに書く |
-  | WCH-Link + ch32rv の loader(V006 / V205 / X315 / V407 / H417、`--programmer loader`) | DM で FLASH_CTLR の MER + STRT(`flash_mass_erase`)の後、loader が書く。H417 は MER が無いので断る(exit 24) | loader が書く page を消す | sector と同じ(STORE は image の外なので触れない) | 断る(loader は書く page を必ず消す) |
-  | OEP の probe(loader) | 同上(DM の MER。H417 は断る) | 同上 | 同上 | 断る |
+  | WCH-Link + ch32rv の loader(V006 / V205 / X315 / V407 / H417、`--programmer loader`) | DM で FLASH_CTLR の MER + STRT(`flash_mass_erase`)の後、loader が書く。MER の無い H417 は Link の全消去(`Program 0x01`。960 KiB で 0.3 s、実測) | loader が書く page を消す | sector と同じ(STORE は image の外なので触れない) | 断る(loader は書く page を必ず消す) |
+  | OEP の probe(loader) | DM の MER。MER の無い H417 は code flash 全体の page(8 KiB)を DM で順に消す(大きさは chip id から DB で引く。分からなければ exit 24) | 同上 | 同上 | 断る |
   | 工場 ISP(`isp flash`) | `isp erase` と同じ全 sector の消去の後に書く(flash の大きさが分からない chip は exit 24) | image の長さ分の 1 KiB sector(最小 8) | sector と同じ。ただし最小の 8 sector が STORE に届くときは image の分だけ消す | 消さない |
   | HID(`boot hid flash`)/ DFU(`boot dfu flash`) | 断る(exit 24。全体を消す手段が無い) | bootloader / device が書く page / block だけを消す | sector と同じ | 断る(必ず消す) |
 

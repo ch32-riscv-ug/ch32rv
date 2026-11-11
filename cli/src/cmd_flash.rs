@@ -300,27 +300,51 @@ pub(crate) fn loader_refusals(args: &FlashArgs) -> Vec<String> {
     v
 }
 
-/// en: `--erase chip` on the RAM-loader paths: the whole code flash erased through the DM's
-/// FLASH controller (MER) before the loader writes. A family with no mass erase ch32rv drives
-/// (CH32H417, or no verified controller profile) is refused, exit 24, before anything is erased.
-/// The hart must be halted. Err is the failure to report (kind, message).
-/// ja: RAM loader の経路の `--erase chip`。loader が書く前に DM で全消去(MER)。できない family は
-/// exit 24 で断る(何も消す前)。
+/// en: `--erase chip` on the RAM-loader paths: the whole code flash erased over the DM before the
+/// loader writes. A family whose FLASH controller has a mass erase gets MER + STRT; one with a
+/// controller profile but no MER (CH32H417) gets every erase page of the code flash, `flash_size`
+/// bytes from the code flash base (5.9 s for the H417's 960 KiB over a LinkE, measured). A family
+/// with neither, or with no known flash size for the page loop, is refused, exit 24, before
+/// anything is erased. The hart must be halted. Err is the failure to report (kind, message).
+/// ja: RAM loader の経路の `--erase chip`。loader が書く前に DM で全消去する。MER のある family は
+/// MER、MER の無い family(H417)は code flash 全体の page を順に消す。どちらもできなければ exit 24
+/// で断る(何も消す前)。
 pub(crate) fn loader_chip_erase<T: ch32rv_dmi::DtmAccess>(
     dtm: &mut T,
     family: &str,
+    flash_size: Option<u32>,
 ) -> Result<(), (ErrorKind, String)> {
-    let Some(mode) = ch32rv_flash::erase_plan::mass_erase_mode(family) else {
+    if let Some(mode) = ch32rv_flash::erase_plan::mass_erase_mode(family) {
+        return ch32rv_dmi::DebugModule::new(dtm)
+            .flash_mass_erase(mode)
+            .map_err(|e| (ErrorKind::TransferFailed, format!("chip erase failed: {e}")));
+    }
+    let Some(profile) = ch32rv_flash::flash_controller_profile_for(family) else {
+        return Err((
+            ErrorKind::CapabilityUnsupported,
+            format!("--erase chip: ch32rv has no FLASH controller profile for {family}"),
+        ));
+    };
+    let Some(size) = flash_size.filter(|&n| n > 0) else {
         return Err((
             ErrorKind::CapabilityUnsupported,
             format!(
-                "--erase chip: ch32rv has no mass erase for {family} (no FLASH_CTLR.MER it drives)"
+                "--erase chip: the code flash size of this {family} is not known, so the page erase cannot be sized"
             ),
         ));
     };
-    ch32rv_dmi::DebugModule::new(dtm)
-        .flash_mass_erase(mode)
-        .map_err(|e| (ErrorKind::TransferFailed, format!("chip erase failed: {e}")))
+    let page = profile.page_size;
+    let mut dm = ch32rv_dmi::DebugModule::new(dtm);
+    for i in 0..size.div_ceil(page) {
+        let addr = CODE_FLASH_START + i * page;
+        dm.flash_page_erase(addr, profile.mode).map_err(|e| {
+            (
+                ErrorKind::TransferFailed,
+                format!("chip erase failed at 0x{addr:08x}: {e}"),
+            )
+        })?;
+    }
+    Ok(())
 }
 
 /// en: The `scope` / `store` a RAM-loader flash reports: the loader never touches flash outside
@@ -1429,10 +1453,27 @@ fn flash_via_loader(
         );
     }
     let started = std::time::Instant::now();
-    if args.erase == EraseMode::Chip
-        && let Err((kind, msg)) = loader_chip_erase(session.link(), &family)
-    {
-        return fail(cli, CMD, kind, msg, None);
+    if args.erase == EraseMode::Chip {
+        // en: A family with no MER (CH32H417): the Link's own chip erase does it whole (0.3 s on
+        // the H417 against 5.9 s for the page loop, measured 2026-11-11).
+        // ja: MER の無い family(H417)は Link の全消去を使う(page を回すより速い)。
+        let erased = if ch32rv_flash::erase_plan::mass_erase_mode(&family).is_none()
+            && ch32rv_flash::flash_controller_profile_for(&family).is_some()
+        {
+            session
+                .link()
+                .erase_flash()
+                .map_err(|e| (ErrorKind::TransferFailed, format!("chip erase failed: {e}")))
+        } else {
+            loader_chip_erase(
+                session.link(),
+                &family,
+                (flash_size > 0).then_some(flash_size),
+            )
+        };
+        if let Err((kind, msg)) = erased {
+            return fail(cli, CMD, kind, msg, None);
+        }
     }
     let result = {
         let mut t = ch32rv_dmi::DmTarget::new(session.link());
