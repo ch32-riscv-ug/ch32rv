@@ -953,6 +953,8 @@ impl Backend {
                     &mut warnings,
                 )
                 .map_err(|e| format!("attach: {e}"))?;
+                // CH32V103: the attach overwrote s1; restart the program before watching it.
+                session.restart_if_attach_corrupted();
                 let src = DmiSource::open(&mut session, s.source, &mut warnings)
                     .map_err(|e| format!("open {}: {e}", s.source.as_str()))?;
                 // The sources only move while the core runs.

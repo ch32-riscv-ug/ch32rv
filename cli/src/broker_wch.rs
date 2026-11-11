@@ -779,7 +779,11 @@ impl WchUpstream {
                 // SRAM just written over DMI read back stale through the fast read, and so did code
                 // flash just programmed by a loader run (CH32V003): once anything was written in
                 // this attach, every read goes through the Debug Module.
-                let memory = !dirty && (0x0800_0000..0x1000_0000).contains(&addr);
+                // A CH32V103's fast read runs on what the Link set up at the attach, which the
+                // restart after it (s1) undoes: it then returned zeros. Always the Debug Module.
+                let memory = !dirty
+                    && (0x0800_0000..0x1000_0000).contains(&addr)
+                    && !crate::session::attach_corrupts_regs(s.attach.family_byte);
                 let fast = if memory {
                     s.link()
                         .read_mem(addr, len)

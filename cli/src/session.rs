@@ -224,8 +224,10 @@ impl Session {
     /// 持つ session(monitor、ブローカー)用。単発のコマンドは drop に任せる。V103 は attach で止まり、
     /// DetachChip で(`dbg halt` の後でも)走り出すので、hart の状態では分けない。
     pub fn restart_if_attach_corrupted(&mut self) -> bool {
-        attach_corrupts_regs(self.attach.family_byte)
-            && crate::cmd_flash::soft_reset_and_run(self).is_ok()
+        if !attach_corrupts_regs(self.attach.family_byte) {
+            return false;
+        }
+        crate::cmd_flash::soft_reset_and_run(self).is_ok()
     }
 
     /// Note that a reset which runs the target was done (for `--release-dm` on drop).
