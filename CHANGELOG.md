@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.30.2 - 2026-11-11
+
 - (EN) rustix 1.1.4 -> 1.1.6 for RUSTSEC-2026-0486 (unsound xattr functions; ch32rv calls none of them, the CI advisory check stopped on it).
 - (JA) rustix を 1.1.4 から 1.1.6 に上げた(RUSTSEC-2026-0486。xattr の関数の不健全さ。ch32rv はどれも呼ばないが、CI の advisory の確認が止まっていた)。
 
