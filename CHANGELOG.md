@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The `flash-capacity-unavailable` warning is given only when the code flash size is known nowhere. A probe that reports no size while the DB has it (CH32X315: the probe reads 0xe339) no longer warns on every command; `target info` still shows the raw value and `flash_capacity_source: db`.
+- (JA) 警告 `flash-capacity-unavailable` は、code flash の大きさがどこからも分からないときだけ出す。probe が大きさを返さず DB が知っているとき(CH32X315: probe は 0xe339 を読む)は、コマンドのたびに警告しない。`target info` は今までどおり生の値と `flash_capacity_source: db` を出す。
+
 - (EN) `flash --erase chip` works on a CH32H417 (it has no FLASH_CTLR MER, and was refused with exit 24). Through a WCH-Link it uses the Link's own chip erase (`Program 0x01`: 960 KiB in 0.3 s, measured on a CH32H417QEU6 with a WCH-LinkE 2.22, the area outside the image read back erased); through an OEP probe it erases every 8 KiB page of the code flash over the DM, sized from the DB by the chip id (the same page erase as `erase --range`: 960 KiB in 5.9 s over a WCH-LinkE). The other families keep the DM's MER.
 - (JA) `flash --erase chip` が CH32H417 でも使える(FLASH_CTLR に MER が無く、exit 24 で断っていた)。WCH-Link 越しは Link の全消去(`Program 0x01`。CH32H417QEU6 と WCH-LinkE 2.22 で 960 KiB を 0.3 s、image の外も消えたことを読んで確かめた)、OEP の probe 越しは code flash の 8 KiB の page をすべて DM で消す(大きさは chip id から DB で引く。`erase --range` と同じ page 消去で、WCH-LinkE 越しに 960 KiB を 5.9 s)。ほかの family は今までどおり DM の MER。
 

@@ -419,12 +419,11 @@ fn x315_erased_capacity_uses_db_and_retains_raw_response() {
     assert_eq!(v["result"]["sram_bytes"], 65536);
     assert_eq!(v["result"]["flash_capacity_raw"], "0xe339");
     assert_eq!(v["result"]["flash_capacity_source"], "db");
+    // The DB fills the size in, so there is nothing to warn about.
     assert!(
-        v["warnings"]
+        !v["warnings"]
             .as_array()
-            .unwrap()
-            .iter()
-            .any(|w| w["code"] == "flash-capacity-unavailable")
+            .is_some_and(|a| a.iter().any(|w| w["code"] == "flash-capacity-unavailable"))
     );
 
     let out = Command::new(bin())

@@ -158,10 +158,13 @@ impl Session {
             }
             Err(_) => None,
         };
+        // en: Only when no size is known at all: a probe that reports none (X315: 0xe339) with the
+        // DB filling it in is the normal case, shown by `target info` (flash_capacity_source).
+        // ja: 大きさがどこからも分からないときだけ警告する(X315 のように DB で埋まるのは普通)。
         if let Some(ci) = &chip
             && reported_flash_bytes(ci).is_none()
+            && let (None, source) = flash_capacity(chip.as_ref(), &db, attach.chip_id)
         {
-            let (_, source) = flash_capacity(chip.as_ref(), &db, attach.chip_id);
             warnings.push(Warning {
                 code: "flash-capacity-unavailable".to_owned(),
                 msg: format!(
