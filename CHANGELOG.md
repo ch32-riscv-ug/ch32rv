@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) rustix 1.1.4 -> 1.1.6 for RUSTSEC-2026-0486 (unsound xattr functions; ch32rv calls none of them, the CI advisory check stopped on it).
+- (JA) rustix を 1.1.4 から 1.1.6 に上げた(RUSTSEC-2026-0486。xattr の関数の不健全さ。ch32rv はどれも呼ばないが、CI の advisory の確認が止まっていた)。
+
 - (EN) The `flash-capacity-unavailable` warning is given only when the code flash size is known nowhere. A probe that reports no size while the DB has it (CH32X315: the probe reads 0xe339) no longer warns on every command; `target info` still shows the raw value and `flash_capacity_source: db`.
 - (JA) 警告 `flash-capacity-unavailable` は、code flash の大きさがどこからも分からないときだけ出す。probe が大きさを返さず DB が知っているとき(CH32X315: probe は 0xe339 を読む)は、コマンドのたびに警告しない。`target info` は今までどおり生の値と `flash_capacity_source: db` を出す。
 
