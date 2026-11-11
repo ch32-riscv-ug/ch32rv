@@ -483,10 +483,15 @@ pub(crate) fn enable_sdi(
             return Err(SdiError::new(ErrorKind::TargetAmbiguous, e.to_string()));
         }
         let _ = link.set_speed(attach.family_byte, speed);
-        settle_before_sdi_enable(&mut link);
-        let warnings = vec![attach_reclocks_warning(
+        let mut warnings = vec![attach_reclocks_warning(
             "press the board's reset, or use `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`",
         )];
+        // CH32V103: the attach overwrote s1; restart the program before forwarding its output.
+        if crate::session::attach_corrupts_regs(attach.family_byte) {
+            let _ = link.soft_reset();
+            warnings.push(crate::session::attach_corrupts_register_warning());
+        }
+        settle_before_sdi_enable(&mut link);
         if let Err(e) = link.set_sdi_print_enabled(true) {
             return Err(SdiError::new(
                 ErrorKind::TransferFailed,
@@ -545,6 +550,9 @@ fn run_dmi(cli: &Cli, source: MonitorSource) -> ExitCode {
         "`ch32rv run <elf> --no-flash --source {}` (resets it, then streams)",
         source.as_str()
     )));
+    // en: CH32V103: the attach overwrote s1, so restart the program before watching it (the
+    // session's warning says so). ja: V103 は attach が s1 を壊すので、見る前に起動し直す。
+    session.restart_if_attach_corrupted();
     let mut src = match DmiSource::open(&mut session, source, &mut warnings) {
         Ok(s) => s,
         Err(e) => return open_error(cli, CMD, e),
@@ -746,6 +754,10 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
     let _ = link.set_speed_default(speed);
     if let Ok(attach) = link.attach_chip() {
         let _ = link.set_speed(attach.family_byte, speed);
+        // CH32V103: the attach overwrote s1; restart the program so it does not fault.
+        if crate::session::attach_corrupts_regs(attach.family_byte) {
+            let _ = link.soft_reset();
+        }
     }
     if on {
         settle_before_sdi_enable(&mut link);

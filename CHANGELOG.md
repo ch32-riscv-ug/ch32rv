@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Fix: a program on a CH32V103 no longer faults after a ch32rv command attaches through a WCH-Link. The Link's AttachChip overwrites the V103's s1 register (0x0297df3f through a WCH-Link CH549 2.12, the chip id through a WCH-LinkE) and DetachChip lets the program run on, even after `dbg halt`; it then faulted on its next use of s1 (mcause 4; ArduinoCore-CH32RV's Clang builds hit it often, as they keep an array address in s1 across a loop). Every command that attaches to a V103 through a WCH-Link now restarts the program (soft reset) before it lets go, unless it already reset it; `monitor` (dmdata / dmseq / rtt / sdi) and the WCH-Link broker restart it right after the attach. New warning `attach-corrupts-register`. gdb already did this. Measured with a loop that keeps a RAM address in s1: with 0.30.2 its counter stopped after the first `read`, now it keeps counting across `read`, `target info`, `dbg halt` and `monitor`.
+- (JA) 修正: WCH-Link 越しに ch32rv のコマンドが attach しても、CH32V103 の program が落ちなくなった。Link の AttachChip は V103 の s1 を上書きし(WCH-Link(CH549)2.12 では 0x0297df3f、WCH-LinkE では chip id)、DetachChip は(`dbg halt` の後でも)program を走らせるので、次に s1 を使ったところで落ちていた(mcause 4。ArduinoCore-CH32RV の Clang のビルドはループの間 s1 に配列の番地を置くので当たりやすかった)。V103 に WCH-Link 越しに attach するコマンドは、reset していなければ離す前に program を soft reset で起動し直す。`monitor`(dmdata / dmseq / rtt / sdi)と WCH-Link のブローカーは attach の直後に起動し直す。warning `attach-corrupts-register` を足した。gdb は前からそうしていた。s1 に RAM の番地を置いて数えるループで確かめた: 0.30.2 では最初の `read` の後に数が止まり、今は `read`、`target info`、`dbg halt`、`monitor` の後も数え続ける。
+
 ## 0.30.2 - 2026-11-11
 
 - (EN) rustix 1.1.4 -> 1.1.6 for RUSTSEC-2026-0486 (unsound xattr functions; ch32rv calls none of them, the CI advisory check stopped on it).

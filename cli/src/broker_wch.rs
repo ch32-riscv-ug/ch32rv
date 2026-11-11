@@ -493,6 +493,8 @@ impl WchUpstream {
             }
         }
         let _ = s.dm().resume();
+        // CH32V103: the attach overwrote s1; the program the consoles watch is restarted.
+        s.restart_if_attach_corrupted();
         self.session = Some(s);
         true
     }
@@ -578,7 +580,12 @@ impl WchUpstream {
                         None,
                         &mut warnings,
                     ) {
-                        Ok(s) => {
+                        Ok(mut s) => {
+                            // en: CH32V103: the attach overwrote s1, and the broker keeps the
+                            // target running while it holds it: restart the program now.
+                            // ja: V103 は attach が s1 を壊し、ブローカーは持ったまま走らせるので、
+                            // 今すぐ起動し直す。
+                            s.restart_if_attach_corrupted();
                             self.session = Some(s);
                             self.dirty = false;
                         }
