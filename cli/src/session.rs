@@ -173,8 +173,8 @@ impl Session {
                 ),
             });
         }
-        if attach_corrupts_regs(attach.family_byte) {
-            warnings.push(attach_corrupts_register_warning());
+        if let Some(reg) = attach_corrupted_register(attach.family_byte, attach.chip_id) {
+            warnings.push(attach_corrupts_register_warning(reg));
         }
         let mut ran_before = [false; 2];
         if attach.family_byte == 0xc6
@@ -215,7 +215,7 @@ impl Session {
         flash_capacity(self.chip.as_ref(), &self.db, self.attach.chip_id)
     }
 
-    /// en: On a family whose attach overwrote s1 (CH32V103), restart the program now, for a session
+    /// en: On a chip whose attach overwrote a GPR (CH32V103 s1, CH32V205 s0), restart the program now, for a session
     /// that keeps the target running while it holds it (monitor, the broker). A one-shot command
     /// leaves it to the drop, after its reads. Not gated on the hart's state: the V103 is halted
     /// by the attach and DetachChip lets it run, even after `dbg halt` (measured 2026-11-12, WCH-Link
@@ -224,7 +224,7 @@ impl Session {
     /// 持つ session(monitor、ブローカー)用。単発のコマンドは drop に任せる。V103 は attach で止まり、
     /// DetachChip で(`dbg halt` の後でも)走り出すので、hart の状態では分けない。
     pub fn restart_if_attach_corrupted(&mut self) -> bool {
-        if !attach_corrupts_regs(self.attach.family_byte) {
+        if attach_corrupted_register(self.attach.family_byte, self.attach.chip_id).is_none() {
             return false;
         }
         crate::cmd_flash::soft_reset_and_run(self).is_ok()
@@ -333,25 +333,60 @@ fn hart_ran(link: &mut WchLink, hart: u32) -> Result<bool, ch32rv_dmi::DmiError>
     Ok(dm.read_reg(ch32rv_dmi::RegName::Pc)? != 0)
 }
 
-/// en: Whether the WCH-Link AttachChip overwrites a live GPR on this family (CH32V103: s1 / x9,
-/// with 0x0297df3f through a WCH-Link CH549 2.12, with the chip id through a WCH-LinkE; saved
-/// nowhere), so a program that goes on running faults on its next use of s1 (mcause 4 on
-/// `lw s0, 0(s1)`, ArduinoCore-CH32RV's Clang build 2026-11-12). wch-protocols
-/// `protocols/pc-to-link.ja.md` "V103 attach quirk".
-/// ja: AttachChip が生きた GPR を壊す family か(V103 の s1。どこにも保存されない)。
+/// en: Whether the WCH-Link's fast memory read is unreliable on this family once the program was
+/// restarted after the attach (CH32V103: it runs on what the Link set up at the attach, and
+/// returned zeros after the restart, WCH-Link CH549 2.12, 2026-11-12): read through the Debug
+/// Module there.
+/// ja: attach の後に program を起動し直すと、WCH-Link の高速読み出しが当てにならない family か
+/// (V103: Link が attach で用意したものの上で動き、起動し直しの後は 0 を返した)。DM で読む。
 pub(crate) fn attach_corrupts_regs(family_byte: u8) -> bool {
     ch32rv_flash::flash_controller_profile(family_byte).is_some_and(|p| p.attach_corrupts_regs)
 }
 
-/// en: The warning a command that attaches to such a family gives: the program is restarted.
-/// ja: そうした family に attach するコマンドが出す警告(program は起動し直す)。
-pub(crate) fn attach_corrupts_register_warning() -> Warning {
+/// en: The live GPR the WCH-Link's AttachChip overwrites on this chip, saved nowhere, so a
+/// program that goes on running faults at its next use of it:
+/// - CH32V103: s1 (x9), with 0x0297df3f through a WCH-Link CH549 2.12 and the chip id through a
+///   WCH-LinkE; the attach also halts the hart (mcause 4 on `lw s0, 0(s1)`, ArduinoCore-CH32RV's
+///   Clang build, 2026-11-12).
+/// - CH32V205 family (CH32V205 and CH32V203CCT6 in the DB): s0 (x8) and dscratch0, with
+///   0xE000D004 through a WCH-LinkE 2.22, whatever chip type byte goes before the attach
+///   (`mtval` 0xE000D008; ArduinoCore-CH32RV's DMSeq console stopped answering, 2026-11-12).
+///
+/// wch-protocols `protocols/pc-to-link.ja.md` "V103 attach quirk".
+/// ja: WCH-Link の AttachChip が上書きする生きた GPR(どこにも保存されない)。V103 は s1、
+/// V205 の family(DB では CH32V205 と CH32V203CCT6)は s0(と dscratch0。0xE000D004)。
+pub(crate) fn attach_corrupted_register(family_byte: u8, chip_id: u32) -> Option<&'static str> {
+    if attach_corrupts_regs(family_byte) {
+        return Some("s1");
+    }
+    let family = match ch32rv_target::Db::builtin().resolve_by_chip_id(chip_id) {
+        ch32rv_target::Resolution::Sku(s) => s.family.clone(),
+        ch32rv_target::Resolution::Family(f, _) => f,
+        ch32rv_target::Resolution::Unknown => return None,
+    };
+    family_attach_corrupts(&family)
+}
+
+/// en: [`attach_corrupted_register`] by the chip id's DB family name (the OEP view of a WCH-Link
+/// broker gives the family). ja: DB の family 名から(WCH-Link のブローカーの OEP の側で使う)。
+pub(crate) fn family_attach_corrupts(family: &str) -> Option<&'static str> {
+    match family {
+        "CH32V103" => Some("s1"),
+        "CH32V205" => Some("s0"),
+        _ => None,
+    }
+}
+
+/// en: The warning a command that attaches to such a chip gives: the program is restarted.
+/// ja: そうした chip に attach するコマンドが出す警告(program は起動し直す)。
+pub(crate) fn attach_corrupts_register_warning(register: &str) -> Warning {
     Warning {
         code: "attach-corrupts-register".to_owned(),
-        msg: "attaching through a WCH-Link overwrites the CH32V103's s1 register, which a running \
-              program cannot survive: ch32rv restarts the program before it lets the target go \
-              (the probe lets it run when it detaches, even after `dbg halt`)"
-            .to_owned(),
+        msg: format!(
+            "attaching through a WCH-Link overwrites this chip's {register} register, which a \
+             running program cannot survive: ch32rv restarts the program before it lets the \
+             target go (the probe lets it run when it detaches, even after `dbg halt`)"
+        ),
     }
 }
 

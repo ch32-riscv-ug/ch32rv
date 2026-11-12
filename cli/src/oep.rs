@@ -2193,15 +2193,16 @@ pub(crate) fn gdb(cli: &Cli, args: &crate::args::GdbArgs, a: &OepAddr) -> ExitCo
             .family
             .as_deref()
             .and_then(ch32rv_flash::flash_controller_profile_for);
+        let corrupts = x
+            .family
+            .as_deref()
+            .and_then(crate::session::family_attach_corrupts);
         // en: Behind a WCH-Link broker the attach is the Link's AttachChip, which overwrites s1 on
-        // CH32V103: restart the program so it sets its registers again (as the direct gdb does).
+        // CH32V103 and s0 on CH32V205: restart the program so it sets its registers again (as the direct gdb does).
         // A connection already there was attached before, and is left as it is.
         // ja: WCH-Link のブローカーの裏では attach が AttachChip で、CH32V103 では s1 を上書きする。
         // 直接の gdb と同じく program を起動し直す。既にあった接続はそのまま。
-        if matches!(a, OepAddr::Wch(_))
-            && !x.existing
-            && profile.is_some_and(|p| p.attach_corrupts_regs)
-        {
+        if matches!(a, OepAddr::Wch(_)) && !x.existing && corrupts.is_some() {
             let _ = x.t.reset(ResetMode::Run);
             std::thread::sleep(Duration::from_millis(50));
             eprintln!(

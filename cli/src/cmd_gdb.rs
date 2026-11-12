@@ -73,12 +73,12 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
     };
     let _ = link.set_speed(attach.family_byte, speed);
 
-    // On families whose AttachChip corrupts a live GPR (CH32V103 overwrites s1 with the chip id),
+    // On chips whose AttachChip corrupts a live GPR (CH32V103 s1, CH32V205 s0),
     // soft-reset so the program re-runs and re-establishes its registers before we halt it -
     // otherwise the resumed program faults on its next use of that register. This restarts the
     // target (reset-attach semantics) but is the only way to debug it cleanly.
     let profile = ch32rv_flash::flash_controller_profile(attach.family_byte);
-    if profile.map(|p| p.attach_corrupts_regs).unwrap_or(false) {
+    if crate::session::attach_corrupted_register(attach.family_byte, attach.chip_id).is_some() {
         let _ = link.soft_reset();
         std::thread::sleep(Duration::from_millis(50));
         eprintln!(

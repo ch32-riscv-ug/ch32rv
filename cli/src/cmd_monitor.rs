@@ -587,10 +587,13 @@ pub(crate) fn enable_sdi(
         let mut warnings = vec![attach_reclocks_warning(
             "press the board's reset, or use `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`",
         )];
-        // CH32V103: the attach overwrote s1; restart the program before forwarding its output.
-        if crate::session::attach_corrupts_regs(attach.family_byte) {
+        // CH32V103 / V205: the attach overwrote a GPR; restart the program before forwarding its
+        // output.
+        if let Some(reg) =
+            crate::session::attach_corrupted_register(attach.family_byte, attach.chip_id)
+        {
             let _ = link.soft_reset();
-            warnings.push(crate::session::attach_corrupts_register_warning());
+            warnings.push(crate::session::attach_corrupts_register_warning(reg));
         }
         settle_before_sdi_enable(&mut link);
         if let Err(e) = link.set_sdi_print_enabled(true) {
@@ -855,8 +858,8 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
     let _ = link.set_speed_default(speed);
     if let Ok(attach) = link.attach_chip() {
         let _ = link.set_speed(attach.family_byte, speed);
-        // CH32V103: the attach overwrote s1; restart the program so it does not fault.
-        if crate::session::attach_corrupts_regs(attach.family_byte) {
+        // CH32V103 / V205: the attach overwrote a GPR; restart the program so it does not fault.
+        if crate::session::attach_corrupted_register(attach.family_byte, attach.chip_id).is_some() {
             let _ = link.soft_reset();
         }
     }

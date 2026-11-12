@@ -678,6 +678,9 @@ fn broker_record_at(addr: &str) -> Option<Value> {
 /// en: A link to `target`'s broker if one of this ch32rv runs; never starts one (a broker of
 /// another ch32rv is not talked to). ja: この版のブローカーが動いていればその link(起動しない)。
 pub(crate) fn existing_link_for(target: &BrokerTarget) -> Option<Link> {
+    if ch32rv_usb::replay::active() {
+        return None;
+    }
     let v = read_endpoint(&target.key())?;
     if other_version(&v).is_some() {
         return None;
@@ -691,6 +694,15 @@ pub(crate) fn existing_link_for(target: &BrokerTarget) -> Option<Link> {
 /// ja: どの版でも `target` のブローカーが答えるか(コマンドをブローカーに回すかの判断用。別の版は
 /// 回した先で待って断る。避けて直接開くことはしない)。
 pub(crate) fn broker_runs(target: &BrokerTarget) -> bool {
+    // en: A `--replay` run plays a recording: a real broker for the recorded probe's serial (the
+    // bench's own probe, in use meanwhile) must not answer it. The replay test of a CH32X315
+    // failed once while the bench's X315 had a monitor open.
+    // ja: `--replay` は録音を再生する。録音の probe と同じ serial の本物のブローカー(ベンチで
+    // 使用中の同じ probe)に答えさせない。X315 の replay の試験が、ベンチの X315 でモニタが開いて
+    // いた間に一度落ちた。
+    if ch32rv_usb::replay::active() {
+        return false;
+    }
     read_endpoint(&target.key())
         .and_then(|v| v.get("port")?.as_u64())
         .is_some_and(|port| TcpStream::connect(("127.0.0.1", port as u16)).is_ok())
