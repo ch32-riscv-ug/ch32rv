@@ -55,6 +55,9 @@ clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 toml = "0.8"
 sha2 = "0.10"
+# en: Ctrl-C / SIGTERM in `monitor --source sdi`, so it turns the LinkE's forwarding off before it ends.
+# ja: `monitor --source sdi` の Ctrl-C / SIGTERM。終わる前に LinkE の転送を止める。
+ctrlc = { version = "3.5", features = ["termination"] }
 fs4 = "0.13"
 rustix = { version = "1", default-features = false, features = ["std", "termios"] }
 hidapi = { version = "2.6.7", default-features = false, features = ["linux-native-basic-udev", "windows-native"] }

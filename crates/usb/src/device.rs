@@ -58,10 +58,12 @@ pub(crate) fn classify_open_error(e: impl Into<io::Error>) -> UsbError {
 /// or - under `--replay` - the identity recorded in a capture fixture.
 /// ja: 列挙された USB device 1 つ分の情報。`nusb::DeviceInfo` を隠蔽して包む(`--replay` 時は
 /// capture fixture に記録された識別子)。
+#[derive(Clone)]
 pub struct UsbDeviceInfo {
     inner: Inner,
 }
 
+#[derive(Clone)]
 enum Inner {
     Nusb(nusb::DeviceInfo),
     /// A device reconstructed from a `--replay` capture fixture (no real hardware).

@@ -818,6 +818,8 @@ enum Backend {
     },
     Sdi {
         rx: Receiver<std::io::Result<Vec<u8>>>,
+        /// Turns the forwarding off on CLOSE / switch / failure, before the lock goes.
+        _forwarding: crate::cmd_monitor::SdiForwarding,
         _lock: DeviceLock,
     },
     Dmi {
@@ -929,8 +931,11 @@ impl Backend {
                 let (speed, _) = crate::parse::speed(&env.speed)?;
                 crate::cmd_monitor::enable_sdi(entry, speed, s.chip.as_deref())
                     .map_err(|e| e.msg)?;
+                let mut forwarding = crate::cmd_monitor::SdiForwarding::new(entry);
+                let rx = raw_reader(path, &mut forwarding)?;
                 Ok(Backend::Sdi {
-                    rx: raw_reader(path)?,
+                    rx,
+                    _forwarding: forwarding,
                     _lock: lock,
                 })
             }
@@ -1101,9 +1106,15 @@ impl Backend {
 /// ja: `path` を cat と同じ素のブロッキング file として別スレッドで読む(serialport は DTR を立て、
 /// O_NONBLOCK も LinkE の SDI 転送を 1 行で止める実測)。CLOSE 後のスレッドは read で待ったまま、
 /// 次の chunk かプロセスの終わりで消える。
-fn raw_reader(path: &str) -> Result<Receiver<std::io::Result<Vec<u8>>>, String> {
+fn raw_reader(
+    path: &str,
+    forwarding: &mut crate::cmd_monitor::SdiForwarding,
+) -> Result<Receiver<std::io::Result<Vec<u8>>>, String> {
     use std::io::Read;
     let mut file = crate::cmd_monitor::open_raw(path).map_err(|e| format!("open {path}: {e}"))?;
+    if let Ok(ctl) = file.try_clone() {
+        forwarding.watch_cdc(ctl);
+    }
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut chunk = [0u8; 512];
