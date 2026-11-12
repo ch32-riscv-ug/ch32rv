@@ -819,7 +819,7 @@ enum Backend {
     Sdi {
         rx: Receiver<std::io::Result<Vec<u8>>>,
         /// Turns the forwarding off on CLOSE / switch / failure, before the lock goes.
-        _forwarding: crate::cmd_monitor::SdiForwarding,
+        _forwarding: Box<crate::cmd_monitor::SdiForwarding>,
         _lock: DeviceLock,
     },
     Dmi {
@@ -935,7 +935,7 @@ impl Backend {
                 let rx = raw_reader(path, &mut forwarding)?;
                 Ok(Backend::Sdi {
                     rx,
-                    _forwarding: forwarding,
+                    _forwarding: Box::new(forwarding),
                     _lock: lock,
                 })
             }

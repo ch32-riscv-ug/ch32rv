@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Fix (0.30.3): ch32rv builds for Windows again. 0.30.3's SDI change left a variable unused and an enum variant large on Windows only, so its release has no Windows binaries.
+- (JA) 修正(0.30.3): Windows 向けにまたビルドできる。0.30.3 の SDI の変更が Windows でだけ未使用の変数と大きすぎる enum の variant を残し、0.30.3 のリリースには Windows のバイナリが無い。
+
 ## 0.30.3 - 2026-11-12
 
 - (EN) Fix: the SDI monitor no longer leaves a WCH-LinkE sending old SDI output in place of its UART's bytes. Left on with nobody reading the CDC, the LinkE's SDI forwarding keeps pulling the target's SDI output into the buffer its UART bridge sends from, and later sends that output in place of the bytes the UART receives, as much per transfer as the UART received. `monitor --source sdi` and the Arduino monitor's sdi left the forwarding on when they ended, so a UART test that followed an SDI one, even after the board was reflashed, got `SDI <build> <n>` lines from the old sketch instead of its echo on every open. `monitor sdi off` alone did not clear it; only a probe power cycle did. Both monitors now turn the forwarding off while the CDC is still open, when they end (`--duration`, Ctrl-C or SIGTERM; CLOSE, QUIT, stdin EOF or a source switch), and empty the LinkE's buffer by changing the line rate and back: the LinkE drops what it holds on a rate change. `monitor sdi off` empties it too, so it alone now clears the state left by another tool or by `flash --sdi on`. When the CDC is held elsewhere it warns `cdc-not-cleared`. Measured on WCH-LinkE 2.22 with a CH32V203 and a CH32V307 using ArduinoCore-CH32RV's console-sdi and uart sketches: 0.30.2's pluggable monitor left the echo replaced, and the new one, `--duration`, Ctrl-C and stdin EOF did not; `monitor sdi off` cleared the replaced state.

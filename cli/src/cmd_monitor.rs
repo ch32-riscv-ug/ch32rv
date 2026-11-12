@@ -275,7 +275,7 @@ fn stream_port(
     // consume it explicitly (otherwise it is an unused variable on e.g. Windows).
     // ja: 上の raw open は unix 限定。他 OS では raw は無効なので明示的に消費(でないと Windows 等で未使用)。
     #[cfg(not(unix))]
-    let _ = sdi;
+    let _ = (raw, sdi);
 
     let mut sp = match serialport::new(port_path, baud)
         .timeout(Duration::from_millis(200))
