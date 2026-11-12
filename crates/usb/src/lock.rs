@@ -10,8 +10,6 @@ use std::fs::{File, OpenOptions};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use fs4::fs_std::FileExt;
-
 /// en: A held advisory lock on one probe. Releasing happens on drop (the file closes and the OS
 /// drops the `flock`). ja: probe 1 台の advisory lock。drop でファイルが閉じ OS が flock を解放。
 #[derive(Debug)]
@@ -60,8 +58,14 @@ impl DeviceLock {
         loop {
             // `flock` is advisory and per-open-file-description: an exclusive lock succeeds only
             // when no other process holds one on this path.
-            if file.try_lock_exclusive()? {
-                return Ok(DeviceLock { _file: Some(file) });
+            // en: fs4's, named in full: from Rust 1.89 std's own `File::try_lock` would win the
+            // method lookup, and the MSRV is 1.88.
+            // ja: fs4 のものを明示して呼ぶ(Rust 1.89 からは std の `File::try_lock` がメソッド解決で
+            // 勝つ。MSRV は 1.88)。
+            match fs4::FileExt::try_lock(&file) {
+                Ok(()) => return Ok(DeviceLock { _file: Some(file) }),
+                Err(fs4::TryLockError::WouldBlock) => {}
+                Err(fs4::TryLockError::Error(e)) => return Err(e.into()),
             }
             if Instant::now() >= deadline {
                 return Err(LockError::Timeout(timeout.as_secs_f64()));

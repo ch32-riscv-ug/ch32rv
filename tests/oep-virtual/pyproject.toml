@@ -2,4 +2,4 @@
 name = "ch32rv-oep-virtual-tests"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = ["oep-client-python[acquire]==0.0.47"]
+dependencies = ["oep-client-python[acquire]==0.0.54"]

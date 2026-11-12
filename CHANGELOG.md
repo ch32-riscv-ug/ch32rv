@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) Dependencies to their latest: toml 0.8 -> 1, sha2 0.10 -> 0.11, fs4 0.13 -> 1 (the probe lock now calls fs4's `try_lock` by name, since Rust 1.89's own `File::try_lock` would otherwise win the lookup), object 0.40 -> 0.41, and the Cargo.lock updates within range (nusb 0.2.9, clap 4.6.7, serde_json, libc, ...). Tests: oep-client-python 0.0.54 (was 0.0.47), pytest 9.2.0. Checked: the tests, clippy for Linux and Windows, `xtask db-check`, the same registry from `xtask oep-gen` before and after, and on a CH32V203 through a WCH-LinkE a flash + verify of an Arduino ELF, the probe lock refusing a second command (exit 13) and the UART echo.
+- (JA) 依存を最新に上げた: toml 0.8 → 1、sha2 0.10 → 0.11、fs4 0.13 → 1(probe の lock は fs4 の `try_lock` を名前を明示して呼ぶ。Rust 1.89 の std の `File::try_lock` がメソッド解決で勝つため)、object 0.40 → 0.41、Cargo.lock の範囲内の更新(nusb 0.2.9、clap 4.6.7、serde_json、libc など)。試験: oep-client-python 0.0.54(0.0.47 から)、pytest 9.2.0。確かめたこと: 試験、Linux と Windows の clippy、`xtask db-check`、`xtask oep-gen` が前後で同じ registry を作ること、WCH-LinkE 越しの CH32V203 で Arduino の ELF の flash と verify、probe の lock が 2 つ目のコマンドを断ること(exit 13)、UART の折り返し。
 ## 0.30.4 - 2026-11-12
 
 - (EN) Fix (0.30.3): ch32rv builds for Windows again. 0.30.3's SDI change left a variable unused and an enum variant large on Windows only, so its release has no Windows binaries.

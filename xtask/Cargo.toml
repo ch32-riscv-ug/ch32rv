@@ -10,7 +10,7 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-sha2 = "0.10"
+sha2 = "0.11"
 toml = { workspace = true }
 
 [lints]

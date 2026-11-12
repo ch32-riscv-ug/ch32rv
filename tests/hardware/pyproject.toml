@@ -2,7 +2,7 @@
 name = "ch32rv-oep-hardware-tests"
 version = "0.0.0"
 requires-python = ">=3.12"
-dependencies = ["pytest>=8", "oep-client-python==0.0.47"]
+dependencies = ["pytest>=8", "oep-client-python==0.0.54"]
 
 [tool.pytest.ini_options]
 testpaths = ["."]
