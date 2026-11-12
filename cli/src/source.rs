@@ -238,7 +238,7 @@ impl RttTarget for Session {
     }
 
     fn read(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, DmiError> {
-        if crate::session::attach_corrupts_regs(self.attach.family_byte) {
+        if crate::session::link_fast_read_unreliable(self.attach.family_byte) {
             return self.dm().read_mem(addr, len);
         }
         self.link().read_mem(addr, len).map_err(transport)

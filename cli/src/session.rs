@@ -230,6 +230,53 @@ impl Session {
         crate::cmd_flash::soft_reset_and_run(self).is_ok()
     }
 
+    /// en: For a session that keeps the target running while it holds it (monitor, the Arduino
+    /// monitor, the WCH-Link broker): undo now what the attach did to the running program, which a
+    /// one-shot command leaves to its drop. Restarts the program where the attach overwrote a GPR
+    /// ([`Self::restart_if_attach_corrupted`]), and on a CH32H417 resumes the hart the command did
+    /// not select when it was running before: the LinkE's AttachChip stops it, and with
+    /// ArduinoCore-CH32RV's default build the sketch and its console run on that hart (core 1,
+    /// V5F; core 0 wakes it and waits in wfi), so `monitor --source dmseq` got no answer
+    /// (2026-11-12).
+    /// ja: target を走らせたまま持つ session(monitor、Arduino のモニタ、WCH-Link のブローカー)用。
+    /// attach が走っている program にしたことを今すぐ戻す(単発のコマンドは drop で)。GPR を壊す
+    /// chip では program を起動し直し、CH32H417 では、選ばなかった hart が走っていたなら resume する
+    /// (AttachChip が止める。ArduinoCore の既定のビルドでは sketch とコンソールはその hart = core 1
+    /// の V5F で動き、monitor の dmseq が答えなかった)。
+    pub fn keep_running(&mut self) {
+        if self.restart_if_attach_corrupted() {
+            return;
+        }
+        self.resume_other_harts();
+    }
+
+    /// en: On a CH32H417, resume every hart that was running before the attach stopped it
+    /// ([`hart_ran`]), and make the program's hart the session's: core 1 (V5F) when it ran, as
+    /// with ArduinoCore-CH32RV's default build, where core 0 (V3F) only wakes it and waits in wfi.
+    /// The halts, memory reads and resumes of the session then go to the hart that runs the
+    /// sketch: a memory read passes through DATA0, which the running V5F's DMSeq console writes,
+    /// so a read through core 0 returned the console's words instead of the flash (2026-11-12).
+    /// ja: CH32H417 で、attach の前に走っていた hart をすべて resume し、program の hart を session
+    /// の hart にする(走っていれば core 1 = V5F。ArduinoCore の既定のビルドでは core 0 = V3F は起こして
+    /// wfi で待つだけ)。メモリの読み出しは DATA0 を通り、走っている V5F の DMSeq がそこを書くので、
+    /// core 0 越しの読み出しは flash ではなくコンソールの語を返した。
+    fn resume_other_harts(&mut self) {
+        if self.attach.family_byte != 0xc6
+            || !RESUME_OTHER_HARTS.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return;
+        }
+        let keep = self.link.selected_hart();
+        for hart in 0..2 {
+            if self.ran_before[hart as usize] && matches!(hart_ran(&mut self.link, hart), Ok(true))
+            {
+                let _ = resume_hart(&mut self.link, hart);
+            }
+        }
+        let program = if self.ran_before[1] { 1 } else { keep };
+        let _ = self.link.select_hart(program);
+    }
+
     /// Note that a reset which runs the target was done (for `--release-dm` on drop).
     pub fn mark_reset_run(&mut self) {
         self.reset_run = true;
@@ -343,6 +390,17 @@ pub(crate) fn attach_corrupts_regs(family_byte: u8) -> bool {
     ch32rv_flash::flash_controller_profile(family_byte).is_some_and(|p| p.attach_corrupts_regs)
 }
 
+/// en: Whether the Link's fast memory read is to be left alone on this family for a session that
+/// let the target run again after the attach: the CH32V103 ([`attach_corrupts_regs`]) and the
+/// CH32H417, whose fast read returned words that were not in the flash (`90 0a 00 00` repeated
+/// where the image starts `73 70 04 30`) once core 1 (V5F) was resumed under a broker
+/// (2026-11-12). Those read through the Debug Module.
+/// ja: attach の後に target を走らせ直した session で、Link の高速読み出しを使わない family か。
+/// V103 と、CH32H417(core 1 を resume した後のブローカーで、flash に無い語を返した)。DM で読む。
+pub(crate) fn link_fast_read_unreliable(family_byte: u8) -> bool {
+    attach_corrupts_regs(family_byte) || family_byte == 0xc6
+}
+
 /// en: The live GPR the WCH-Link's AttachChip overwrites on this chip, saved nowhere, so a
 /// program that goes on running faults at its next use of it:
 /// - CH32V103: s1 (x9), with 0x0297df3f through a WCH-Link CH549 2.12 and the chip id through a
@@ -388,6 +446,24 @@ pub(crate) fn attach_corrupts_register_warning(register: &str) -> Warning {
              target go (the probe lets it run when it detaches, even after `dbg halt`)"
         ),
     }
+}
+
+/// en: For a raw link after AttachChip on a CH32H417 (the SDI forwarding, which keeps no
+/// Session): resume every hart that was running before the attach stopped it, then select hart 0
+/// again (the LinkE forwards SDI from what it set up at the attach). See
+/// [`Session::keep_running`].
+/// ja: CH32H417 で AttachChip の後の raw link 用(Session を持たない SDI 転送): attach の前に走って
+/// いた hart をすべて resume し、hart 0 を選び直す。
+pub(crate) fn resume_running_harts(link: &mut WchLink, family_byte: u8) {
+    if family_byte != 0xc6 {
+        return;
+    }
+    for hart in 0..2 {
+        if matches!(hart_ran(link, hart), Ok(true)) {
+            let _ = resume_hart(link, hart);
+        }
+    }
+    let _ = link.select_hart(0);
 }
 
 /// Resume `hart` (selected first).

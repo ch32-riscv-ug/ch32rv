@@ -595,6 +595,8 @@ pub(crate) fn enable_sdi(
             let _ = link.soft_reset();
             warnings.push(crate::session::attach_corrupts_register_warning(reg));
         }
+        // CH32H417: the attach stopped the hart the sketch runs on (core 1 with the default build).
+        crate::session::resume_running_harts(&mut link, attach.family_byte);
         settle_before_sdi_enable(&mut link);
         if let Err(e) = link.set_sdi_print_enabled(true) {
             return Err(SdiError::new(
@@ -656,7 +658,7 @@ fn run_dmi(cli: &Cli, source: MonitorSource) -> ExitCode {
     )));
     // en: CH32V103: the attach overwrote s1, so restart the program before watching it (the
     // session's warning says so). ja: V103 は attach が s1 を壊すので、見る前に起動し直す。
-    session.restart_if_attach_corrupted();
+    session.keep_running();
     let mut src = match DmiSource::open(&mut session, source, &mut warnings) {
         Ok(s) => s,
         Err(e) => return open_error(cli, CMD, e),
@@ -862,6 +864,7 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
         if crate::session::attach_corrupted_register(attach.family_byte, attach.chip_id).is_some() {
             let _ = link.soft_reset();
         }
+        crate::session::resume_running_harts(&mut link, attach.family_byte);
     }
     if on {
         settle_before_sdi_enable(&mut link);

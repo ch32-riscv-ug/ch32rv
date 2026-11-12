@@ -494,7 +494,7 @@ impl WchUpstream {
         }
         let _ = s.dm().resume();
         // CH32V103: the attach overwrote s1; the program the consoles watch is restarted.
-        s.restart_if_attach_corrupted();
+        s.keep_running();
         self.session = Some(s);
         true
     }
@@ -585,7 +585,7 @@ impl WchUpstream {
                             // target running while it holds it: restart the program now.
                             // ja: V103 は attach が s1 を壊し、ブローカーは持ったまま走らせるので、
                             // 今すぐ起動し直す。
-                            s.restart_if_attach_corrupted();
+                            s.keep_running();
                             self.session = Some(s);
                             self.dirty = false;
                         }
@@ -780,10 +780,11 @@ impl WchUpstream {
                 // flash just programmed by a loader run (CH32V003): once anything was written in
                 // this attach, every read goes through the Debug Module.
                 // A CH32V103's fast read runs on what the Link set up at the attach, which the
-                // restart after it (s1) undoes: it then returned zeros. Always the Debug Module.
+                // restart after it (s1) undoes: it then returned zeros; a CH32H417's returned words
+                // not in the flash once core 1 ran again. Always the Debug Module there.
                 let memory = !dirty
                     && (0x0800_0000..0x1000_0000).contains(&addr)
-                    && !crate::session::attach_corrupts_regs(s.attach.family_byte);
+                    && !crate::session::link_fast_read_unreliable(s.attach.family_byte);
                 let fast = if memory {
                     s.link()
                         .read_mem(addr, len)
