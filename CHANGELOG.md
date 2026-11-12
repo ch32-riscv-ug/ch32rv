@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.30.4 - 2026-11-12
+
 - (EN) Fix (0.30.3): ch32rv builds for Windows again. 0.30.3's SDI change left a variable unused and an enum variant large on Windows only, so its release has no Windows binaries.
 - (JA) 修正(0.30.3): Windows 向けにまたビルドできる。0.30.3 の SDI の変更が Windows でだけ未使用の変数と大きすぎる enum の variant を残し、0.30.3 のリリースには Windows のバイナリが無い。
 
