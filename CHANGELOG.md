@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.30.7 - 2026-11-12
+
 ## 0.30.6 - 2026-11-12
 
 - (EN) Fix: a CH32H417 sketch built for its V5F core (ArduinoCore-CH32RV's default since 0.7.0) can be watched through a WCH-LinkE. There core 0 (V3F) wakes core 1 (V5F) after a reset and waits in wfi, and the sketch and its DMSeq / SDI / RTT console run on core 1. The LinkE's AttachChip stops the hart a command did not select (core 1 by default), and ch32rv let it go only when a command ended, so `monitor`, the Arduino monitor and the WCH-Link broker, which hold the target running, left the sketch stopped: no READY ever came back. These now resume, right after the attach, every hart that was running before it, as does the SDI forwarding; and when core 1 was running, the monitor's and the broker's halts, memory reads and resumes go to core 1: a memory read passes through DATA0, which the running V5F's DMSeq console writes, so a read through core 0 returned the console's words instead of the flash. The H417's memory reads under the broker go through the Debug Module, not the Link's fast read (which returned words not in the flash then). A V3F-only build, whose core 1 stays asleep, is handled as before. Measured with ArduinoCore-CH32RV's selfcheck (V5F build) on a CH32H417 with a WCH-LinkE 2.22: 0.30.4's monitor and pluggable monitor got no READY; now both do, a `read` through the broker matches the flash, and the sketch keeps answering after `read`, `target info`, `monitor sdi off`, `flash` and `reset`.
