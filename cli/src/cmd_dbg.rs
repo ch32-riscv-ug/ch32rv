@@ -416,7 +416,15 @@ fn read_chunks(
     let mut off = 0u32;
     while off < len {
         let want = READ_CHUNK.min(len - off);
-        let chunk = if cli.core == 0 {
+        // The WCH-Link (CH549) overwrites s1 / a0 when its fast read reaches the top of SRAM
+        // (`session::link_fast_read_ok`): SRAM goes through the Debug Module there.
+        let fast = cli.core == 0
+            && !crate::session::link_fast_read_clobbers(
+                session.probe_info.variant,
+                start + off,
+                want,
+            );
+        let chunk = if fast {
             session
                 .link()
                 .read_mem(start + off, want)

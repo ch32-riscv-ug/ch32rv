@@ -413,6 +413,36 @@ pub(crate) fn link_fast_read_unreliable(family_byte: u8) -> bool {
     attach_corrupts_regs(family_byte) || family_byte == 0xc6
 }
 
+/// en: Whether the Link's fast read of `[addr, addr + len)` leaves a running program intact on this
+/// probe. The WCH-Link (CH549) 2.12's fast read of the top of SRAM overwrites the halted hart's s1
+/// (x9) with the end of the read and a0 (x10) with 0xE0000000 (CH32V203RBT6: reading
+/// 0x2000F000+4 KiB; flash, the bottom of SRAM and the WCH-LinkE left every GPR alone), so a
+/// program it then lets go hung in an `if (s1) ...` loop: `monitor --source rtt` scans the whole
+/// SRAM and got no answer from ArduinoCore-CH32RV's console-rtt (2026-11-13). SRAM is read through
+/// the Debug Module on that Link; together with [`link_fast_read_unreliable`].
+/// ja: この probe で Link の高速読み出しが走っている program を壊さないか。WCH-Link(CH549)2.12 は
+/// SRAM の上端を読むと、止めた hart の s1 を読み出しの終わりの番地に、a0 を 0xE0000000 にする
+/// (V203RB で実測。flash・SRAM の下側・LinkE は GPR を変えない)。その Link では SRAM を DM で読む。
+pub(crate) fn link_fast_read_ok(
+    variant: ch32rv_wchlink::Variant,
+    family_byte: u8,
+    addr: u32,
+    len: u32,
+) -> bool {
+    !link_fast_read_unreliable(family_byte) && !link_fast_read_clobbers(variant, addr, len)
+}
+
+/// en: The WCH-Link (CH549) part of [`link_fast_read_ok`]: a fast read reaching into SRAM.
+/// ja: [`link_fast_read_ok`] のうち CH549 の Link の分(SRAM にかかる高速読み出し)。
+pub(crate) fn link_fast_read_clobbers(
+    variant: ch32rv_wchlink::Variant,
+    addr: u32,
+    len: u32,
+) -> bool {
+    const SRAM_BASE: u32 = 0x2000_0000;
+    variant == ch32rv_wchlink::Variant::Ch549 && addr.saturating_add(len) > SRAM_BASE
+}
+
 /// en: The live GPR the WCH-Link's AttachChip overwrites on this chip, saved nowhere, so a
 /// program that goes on running faults at its next use of it:
 /// - CH32V103: s1 (x9), with 0x0297df3f through a WCH-Link CH549 2.12 and the chip id through a
@@ -807,5 +837,32 @@ mod attach_corruption_tests {
             None
         );
         assert!(!h417_both_cores_ran(0x19, [true, true]));
+    }
+}
+
+#[cfg(test)]
+mod fast_read_tests {
+    use super::*;
+    use ch32rv_wchlink::Variant;
+
+    /// The CH549 Link's fast read is kept off SRAM (it overwrote s1 / a0 there), not off flash;
+    /// the LinkE keeps it everywhere.
+    #[test]
+    fn ch549_reads_sram_through_the_debug_module() {
+        assert!(link_fast_read_clobbers(Variant::Ch549, 0x2000_f000, 0x1000));
+        assert!(link_fast_read_clobbers(Variant::Ch549, 0x1fff_fff0, 0x20));
+        assert!(!link_fast_read_clobbers(
+            Variant::Ch549,
+            0x0800_0000,
+            0x1_0000
+        ));
+        assert!(!link_fast_read_clobbers(
+            Variant::LinkE,
+            0x2000_f000,
+            0x1000
+        ));
+        assert!(!link_fast_read_ok(Variant::Ch549, 0x19, 0x2000_0000, 4));
+        assert!(link_fast_read_ok(Variant::Ch549, 0x19, 0x0800_0000, 4));
+        assert!(!link_fast_read_ok(Variant::LinkE, 0xc6, 0x0800_0000, 4));
     }
 }
