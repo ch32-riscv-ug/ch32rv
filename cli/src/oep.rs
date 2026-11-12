@@ -283,8 +283,14 @@ pub(crate) fn oep_devices() -> Vec<ch32rv_usb::UsbDeviceInfo> {
 /// ja: 一覧用に OEP の probe を lock 無しで短く読む(ブローカーがあればその link、無ければ serial
 /// port を短く開く)。読めなければ None。
 pub(crate) fn probe_for_listing(dev: &ch32rv_usb::UsbDeviceInfo) -> Option<Probe> {
-    let path = oep_port(dev)?;
     let quick = Duration::from_millis(300);
+    // en: A probe without a CDC (a CH32 OEP firmware's default is vendor bulk + HID only) is
+    // read on those, found by the device itself.
+    // ja: CDC の無い probe(CH32 の OEP の firmware の既定は vendor bulk と HID だけ)は、device
+    // そのものからそれらで読む。
+    let Some(path) = oep_port(dev) else {
+        return connect_device(dev, true, true, true, Some(quick)).map(|(p, _)| p);
+    };
     match crate::broker::existing_link(&path) {
         Some(mut l) => {
             l.set_timeout(quick);
@@ -349,7 +355,11 @@ fn unit_among(unit_id: &str, serials: &[String]) -> bool {
 
 /// Whether the serial port `path` belongs to an OEP probe (as [`is_oep_device`] decides).
 fn port_of_oep_device(path: &str) -> bool {
-    let sel = Selector::Port(path.to_owned());
+    let at_topology = path.strip_prefix(TOPOLOGY);
+    let sel = match at_topology {
+        Some(t) => Selector::Topology(t.to_owned()),
+        None => Selector::Port(path.to_owned()),
+    };
     oep_devices()
         .iter()
         .enumerate()
@@ -478,7 +488,11 @@ fn connect_ordered(
         Some(Via::Hid) => (false, true, false),
         Some(_) => (false, false, true),
     };
-    let sel = Selector::Port(path.to_owned());
+    let at_topology = path.strip_prefix(TOPOLOGY);
+    let sel = match at_topology {
+        Some(t) => Selector::Topology(t.to_owned()),
+        None => Selector::Port(path.to_owned()),
+    };
     let dev = (bulk || hid)
         .then(|| {
             oep_devices()
@@ -488,39 +502,15 @@ fn connect_ordered(
                 .map(|(_, d)| d)
         })
         .flatten();
-    let try_link = |stream: Box<dyn ch32rv_oep::link::ByteStream>| {
-        let mut link = ch32rv_oep::link::Link::new(stream, ch32rv_oep::link::Framing::Length);
-        if let Some(t) = timeout {
-            link.set_timeout(t);
-        }
-        Probe::connect(link).ok()
-    };
-    if let Some(d) = &dev {
-        if hid_first
-            && hid
-            && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
-        {
-            return Ok((p, "hid"));
-        }
-        if bulk
-            && let Some(p) = d
-                // class 0xFF, subclass 'O', protocol 'E' (oep-transports §3)
-                .open_vendor_bulk(
-                    ch32rv_oep::registry::usb::VENDOR_BULK_SUBCLASS,
-                    ch32rv_oep::registry::usb::VENDOR_BULK_PROTOCOL,
-                )
-                .ok()
-                .flatten()
-                .and_then(|pipe| try_link(Box::new(VendorBulk(pipe))))
-        {
-            return Ok((p, "vendor-bulk"));
-        }
-        if !hid_first
-            && hid
-            && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
-        {
-            return Ok((p, "hid"));
-        }
+    if let Some(d) = &dev
+        && let Some(found) = connect_device(d, bulk, hid, hid_first, timeout)
+    {
+        return Ok(found);
+    }
+    if at_topology.is_some() {
+        return Err(format!(
+            "the OEP device at USB {path} did not answer on its vendor HID / bulk interface (it has no serial port)"
+        ));
     }
     if !serial {
         let what = if bulk { "vendor bulk" } else { "vendor HID" };
@@ -535,6 +525,56 @@ fn connect_ordered(
     Probe::connect(link)
         .map(|p| (p, "serial"))
         .map_err(|e| e.to_string())
+}
+
+/// en: What stands in a route's `path` for a probe without a serial port: `topology:<bus>-<ports>`,
+/// the USB position it is found by. ja: serial port の無い probe の route の `path`(USB の位置)。
+const TOPOLOGY: &str = "topology:";
+
+/// en: Connect to an OEP device on its vendor HID and / or vendor bulk interface (HID first when
+/// `hid_first`), without its serial port. The transport it answered on comes back with it.
+/// ja: OEP の device に vendor HID / vendor bulk でつなぐ(`hid_first` なら HID が先)。serial port は
+/// 使わない。答えた transport も返す。
+fn connect_device(
+    d: &ch32rv_usb::UsbDeviceInfo,
+    bulk: bool,
+    hid: bool,
+    hid_first: bool,
+    timeout: Option<Duration>,
+) -> Option<(Probe, &'static str)> {
+    let try_link = |stream: Box<dyn ch32rv_oep::link::ByteStream>| {
+        let mut link = ch32rv_oep::link::Link::new(stream, ch32rv_oep::link::Framing::Length);
+        if let Some(t) = timeout {
+            link.set_timeout(t);
+        }
+        Probe::connect(link).ok()
+    };
+    if hid_first
+        && hid
+        && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
+    {
+        return Some((p, "hid"));
+    }
+    if bulk
+        && let Some(p) = d
+            // class 0xFF, subclass 'O', protocol 'E' (oep-transports §3)
+            .open_vendor_bulk(
+                ch32rv_oep::registry::usb::VENDOR_BULK_SUBCLASS,
+                ch32rv_oep::registry::usb::VENDOR_BULK_PROTOCOL,
+            )
+            .ok()
+            .flatten()
+            .and_then(|pipe| try_link(Box::new(VendorBulk(pipe))))
+    {
+        return Some((p, "vendor-bulk"));
+    }
+    if !hid_first
+        && hid
+        && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
+    {
+        return Some((p, "hid"));
+    }
+    None
 }
 
 /// en: Resolve an `oep://` address (host guide §5.3) to its route. The probe segment is looked up
@@ -554,10 +594,17 @@ pub(crate) fn resolve_oep(a: &Address) -> Result<OepAddr, String> {
             .into_iter()
             .find(|d| probe_id(d).eq_ignore_ascii_case(id))
     };
-    let usb = |dev: ch32rv_usb::UsbDeviceInfo, via: Option<Via>| {
-        oep_port(&dev)
-            .map(|path| Route::Usb { path, via })
-            .ok_or_else(|| format!("OEP probe {id} has no serial port"))
+    // en: A probe without a CDC (a CH32 OEP firmware's default: vendor bulk + HID only) is found
+    // by its USB position instead of its serial port; only `via=cdc` needs the port.
+    // ja: CDC の無い probe(CH32 の OEP の firmware の既定は vendor bulk と HID だけ)は、serial port
+    // の代わりに USB の位置で探す。serial port が要るのは `via=cdc` だけ。
+    let usb = |dev: ch32rv_usb::UsbDeviceInfo, via: Option<Via>| match oep_port(&dev) {
+        Some(path) => Ok(Route::Usb { path, via }),
+        None if matches!(via, Some(Via::Cdc)) => Err(format!("OEP probe {id} has no serial port")),
+        None => Ok(Route::Usb {
+            path: format!("{TOPOLOGY}{}", dev.topology()),
+            via,
+        }),
     };
     let route = match &a.via {
         None => match on_usb() {
