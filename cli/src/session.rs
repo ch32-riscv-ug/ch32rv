@@ -35,6 +35,9 @@ pub struct Session {
     reset_run: bool,
     /// H417: which harts were running before this session stopped them (see [`hart_ran`]).
     ran_before: [bool; 2],
+    /// The live GPR the attach overwrote in the running program, if any
+    /// ([`attach_corrupted_register_in`]).
+    corrupted: Option<&'static str>,
 }
 
 /// What went wrong, so the CLI can pick the right exit code.
@@ -173,17 +176,23 @@ impl Session {
                 ),
             });
         }
-        if let Some(reg) = attach_corrupted_register(attach.family_byte, attach.chip_id) {
+        // en: H417: which harts ran decides the restart (core 0 alone: its a0 was overwritten)
+        // and what is resumed. `dbg` leaves the harts as they are (it does not look), so it
+        // neither restarts an H417 program nor resumes the other core: a restart would wipe the
+        // state it is there to inspect.
+        // ja: H417 では、走っていた hart で起動し直し(core 0 だけなら a0 が壊れた)と resume を決める。
+        // `dbg` は hart を見ない(起動し直しも他の core の resume もしない。調べたい状態を消すため)。
+        let ran_before = if RESUME_OTHER_HARTS.load(std::sync::atomic::Ordering::Relaxed) {
+            harts_that_ran(&mut link, attach.family_byte)
+        } else {
+            [false; 2]
+        };
+        let corrupted =
+            attach_corrupted_register_in(attach.family_byte, attach.chip_id, ran_before);
+        if let Some(reg) = corrupted {
             warnings.push(attach_corrupts_register_warning(reg));
-        }
-        let mut ran_before = [false; 2];
-        if attach.family_byte == 0xc6
-            && RESUME_OTHER_HARTS.load(std::sync::atomic::Ordering::Relaxed)
-        {
-            for (hart, ran) in ran_before.iter_mut().enumerate() {
-                *ran = hart_ran(&mut link, hart as u32).unwrap_or(false);
-            }
-            let _ = link.select_hart(0);
+        } else if h417_both_cores_ran(attach.family_byte, ran_before) {
+            warnings.push(h417_core0_a0_warning());
         }
         Ok(Self {
             link,
@@ -194,6 +203,7 @@ impl Session {
             _lock: lock,
             reset_run: false,
             ran_before,
+            corrupted,
         })
     }
 
@@ -215,16 +225,18 @@ impl Session {
         flash_capacity(self.chip.as_ref(), &self.db, self.attach.chip_id)
     }
 
-    /// en: On a chip whose attach overwrote a GPR (CH32V103 s1, CH32V205 s0), restart the program now, for a session
-    /// that keeps the target running while it holds it (monitor, the broker). A one-shot command
-    /// leaves it to the drop, after its reads. Not gated on the hart's state: the V103 is halted
-    /// by the attach and DetachChip lets it run, even after `dbg halt` (measured 2026-11-12, WCH-Link
-    /// CH549 2.12). True when it restarted.
-    /// ja: attach が s1 を壊す family(V103)で、今すぐ program を起動し直す。target を走らせたまま
+    /// en: On a chip whose attach overwrote a GPR of the running program (CH32V103 s1, CH32V205 s0,
+    /// CH32H417 core 0's a0 when only core 0 ran), restart the program now, for a session that
+    /// keeps the target running while it holds it (monitor, the broker). A one-shot command leaves
+    /// it to the drop, after its reads. Not gated on the hart's state: the V103 is halted by the
+    /// attach and DetachChip lets it run, even after `dbg halt` (measured 2026-11-12, WCH-Link
+    /// CH549 2.12; H417 core 0 likewise, 2026-11-13). True when it restarted.
+    /// ja: attach が走っている program の GPR を壊した chip(V103 は s1、V205 は s0、H417 は core 0
+    /// だけが走っていたときの core 0 の a0)で、今すぐ program を起動し直す。target を走らせたまま
     /// 持つ session(monitor、ブローカー)用。単発のコマンドは drop に任せる。V103 は attach で止まり、
-    /// DetachChip で(`dbg halt` の後でも)走り出すので、hart の状態では分けない。
+    /// DetachChip で(`dbg halt` の後でも)走り出すので、hart の状態では分けない(H417 の core 0 も同じ)。
     pub fn restart_if_attach_corrupted(&mut self) -> bool {
-        if attach_corrupted_register(self.attach.family_byte, self.attach.chip_id).is_none() {
+        if self.corrupted.is_none() {
             return false;
         }
         crate::cmd_flash::soft_reset_and_run(self).is_ok()
@@ -445,6 +457,60 @@ pub(crate) fn attach_corrupts_register_warning(register: &str) -> Warning {
              running program cannot survive: ch32rv restarts the program before it lets the \
              target go (the probe lets it run when it detaches, even after `dbg halt`)"
         ),
+    }
+}
+
+/// en: H417: which harts were running before the attach stopped them ([`hart_ran`]), hart 0
+/// selected again after. `[false; 2]` on any other chip.
+/// ja: H417 で、attach が止める前に走っていた hart(終わったら hart 0 を選び直す)。他は `[false; 2]`。
+pub(crate) fn harts_that_ran(link: &mut WchLink, family_byte: u8) -> [bool; 2] {
+    let mut ran = [false; 2];
+    if family_byte == 0xc6 {
+        for (hart, r) in ran.iter_mut().enumerate() {
+            *r = hart_ran(link, hart as u32).unwrap_or(false);
+        }
+        let _ = link.select_hart(0);
+    }
+    ran
+}
+
+/// en: [`attach_corrupted_register`], and on a CH32H417 the GPR the attach overwrote in the
+/// program given which harts ran (`ran`, [`harts_that_ran`]): the LinkE's AttachChip zeroes core
+/// 0's (V3F) a0 (x10) about every other time (LinkE 2.22 and 2.23: 5 of 9 and 7 of 15 attaches;
+/// core 1 untouched), and DMI reads nothing before the attach, so it cannot be saved. The program
+/// is core 0's when core 1 did not run (ArduinoCore-CH32RV's V3F build): with `this` in a0 at
+/// `SerialDMSeq.available()`'s entry, the sketch read a byte that was not there and got `\xff`
+/// in front of its next line (2026-11-13). With core 1 running too (the default V5F build, where
+/// core 0 only waits in wfi for work) it is left alone: see [`h417_core0_a0_warning`].
+/// ja: [`attach_corrupted_register`] に加え、H417 では走っていた hart から決める。LinkE の
+/// AttachChip は core 0(V3F)の a0 をおよそ 2 回に 1 回 0 にする(2.22 / 2.23 とも。core 1 は無事)。
+/// attach の前は DMI が読めないので退避できない。core 1 が走っていなければ program は core 0 の
+/// もの(V3F ビルド)で、`available()` の入口で a0 = this が 0 になり、行の頭に `\xff` が入った。
+pub(crate) fn attach_corrupted_register_in(
+    family_byte: u8,
+    chip_id: u32,
+    ran: [bool; 2],
+) -> Option<&'static str> {
+    attach_corrupted_register(family_byte, chip_id)
+        .or_else(|| (family_byte == 0xc6 && ran[0] && !ran[1]).then_some("a0 (core 0)"))
+}
+
+/// en: A CH32H417 with both cores running: the attach may have zeroed core 0's a0, and the
+/// program is not restarted (core 1 runs it, core 0 usually only waits for work).
+/// ja: 両方の core が走っていた H417(attach が core 0 の a0 を 0 にしたかもしれないが、起動し直さない)。
+pub(crate) fn h417_both_cores_ran(family_byte: u8, ran: [bool; 2]) -> bool {
+    family_byte == 0xc6 && ran[0] && ran[1]
+}
+
+/// The warning for [`h417_both_cores_ran`].
+pub(crate) fn h417_core0_a0_warning() -> Warning {
+    Warning {
+        code: "attach-may-corrupt-register".to_owned(),
+        msg: "attaching through a WCH-LinkE may zero core 0's a0 register on a CH32H417; both \
+              cores were running, so ch32rv leaves the program running (core 0 waiting for work, \
+              as in ArduinoCore-CH32RV's default build, is not affected): reset the board if code \
+              running on core 0 misbehaves"
+            .to_owned(),
     }
 }
 
@@ -710,5 +776,36 @@ mod capacity_tests {
             (Some(288 * 1024), "probe")
         );
         assert_eq!(flash_capacity(None, &db, 0xdeadbeef), (None, "unavailable"));
+    }
+}
+
+#[cfg(test)]
+mod attach_corruption_tests {
+    use super::*;
+
+    /// H417: a0 is restarted for only when core 0 alone ran (the V3F build); with core 1 running
+    /// too it is a warning, and nothing when core 0 did not run.
+    #[test]
+    fn h417_restarts_only_a_program_on_core_0_alone() {
+        let id = 0x4170_053d;
+        assert_eq!(
+            attach_corrupted_register_in(0xc6, id, [true, false]),
+            Some("a0 (core 0)")
+        );
+        assert_eq!(attach_corrupted_register_in(0xc6, id, [true, true]), None);
+        assert!(h417_both_cores_ran(0xc6, [true, true]));
+        assert_eq!(attach_corrupted_register_in(0xc6, id, [false, false]), None);
+        assert_eq!(attach_corrupted_register_in(0xc6, id, [false, true]), None);
+        assert!(!h417_both_cores_ran(0xc6, [false, true]));
+    }
+
+    /// Other chips do not depend on the harts.
+    #[test]
+    fn other_chips_ignore_the_harts() {
+        assert_eq!(
+            attach_corrupted_register_in(0x19, 0x2030_0500, [true, false]),
+            None
+        );
+        assert!(!h417_both_cores_ran(0x19, [true, true]));
     }
 }

@@ -73,13 +73,18 @@ pub fn gdb(cli: &Cli, args: &GdbArgs) -> ExitCode {
     };
     let _ = link.set_speed(attach.family_byte, speed);
 
-    // On chips whose AttachChip corrupts a live GPR (CH32V103 s1, CH32V205 s0),
-    // soft-reset so the program re-runs and re-establishes its registers before we halt it -
-    // otherwise the resumed program faults on its next use of that register. This restarts the
-    // target (reset-attach semantics) but is the only way to debug it cleanly.
+    // On chips whose AttachChip corrupts a live GPR (CH32V103 s1, CH32V205 s0, CH32H417 core 0's
+    // a0 when only core 0 ran), soft-reset so the program re-runs and re-establishes its
+    // registers before we halt it - otherwise the resumed program faults on its next use of that
+    // register. This restarts the target (reset-attach semantics) but is the only way to debug it
+    // cleanly.
     let profile = ch32rv_flash::flash_controller_profile(attach.family_byte);
-    if crate::session::attach_corrupted_register(attach.family_byte, attach.chip_id).is_some() {
-        let _ = link.soft_reset();
+    let ran = crate::session::harts_that_ran(&mut link, attach.family_byte);
+    if crate::session::attach_corrupted_register_in(attach.family_byte, attach.chip_id, ran)
+        .is_some()
+    {
+        let _ = crate::cmd_flash::soft_reset_and_run_link(&mut link);
+        let _ = link.select_hart(0);
         std::thread::sleep(Duration::from_millis(50));
         eprintln!(
             "gdb: soft-reset after attach (this core's attach corrupts a register; the target restarted)"

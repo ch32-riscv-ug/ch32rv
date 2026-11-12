@@ -587,16 +587,22 @@ pub(crate) fn enable_sdi(
         let mut warnings = vec![attach_reclocks_warning(
             "press the board's reset, or use `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`",
         )];
-        // CH32V103 / V205: the attach overwrote a GPR; restart the program before forwarding its
-        // output.
+        // CH32V103 / V205 / H417 with only core 0 running: the attach overwrote a GPR; restart the
+        // program before forwarding its output. Otherwise, on a CH32H417, the attach stopped the
+        // hart the sketch runs on (core 1 with the default build): resume what ran.
+        let ran = crate::session::harts_that_ran(&mut link, attach.family_byte);
         if let Some(reg) =
-            crate::session::attach_corrupted_register(attach.family_byte, attach.chip_id)
+            crate::session::attach_corrupted_register_in(attach.family_byte, attach.chip_id, ran)
         {
-            let _ = link.soft_reset();
+            let _ = crate::cmd_flash::soft_reset_and_run_link(&mut link);
+            let _ = link.select_hart(0);
             warnings.push(crate::session::attach_corrupts_register_warning(reg));
+        } else {
+            if crate::session::h417_both_cores_ran(attach.family_byte, ran) {
+                warnings.push(crate::session::h417_core0_a0_warning());
+            }
+            crate::session::resume_running_harts(&mut link, attach.family_byte);
         }
-        // CH32H417: the attach stopped the hart the sketch runs on (core 1 with the default build).
-        crate::session::resume_running_harts(&mut link, attach.family_byte);
         settle_before_sdi_enable(&mut link);
         if let Err(e) = link.set_sdi_print_enabled(true) {
             return Err(SdiError::new(
@@ -860,11 +866,17 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
     let _ = link.set_speed_default(speed);
     if let Ok(attach) = link.attach_chip() {
         let _ = link.set_speed(attach.family_byte, speed);
-        // CH32V103 / V205: the attach overwrote a GPR; restart the program so it does not fault.
-        if crate::session::attach_corrupted_register(attach.family_byte, attach.chip_id).is_some() {
-            let _ = link.soft_reset();
+        // CH32V103 / V205 / H417 with only core 0 running: the attach overwrote a GPR; restart the
+        // program so it does not fault. Otherwise resume the H417 harts that ran.
+        let ran = crate::session::harts_that_ran(&mut link, attach.family_byte);
+        if crate::session::attach_corrupted_register_in(attach.family_byte, attach.chip_id, ran)
+            .is_some()
+        {
+            let _ = crate::cmd_flash::soft_reset_and_run_link(&mut link);
+            let _ = link.select_hart(0);
+        } else {
+            crate::session::resume_running_harts(&mut link, attach.family_byte);
         }
-        crate::session::resume_running_harts(&mut link, attach.family_byte);
     }
     if on {
         settle_before_sdi_enable(&mut link);

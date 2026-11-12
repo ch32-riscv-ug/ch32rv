@@ -1538,13 +1538,19 @@ fn flash_via_loader(
 
 pub(crate) fn soft_reset_and_run(session: &mut Session) -> Result<(), String> {
     session.mark_reset_run();
-    session
-        .link()
-        .soft_reset()
+    soft_reset_and_run_link(session.link())
+}
+
+/// en: [`soft_reset_and_run`] on a raw link (the SDI forwarding and the direct gdb keep no
+/// Session): reset, acknowledge it, and resume the hart if the reset left it halted (the LinkE's
+/// soft reset leaves the H417's core 0 halted).
+/// ja: raw link 版(SDI 転送と直接の gdb は Session を持たない)。reset → 確認 → 止まっていれば resume。
+pub(crate) fn soft_reset_and_run_link(link: &mut ch32rv_wchlink::WchLink) -> Result<(), String> {
+    link.soft_reset()
         .map_err(|e| format!("reset failed: {e}"))?;
     // Give the hart a moment to come out of reset before judging its state.
     std::thread::sleep(Duration::from_millis(20));
-    let mut dm = session.dm();
+    let mut dm = ch32rv_dmi::DebugModule::new(link);
     dm.ack_have_reset()
         .map_err(|e| format!("reset acknowledge failed: {e}"))?;
     match dm.is_running() {
