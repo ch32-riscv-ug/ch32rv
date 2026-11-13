@@ -110,7 +110,8 @@ a device. Exit codes and the JSON envelope are defined by the `ch32rv-contract` 
 
 `isp` writes through the chip's factory bootloader (USB or UART); `isp enter --via probe` puts
 CH32X03x / CH32H417 in it over the debug wire. `boot` writes through custom bootloaders (DFU, HID).
-`broker` keeps one OEP probe open for several ch32rv commands at once.
+`broker` keeps one probe (OEP or WCH-Link) open for several ch32rv commands at once, and other OEP
+tools find and share it (OEP host guide §7.2: `oep/brokers/<unit_id>.json`, `oep.probe.share`).
 
 ## Library crates
 

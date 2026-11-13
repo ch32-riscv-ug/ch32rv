@@ -53,8 +53,8 @@ sudo udevadm control --reload-rules && sudo udevadm trigger
 ドライバの入れ替えは不要。`ch32rv` は次のどちらでも動く:
 
 - **WCH 純正ドライバ**(WCH-LinkUtility が入れるもの)— `ch32rv` がそのドライバ越しに直接 probe を叩くので、
-  WCH-LinkUtility と共存でき **Zadig 不要**。この経路は Windows x86_64 限定で、WinUSB よりやや遅い。
-- **WinUSB** — probe が既に WinUSB デバイスとして見えていれば(クリーン機では自動 install されることが多い)それを使う。
+  `ch32rv` と WCH-LinkUtility は共存でき **Zadig 不要**。この経路は Windows x86_64 限定で、WinUSB よりやや遅い。
+- **WinUSB** — probe が既に WinUSB デバイスとして見えていれば(クリーン機では自動 install されることが多い)`ch32rv` はそれを使う。
   使えるドライバが全く無い時だけ Zadig を検討。
 
 `ch32rv` は WinUSB を先に試し、ダメなら WCH 純正ドライバへ自動フォールバックする。probe が見つからなければ `ch32rv doctor` を実行。
@@ -99,7 +99,7 @@ ch32rv capabilities                     # この probe + target の組で何が�
 | `doctor` / `version` / `complete` | 環境診断 · バージョン · shell 補完 |
 | `arduino` | Arduino IDE 統合(`discovery` / `monitor` Pluggable プロトコル) |
 
-`isp` はチップの factory bootloader(USB または UART)で書く。`isp enter --via probe` は CH32X03x / CH32H417 を debug 線から bootloader へ入れる。`boot` は独自 bootloader(DFU、HID)で書く。`broker` は 1 つの OEP の probe を開いたまま、複数の ch32rv のコマンドに使わせる。
+`isp` はチップの factory bootloader(USB または UART)で書く。`isp enter --via probe` は CH32X03x / CH32H417 を debug 線から bootloader へ入れる。`boot` は独自 bootloader(DFU、HID)で書く。`broker` は 1 つの probe(OEP か WCH-Link)を開いたまま、複数の ch32rv のコマンドに使わせる。ほかの OEP の道具も、それを見つけて相乗りできる(OEP の host ガイド §7.2: `oep/brokers/<unit_id>.json`、`oep.probe.share`)。
 
 ## ライブラリ crate
 
