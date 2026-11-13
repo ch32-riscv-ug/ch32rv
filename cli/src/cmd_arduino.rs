@@ -807,9 +807,11 @@ struct Resolved {
 /// それを持つ WCH probe があればそれ(`probe list` の `ports` で引くので serial 番号の無い Link も
 /// 位置で見つかる)、無ければ素の serial port(uart だけが使える)。
 fn resolve_address(address: &str) -> Result<Resolved, String> {
-    let entries = crate::cmd_probe::wch_devices().map_err(|e| format!("USB enumeration: {e}"))?;
+    // en: Enumerated only for the addresses that name a WCH-Link (an enumeration waits on any USB
+    // device the kernel is still probing). ja: WCH-Link を指すアドレスでだけ列挙する。
+    let entries = || crate::cmd_probe::wch_devices().map_err(|e| format!("USB enumeration: {e}"));
     if let Some(id) = address.strip_prefix("wchlink://") {
-        let entry = entries
+        let entry = entries()?
             .into_iter()
             .find(|e| e.dev.port_id().as_deref() == Some(id))
             .ok_or_else(|| format!("no WCH-Link {id} is connected"))?;
@@ -858,7 +860,7 @@ fn resolve_address(address: &str) -> Result<Resolved, String> {
         });
     }
     let sel = ch32rv_usb::Selector::Port(address.to_owned());
-    let mut owners: Vec<Entry> = entries
+    let mut owners: Vec<Entry> = entries()?
         .into_iter()
         .enumerate()
         .filter(|(i, e)| sel.matches(&e.dev, *i))
@@ -1323,16 +1325,12 @@ fn session(client: &str, address: &str, shared: &Shared, env: &Env, slot: &OpenS
         mlog(format_args!("session: open failed: {m}"));
         slot.finish(Err(m))
     };
-    let resolved = match resolve_address(address) {
-        Ok(r) => r,
-        Err(m) => {
-            fail(m);
-            return;
-        }
-    };
-    // en: Connected before the source opens, so OPEN can answer in time however long the open
-    // takes (arduino-cli listens before it sends OPEN and accepts after the answer).
-    // ja: source を開く前につなぐ(OPEN が時間内に返事をできるように)。
+    // en: Connected before anything else, so OPEN can answer in time however long the rest takes
+    // (arduino-cli listens before it sends OPEN and accepts after the answer): resolving the
+    // address enumerates USB, which waits on any device the kernel is still probing - a CH32H417
+    // sketch whose HID interface timed out held it 20 s right after an upload (2026-11-14).
+    // ja: 何より先につなぐ(残りがどれだけかかっても OPEN が時間内に返事をできるように)。アドレスの
+    // 解決は USB を列挙し、kernel が probe 中の機器を待つ(HID が時間切れの H417 の sketch で 20 秒)。
     let mut sock = match TcpStream::connect(client) {
         Ok(s) => s,
         Err(e) => {
@@ -1345,6 +1343,20 @@ fn session(client: &str, address: &str, shared: &Shared, env: &Env, slot: &OpenS
         return;
     };
     slot.connected(keep);
+    let resolved = resolve_address(address);
+    mlog(format_args!(
+        "session: address resolved: {}",
+        resolved.is_ok()
+    ));
+    let resolved = match resolved {
+        Ok(r) => r,
+        Err(m) => {
+            if fail(m.clone()) {
+                lost(&mut sock, &m);
+            }
+            return;
+        }
+    };
     let mut backend = match Backend::open(&resolved, shared.settings(), env) {
         Ok(b) => b,
         Err(m) => {

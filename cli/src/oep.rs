@@ -1826,6 +1826,7 @@ impl ConsoleSession {
         chip: Option<&str>,
         max_speed_hz: Option<u32>,
     ) -> Result<Self, String> {
+        crate::cmd_arduino::mlog(format_args!("oep: linking to the broker"));
         let mut link = match (a.broker_target(), a) {
             (Some(t), _) => crate::broker::client_link_for(&t)?,
             (

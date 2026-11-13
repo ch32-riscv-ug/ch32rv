@@ -44,6 +44,8 @@ const FIRST_CLIENT_WAIT: Duration = Duration::from_secs(10);
 const START_WAIT: Duration = Duration::from_secs(5);
 /// How often a client that finds no endpoint starts a broker again while it waits.
 const RESPAWN_EVERY: Duration = Duration::from_millis(400);
+/// How long a broker's answer to a client's hello / describe is waited for ([`connect_endpoint`]).
+const HANDSHAKE_WAIT: Duration = Duration::from_secs(2);
 /// The broker's own lease on the probe, renewed by keepalive while no client talks.
 /// en: The broker's lease: long enough that a raised port speed that stopped answering can be
 /// noticed and brought back to the boot speed (a timeout, then a confirm there) before it lapses
@@ -722,21 +724,32 @@ fn connect_endpoint(spot: &Spot, v: &Value) -> Found {
             Found::Nothing
         };
     }
-    let Ok(link) = ch32rv_oep::link::open_tcp(&addr) else {
+    let Ok(mut link) = ch32rv_oep::link::open_tcp(&addr) else {
+        crate::cmd_arduino::mlog(format_args!("broker: {addr} refused"));
         return Found::Nothing;
     };
-    let link = match &spot.unit {
+    // en: A broker answers the session's own requests itself, at once; one that does not within
+    // HANDSHAKE_WAIT is on its way out (its last client just left) or stuck, and is passed over
+    // instead of being waited on for the link's 15 s - longer than arduino-cli gives a monitor's
+    // OPEN (a monitor opened right after an upload hung there, 2026-11-14).
+    // ja: ブローカーは session の要求に自分ですぐ答える。HANDSHAKE_WAIT で答えなければ、終わりかけか
+    // 詰まっているとみて待たない(link の 15 秒は arduino-cli が OPEN を待つ 10 秒より長い)。
+    link.set_timeout(HANDSHAKE_WAIT);
+    let mut link = match &spot.unit {
         Some(unit) => {
             let Ok(mut p) = Probe::connect(link) else {
+                crate::cmd_arduino::mlog(format_args!("broker: {addr} did not answer"));
                 return Found::Nothing;
             };
             if crate::oep::verify_unit(&mut p, unit).is_err() {
+                crate::cmd_arduino::mlog(format_args!("broker: {addr} is not the unit"));
                 return Found::Nothing;
             }
             p.into_link()
         }
         None => link,
     };
+    link.set_timeout(ch32rv_oep::link::TCP_TIMEOUT);
     if read_endpoint(spot).and_then(|w| rec_pid(&w)) != Some(pid) {
         return Found::Nothing;
     }
@@ -779,6 +792,7 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, ClientLinkE
             Found::Nothing => {}
         }
     }
+    crate::cmd_arduino::mlog(format_args!("broker: starting one"));
     let t0 = now_ms();
     spawn_broker(target)?;
     let mut spawned = Instant::now();
