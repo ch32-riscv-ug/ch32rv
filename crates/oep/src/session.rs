@@ -102,17 +102,19 @@ pub struct Probe {
     fns: HashMap<String, Interface>,
     /// Each fn's declared ops (describe tag `ops`), learned once per boot; `None` = no ops tag.
     ops: HashMap<u16, Option<Vec<u8>>>,
-    /// Open with [`SHARE_EXTENSION`]: join the lock a ch32rv broker shares among its own tools.
+    /// Open with [`SHARE_EXTENSION`]: join the lock a broker shares among its clients.
     share: bool,
 }
 
-/// en: The named extension (sent critical, value: the name alone) by which an `open` asks a ch32rv
-/// broker to share its one lock with the broker's other ch32rv clients (monitor, gdb, flash at
-/// once). A client without it is answered as core says: one lock, and while the ch32rv tools
-/// share it, its open is locked (host guide §7). Anything else (an OEP probe) refuses it
-/// unsupported, and the open goes again without it.
-/// ja: ch32rv のブローカーに、1 つのロックへの相乗りを頼む open の名前つき拡張(critical)。
-pub const SHARE_EXTENSION: &str = "io.github.ch32-riscv-ug.share";
+/// en: The named extension `oep.probe.share` (OEP host guide §7.1; sent critical, data empty: the
+/// value is the name alone) by which an `open` asks a broker to share its one lock with its other
+/// clients (monitor, gdb, flash at once): sessions and resources per client, one owner to the
+/// probe, a forced open takes it from all of them. A client without it is answered as core says.
+/// Anything that does not know it (an OEP probe) refuses it unsupported, and the open goes again
+/// without it.
+/// ja: ブローカーに 1 つのロックへの相乗りを頼む open の名前つき拡張 `oep.probe.share`
+/// (host ガイド §7.1、critical、data は空)。
+pub const SHARE_EXTENSION: &str = "oep.probe.share";
 
 impl Probe {
     /// Confirm the probe (no session yet).
@@ -130,13 +132,18 @@ impl Probe {
         })
     }
 
-    /// Whether [`open`](Self::open) asks to share a ch32rv broker's lock ([`SHARE_EXTENSION`]).
+    /// Whether [`open`](Self::open) asks to share a broker's lock ([`SHARE_EXTENSION`]).
     pub fn set_share(&mut self, on: bool) {
         self.share = on;
     }
 
     pub fn limits(&self) -> Limits {
         self.limits
+    }
+
+    /// The link, given back (to confirm the endpoint before handing the link on).
+    pub fn into_link(self) -> Link {
+        self.link
     }
 
     pub fn link(&mut self) -> &mut Link {

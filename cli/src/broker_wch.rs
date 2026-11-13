@@ -512,16 +512,13 @@ impl WchUpstream {
 
     /// The unit id this broker declares: the Link's USB serial, lowercased (a-z 0-9 - only).
     fn unit_id(&self) -> String {
-        let id: String = self
-            .entry
-            .dev
-            .port_id()
-            .unwrap_or_else(|| "wch-link".to_owned())
-            .to_ascii_lowercase()
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-            .collect();
-        id.chars().take(32).collect()
+        wch_unit_id(
+            &self
+                .entry
+                .dev
+                .port_id()
+                .unwrap_or_else(|| "wch-link".to_owned()),
+        )
     }
 
     fn wire(&mut self, c: &Call) -> Reply {
@@ -1166,4 +1163,15 @@ fn run(s: &mut Session, b: &[u8]) -> Reply {
             failed(out)
         }
     }
+}
+
+/// en: The unit id a WCH-Link broker declares for the Link known by `id` (its USB serial): lowercase,
+/// `a-z 0-9 -` only, at most 32 (core §7.5). Its describe and its broker file (host guide §7.2)
+/// both use it. ja: WCH-Link のブローカーが名乗る unit id(serial を小文字、`a-z 0-9 -`、32 文字まで)。
+pub(crate) fn wch_unit_id(id: &str) -> String {
+    id.to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .take(32)
+        .collect()
 }

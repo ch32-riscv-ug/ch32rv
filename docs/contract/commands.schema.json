@@ -775,7 +775,15 @@
         "transport": {"type": ["string", "null"], "description": "ブローカーが probe を開いた道"},
         "version": {
           "type": ["string", "null"],
-          "description": "ブローカーの ch32rv の版(版を持たない古いブローカーなら null)"
+          "description": "ブローカーの版(記録の implementation.version)"
+        },
+        "implementation": {
+          "type": ["string", "null"],
+          "description": "ブローカーの実装の名前(記録の implementation.name。ch32rv なら \"ch32rv\")"
+        },
+        "file": {
+          "type": ["string", "null"],
+          "description": "OEP の host ガイド §7.2 の記録の場所 oep/brokers/<unit_id>.json。unit_id で名指せない probe なら null"
         }
       }
     }

@@ -39,7 +39,7 @@
 ## 4. ブローカー
 
 - key は probe の同一性。OEP の probe は `oep-<unit_id の小文字>`(USB の probe は serial = unit_id)。unit を名指さずに渡した、OEP の USB device を持たない serial port(UART bridge)は `oep-port-<正規化した path>`。WCH-Link は `wch-<serial>`(無ければ `wch-usb-<topology>`)。同じ probe は 1 つのブローカーになる。
-- `broker endpoint --json` は結果の封筒(envelope)の `result` に `{endpoint, pid, transport, version}` を返す。`endpoint` は `"127.0.0.1:<port>"` か null。利用者は `result.endpoint` を見る。
+- `broker endpoint --json` は結果の封筒(envelope)の `result` に `{endpoint, pid, transport, version, implementation, file}` を返す。`endpoint` は `"127.0.0.1:<port>"` か null。利用者は `result.endpoint` を見る。
 - ブローカーの TCP は素の OEP(`length(u16) message`、oep-transports §1)で、127.0.0.1 だけで待つ。
 - 詳しくは [oep-host.ja.md](oep-host.ja.md) §7.2。
 

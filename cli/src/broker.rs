@@ -66,6 +66,8 @@ const RAISES_AGAIN: u32 = 3;
 const BROKER_PROTOCOL: u64 = 1;
 /// The ch32rv a broker of this build is.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The `implementation.name` of ch32rv's brokers in their files (host guide §7.2).
+const IMPLEMENTATION: &str = "ch32rv";
 /// en: The firmware text (fn 0 describe, core §7.5) of a broker that is the probe itself (the
 /// WCH-Link broker): which ch32rv it is, for users outside ch32rv. A broker in front of an OEP
 /// probe passes the probe's own on. ja: WCH-Link のブローカーの describe の firmware(どの ch32rv か)。
@@ -73,23 +75,25 @@ pub(crate) fn broker_firmware() -> String {
     format!("ch32rv-broker {VERSION} protocol {BROKER_PROTOCOL}")
 }
 
-/// en: Which other ch32rv wrote endpoint record `v` (`ch32rv 0.24.0 (pid 123)`), or `None` when
-/// it is a broker of this ch32rv. A client talks only to a broker of its own protocol and
-/// version: one of another version may answer differently, and that is not found out until it
-/// does (docs/cli.ja.md §4.12). A record with no version is from a ch32rv before this check.
-/// ja: endpoint の記録 `v` を書いたのが別の ch32rv ならその名前、この ch32rv のブローカーなら
-/// None。client は同じ取り決めと版のブローカーとだけ話す。
+/// en: Which other broker wrote record `v` (`ch32rv 0.24.0 (pid 123)`), from its
+/// `implementation` (host guide §7.2), or `None` when it is a broker of this ch32rv. A client
+/// talks only to a broker of its own version: one of another version (or another implementation)
+/// may answer differently, and that is not found out until it does (docs/cli.ja.md §4.12).
+/// ja: 記録 `v` を書いたのが別のブローカーならその名前(`implementation` から)、この ch32rv の
+/// ブローカーなら None。client は同じ版のブローカーとだけ話す。
 fn other_version(v: &Value) -> Option<String> {
-    let protocol = v.get("protocol").and_then(Value::as_u64);
-    let version = v.get("version").and_then(Value::as_str);
-    if protocol == Some(BROKER_PROTOCOL) && version == Some(VERSION) {
+    let imp = v.get("implementation");
+    let name = imp.and_then(|i| i.get("name")).and_then(Value::as_str);
+    let version = imp.and_then(|i| i.get("version")).and_then(Value::as_str);
+    if name == Some(IMPLEMENTATION) && version == Some(VERSION) {
         return None;
     }
-    let pid = v.get("pid").and_then(Value::as_u64).unwrap_or(0);
-    Some(match version {
-        Some(ver) => format!("ch32rv {ver} (pid {pid})"),
-        None => format!("a ch32rv older than the broker version check (pid {pid})"),
-    })
+    let pid = rec_pid(v).unwrap_or(0);
+    Some(format!(
+        "{} {} (pid {pid})",
+        name.unwrap_or("an unnamed broker"),
+        version.unwrap_or("of no version")
+    ))
 }
 
 /// Whether an open's payload (lease force [TLV]) carries `SHARE_EXTENSION`.
@@ -121,25 +125,53 @@ fn locked(corr: u16, remaining_ms: u32, owner: Option<&[u8]>) -> Vec<u8> {
 
 // ---- where a broker is ----
 
-/// en: The key a probe's broker files are named by: the probe's identity, so every way to reach
-/// one probe (`oep://` with any `via`, the path of either of its CDC ports) meets the same broker
-/// (docs/freeze-decisions.ja.md §4; host guide §5.3: a lock key ignores `via`). An OEP USB
-/// device's serial is its unit id and is read without opening it; a serial port given as it is
-/// with no OEP USB device behind it (a UART bridge) is known only by its path, since the probe
-/// cannot be opened to learn more (the broker holds it).
-/// ja: ブローカーの file の key は probe の同一性。同じ probe へのどの道(どの `via` の `oep://`、
-/// どちらの CDC の path)も同じブローカーに着く。OEP の USB device の serial は unit id で、開かずに
-/// 読める。OEP の USB device を持たない serial port(UART bridge)は path でしか分からない。
-fn key_for(path: &str) -> String {
+/// en: Where a probe's broker is found. `key` names ch32rv's own files for the probe (log, kept
+/// session id, start-up status, its lock) and is the probe's identity, so every way to reach one
+/// probe (`oep://` with any `via`, the path of either of its CDC ports) meets the same broker
+/// (docs/freeze-decisions.ja.md §4; host guide §5.3: a lock key ignores `via`). `unit` is the
+/// probe's unit id when the broker publishes itself where any tool finds it, `oep/brokers/<unit>.json`
+/// with `<unit>.lock` (host guide §7.2); without one (a UART bridge known only by its path, a
+/// device with no serial, an `x-` unit id) the record stays in ch32rv's runtime directory.
+/// ja: probe のブローカーの見つけ方。`key` は ch32rv 自身の file(log、session id、起動の結果、
+/// lock)の名前で、probe の同一性(どの経路でも同じブローカーに着く)。`unit` は、どの道具からも
+/// 見つかる `oep/brokers/<unit>.json` に載せるときの unit id(host ガイド §7.2)。無いもの(path でしか
+/// 分からない UART bridge、serial の無い device、`x-` の unit id)は ch32rv の runtime の場所に置く。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Spot {
+    pub(crate) key: String,
+    pub(crate) unit: Option<String>,
+}
+
+/// en: The spot of the OEP probe at serial port `path`: an OEP USB device's serial is its unit id
+/// and is read without opening it; a serial port with no OEP USB device behind it (a UART bridge)
+/// is known only by its path, since the probe cannot be opened to learn more (the broker holds it).
+/// ja: serial port `path` の OEP probe の場所。OEP の USB device の serial は unit id で、開かずに読める。
+fn spot_for(path: &str) -> Spot {
     let sel = ch32rv_usb::Selector::Port(path.to_owned());
     let dev = crate::oep::oep_devices()
         .into_iter()
         .enumerate()
         .find(|(i, d)| sel.matches(d, *i))
         .map(|(_, d)| d);
-    match dev.and_then(|d| d.port_id()) {
-        Some(id) => unit_key(&id),
-        None => ch32rv_usb::sanitize_key(&format!("oep-port-{}", ch32rv_usb::normalize_port(path))),
+    let serial = dev
+        .as_ref()
+        .and_then(|d| d.serial().filter(|s| !s.is_empty()).map(str::to_owned));
+    match (serial, dev.and_then(|d| d.port_id())) {
+        (Some(sn), _) => Spot {
+            key: unit_key(&sn),
+            unit: std_unit(&sn),
+        },
+        (None, Some(id)) => Spot {
+            key: unit_key(&id),
+            unit: None,
+        },
+        (None, None) => Spot {
+            key: ch32rv_usb::sanitize_key(&format!(
+                "oep-port-{}",
+                ch32rv_usb::normalize_port(path)
+            )),
+            unit: None,
+        },
     }
 }
 
@@ -148,8 +180,34 @@ fn unit_key(unit: &str) -> String {
     ch32rv_usb::sanitize_key(&format!("oep-{}", unit.to_ascii_lowercase()))
 }
 
-fn endpoint_file(key: &str) -> PathBuf {
-    ch32rv_usb::runtime_dir().join(format!("{key}.oep"))
+/// en: `id` as the unit id a broker file is named by (host guide §7.2): lowercase, 1 to 32 of
+/// `a-z 0-9 -` (core §7.5), not an `x-` one (not unique: never a key across sessions). `None`
+/// when it cannot be one. ja: broker の file の名前にする unit id(小文字、`a-z 0-9 -` の 1〜32 文字、
+/// `x-` でない)。なれなければ None。
+fn std_unit(id: &str) -> Option<String> {
+    let u = id.to_ascii_lowercase();
+    let ok = (1..=32).contains(&u.len())
+        && u.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !u.starts_with("x-");
+    ok.then_some(u)
+}
+
+/// en: The broker record of `spot`: `oep/brokers/<unit>.json` (host guide §7.2), else
+/// `<runtime>/<key>.broker.json` (ch32rv's own). `None` when the standard directory cannot be
+/// named. ja: `spot` のブローカーの記録の場所。
+fn record_file(spot: &Spot) -> Option<PathBuf> {
+    match &spot.unit {
+        Some(u) => Some(ch32rv_usb::oep_brokers_dir()?.join(format!("{u}.json"))),
+        None => Some(ch32rv_usb::runtime_dir().join(format!("{}.broker.json", spot.key))),
+    }
+}
+
+/// en: Where a client that started a broker learns why it did not come up (ch32rv's own; the
+/// broker file is there only while the broker listens). ja: 起動したブローカーが上がらなかった
+/// 理由を client が読む場所(ch32rv 内部。broker の file は待ち受けている間だけある)。
+fn status_file(key: &str) -> PathBuf {
+    ch32rv_usb::runtime_dir().join(format!("{key}.status"))
 }
 
 /// en: The broker's session id on the probe, kept while it runs. A probe keeps a session across
@@ -173,10 +231,12 @@ fn saved_sid(key: &str) -> Option<u32> {
         .filter(|&s| s != 0)
 }
 
-/// en: Remove what brokers that no longer run left in the runtime directory: an endpoint file
-/// whose broker does not hold its flock (it died), and, older than a day, a kept session id or
-/// an address's unit id; logs and lock files older than a week (a lock only when not held).
-/// Only ch32rv's broker files (`oep-*`, `wch-*`); `own` (this broker's key) is left alone.
+/// en: Remove what brokers that no longer run left in ch32rv's runtime directory: a record of
+/// its own (`.broker.json`, or `.oep` of a ch32rv before host guide §7.2) whose broker does not
+/// hold its flock (it died), and, older than a day, a kept session id, a start-up status or an
+/// address's unit id; logs and lock files older than a week (a lock only when not held). Only
+/// ch32rv's broker files (`oep-*`, `wch-*`); `own` (this broker's key) is left alone. The
+/// standard `oep/brokers/` is not swept: its `.lock` stays, its `.json` is the lock holder's.
 /// ja: もう動いていないブローカーが runtime の場所に残したものを消す(死んだブローカーの endpoint、
 /// 1 日より古い session id と unit id、1 週間より古い log と lock)。
 fn sweep_runtime(own: &str) {
@@ -198,9 +258,12 @@ fn sweep_runtime(own: &str) {
         let held = |key: &str| {
             ch32rv_usb::DeviceLock::acquire(&format!("{key}.broker"), Duration::ZERO).is_err()
         };
-        let stale = if let Some(key) = name.strip_suffix(".oep") {
+        let stale = if let Some(key) = name
+            .strip_suffix(".broker.json")
+            .or_else(|| name.strip_suffix(".oep"))
+        {
             !held(key)
-        } else if name.ends_with(".sid") || name.ends_with(".unit") {
+        } else if name.ends_with(".sid") || name.ends_with(".unit") || name.ends_with(".status") {
             age > DAY
         } else if let Some(key) = name.strip_suffix(".broker.lock") {
             age > 7 * DAY && !held(key)
@@ -284,21 +347,39 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn read_endpoint(key: &str) -> Option<Value> {
-    let text = std::fs::read_to_string(endpoint_file(key)).ok()?;
-    serde_json::from_str(&text).ok()
+/// en: The broker record of `spot`, when there is one to read (the standard directory only when
+/// it is this user's 0700 one, host guide §7.2). ja: `spot` のブローカーの記録。
+fn read_endpoint(spot: &Spot) -> Option<Value> {
+    let path = match &spot.unit {
+        Some(u) => ch32rv_usb::oep_brokers_dir_checked()?.join(format!("{u}.json")),
+        None => record_file(spot)?,
+    };
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()?;
+    v.is_object().then_some(v)
 }
 
-/// en: Write the endpoint file atomically (0600 on unix), with this broker's protocol and version.
-/// ja: endpoint の file を書く(0600、rename で置き換え)。このブローカーの取り決めの番号と版を入れる。
-fn write_endpoint(key: &str, v: &Value) -> std::io::Result<()> {
-    let mut v = v.clone();
-    if let Some(o) = v.as_object_mut() {
-        o.insert("protocol".to_owned(), json!(BROKER_PROTOCOL));
-        o.insert("version".to_owned(), json!(VERSION));
-    }
-    let dir = ch32rv_usb::create_runtime_dir()?;
-    let tmp = dir.join(format!("{key}.oep.{}", std::process::id()));
+/// en: Write the broker record atomically (0600 on unix; a temporary file renamed, so no reader
+/// sees half of it). ja: ブローカーの記録を書く(0600、一時ファイルから rename)。
+fn write_endpoint(spot: &Spot, v: &Value) -> std::io::Result<()> {
+    let dir = match &spot.unit {
+        Some(_) => ch32rv_usb::create_oep_brokers_dir()?,
+        None => ch32rv_usb::create_runtime_dir()?,
+    };
+    let path = record_file(spot).ok_or_else(|| std::io::Error::other("no broker directory"))?;
+    write_private(&dir, &path, v.to_string().as_bytes())
+}
+
+/// Write `bytes` to `path` in `dir` through a temporary file renamed over it (0600 on unix).
+fn write_private(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    bytes: &[u8],
+) -> std::io::Result<()> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let tmp = dir.join(format!(".{name}.{}.tmp", std::process::id()));
     {
         let mut o = std::fs::OpenOptions::new();
         o.write(true).create(true).truncate(true);
@@ -308,9 +389,113 @@ fn write_endpoint(key: &str, v: &Value) -> std::io::Result<()> {
             o.mode(0o600);
         }
         let mut f = o.open(&tmp)?;
-        f.write_all(v.to_string().as_bytes())?;
+        f.write_all(bytes)?;
     }
-    std::fs::rename(&tmp, endpoint_file(key))
+    std::fs::rename(&tmp, path)
+}
+
+/// en: Remove `spot`'s record. Only the broker holding the probe's broker lock calls this (host
+/// guide §7.2: a reader never removes a record), and only for a record that is its own or that a
+/// broker which died left. ja: 記録を消す。ブローカーの lock を持つものだけが呼ぶ。
+fn remove_endpoint(spot: &Spot) {
+    if let Some(path) = record_file(spot) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// Whether `spot`'s record is this process's.
+fn endpoint_is_ours(spot: &Spot) -> bool {
+    read_endpoint(spot).and_then(|v| rec_pid(&v)) == Some(u64::from(std::process::id()))
+}
+
+/// en: This broker's record (host guide §7.2): where it listens, the share extension it takes, who
+/// it is; `via` is the transport it holds the probe over (shown, and read by ch32rv's own clients
+/// to keep to the route they named). ja: このブローカーの記録(host ガイド §7.2)。
+fn broker_record(spot: &Spot, port: u16, transport: &str, started: &str) -> Value {
+    let mut v = json!({
+        "endpoints": [{"kind": "tcp", "address": format!("127.0.0.1:{port}")}],
+        "share": [ch32rv_oep::session::SHARE_EXTENSION],
+        "pid": std::process::id(),
+        "started": started,
+        "implementation": {"name": IMPLEMENTATION, "version": VERSION},
+        "via": transport,
+    });
+    if let (Some(u), Some(o)) = (&spot.unit, v.as_object_mut()) {
+        o.insert("unit_id".to_owned(), json!(u));
+    }
+    v
+}
+
+/// The record's first TCP endpoint (`host:port`); other kinds are skipped (host guide §7.2).
+fn rec_address(v: &Value) -> Option<String> {
+    v.get("endpoints")?
+        .as_array()?
+        .iter()
+        .find(|e| e.get("kind").and_then(Value::as_str) == Some("tcp"))?
+        .get("address")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+fn rec_pid(v: &Value) -> Option<u64> {
+    v.get("pid")?.as_u64()
+}
+
+/// en: Whether the broker that wrote record `v` still runs: its process does (a record a broker
+/// that died left stays until the next broker of the probe takes the lock; a reader never tries
+/// the lock, host guide §7.2). ja: 記録を書いたブローカーがまだ動いているか(プロセスで見る。
+/// 読む側は lock を試しに取らない)。
+fn rec_alive(v: &Value) -> bool {
+    rec_pid(v)
+        .and_then(|p| u32::try_from(p).ok())
+        .is_some_and(ch32rv_usb::process_alive)
+}
+
+/// en: A start-up failure for the client that started the broker: `error`, and `busy` when the
+/// probe was held by another host through `--lock-timeout`. ja: 起動の失敗を起動した client に渡す。
+fn write_status(key: &str, error: &str, busy: bool) {
+    let v = json!({"error": error, "busy": busy, "pid": std::process::id(), "time": now_ms()});
+    if let Ok(dir) = ch32rv_usb::create_runtime_dir() {
+        let _ = write_private(&dir, &status_file(key), v.to_string().as_bytes());
+    }
+}
+
+/// The start-up failure a broker of `key` reported at or after `since` (ms): (error, busy).
+fn read_status(key: &str, since: u64) -> Option<(String, bool)> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(status_file(key)).ok()?).ok()?;
+    if v.get("time")?.as_u64()? + 50 < since {
+        return None;
+    }
+    Some((
+        v.get("error")?.as_str()?.to_owned(),
+        v.get("busy").and_then(Value::as_bool).unwrap_or(false),
+    ))
+}
+
+/// en: Now as RFC 3339 in UTC (`2026-11-13T04:05:06Z`), for a record's `started`.
+/// ja: 今の時刻を RFC 3339(UTC)で。
+fn rfc3339_now() -> String {
+    rfc3339(now_ms() / 1000)
+}
+
+fn rfc3339(secs: u64) -> String {
+    let (days, rem) = (secs / 86_400, secs % 86_400);
+    // Civil date from days since 1970-01-01 (Howard Hinnant's algorithm).
+    let z = days as i64 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}Z",
+        rem / 3600,
+        rem % 3600 / 60,
+        rem % 60
+    )
 }
 
 // ---- the client side ----
@@ -360,10 +545,25 @@ impl BrokerTarget {
     }
 
     pub(crate) fn key(&self) -> String {
+        self.spot().key
+    }
+
+    /// en: Where this probe's broker is found ([`Spot`]). A WCH-Link known by its serial is
+    /// published under the unit id its broker describes ([`crate::broker_wch::wch_unit_id`]).
+    /// ja: この probe のブローカーの見つけ方。
+    pub(crate) fn spot(&self) -> Spot {
         match self {
-            BrokerTarget::Serial(p) => key_for(p),
-            BrokerTarget::Oep { unit, .. } | BrokerTarget::Net { unit, .. } => unit_key(unit),
-            BrokerTarget::Wch { id, .. } => ch32rv_usb::sanitize_key(&format!("wch-{id}")),
+            BrokerTarget::Serial(p) => spot_for(p),
+            BrokerTarget::Oep { unit, .. } | BrokerTarget::Net { unit, .. } => Spot {
+                key: unit_key(unit),
+                unit: std_unit(unit),
+            },
+            BrokerTarget::Wch { id, selector } => Spot {
+                key: ch32rv_usb::sanitize_key(&format!("wch-{id}")),
+                unit: selector
+                    .strip_prefix("serial:")
+                    .and_then(|sn| std_unit(&crate::broker_wch::wch_unit_id(sn))),
+            },
         }
     }
 
@@ -491,61 +691,71 @@ fn other_version_busy(who: &str) -> ClientLinkError {
     }
 }
 
-/// What an endpoint record leads to.
+/// What a broker record leads to.
 enum Found {
     /// A connection to a broker of this ch32rv.
     Link(Box<Link>),
-    /// A running broker of another ch32rv (who it is).
+    /// A running broker of another ch32rv or implementation (who it is).
     Other(String),
-    /// Nothing to use: an error record, a broker that is gone or on its way out.
+    /// Nothing to use: a broker that is gone or on its way out, or the wrong probe's.
     Nothing,
 }
 
-/// en: Connect to the broker endpoint record `v` names. A connection counts only if the endpoint
-/// still names the same broker once connected: a broker about to end takes its endpoint down
-/// first and then still accepts for a moment, so a client that read the file just before would
-/// otherwise talk to a process on its way out. A broker of another ch32rv counts while it holds
-/// its flock (the record of one that died is no one's), named by its record.
-/// ja: endpoint の記録 `v` のブローカーにつなぐ。つないだ後も endpoint が同じブローカーを指すときだけ
-/// 有効(終わりかけのブローカーは先に endpoint を下ろしてからも少し受け付ける)。別の版の ch32rv の
-/// ブローカーは flock を持っている間だけ数える。版は記録で確かめる。
-fn connect_endpoint(key: &str, v: &Value) -> Found {
-    let (Some(port), Some(pid)) = (
-        v.get("port").and_then(Value::as_u64),
-        v.get("pid").and_then(Value::as_u64),
-    ) else {
+/// en: Connect to the broker record `v` names. A connection counts only if the record still names
+/// the same broker once connected (a broker about to end takes its record down first and then
+/// still accepts for a moment, so a client that read the file just before would otherwise talk to
+/// a process on its way out), and, for a record named by a unit id, only if fn 0 describe there
+/// says that unit id (host guide §7.2: a broker that died leaves its record, and its port may be
+/// another probe's broker by now). A broker of another ch32rv or implementation counts while its
+/// process runs, named by its record.
+/// ja: 記録 `v` のブローカーにつなぐ。つないだ後も記録が同じブローカーを指し、unit id の記録なら
+/// describe の unit_id が同じときだけ有効(死んだブローカーの port を別の probe のブローカーが使って
+/// いることがある)。別の版や実装のブローカーは、プロセスが動いている間だけ数える。
+fn connect_endpoint(spot: &Spot, v: &Value) -> Found {
+    let (Some(addr), Some(pid)) = (rec_address(v), rec_pid(v)) else {
         return Found::Nothing;
     };
     if let Some(who) = other_version(v) {
-        let alive =
-            ch32rv_usb::DeviceLock::acquire(&format!("{key}.broker"), Duration::ZERO).is_err();
-        return if alive {
+        return if rec_alive(v) {
             Found::Other(who)
         } else {
             Found::Nothing
         };
     }
-    let Ok(l) = ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")) else {
+    let Ok(link) = ch32rv_oep::link::open_tcp(&addr) else {
         return Found::Nothing;
     };
-    if read_endpoint(key).and_then(|w| w.get("pid")?.as_u64()) != Some(pid) {
+    let link = match &spot.unit {
+        Some(unit) => {
+            let Ok(mut p) = Probe::connect(link) else {
+                return Found::Nothing;
+            };
+            if crate::oep::verify_unit(&mut p, unit).is_err() {
+                return Found::Nothing;
+            }
+            p.into_link()
+        }
+        None => link,
+    };
+    if read_endpoint(spot).and_then(|w| rec_pid(&w)) != Some(pid) {
         return Found::Nothing;
     }
-    Found::Link(Box::new(l))
+    Found::Link(Box::new(link))
 }
 
-/// en: A link to the broker of `target`, starting the broker when none answers. An endpoint the
-/// broker wrote before this call counts only if it answers; an error it wrote counts only if it
-/// is newer than our start. A broker of another ch32rv is waited for up to `--lock-timeout` (it
-/// ends when its last client leaves; then this one starts its own), then exit 13 naming it.
+/// en: A link to the broker of `target`, starting the broker when none answers. A record the
+/// broker wrote before this call counts only if it answers; a start-up failure it reported counts
+/// only if it is newer than our start. A broker of another ch32rv is waited for up to
+/// `--lock-timeout` (it ends when its last client leaves; then this one starts its own), then
+/// exit 13 naming it.
 /// ja: `target` のブローカーへの link。答えるブローカーが無ければ起動する。別の版の ch32rv の
 /// ブローカーは `--lock-timeout` まで待ち(最後の client が抜けると終わるので、そのあと自分のを
 /// 起動する)、終わらなければ相手の版と PID を出して exit 13。
 pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, ClientLinkError> {
-    let key = target.key();
+    let spot = target.spot();
     let lock_wait = crate::oep::lock_wait();
-    if let Some(v) = read_endpoint(&key)
-        && let Some(t) = v.get("transport").and_then(Value::as_str)
+    if let Some(v) = read_endpoint(&spot)
+        && let Some(t) = v.get("via").and_then(Value::as_str)
         && !target.accepts(t)
         && other_version(&v).is_none()
         && broker_runs(target)
@@ -560,10 +770,10 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, ClientLinkE
             other_version: false,
         });
     }
-    // The other ch32rv's broker in the way, and since when.
+    // The other broker in the way, and since when.
     let mut other: Option<(String, Instant)> = None;
-    if let Some(v) = read_endpoint(&key) {
-        match connect_endpoint(&key, &v) {
+    if let Some(v) = read_endpoint(&spot) {
+        match connect_endpoint(&spot, &v) {
             Found::Link(l) => return Ok(*l),
             Found::Other(who) => other = Some((who, Instant::now())),
             Found::Nothing => {}
@@ -583,43 +793,37 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, ClientLinkE
         if Instant::now() >= deadline {
             break;
         }
+        if let Some((error, busy)) = read_status(&spot.key, t0) {
+            return Err(ClientLinkError {
+                msg: error,
+                busy,
+                other_version: false,
+            });
+        }
         let mut respawn = spawned.elapsed() >= RESPAWN_EVERY;
-        if let Some(v) = read_endpoint(&key) {
-            let fresh = v.get("time").and_then(Value::as_u64).unwrap_or(0) + 50 >= t0;
-            match connect_endpoint(&key, &v) {
+        let record = read_endpoint(&spot).filter(rec_alive);
+        if let Some(v) = record {
+            match connect_endpoint(&spot, &v) {
                 Found::Link(l) => return Ok(*l),
                 Found::Other(who) => {
                     let since = other.as_ref().map_or_else(Instant::now, |o| o.1);
                     other = Some((who, since));
                     respawn = false;
                 }
-                Found::Nothing => {
-                    if fresh
-                        && other_version(&v).is_none()
-                        && let Some(e) = v.get("error").and_then(Value::as_str)
-                    {
-                        return Err(ClientLinkError {
-                            msg: e.to_owned(),
-                            busy: v.get("busy").and_then(Value::as_bool).unwrap_or(false),
-                            other_version: false,
-                        });
-                    }
-                    // en: A record left by a broker that died (of any version): the one we
-                    // started may have met its flock still held a moment ago, so start again.
-                    // ja: 死んだブローカーの記録。起動したものが直前の flock に当たったかもしれない。
-                    respawn &= other_version(&v).is_some();
-                }
+                // en: Ours, up but not answering yet (or on its way out): it is not started
+                // again. ja: この版のブローカーが上がっていてまだ答えない(か終わりかけ)。
+                Found::Nothing => respawn = false,
             }
         } else if other.take().is_some() {
-            // en: Another ch32rv's broker went: ours starts now, with its full start time.
-            // ja: 別の版のブローカーが終わった。今から自分のを起動し、起動の待ちを取り直す。
+            // en: The other broker went: ours starts now, with its full start time.
+            // ja: 別のブローカーが終わった。今から自分のを起動し、起動の待ちを取り直す。
             deadline = deadline.max(Instant::now() + START_WAIT + lock_wait);
             respawn = true;
         }
         // en: The one we started may have found the old broker still holding the probe (its lock)
         // and left; start another now that the old one may be gone (a second one leaves at once
-        // while the first runs: the flock). ja: 起動したものが古いブローカーの lock に当たって
-        // 終わったかもしれないので、もう一度起動する(動いていれば flock で 2 つ目はすぐ終わる)。
+        // while the first runs: the lock). ja: 起動したものが古いブローカーの lock に当たって
+        // 終わったかもしれないので、もう一度起動する(動いていれば lock で 2 つ目はすぐ終わる)。
         if respawn {
             spawn_broker(target)?;
             spawned = Instant::now();
@@ -634,45 +838,52 @@ pub(crate) fn client_link_for(target: &BrokerTarget) -> Result<Link, ClientLinkE
     .into())
 }
 
-/// en: Whether `addr` (`host:port`) is a ch32rv broker on this host, from the endpoint files: such
+/// en: Whether `addr` (`host:port`) is a ch32rv broker on this host, from the broker records: such
 /// an address is a broker's client port, opened directly (a broker is never put in front of a
-/// broker). ja: `addr` がこの PC の ch32rv のブローカーか(endpoint の file から)。そうなら直接つなぐ。
+/// broker). ja: `addr` がこの PC のブローカーか(記録から)。そうなら直接つなぐ。
 pub(crate) fn is_broker_endpoint(addr: &str) -> bool {
     broker_record_at(addr).is_some()
 }
 
-/// en: Which other ch32rv the broker at `addr` is (as [`other_version`] reads its endpoint
-/// record), or `None` for a broker of this ch32rv or no broker. The version lives in the record
+/// en: Which other ch32rv (or implementation) the broker at `addr` is (as [`other_version`] reads
+/// its record), or `None` for a broker of this ch32rv or no broker. The version lives in the record
 /// only: the confirm answer must fit 64 bytes (core §7.1).
-/// ja: `addr` のブローカーが別の版の ch32rv ならその名前。版は endpoint の記録だけが持つ。
+/// ja: `addr` のブローカーが別の版の ch32rv(か別の実装)ならその名前。版は記録だけが持つ。
 pub(crate) fn other_broker_at(addr: &str) -> Option<String> {
     other_version(&broker_record_at(addr)?)
 }
 
-/// The endpoint record of the running broker whose client port is `addr` (`127.0.0.1:<port>`).
+/// en: The record of the running broker whose client port is `addr` (`127.0.0.1:<port>`): the
+/// standard `oep/brokers/*.json` of any implementation and ch32rv's own `*.broker.json`.
+/// ja: client の port が `addr` の、動いているブローカーの記録(標準の場所と ch32rv 内部の両方)。
 fn broker_record_at(addr: &str) -> Option<Value> {
     let (host, port) = addr.rsplit_once(':')?;
     if !matches!(host, "127.0.0.1" | "localhost") {
         return None;
     }
-    let port = port.parse::<u64>().ok()?;
-    std::fs::read_dir(ch32rv_usb::runtime_dir())
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "oep"))
-        .filter_map(|e| {
-            let key = e.path().file_stem()?.to_string_lossy().into_owned();
-            let v: Value = serde_json::from_str(&std::fs::read_to_string(e.path()).ok()?).ok()?;
-            Some((key, v))
+    let port = port.parse::<u16>().ok()?;
+    let read_dir = |dir: Option<PathBuf>, suffix: &'static str| {
+        dir.and_then(|d| std::fs::read_dir(d).ok())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(move |e| {
+                let n = e.file_name().to_string_lossy().into_owned();
+                n.ends_with(suffix) && !n.starts_with('.')
+            })
+            .filter_map(|e| {
+                serde_json::from_str::<Value>(&std::fs::read_to_string(e.path()).ok()?).ok()
+            })
+    };
+    read_dir(ch32rv_usb::oep_brokers_dir_checked(), ".json")
+        .chain(read_dir(Some(ch32rv_usb::runtime_dir()), ".broker.json"))
+        .filter(|v| {
+            rec_address(v).and_then(|a| a.rsplit_once(':').and_then(|(_, p)| p.parse::<u16>().ok()))
+                == Some(port)
         })
-        .filter(|(_, v)| v.get("port").and_then(Value::as_u64) == Some(port))
-        // Only a broker that still runs (holds its flock): a broker that died leaves its file,
-        // and its port may now be anyone's.
-        .find(|(key, _)| {
-            ch32rv_usb::DeviceLock::acquire(&format!("{key}.broker"), Duration::ZERO).is_err()
-        })
-        .map(|(_, v)| v)
+        // Only a broker that still runs: one that died leaves its record, and its port may now be
+        // anyone's.
+        .find(rec_alive)
 }
 
 /// en: A link to `target`'s broker if one of this ch32rv runs; never starts one (a broker of
@@ -681,12 +892,12 @@ pub(crate) fn existing_link_for(target: &BrokerTarget) -> Option<Link> {
     if ch32rv_usb::replay::active() {
         return None;
     }
-    let v = read_endpoint(&target.key())?;
-    if other_version(&v).is_some() {
-        return None;
+    let spot = target.spot();
+    let v = read_endpoint(&spot)?;
+    match connect_endpoint(&spot, &v) {
+        Found::Link(l) => Some(*l),
+        Found::Other(_) | Found::Nothing => None,
     }
-    let port = v.get("port")?.as_u64()?;
-    ch32rv_oep::link::open_tcp(&format!("127.0.0.1:{port}")).ok()
 }
 
 /// en: Whether a broker of any ch32rv answers for `target` (to send a command through the broker,
@@ -703,9 +914,17 @@ pub(crate) fn broker_runs(target: &BrokerTarget) -> bool {
     if ch32rv_usb::replay::active() {
         return false;
     }
-    read_endpoint(&target.key())
-        .and_then(|v| v.get("port")?.as_u64())
-        .is_some_and(|port| TcpStream::connect(("127.0.0.1", port as u16)).is_ok())
+    live_address(&target.spot()).is_some()
+}
+
+/// The address of `spot`'s broker when its record names a running broker that takes a connection.
+fn live_address(spot: &Spot) -> Option<String> {
+    let v = read_endpoint(spot).filter(rec_alive)?;
+    let addr = rec_address(&v)?;
+    use std::net::ToSocketAddrs;
+    let sa = addr.to_socket_addrs().ok()?.next()?;
+    TcpStream::connect_timeout(&sa, Duration::from_secs(1)).ok()?;
+    Some(addr)
 }
 
 /// A link to the OEP probe's broker if one runs; never starts one (discovery only looks).
@@ -715,7 +934,7 @@ pub(crate) fn existing_link(path: &str) -> Option<Link> {
 
 /// The runtime file discovery keeps a probe's last listing in (for when the probe is busy), by `key`.
 pub(crate) fn listing_cache(key: &str) -> PathBuf {
-    ch32rv_usb::runtime_dir().join(format!("{}.ports.json", key_for(key)))
+    ch32rv_usb::runtime_dir().join(format!("{}.ports.json", spot_for(key).key))
 }
 
 /// en: An address whose `via=tcp:` is a ch32rv broker on this host. ja: ブローカー自身のアドレス。
@@ -735,26 +954,24 @@ pub(crate) fn endpoint(cli: &Cli) -> ExitCode {
         },
         Err(c) => return c,
     };
-    let v = read_endpoint(&target.key());
-    let live = v.as_ref().and_then(|v| {
-        let port = v.get("port")?.as_u64()?;
-        TcpStream::connect(("127.0.0.1", port as u16)).ok()?;
-        Some(format!("127.0.0.1:{port}"))
-    });
-    // en: The running broker's field, null when none runs (or, for `version`, when the broker is
-    // of a ch32rv before the field). ja: 動いているブローカーの field。無ければ null。
-    let field = |name: &str| {
+    let spot = target.spot();
+    let v = read_endpoint(&spot);
+    let live = live_address(&spot);
+    // en: The running broker's field, null when none runs. ja: 動いているブローカーの field。
+    let field = |get: fn(&Value) -> Option<Value>| {
         live.as_ref()
-            .and(v.as_ref().and_then(|v| v.get(name).cloned()))
+            .and(v.as_ref().and_then(get))
             .unwrap_or(Value::Null)
     };
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
         env.result = Some(json!({
             "endpoint": live,
-            "pid": field("pid"),
-            "transport": field("transport"),
-            "version": field("version"),
+            "pid": field(|v| v.get("pid").cloned()),
+            "transport": field(|v| v.get("via").cloned()),
+            "version": field(|v| v.get("implementation")?.get("version").cloned()),
+            "implementation": field(|v| v.get("implementation")?.get("name").cloned()),
+            "file": spot.unit.as_ref().and_then(|_| record_file(&spot)).map(|p| p.display().to_string()),
         }));
         crate::print_envelope(&env)
     } else {
@@ -822,28 +1039,51 @@ fn serve_target(
     target: BrokerTarget,
     wch_entry: Option<crate::cmd_probe::Entry>,
 ) -> ExitCode {
-    let key = target.key();
-    // One broker per probe: a second one started in a race leaves quietly.
+    let spot = target.spot();
+    let key = spot.key.clone();
+    // en: One broker per probe: a second one started in a race leaves quietly. ch32rv's own lock,
+    // and for a probe with a unit id also `oep/brokers/<unit>.lock`, which brokers of every
+    // implementation take (host guide §7.2: one that cannot take it starts no broker).
+    // ja: probe ごとに 1 つ。ch32rv 自身の lock と、unit id のある probe は全実装が取る
+    // `oep/brokers/<unit>.lock`(取れなければブローカーを起動しない)。
     let Ok(_guard) = ch32rv_usb::DeviceLock::acquire(&format!("{key}.broker"), Duration::ZERO)
     else {
         return ExitCode::SUCCESS;
     };
+    let _std_guard = match &spot.unit {
+        Some(u) => {
+            let lock = ch32rv_usb::create_oep_brokers_dir()
+                .map_err(ch32rv_usb::LockError::from)
+                .and_then(|d| {
+                    ch32rv_usb::DeviceLock::acquire_path(
+                        &d.join(format!("{u}.lock")),
+                        Duration::ZERO,
+                    )
+                });
+            match lock {
+                Ok(g) => Some(g),
+                Err(ch32rv_usb::LockError::Timeout(_)) => return ExitCode::SUCCESS,
+                Err(e) => {
+                    write_status(&key, &format!("oep/brokers: {e}"), false);
+                    return ExitCode::from(ErrorKind::DeviceOpenFailed.exit_code());
+                }
+            }
+        }
+        None => None,
+    };
+    // en: What a broker that died left is the lock holder's to remove (host guide §7.2).
+    // ja: 落ちたブローカーの記録は、lock を取ったものが消す。
+    remove_endpoint(&spot);
     sweep_runtime(&key);
     let report_error = |m: String| {
-        let _ = write_endpoint(
-            &key,
-            &json!({"error": m, "pid": std::process::id(), "time": now_ms()}),
-        );
+        write_status(&key, &m, false);
         ExitCode::from(ErrorKind::DeviceOpenFailed.exit_code())
     };
     // en: The probe's lock, held by another host through `--lock-timeout`: its clients exit 13.
     // ja: probe の lock を `--lock-timeout` の間 他の host が持っていた。client は exit 13。
     let report_lock = |e: ch32rv_oep::session::OepError| {
         let busy = matches!(e, ch32rv_oep::session::OepError::Locked { .. });
-        let _ = write_endpoint(
-            &key,
-            &json!({"error": e.to_string(), "busy": busy, "pid": std::process::id(), "time": now_ms()}),
-        );
+        write_status(&key, &e.to_string(), busy);
         let kind = if busy {
             ErrorKind::DeviceBusy
         } else {
@@ -932,13 +1172,9 @@ fn serve_target(
         Err(e) => return report_error(format!("listen: {e}")),
     };
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    if write_endpoint(
-        &key,
-        &json!({"port": port, "pid": std::process::id(), "time": now_ms(), "transport": transport}),
-    )
-    .is_err()
-    {
-        return ExitCode::from(ErrorKind::DeviceOpenFailed.exit_code());
+    let record = broker_record(&spot, port, transport, &rfc3339_now());
+    if let Err(e) = write_endpoint(&spot, &record) {
+        return report_error(format!("publish the broker: {e}"));
     }
 
     broker_log(&key, &format!("up on 127.0.0.1:{port} over {transport}"));
@@ -986,8 +1222,8 @@ fn serve_target(
         restart_fn: None,
         relayed_restart: false,
         ledger: Ledger::default(),
-        key: key.clone(),
-        endpoint: json!({"port": port, "pid": std::process::id(), "time": now_ms(), "transport": transport}),
+        spot: spot.clone(),
+        endpoint: record,
         raise_rates: speed_port.and(port_speed_rates()),
         raise_again_at: None,
         raises_left: RAISES_AGAIN,
@@ -1009,11 +1245,9 @@ fn serve_target(
         Ok(()) => broker_log(&key, "down: no client left"),
         Err(e) => broker_log(&key, &format!("down on an upstream error: {e}")),
     }
-    // Remove the endpoint only if it is still ours, then end the probe session.
-    if read_endpoint(&key).and_then(|v| v.get("pid")?.as_u64())
-        == Some(u64::from(std::process::id()))
-    {
-        let _ = std::fs::remove_file(endpoint_file(&key));
+    // Remove the record only if it is still ours, then end the probe session.
+    if endpoint_is_ours(&spot) {
+        remove_endpoint(&spot);
     }
     if !b.relayed_restart {
         b.up.end();
@@ -1341,8 +1575,8 @@ struct Broker {
     /// restarting and answers nothing).
     relayed_restart: bool,
     ledger: Ledger,
-    /// The runtime key and what the endpoint file says, to take it down and put it back.
-    key: String,
+    /// Where the broker is published and its record, to take it down and put it back.
+    spot: Spot,
     endpoint: Value,
     /// The raised UART bridge (None: at the boot speed).
     speed_port: Option<u8>,
@@ -1435,7 +1669,7 @@ impl Broker {
             for ev in batch {
                 match ev {
                     Ev::Connected(id, s) => {
-                        broker_log(&self.key, &format!("client {id} connected"));
+                        broker_log(&self.spot.key, &format!("client {id} connected"));
                         self.clients.insert(id, ClientOut::spawn(s));
                     }
                     // A client counts once it has asked something: a connection that only checks
@@ -1456,13 +1690,16 @@ impl Broker {
                         // ends (transports §3); what it holds goes then.
                         let holds = self.core.holder.as_ref().is_some_and(|h| h.client == id);
                         if !holds && let Err(e) = self.release(id) {
-                            broker_log(&self.key, &format!("client {id}: release failed: {e}"));
+                            broker_log(
+                                &self.spot.key,
+                                &format!("client {id}: release failed: {e}"),
+                            );
                         }
                         self.awaiting.retain(|(c, _), _| *c != id);
                         self.up.client_gone(id);
                         self.clients.remove(&id);
                         self.sessions.remove(&id);
-                        broker_log(&self.key, &format!("client {id} gone"));
+                        broker_log(&self.spot.key, &format!("client {id} gone"));
                     }
                 }
             }
@@ -1503,15 +1740,14 @@ impl Broker {
     /// それを読んだ接続を [`LEAVE_GRACE`] だけ待つ。来たら終わるのをやめて endpoint を戻し、その event を
     /// loop に返す。`None` なら終わる。
     fn leave(&mut self, rx: &mpsc::Receiver<Ev>) -> Option<Ev> {
-        let ours = read_endpoint(&self.key).and_then(|v| v.get("pid")?.as_u64())
-            == Some(u64::from(std::process::id()));
+        let ours = endpoint_is_ours(&self.spot);
         if ours {
-            let _ = std::fs::remove_file(endpoint_file(&self.key));
+            remove_endpoint(&self.spot);
         }
         let ev = rx.recv_timeout(LEAVE_GRACE).ok()?;
-        broker_log(&self.key, "a client came while leaving: staying up");
+        broker_log(&self.spot.key, "a client came while leaving: staying up");
         if ours {
-            let _ = write_endpoint(&self.key, &self.endpoint);
+            let _ = write_endpoint(&self.spot, &self.endpoint);
         }
         Some(ev)
     }
@@ -1627,7 +1863,7 @@ impl Broker {
         self.send(id, &answer);
         if restarting {
             broker_log(
-                &self.key,
+                &self.spot.key,
                 &format!("client {id}: restart relayed - closing the probe's transport and ending"),
             );
             self.relayed_restart = true;
@@ -1662,7 +1898,7 @@ impl Broker {
                 Err(e) => {
                     let alive = self.up.recheck();
                     broker_log(
-                        &self.key,
+                        &self.spot.key,
                         &format!(
                             "upstream: {e}; {n_calls} waiting request(s) answered result_lost, {}",
                             if alive {
@@ -1690,7 +1926,7 @@ impl Broker {
         let after = self.up.losses();
         if (after.0, after.1) != (before.0, before.1) {
             broker_log(
-                &self.key,
+                &self.spot.key,
                 &format!(
                     "upstream: {} resend(s), {} broken frame(s) dropped",
                     after.0 - before.0,
@@ -1709,7 +1945,10 @@ impl Broker {
             .iter()
             .any(|r| r.resolution == Resolution::Rejected(reject_reasons::NO_SESSION))
         {
-            broker_log(&self.key, "upstream: no_session - opening a new session");
+            broker_log(
+                &self.spot.key,
+                "upstream: no_session - opening a new session",
+            );
             self.restart_session()?;
         }
         // en: Pushes read while the answers were awaited came before them on the probe's link;
@@ -1774,7 +2013,7 @@ impl Broker {
             self.speed_port = None;
             self.lowered();
             broker_log(
-                &self.key,
+                &self.spot.key,
                 "port_speed: a request at the raised speed got no answer (even resent), and the probe answered confirm at the boot speed (oep-if-link §3): at the boot speed for now",
             );
             return;
@@ -1813,7 +2052,7 @@ impl Broker {
             self.speed_window.clear();
             self.lowered();
             broker_log(
-                &self.key,
+                &self.spot.key,
                 &format!(
                     "port_speed: {why} at {rate}: back to the boot speed{}",
                     if ok { "" } else { " (no confirm there)" }
@@ -1856,12 +2095,15 @@ impl Broker {
                     self.speed_window.clear();
                     self.fallbacks_seen = p.link().speed_fallbacks;
                 }
-                broker_log(&self.key, &format!("port_speed again: {}", r.summary()));
+                broker_log(
+                    &self.spot.key,
+                    &format!("port_speed again: {}", r.summary()),
+                );
                 if !committed {
                     self.lowered();
                 }
             }
-            Err(e) => broker_log(&self.key, &format!("port_speed again: {e}")),
+            Err(e) => broker_log(&self.spot.key, &format!("port_speed again: {e}")),
         }
         true
     }
@@ -1871,7 +2113,7 @@ impl Broker {
         let before = self.up.losses();
         if self.up.keepalive()? {
             broker_log(
-                &self.key,
+                &self.spot.key,
                 "upstream: no_session on keepalive - opening a new session",
             );
             self.restart_session()?;
@@ -1889,7 +2131,7 @@ impl Broker {
     fn watch_restart(&mut self) -> Result<(), String> {
         if self.up.rebooted() {
             broker_log(
-                &self.key,
+                &self.spot.key,
                 "upstream: the probe restarted (its boot_id changed) - opening a new session",
             );
             self.restart_session()?;
@@ -1927,7 +2169,7 @@ impl Broker {
             // The clients' requests now go in the new session.
             if let Some(sid) = p.session_id() {
                 self.sid = sid;
-                save_sid(&self.key, sid);
+                save_sid(&self.spot.key, sid);
             }
         }
         Ok(())
@@ -1953,7 +2195,7 @@ impl Broker {
             let push = msg.first() != Some(&registry::roles::RESULT);
             if !c.queue(length_frame(msg), push) && c.dropped == 1 {
                 broker_log(
-                    &self.key,
+                    &self.spot.key,
                     &format!(
                         "client {id} is not reading: its pushes past {} MiB are dropped",
                         CLIENT_BACKLOG >> 20
@@ -1967,7 +2209,7 @@ impl Broker {
     fn release_quiet(&mut self, c: u64, why: &str) {
         if let Err(e) = self.release(c) {
             broker_log(
-                &self.key,
+                &self.spot.key,
                 &format!("client {c}: release at {why} failed: {e}"),
             );
         }
@@ -2157,7 +2399,7 @@ impl Broker {
                                     self.release_quiet(c, "force");
                                 }
                                 broker_log(
-                                    &self.key,
+                                    &self.spot.key,
                                     &format!(
                                         "client {id} forced the lock: the shared sessions end"
                                     ),
@@ -2345,7 +2587,7 @@ impl Broker {
                 && prev != id
             {
                 broker_log(
-                    &self.key,
+                    &self.spot.key,
                     &format!(
                         "fn {}: client {id}'s subscribe replaces client {prev}'s",
                         req.func
@@ -2504,13 +2746,13 @@ pub(crate) struct Lend {
 /// `--lock-timeout`, then refused (`busy`, exit 13), as [`client_link_for`] does.
 /// ja: 動いているブローカーから Link を借りる。別の版のブローカーは `--lock-timeout` 待って断る。
 pub(crate) fn lend(target: &BrokerTarget) -> Result<Lend, ClientLinkError> {
-    let key = target.key();
+    let spot = target.spot();
     let since = Instant::now();
     let link = loop {
-        let Some(v) = read_endpoint(&key) else {
+        let Some(v) = read_endpoint(&spot) else {
             return Err("the Link's broker is not running".into());
         };
-        match connect_endpoint(&key, &v) {
+        match connect_endpoint(&spot, &v) {
             Found::Link(l) => break *l,
             Found::Other(who) if since.elapsed() >= crate::oep::lock_wait() => {
                 return Err(other_version_busy(&who));
@@ -2647,18 +2889,104 @@ mod tests {
     }
 
     #[test]
-    fn only_a_broker_of_this_protocol_and_version_is_ours() {
-        let ours = json!({"port": 1, "pid": 7, "protocol": BROKER_PROTOCOL, "version": VERSION});
+    fn only_a_broker_of_this_implementation_and_version_is_ours() {
+        let spot = Spot {
+            key: "oep-ab12".into(),
+            unit: Some("ab12".into()),
+        };
+        let ours = broker_record(&spot, 1, "serial", "2026-11-13T00:00:00Z");
         assert_eq!(other_version(&ours), None);
-        let newer = json!({"port": 1, "pid": 7, "protocol": BROKER_PROTOCOL, "version": "9.9.9"});
+        let mut newer = ours.clone();
+        newer["implementation"]["version"] = "9.9.9".into();
         assert_eq!(
             other_version(&newer).as_deref(),
-            Some("ch32rv 9.9.9 (pid 7)")
+            Some(&*format!("ch32rv 9.9.9 (pid {})", std::process::id()))
         );
-        let protocol = json!({"port": 1, "pid": 7, "protocol": 99, "version": VERSION});
-        assert!(other_version(&protocol).is_some());
-        // A broker from before the check wrote neither field.
-        let old = json!({"port": 1, "pid": 7, "time": 0, "transport": "serial"});
-        assert!(other_version(&old).unwrap().contains("older"));
+        let mut other = ours.clone();
+        other["implementation"] = json!({"name": "oep-broker", "version": VERSION});
+        assert!(other_version(&other).unwrap().starts_with("oep-broker "));
+        // A record of a ch32rv before host guide §7.2 (or any without `implementation`).
+        let old = json!({"port": 1, "pid": 7, "protocol": BROKER_PROTOCOL, "version": VERSION});
+        assert!(other_version(&old).unwrap().contains("unnamed"));
+    }
+
+    #[test]
+    fn the_record_has_host_guide_7_2_members() {
+        let spot = Spot {
+            key: "wch-49808f06ce30".into(),
+            unit: Some("49808f06ce30".into()),
+        };
+        let v = broker_record(&spot, 40123, "wchlink", "2026-11-13T04:05:06Z");
+        assert_eq!(v["unit_id"], "49808f06ce30");
+        assert_eq!(
+            v["endpoints"],
+            json!([{"kind": "tcp", "address": "127.0.0.1:40123"}])
+        );
+        assert_eq!(v["share"], json!(["oep.probe.share"]));
+        assert_eq!(v["pid"], std::process::id());
+        assert_eq!(v["started"], "2026-11-13T04:05:06Z");
+        assert_eq!(
+            v["implementation"],
+            json!({"name": "ch32rv", "version": VERSION})
+        );
+        assert_eq!(v["via"], "wchlink");
+        assert_eq!(rec_address(&v).as_deref(), Some("127.0.0.1:40123"));
+        // A reader skips kinds it does not know.
+        let mixed = json!({"endpoints": [{"kind": "uds", "path": "/x"}, {"kind": "tcp", "address": "127.0.0.1:9"}]});
+        assert_eq!(rec_address(&mixed).as_deref(), Some("127.0.0.1:9"));
+        // Without a unit id (ch32rv's own record) there is no unit_id member.
+        let own = broker_record(
+            &Spot {
+                key: "oep-port-ttyUSB0".into(),
+                unit: None,
+            },
+            1,
+            "serial",
+            "x",
+        );
+        assert!(own.get("unit_id").is_none());
+    }
+
+    #[test]
+    fn a_file_is_named_only_by_a_unit_id_that_may_name_one() {
+        assert_eq!(std_unit("49808F06CE30").as_deref(), Some("49808f06ce30"));
+        assert_eq!(std_unit("ab-12").as_deref(), Some("ab-12"));
+        assert_eq!(std_unit("x-1234"), None);
+        assert_eq!(std_unit("X-1234"), None);
+        assert_eq!(std_unit(""), None);
+        assert_eq!(std_unit(&"a".repeat(33)), None);
+        assert_eq!(std_unit("usb-1.2"), None);
+        assert_eq!(std_unit("../evil"), None);
+        let wch = BrokerTarget::Wch {
+            id: "49808F06CE30".into(),
+            selector: "serial:49808F06CE30".into(),
+        };
+        assert_eq!(
+            wch.spot(),
+            Spot {
+                key: "wch-49808F06CE30".into(),
+                unit: Some("49808f06ce30".into())
+            }
+        );
+        // A Link with no serial is known by its position: no standard file.
+        let by_place = BrokerTarget::Wch {
+            id: "usb-3-1.2".into(),
+            selector: "topology:3-1.2".into(),
+        };
+        assert_eq!(by_place.spot().unit, None);
+        let net = BrokerTarget::Net {
+            addr: "127.0.0.1:1".into(),
+            unit: "AbC123".into(),
+            via: None,
+        };
+        assert_eq!(net.spot().unit.as_deref(), Some("abc123"));
+        assert_eq!(net.spot().key, "oep-abc123");
+    }
+
+    #[test]
+    fn started_is_rfc_3339_in_utc() {
+        assert_eq!(rfc3339(0), "1970-01-01T00:00:00Z");
+        assert_eq!(rfc3339(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(rfc3339(1_794_542_706), "2026-11-13T04:05:06Z");
     }
 }

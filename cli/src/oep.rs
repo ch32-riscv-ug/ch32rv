@@ -813,7 +813,7 @@ fn connect(cli: &Cli, cmd: &str, a: &OepAddr) -> Result<Probe, ExitCode> {
     };
     apply_timeout(&mut link);
     let mut p = Probe::connect(link).map_err(|e| oep_fail(cli, cmd, e))?;
-    // Always a ch32rv broker here: share its lock with the other ch32rv tools (host guide §7).
+    // Always a broker here: share its lock with the other tools (oep.probe.share, host guide §7.1).
     p.set_share(true);
     if let Some(place) = a.place() {
         verify_unit(&mut p, &place.unit)

@@ -7,7 +7,7 @@
 //! 終了すれば OS が自動解放 = 異常終了した保持者の lock も自動回収(stale の手動掃除が不要)。
 
 use std::fs::{File, OpenOptions};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 /// en: A held advisory lock on one probe. Releasing happens on drop (the file closes and the OS
@@ -46,13 +46,25 @@ impl DeviceLock {
             return Ok(DeviceLock { _file: None });
         }
         let dir = create_runtime_dir()?;
-        let path = dir.join(format!("{}.lock", sanitize(key)));
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .truncate(false)
-            .open(&path)?;
+        Self::acquire_path(&dir.join(format!("{}.lock", sanitize(key))), timeout)
+    }
+
+    /// en: Take the exclusive lock on the file at `path` (created when missing, never removed),
+    /// waiting up to `timeout`: flock on unix, LockFileEx on Windows (OEP host guide §7.2's
+    /// `<unit_id>.lock`, which every broker implementation takes). ja: `path` のファイルの排他 lock
+    /// を `timeout` まで待って取る(無ければ作り、消さない)。
+    pub fn acquire_path(path: &Path, timeout: Duration) -> Result<Self, LockError> {
+        if crate::replay::active() {
+            return Ok(DeviceLock { _file: None });
+        }
+        let mut o = OpenOptions::new();
+        o.create(true).read(true).write(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            o.mode(0o600);
+        }
+        let file = o.open(path)?;
 
         let deadline = Instant::now() + timeout;
         loop {
@@ -145,6 +157,144 @@ pub fn create_runtime_dir() -> std::io::Result<PathBuf> {
     Ok(dir)
 }
 
+/// en: The per-user directory where OEP brokers of any implementation publish themselves (OEP
+/// host guide §7.2): `$XDG_RUNTIME_DIR/oep/brokers` on Linux, else `$TMPDIR/oep-<uid>/brokers`
+/// (`/tmp` without `TMPDIR`); `$TMPDIR/oep/brokers` on macOS; `%LOCALAPPDATA%\oep\brokers` on
+/// Windows. `None` when the place cannot be named (no `LOCALAPPDATA`). Unlike [`runtime_dir`],
+/// this is an interface: other tools read it. ja: どの実装の OEP ブローカーも自分を載せる利用者
+/// ごとの場所(host ガイド §7.2)。[`runtime_dir`] と違い、ほかの道具も読む取り決めの場所。
+pub fn oep_brokers_dir() -> Option<PathBuf> {
+    let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
+    #[cfg(windows)]
+    {
+        var("LOCALAPPDATA").map(|d| PathBuf::from(d).join("oep").join("brokers"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Some(match var("TMPDIR") {
+            Some(t) => PathBuf::from(t).join("oep").join("brokers"),
+            None => brokers_dir_for(None, None, user_id()?),
+        })
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Some(brokers_dir_for(
+            var("XDG_RUNTIME_DIR"),
+            var("TMPDIR"),
+            user_id()?,
+        ))
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}
+
+/// The Linux rule of [`oep_brokers_dir`] (also macOS's without `TMPDIR`).
+#[cfg_attr(windows, allow(dead_code))]
+fn brokers_dir_for(
+    xdg: Option<std::ffi::OsString>,
+    tmpdir: Option<std::ffi::OsString>,
+    uid: u32,
+) -> PathBuf {
+    match xdg {
+        Some(rt) => PathBuf::from(rt).join("oep").join("brokers"),
+        None => PathBuf::from(tmpdir.unwrap_or_else(|| "/tmp".into()))
+            .join(format!("oep-{uid}"))
+            .join("brokers"),
+    }
+}
+
+/// en: [`oep_brokers_dir`] when it exists and may be read: on unix it and its parent (`oep`,
+/// `oep-<uid>`) are directories of this user's with mode 0700 (host guide §7.2: otherwise it is
+/// not used). ja: 読んでよいときの [`oep_brokers_dir`](unix では自分の 0700 のディレクトリ)。
+pub fn oep_brokers_dir_checked() -> Option<PathBuf> {
+    let dir = oep_brokers_dir()?;
+    private_dirs_ok(&dir).then_some(dir)
+}
+
+/// en: [`oep_brokers_dir`], created when missing (0700 on unix); refused when it or its parent is
+/// not this user's 0700 directory (one another user made in the shared temp dir, or a symlink).
+/// ja: [`oep_brokers_dir`] を(無ければ 0700 で)作って返す。自分の 0700 でなければ使わない。
+pub fn create_oep_brokers_dir() -> std::io::Result<PathBuf> {
+    let dir = oep_brokers_dir().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "no per-user directory for OEP brokers (LOCALAPPDATA / XDG_RUNTIME_DIR / TMPDIR)",
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        // The parent first (`oep` / `oep-<uid>`), so both levels we make are 0700.
+        if let Some(parent) = dir.parent() {
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)?;
+        }
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&dir)?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(&dir)?;
+    if !private_dirs_ok(&dir) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} (or its parent) is not a 0700 directory of this user's: not used",
+                dir.display()
+            ),
+        ));
+    }
+    Ok(dir)
+}
+
+/// Whether `dir` and its parent are this user's directories with mode 0700 (always on Windows,
+/// where `LOCALAPPDATA` is the user's own).
+fn private_dirs_ok(dir: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let ok = |p: &Path| {
+            std::fs::symlink_metadata(p).is_ok_and(|m| {
+                m.is_dir() && Some(m.uid()) == user_id() && m.mode() & 0o777 == 0o700
+            })
+        };
+        ok(dir) && dir.parent().is_none_or(ok)
+    }
+    #[cfg(not(unix))]
+    {
+        dir.is_dir()
+    }
+}
+
+/// en: Whether process `pid` still runs (unix: signal 0; a process of another user counts). Always
+/// true elsewhere, where the caller's next step (a connection) decides. ja: プロセス `pid` が
+/// まだ動いているか(unix は signal 0)。ほかの OS では常に true(次の接続で決まる)。
+pub fn process_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        let Some(p) = i32::try_from(pid)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+        else {
+            return false;
+        };
+        !matches!(
+            rustix::process::test_kill_process(p),
+            Err(rustix::io::Errno::SRCH)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+        true
+    }
+}
+
 /// Make `key` a safe single path component: keep `[A-Za-z0-9._-]`, replace the rest with `_`.
 pub fn sanitize(key: &str) -> String {
     let mut out: String = key
@@ -193,6 +343,41 @@ mod tests {
             PathBuf::from("/tmp/ch32rv-1001")
         );
         assert_eq!(dir_for(None, tmp, None), PathBuf::from("/tmp/ch32rv-locks"));
+    }
+
+    #[test]
+    fn the_oep_brokers_dir_follows_host_guide_7_2() {
+        assert_eq!(
+            brokers_dir_for(Some("/run/user/1000".into()), Some("/var/tmp".into()), 1000),
+            PathBuf::from("/run/user/1000/oep/brokers")
+        );
+        assert_eq!(
+            brokers_dir_for(None, Some("/var/tmp".into()), 1000),
+            PathBuf::from("/var/tmp/oep-1000/brokers")
+        );
+        assert_eq!(
+            brokers_dir_for(None, None, 1001),
+            PathBuf::from("/tmp/oep-1001/brokers")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_brokers_dir_others_can_read_is_not_used() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = std::env::temp_dir().join(format!("ch32rv-brokers-test-{}", std::process::id()));
+        let dir = base.join("oep").join("brokers");
+        std::fs::create_dir_all(&dir).unwrap();
+        for p in [base.join("oep"), dir.clone()] {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        assert!(private_dirs_ok(&dir));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(!private_dirs_ok(&dir));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(base.join("oep"), std::fs::Permissions::from_mode(0o750)).unwrap();
+        assert!(!private_dirs_ok(&dir));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

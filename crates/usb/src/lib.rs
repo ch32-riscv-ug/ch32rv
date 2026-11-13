@@ -22,7 +22,10 @@ pub mod replay;
 pub mod selector;
 
 pub use device::{UsbDeviceInfo, UsbError, UsbInterface, enumerate};
-pub use lock::{DeviceLock, LockError, create_runtime_dir, runtime_dir, sanitize as sanitize_key};
+pub use lock::{
+    DeviceLock, LockError, create_oep_brokers_dir, create_runtime_dir, oep_brokers_dir,
+    oep_brokers_dir_checked, process_alive, runtime_dir, sanitize as sanitize_key,
+};
 pub use pipe::{BulkPipe, VendorBulkPlace};
 pub use selector::{
     ResolveError, Selector, SelectorParseError, SerialFilter, normalize_port, resolve,

@@ -370,6 +370,45 @@ fn a_probe_announced_by_dns_sd_is_found_and_used_by_its_unit_id() {
     let v: serde_json::Value = common::envelope(&out.stdout);
     let by_unit = v["result"]["endpoint"].as_str().map(str::to_owned);
     assert!(by_unit.is_some(), "{v}");
+    // It publishes itself where any tool finds it (OEP host guide §7.2): `oep/brokers/<unit>.json`
+    // in the user's runtime directory, 0600, beside its `<unit>.lock`.
+    let brokers = uv::test_runtime_dir().join("oep").join("brokers");
+    let file = brokers.join(format!("{unit}.json"));
+    assert_eq!(v["result"]["file"], file.display().to_string(), "{v}");
+    let rec: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(rec["unit_id"], unit.as_str(), "{rec}");
+    assert_eq!(
+        rec["endpoints"],
+        serde_json::json!([{"kind": "tcp", "address": by_unit.clone().unwrap()}]),
+        "{rec}"
+    );
+    assert_eq!(
+        rec["share"],
+        serde_json::json!(["oep.probe.share"]),
+        "{rec}"
+    );
+    assert_eq!(rec["implementation"]["name"], "ch32rv", "{rec}");
+    assert_eq!(
+        rec["implementation"]["version"],
+        env!("CARGO_PKG_VERSION"),
+        "{rec}"
+    );
+    assert_eq!(rec["pid"], v["result"]["pid"], "{rec}");
+    assert!(
+        rec["started"]
+            .as_str()
+            .is_some_and(|t| t.len() == 20 && t.ends_with('Z')),
+        "{rec}"
+    );
+    assert!(brokers.join(format!("{unit}.lock")).exists());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &std::path::Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&file), 0o600);
+        assert_eq!(mode(&brokers), 0o700);
+    }
     // Named with another route it is the same broker (a lock key ignores `via`).
     let out = ch32rv(&[
         "broker",
@@ -446,7 +485,7 @@ fn a_probe_another_host_holds_is_waited_for_lock_timeout_then_busy() {
 
 #[test]
 fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pid() {
-    // A broker of another ch32rv holds the probe (here: ours, its endpoint record rewritten to
+    // A broker of another ch32rv holds the probe (here: ours, its broker record rewritten to
     // another version): a client waits `--lock-timeout` for it and exits 13 naming it; when it
     // ends meanwhile (its last client leaves), the client starts its own and goes on (§3.7).
     let Some((_fake, pty)) = fake_pty() else {
@@ -484,7 +523,7 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
         .flatten()
         .map(|e| e.path())
         .find(|p| {
-            p.extension().is_some_and(|x| x == "oep")
+            p.to_string_lossy().ends_with(".broker.json")
                 && std::fs::read_to_string(p)
                     .ok()
                     .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
@@ -493,7 +532,7 @@ fn a_broker_of_another_ch32rv_is_waited_for_then_refused_with_its_version_and_pi
         .expect("the broker's endpoint file");
     let mut rec: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-    rec["version"] = "0.0.0-other".into();
+    rec["implementation"]["version"] = "0.0.0-other".into();
     std::fs::write(&file, rec.to_string()).unwrap();
 
     let started = Instant::now();
