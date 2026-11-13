@@ -659,7 +659,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
   - `oep://<probe>/<port>`(oep-spec host ガイド §5.3): OEP の probe(`is_oep_device` = USB ID 1209:4F45 の device。oep-transports §3)の口ごとに 1 つ。口は probe に保存した label `S.N`(`S.swdio` / `S.swclk` / `S.swio` / `S.nrst` / `S.rx` / `S.tx`)の `S` で、名前つきの口が無い probe は probe 自身の `oep://<probe>` で出す(線は `--pins` で指す)。`<probe>` は USB の serial(= OEP の unit_id。serial の無い device だけ位置)。attach しないので target は出さない。label は lock 無しで読む(その port のブローカーが動いていればブローカー経由、ここでは起動しない。無ければ HID、vendor bulk、CDC の順に短く開く(HID は他の道具と取り合わない)。応答待ちは 0.3 秒)。読めなければ前回の一覧(runtime dir の `<key>.ports.json`)。properties に vid / pid / port_name(`oep://<probe>` では null)/ port。普通の serial port は開かない。
   - `ch32rv-hid://<topology>`(protocol `ch32rv-hid`): `1209:b803` / `1209:b003`。bootloader は serial 番号を持たないので位置で出し、`boot hid flash --device ch32rv-hid://<topology>` も位置で引く(Linux は hidraw ノードで照合、他 OS は位置が取れないので同じ ID が 2 台あると曖昧 = exit 14)。properties に vid / pid / topology。monitor は無い(断る)。
 - **monitor(ArduinoCore-CH32RV `docs/oep-workflow.ja.md` §6)**: platform.txt の `pluggable_monitor.pattern.<protocol>` に登録し、protocol を `--protocol` で渡す(既定 `serial`)。arduino-cli 1.3.1 は DESCRIBE の `protocol` を port の protocol と照合し、違うと OPEN の前に止まる(ArduinoCore-CH32RV の実測)。
-  - **DESCRIBE**: キーは `port_description`、列挙の値は `value`(arduino-cli が読むキー)。設定は `source` / `baudrate` / `dtr` / `rts` / `chip`。
+  - **DESCRIBE**: キーは `port_description`、列挙の値は `value`(arduino-cli が読むキー)。設定は `source` / `baudrate` / `dtr` / `rts` / `speed` / `chip`。
     - `source`(凍結の表、docs/freeze-decisions.ja.md §3。先頭が既定):
 
       | protocol | source |
@@ -670,6 +670,7 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
 
       `wchlink` に `uart` と `fixture-uart` は無い(uart は Link の CDC を `serial` で開く)。`ch32rv-app` / `ch32rv-isp` / `ch32rv-hid` の source は `serial` と同じ並び。`--protocol` はこの 6 つだけを受け、ほかは usage(exit 2)。
     - `baudrate` / `dtr` / `rts`: `uart` 用。値と既定は組み込みの serial-monitor と同じ(9600、on、on)。他の source でも受けて無視する。開いたまま変えるとすぐ効く。
+    - `speed`: `--speed` と同じ意味(attach する source の debug の速さ。板の `monitor_port.<protocol>.speed` を IDE が渡す入口)。値は `low` / `medium` / `high`(既定はコマンド行の `--speed`、無ければ `high`)。`wchlink` は Link の速さ、`oep` は attach の速さの上限(400 kHz / 4 MHz / 6 MHz、つなぎ直しも同じ)。`uart` / `fixture-uart` では受けて無視する。OPEN と source の切り替えのときに効く。PB8/PB9 が USB と同じ端子の CH32H417 の板では、`high` で読み続けると USB の列挙が乱れることがあり、`low` で乱れなかった。
     - `chip`: `--chip` と同じ意味(板の `monitor_port.serial.chip` を IDE が渡す入口)。値は `auto`(既定、= 指定なし)と DB の family / SKU(`--chip`・core の `build.ch32rv_chip` と同じ綴り)。attach する source(sdi / dmdata / dmseq / rtt)で fail-closed に照合し、合わなければ OPEN が error。`uart` は attach しないので照合しない。
   - **OPEN の address**: `wchlink://<serial>`、`oep://<probe>[/<port>[/<target>]][?via=<経路>]`(`--probe` と同じに解く)、または serial port の path(`--probe` と同じ逆引きで WCH probe を引く)。probe の無い素の serial port は `uart` だけが使え、他の source は OPEN が error。解決・source の open・TCP 接続までを OPEN の中で済ませ、失敗は OPEN の error(arduino-cli は exit 1 で message を出す)。
   - **source**: `uart` = serial port の素通し(双方向、serialport crate で排他 open)。`sdi` = LinkE の SDI 転送を有効にして CDC を読む(受信のみ。DTR を立てない素の open + TIOCEXCL + raw termios)。`dmdata` / `dmseq` / `rtt` = attach して DMI で(双方向)。開いたまま `source` を変えると同じ TCP のまま backend を替える。

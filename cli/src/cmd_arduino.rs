@@ -458,10 +458,12 @@ struct Settings {
     dtr: bool,
     rts: bool,
     chip: Option<String>,
+    /// The debug speed (`--speed`'s values) the sources that attach use (wchlink / oep).
+    speed: String,
 }
 
 impl Settings {
-    fn new(protocol: &str, chip: Option<String>) -> Self {
+    fn new(protocol: &str, chip: Option<String>, speed: String) -> Self {
         let sources: &'static [MonitorSource] = match protocol {
             "wchlink" => &WCHLINK_SOURCES,
             "oep" => &OEP_SOURCES,
@@ -477,6 +479,7 @@ impl Settings {
             dtr: true,
             rts: true,
             chip,
+            speed,
         }
     }
 
@@ -515,6 +518,10 @@ impl Settings {
                 }
                 self.chip = Some(value.to_owned());
             }
+            "speed" => {
+                crate::parse::speed(value)?;
+                self.speed = value.to_owned();
+            }
             _ => return Err(format!("unknown setting `{key}`")),
         }
         Ok(())
@@ -543,6 +550,11 @@ impl Settings {
                     "label": "RTS (uart)", "type": "enum",
                     "value": ["on", "off"], "selected": on_off(self.rts),
                 },
+                "speed": {
+                    "label": "Debug speed", "type": "enum",
+                    "value": speed_values(&self.speed),
+                    "selected": self.speed,
+                },
                 "chip": {
                     "label": "Board chip", "type": "enum",
                     "value": std::iter::once(CHIP_AUTO.to_owned()).chain(chip_names()).collect::<Vec<_>>(),
@@ -551,6 +563,16 @@ impl Settings {
             }
         })
     }
+}
+
+/// en: The `speed` values: `--speed`'s steps, and the value in use when it is a kHz number given
+/// on the command line. ja: `speed` の値(`--speed` の段と、コマンド行の kHz 指定)。
+fn speed_values(current: &str) -> Vec<String> {
+    let mut v: Vec<String> = ["low", "medium", "high"].map(str::to_owned).to_vec();
+    if !v.iter().any(|s| s == current) {
+        v.push(current.to_owned());
+    }
+    v
 }
 
 /// en: Every name `chip` accepts: the DB's families, series and SKUs, spelled as `--chip` takes
@@ -572,7 +594,6 @@ fn chip_names() -> Vec<String> {
 /// What the backends need from the command line (the `Cli` itself stays on the main thread).
 #[derive(Clone)]
 struct Env {
-    speed: String,
     lock_timeout: Duration,
 }
 
@@ -601,11 +622,10 @@ pub fn monitor(cli: &Cli, protocol: &str) -> ExitCode {
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
     let env = Env {
-        speed: cli.speed.clone(),
         lock_timeout: Duration::from_secs(cli.lock_timeout),
     };
     let shared = Arc::new(Shared {
-        settings: Mutex::new(Settings::new(protocol, cli.chip.clone())),
+        settings: Mutex::new(Settings::new(protocol, cli.chip.clone(), cli.speed.clone())),
         stop: AtomicBool::new(false),
     });
     let mut running: Option<(JoinHandle<()>, TcpStream)> = None;
@@ -889,7 +909,13 @@ impl Backend {
                     );
                 }
             };
-            let c = crate::oep::ConsoleSession::open(oep, wanted, s.chip.as_deref())?;
+            let (speed, _) = crate::parse::speed(&s.speed)?;
+            let c = crate::oep::ConsoleSession::open(
+                oep,
+                wanted,
+                s.chip.as_deref(),
+                Some(crate::oep::speed_hz(speed)),
+            )?;
             return Ok(Backend::Oep {
                 console: Box::new(c),
                 source: s.source,
@@ -928,7 +954,7 @@ impl Backend {
                     .as_deref()
                     .ok_or("this probe has no serial port for sdi")?;
                 let lock = lock_for(entry, env)?;
-                let (speed, _) = crate::parse::speed(&env.speed)?;
+                let (speed, _) = crate::parse::speed(&s.speed)?;
                 crate::cmd_monitor::enable_sdi(entry, speed, s.chip.as_deref())
                     .map_err(|e| e.msg)?;
                 let mut forwarding = crate::cmd_monitor::SdiForwarding::new(entry);
@@ -946,7 +972,7 @@ impl Backend {
                         s.source.as_str()
                     )
                 })?;
-                let (speed, _) = crate::parse::speed(&env.speed)?;
+                let (speed, _) = crate::parse::speed(&s.speed)?;
                 let mut warnings = Vec::new();
                 let mut session = Session::attach(
                     entry,
@@ -1220,6 +1246,27 @@ fn lost(sock: &mut TcpStream, why: &str) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_monitor_takes_a_debug_speed() {
+        let mut s = Settings::new("oep", None, "high".to_owned());
+        let d = s.describe("oep");
+        assert_eq!(d["configuration_parameters"]["speed"]["selected"], "high");
+        assert_eq!(
+            d["configuration_parameters"]["speed"]["value"],
+            json!(["low", "medium", "high"])
+        );
+        assert!(s.set("speed", "low").is_ok());
+        assert_eq!(s.speed, "low");
+        assert!(s.set("speed", "fast").is_err());
+        assert_eq!(s.speed, "low");
+        // A kHz `--speed` from the command line is listed as it is.
+        let s = Settings::new("wchlink", None, "4000".to_owned());
+        assert_eq!(
+            s.describe("wchlink")["configuration_parameters"]["speed"]["value"],
+            json!(["low", "medium", "high", "4000"])
+        );
+    }
 
     #[test]
     fn a_recent_listing_stands_in_only_for_its_own_probe() {

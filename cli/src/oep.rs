@@ -1379,11 +1379,7 @@ fn flash_in_session(
         }
     };
     let max_speed_hz = match parse::speed(&cli.speed) {
-        Ok((s, _)) => Some(match s {
-            ch32rv_wchlink::Speed::Low => 400_000,
-            ch32rv_wchlink::Speed::Medium => 4_000_000,
-            ch32rv_wchlink::Speed::High => 6_000_000,
-        }),
+        Ok((s, _)) => Some(speed_hz(s)),
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
     let wire = place.wire;
@@ -1677,6 +1673,16 @@ fn check_family_text(chip_id: Option<u32>, chip: Option<&str>) -> Result<Option<
     Ok(detected)
 }
 
+/// en: `--speed`'s step as the OEP attach's speed ceiling (the WCH-Link steps: 400 kHz, 4 MHz,
+/// 6 MHz). ja: `--speed` の段を OEP の attach の上限に。
+pub(crate) fn speed_hz(s: ch32rv_wchlink::Speed) -> u32 {
+    match s {
+        ch32rv_wchlink::Speed::Low => 400_000,
+        ch32rv_wchlink::Speed::Medium => 4_000_000,
+        ch32rv_wchlink::Speed::High => 6_000_000,
+    }
+}
+
 /// What the Arduino monitor streams from an OEP probe.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamWanted {
@@ -1789,6 +1795,8 @@ pub(crate) struct ConsoleSession {
     relink: Option<(Place, ch32rv_oep::stream::Mechanism)>,
     /// Since when the console has read nothing (its stream is checked after RELINK_CHECK).
     quiet_since: Instant,
+    /// The attach's speed ceiling (`--speed`, the monitor's `speed` setting), relinks included.
+    max_speed_hz: Option<u32>,
     /// What is read, as `--source` names it (the mechanism chosen when none was given).
     source_name: &'static str,
 }
@@ -1816,6 +1824,7 @@ impl ConsoleSession {
         a: &OepAddr,
         wanted: StreamWanted,
         chip: Option<&str>,
+        max_speed_hz: Option<u32>,
     ) -> Result<Self, String> {
         let mut link = match (a.broker_target(), a) {
             (Some(t), _) => crate::broker::client_link_for(&t)?,
@@ -1869,7 +1878,7 @@ impl ConsoleSession {
             StreamWanted::Rtt => {
                 let place = choose_place(&mut probe, a, chip)?;
                 let wire = place.wire;
-                let at = attach_at(&mut probe, wire, place.options(false, None))
+                let at = attach_at(&mut probe, wire, place.options(false, max_speed_hz))
                     .map_err(|e| e.to_string())?;
                 check_family_text(at.wch_chip_id, chip)?;
                 let mut t = OepDtm::new(&mut probe, at.connection).map_err(|e| e.to_string())?;
@@ -1925,7 +1934,7 @@ impl ConsoleSession {
                 };
                 source_name = mech.name();
                 let wire = place.wire;
-                let at = attach_at(&mut probe, wire, place.options(false, None))
+                let at = attach_at(&mut probe, wire, place.options(false, max_speed_hz))
                     .map_err(|e| e.to_string())?;
                 check_family_text(at.wch_chip_id, chip)?;
                 let mut s =
@@ -1945,6 +1954,7 @@ impl ConsoleSession {
             max_read,
             relink,
             quiet_since: Instant::now(),
+            max_speed_hz,
             source_name,
         })
     }
@@ -2031,7 +2041,11 @@ impl ConsoleSession {
         let (Backing::Stream(s), Some((place, mech))) = (&mut self.stream, &self.relink) else {
             return Ok(());
         };
-        let Ok(at) = attach_at(&mut self.probe, place.wire, place.options(false, None)) else {
+        let Ok(at) = attach_at(
+            &mut self.probe,
+            place.wire,
+            place.options(false, self.max_speed_hz),
+        ) else {
             return Ok(());
         };
         s.reopen_console(&mut self.probe, at.connection, *mech)

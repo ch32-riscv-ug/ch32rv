@@ -725,7 +725,12 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
             );
         }
     };
-    let mut c = match crate::oep::ConsoleSession::open(a, wanted, cli.chip.as_deref()) {
+    let max_speed_hz = match crate::parse::speed(&cli.speed) {
+        Ok((s, _)) => Some(crate::oep::speed_hz(s)),
+        Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+    };
+    let mut c = match crate::oep::ConsoleSession::open(a, wanted, cli.chip.as_deref(), max_speed_hz)
+    {
         Ok(c) => c,
         Err(m) => return fail(cli, CMD, ErrorKind::DeviceOpenFailed, m, None),
     };
