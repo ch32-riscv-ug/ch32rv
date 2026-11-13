@@ -74,6 +74,12 @@ enum Programmer {
     Controller(ch32rv_flash::FlashCtrlProfile),
 }
 
+/// en: The stub families written after a Debug Module reset-halt (see where it is used):
+/// CH32V103 (0x01) and CH32V20x / V30x (0x05 / 0x06). ja: reset-halt してから stub で書く family。
+fn stub_reset_halts(family_byte: u8) -> bool {
+    matches!(family_byte, 0x01 | 0x05 | 0x06)
+}
+
 fn verify_read(session: &mut Session, addr: u32, expected: &[u8]) -> Result<Vec<u8>, String> {
     let len = expected.len() as u32;
     match session.link().read_mem(addr, len) {
@@ -968,6 +974,33 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
     };
     let program_segments: &[Segment] = &program_segments;
     let program_total: u64 = program_segments.iter().map(|s| s.data.len() as u64).sum();
+    // en: The stub runs from target RAM, and a halted core does not stop the peripherals' DMA: an
+    // Ethernet sketch on a CH32V203RB kept receiving into RAM and overwrote 60 bytes of what the
+    // stub wrote (verify-mismatch at 0x...2d0 / 0x...8d0, 3 runs of 3 through a CH549 Link,
+    // 2026-11-13; the Link has no RstOut). Reset-halt through the Debug Module first: ndmreset
+    // resets the peripherals (and a running watchdog with them). DMCONTROL only - no attach
+    // again, which would put the Link's PROGBUF back and stop the V003 stub erasing. Only on the
+    // families measured with it (CH32V103, CH32V20x / V30x: written and verified through a
+    // WCH-Link, 2026-11-13). Not on a CH32V003: its system reset also resets the Debug Module
+    // (dmactive drops), which may take the PROGBUF its stub erases with; and not on X035 / L103
+    // until measured.
+    // ja: stub は RAM で走り、core を止めても周辺の DMA は止まらない(Ethernet の sketch が受信で
+    // stub の書く中身を 60 byte 壊した)。DM で reset-halt して周辺ごと止める(DMCONTROL だけ。
+    // attach し直すと Link の PROGBUF が戻り、V003 の stub が消去しなくなる)。実機で確かめた
+    // V103 / V20x / V30x だけ。V003 は system reset で DM もリセットされ(dmactive が落ちる)、stub が
+    // 消去に使う PROGBUF を失うおそれがある。X035 / L103 は確かめるまで入れない。
+    if matches!(programmer, Programmer::Stub(_))
+        && stub_reset_halts(session.attach.family_byte)
+        && let Err(e) = session.dm().reset_halt()
+    {
+        return fail(
+            cli,
+            CMD,
+            ErrorKind::AttachFailed,
+            format!("reset-halt before programming failed: {e}"),
+            store_hint.as_deref(),
+        );
+    }
     sink.event(&Event::Phase {
         name: "program".into(),
         total: Some(program_total),
