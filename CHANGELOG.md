@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.31.3 - 2026-11-13
+
 - (EN) Fix: the Arduino monitor's `OPEN` no longer hangs past arduino-cli's 10 s right after an upload. Resolving the port address enumerated USB, and on Linux reading a device's strings waits while the kernel is still probing that device: a CH32H417 sketch whose HID interface timed out (`usbhid ... -110`) held every enumeration for 20 s. The monitor now connects its socket before it resolves the address, so the 7 s answer covers this too, and enumerates WCH-Links only for addresses that name one (`wchlink://`, a serial port). And a broker that does not answer a client's hello within 2 s (its last client just left, or it is stuck) is passed over instead of waited on for the link's 15 s.
 - (JA) 修正: 書き込みの直後に開いた Arduino のモニタの `OPEN` が、arduino-cli の 10 秒を超えて止まらなくなった。port のアドレスの解決は USB を列挙し、Linux では kernel が probe 中の機器の文字列を読むと待たされる。HID の interface が時間切れになった CH32H417 の sketch(`usbhid ... -110`)は、どの列挙も 20 秒止めていた。モニタはアドレスを解く前に socket をつなぐので、7 秒の返事がこれも覆う。WCH-Link の列挙は、それを指すアドレス(`wchlink://`、serial port)のときだけ行う。また、client の hello に 2 秒で答えないブローカー(最後の client が抜けたところか、詰まっている)は、link の 15 秒を待たずに飛ばす。
 
