@@ -329,6 +329,9 @@ impl ch32rv_dmi::DtmAccess for DynDtm<'_> {
 pub(crate) enum OnTarget<'a, 'b> {
     Wch(&'a mut Session),
     Oep(&'a mut crate::oep::Attached<'b>),
+    /// en: Another hart of an OEP-attached target (`--core 1` on a CH32H417), over raw DMI: the
+    /// probe's ops are hart 0's only. Its chip id rides along. ja: OEP の別 hart(生の DMI)。
+    OepHart(crate::oep::OnHart<'a, 'b>, Option<u32>),
 }
 
 impl OnTarget<'_, '_> {
@@ -337,6 +340,7 @@ impl OnTarget<'_, '_> {
         match self {
             OnTarget::Wch(s) => DynDtm(s.link()),
             OnTarget::Oep(x) => DynDtm(&mut x.t),
+            OnTarget::OepHart(h, _) => DynDtm(h),
         }
     }
 
@@ -345,6 +349,7 @@ impl OnTarget<'_, '_> {
         match self {
             OnTarget::Wch(s) => s.dm().halt(),
             OnTarget::Oep(x) => ch32rv_dmi::TargetAccess::halt(&mut x.t),
+            OnTarget::OepHart(h, _) => ch32rv_dmi::DebugModule::new(h).halt(),
         }
     }
 
@@ -356,6 +361,7 @@ impl OnTarget<'_, '_> {
                 Some(r) => r,
                 None => ch32rv_dmi::DebugModule::new(&mut x.t).resume(),
             },
+            OnTarget::OepHart(h, _) => ch32rv_dmi::DebugModule::new(h).resume(),
         }
     }
 
@@ -368,6 +374,8 @@ impl OnTarget<'_, '_> {
             OnTarget::Oep(x) => {
                 let _ = ch32rv_dmi::TargetAccess::reset(&mut x.t, ch32rv_dmi::ResetMode::Run);
             }
+            // `--core 1 dbg halt --reset` is refused before this (main's `--core` gate).
+            OnTarget::OepHart(..) => {}
         }
     }
 
@@ -376,6 +384,7 @@ impl OnTarget<'_, '_> {
         match self {
             OnTarget::Wch(s) => Some(s.attach.chip_id),
             OnTarget::Oep(x) => x.chip_id,
+            OnTarget::OepHart(_, id) => *id,
         }
     }
 }
@@ -402,13 +411,27 @@ pub(crate) fn on_target_halted(
     f: impl FnOnce(&mut OnTarget<'_, '_>, &str, &str) -> ExitCode,
 ) -> ExitCode {
     match crate::oep::addr(cli, cmd) {
-        Ok(Some(_)) if cli.core != 0 => fail(
-            cli,
-            cmd,
-            ErrorKind::CapabilityUnsupported,
-            "--core 1 currently requires a direct WCH-Link connection",
-            None,
-        ),
+        // en: `dbg` on another hart (`--core 1`, a CH32H417's V5F) goes over raw DMI with core 0
+        // left running: a raw DMI write while the probe holds core 0 halted makes it drop the
+        // registers it kept. DATA0 / DATA1 (a running program's dmseq / DMDATA console frame) are
+        // put back afterwards, except under `dbg dmi`, whose writes are the user's. The hart stays
+        // as the command leaves it, as on a WCH-Link (`dbg resume` lets it run).
+        // ja: 別 hart の `dbg` は core 0 を走らせたまま生の DMI で。DATA0 / DATA1 は戻す
+        // (`dbg dmi` を除く)。hart は WCH-Link と同じくコマンドが残した状態のまま。
+        Ok(Some(a)) if cli.core != 0 => crate::oep::with_attached(cli, cmd, &a, false, |x| {
+            if let Err(m) = crate::oep::other_hart_here(x) {
+                return fail(cli, cmd, ErrorKind::CapabilityUnsupported, m, None);
+            }
+            let family = x.family.clone().unwrap_or_else(|| "unknown".to_owned());
+            let mut h = crate::oep::OnHart::new(&mut x.t, x.core);
+            let kept = (cmd != "dbg.dmi").then(|| h.keep_data()).flatten();
+            let mut t = OnTarget::OepHart(h, x.chip_id);
+            let code = f(&mut t, &family, &family);
+            if let OnTarget::OepHart(mut h, _) = t {
+                h.restore_data(kept);
+            }
+            code
+        }),
         Ok(Some(a)) => crate::oep::with_attached(cli, cmd, &a, halt, |x| {
             let family = x.family.clone().unwrap_or_else(|| "unknown".to_owned());
             let db_family = family.clone();

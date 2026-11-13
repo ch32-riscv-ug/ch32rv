@@ -2152,6 +2152,8 @@ pub(crate) struct Attached<'a> {
     pub(crate) existing: bool,
     /// Where the hart stood when the attach halted it, if it did.
     pub(crate) halted_at: Option<u32>,
+    /// The hart `--core` names: 0 through the probe's ops, another over raw DMI.
+    pub(crate) core: u32,
 }
 
 /// en: Connect, open a session, attach at the place `choose_place` picks (halting when asked),
@@ -2304,6 +2306,7 @@ pub(crate) fn with_attached_reset(
                     family,
                     existing: at.existing,
                     halted_at: at.halted,
+                    core: cli.core,
                 };
                 // en: A target the address names (`<family>-<unique id hex>`, host guide §5.3) is
                 // checked on this connection before anything else is done to it.
@@ -2590,7 +2593,13 @@ pub(crate) fn verify(
 /// `read` on an OEP probe: `--range` / `--region`, dumped or blank-checked.
 pub(crate) fn read(cli: &Cli, args: &crate::args::ReadArgs, a: &OepAddr) -> ExitCode {
     const CMD: &str = "read";
-    with_attached(cli, CMD, a, true, |x| {
+    // en: Another hart is read over raw DMI with core 0 left running (a raw DMI write while the
+    // probe holds core 0 halted makes it drop the registers it kept).
+    // ja: 別の hart は core 0 を走らせたまま生の DMI で読む。
+    with_attached(cli, CMD, a, cli.core == 0, |x| {
+        if let Err(m) = other_hart_here(x) {
+            return fail(cli, CMD, ErrorKind::CapabilityUnsupported, m, None);
+        }
         let (flash, sram) = part_of(cli, x.chip_id).geometry.unwrap_or((0, 0));
         let option_base = x
             .family
@@ -2818,10 +2827,35 @@ fn read_uid_why(x: &mut Attached<'_>) -> Result<String, String> {
 /// en: The OEP transport addressing another hart through raw DMI (oep-if-debug §4: the probe's
 /// high-level ops are hart 0's only; the host selects another hart inside its own dmi requests).
 /// ja: 生の DMI で別の hart を相手にする OEP の transport(高水準の op は hart 0 だけ)。
-struct OnHart<'a, 'b> {
+pub(crate) struct OnHart<'a, 'b> {
     t: &'a mut OepDtm<'b>,
     hart: u32,
 }
+
+impl<'a, 'b> OnHart<'a, 'b> {
+    pub(crate) fn new(t: &'a mut OepDtm<'b>, hart: u32) -> Self {
+        OnHart { t, hart }
+    }
+
+    /// en: DATA0 / DATA1 as they stand (a running program's dmseq / DMDATA console keeps its frame
+    /// there; an abstract command overwrites them). ja: 今の DATA0 / DATA1(console の frame)。
+    pub(crate) fn keep_data(&mut self) -> Option<(u32, u32)> {
+        use ch32rv_dmi::DtmAccess;
+        Some((self.dmi_read(DM_DATA0).ok()?, self.dmi_read(DM_DATA1).ok()?))
+    }
+
+    /// Put back what [`Self::keep_data`] kept (DATA1 first: a DATA0 write may end a frame).
+    pub(crate) fn restore_data(&mut self, kept: Option<(u32, u32)>) {
+        use ch32rv_dmi::DtmAccess;
+        if let Some((d0, d1)) = kept {
+            let _ = self.dmi_write(DM_DATA1, d1);
+            let _ = self.dmi_write(DM_DATA0, d0);
+        }
+    }
+}
+
+const DM_DATA0: u8 = 0x04;
+const DM_DATA1: u8 = 0x05;
 
 impl ch32rv_dmi::DtmAccess for OnHart<'_, '_> {
     fn selected_hart(&self) -> u32 {
@@ -2883,9 +2917,6 @@ fn on_hart<T>(
     hart: u32,
     f: impl FnOnce(&mut ch32rv_dmi::DebugModule<'_, OnHart<'_, '_>>) -> Result<T, ch32rv_dmi::DmiError>,
 ) -> Result<T, String> {
-    const DATA0: u8 = 0x04;
-    const DATA1: u8 = 0x05;
-    use ch32rv_dmi::DtmAccess;
     let mut h = OnHart { t, hart };
     let was_running = !ch32rv_dmi::DebugModule::new(&mut h)
         .is_halted()
@@ -2895,12 +2926,9 @@ fn on_hart<T>(
             .halt()
             .map_err(|e| format!("halt: {e}"))?;
     }
-    let kept = (h.dmi_read(DATA0), h.dmi_read(DATA1));
+    let kept = h.keep_data();
     let r = f(&mut ch32rv_dmi::DebugModule::new(&mut h)).map_err(|e| e.to_string());
-    if let (Ok(d0), Ok(d1)) = kept {
-        let _ = h.dmi_write(DATA1, d1);
-        let _ = h.dmi_write(DATA0, d0);
-    }
+    h.restore_data(kept);
     if was_running {
         let _ = ch32rv_dmi::DebugModule::new(&mut h).resume();
     }
@@ -2915,18 +2943,22 @@ fn on_hart<T>(
 /// で。probe が core 0 を止めている間に生の DMI を書くと退避した register を捨てるので、先に走らせる。
 impl Attached<'_> {
     fn read_words_any(&mut self, addr: u32, count: usize) -> Result<Vec<u32>, String> {
+        let words = |b: Vec<u8>| -> Vec<u32> {
+            b.as_chunks::<4>()
+                .0
+                .iter()
+                .map(|c| u32::from_le_bytes(*c))
+                .collect()
+        };
+        if self.core != 0 {
+            return read_on_hart(&mut self.t, self.core, addr, (count * 4) as u32).map(words);
+        }
         match self.t.read_words(addr, count) {
             Ok(w) => Ok(w),
             Err(e0) if self.family.as_deref() == Some("CH32H417") => {
                 resume_after(&mut self.t);
                 read_on_hart(&mut self.t, 1, addr, (count * 4) as u32)
-                    .map(|b| {
-                        b.as_chunks::<4>()
-                            .0
-                            .iter()
-                            .map(|c| u32::from_le_bytes(*c))
-                            .collect()
-                    })
+                    .map(words)
                     .map_err(|e1| format!("{e0}; through core 1: {e1}"))
             }
             Err(e) => Err(e.to_string()),
@@ -2944,6 +2976,20 @@ impl Attached<'_> {
             }
             Err(e) => Err(e.to_string()),
         }
+    }
+}
+
+/// en: `--core` other than 0 is a CH32H417's core 1 (V5F); elsewhere there is no other hart.
+/// ja: 0 以外の `--core` は CH32H417 の core 1 だけ。
+pub(crate) fn other_hart_here(x: &Attached<'_>) -> Result<(), String> {
+    if x.core == 0 || (x.core == 1 && x.family.as_deref() == Some("CH32H417")) {
+        Ok(())
+    } else {
+        Err(format!(
+            "--core {} requires an attached CH32H417 target (here: {})",
+            x.core,
+            x.family.as_deref().unwrap_or("unknown")
+        ))
     }
 }
 

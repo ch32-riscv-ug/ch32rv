@@ -275,15 +275,6 @@ fn simple_ok(
 pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     // An OEP probe (`oep://`, or a serial port no WCH-Link owns) takes the OEP path.
     match crate::oep::addr(cli, "read") {
-        Ok(Some(_)) if cli.core != 0 => {
-            return fail(
-                cli,
-                "read",
-                ErrorKind::CapabilityUnsupported,
-                "--core 1 currently requires a direct WCH-Link connection",
-                None,
-            );
-        }
         Ok(Some(a)) => return crate::oep::read(cli, args, &a),
         Ok(None) => {}
         Err(c) => return c,
