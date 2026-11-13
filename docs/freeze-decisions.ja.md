@@ -80,7 +80,7 @@ process の exit は tool のコードだけ。target の exit code を process 
 
 - `--dry-run`: 対応していないコマンドは exit 2 で断る。
 - `--core`: 直接 WCH-Link 接続の CH32H417 の `--core 1` の `dbg`(`halt --reset` を除く)と `read` だけ。その他の非 0 は capability-unsupported(exit 24)で断る。halt / resume / step の DMCONTROL は選択を保持する。根拠は [H417 コア選択実測](data-requests/0009-h417-core-selection.ja.md)。
-- `--connect-under-reset`: WCH-Link と OEP の probe で使える(cli.ja.md §3.1)。OEP の probe の `flash` では exit 24。
+- `--connect-under-reset`: WCH-Link と OEP の probe で使える(cli.ja.md §3.1)。OEP の probe の `flash` でも使える(0.31.2 までは exit 24)。
 - `--pins` は OEP の probe へ行かないコマンドで、`--release-dm` は OEP の probe へ行くコマンドで exit 24(`arduino monitor` はアドレスを IDE から受けるので断らない)。
 - config の `[defaults] chip`: `--chip` も `CH32RV_CHIP` も無いときに使う。
 

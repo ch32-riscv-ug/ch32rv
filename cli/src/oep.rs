@@ -1178,6 +1178,19 @@ fn attach_under_reset_retrying(
         .unwrap_or_else(|| ch32rv_oep::session::OepError::Malformed("no attach was tried".into())))
 }
 
+/// en: An attach error from the probe or the session (busy, link, missing interface or pins), not
+/// from the target: attaching again, under reset or later, does not help.
+/// ja: target ではなく probe / session 側の attach の失敗(やり直しても変わらない)。
+fn probe_side(e: &OepError) -> bool {
+    matches!(
+        e,
+        OepError::Locked { .. }
+            | OepError::Link(_)
+            | OepError::NoInterface(_)
+            | OepError::PinsNeeded { .. }
+    )
+}
+
 /// en: `--attach-wait`: attach, halting, until the target answers or the deadline passes (the
 /// user power-cycles it or presses its RESET meanwhile), so firmware that sleeps or takes the
 /// debug pins after its boot wait is stopped inside that wait.
@@ -1193,12 +1206,7 @@ fn attach_waiting(
         match attach_at(p, wire, options) {
             Ok(at) => return Ok(at),
             // en: The probe or the session, not the target: waiting does not help.
-            Err(
-                e @ (OepError::Locked { .. }
-                | OepError::Link(_)
-                | OepError::NoInterface(_)
-                | OepError::PinsNeeded { .. }),
-            ) => return Err(e),
+            Err(e) if probe_side(&e) => return Err(e),
             Err(e) if std::time::Instant::now() >= deadline => return Err(e),
             Err(_) => {}
         }
@@ -1220,14 +1228,7 @@ fn attach_at(
     mut options: AttachOptions,
 ) -> Result<ch32rv_oep::target::Attached, ch32rv_oep::session::OepError> {
     let at = attach(p, wire, options)?;
-    let family =
-        at.wch_chip_id.and_then(
-            |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
-                ch32rv_target::Resolution::Sku(s) => Some(s.family.clone()),
-                ch32rv_target::Resolution::Family(f, _) => Some(f),
-                ch32rv_target::Resolution::Unknown => None,
-            },
-        );
+    let family = family_of(at.wch_chip_id);
     let low = ch32rv_oep::registry::wire_rvswd::enums::idle_clock::LOW;
     if wire != WireKind::Rvswd
         || options.idle_clock.is_some()
@@ -1302,15 +1303,12 @@ fn family(cli: &Cli, cmd: &str, chip_id: Option<u32>) -> Result<String, ExitCode
 }
 
 /// en: The `flash` flags an OEP probe's path cannot honour (refused with exit 24 before it
-/// connects): the loader's ([`crate::cmd_flash::loader_refusals`]), an attach that holds NRST or
-/// waits (the flash attaches with a halt of its own), `--reset halt`, and `--repeat` (its wait
+/// connects): the loader's ([`crate::cmd_flash::loader_refusals`]), an attach that waits (the
+/// flash attaches with a halt of its own), `--reset halt`, and `--repeat` (its wait
 /// for the next target looks through a WCH-Link only).
 /// ja: OEP の経路で守れない `flash` のフラグ(つなぐ前に exit 24 で断る)。
 pub(crate) fn flash_refusals(cli: &Cli, args: &FlashArgs) -> Vec<String> {
     let mut v = crate::cmd_flash::loader_refusals(args);
-    if cli.connect_under_reset {
-        v.push("--connect-under-reset".to_owned());
-    }
     if cli.attach_wait.is_some() {
         v.push("--attach-wait".to_owned());
     }
@@ -1389,8 +1387,62 @@ fn flash_in_session(
         Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
     };
     let wire = place.wire;
-    let at = match attach_at(p, wire, place.options(true, max_speed_hz)) {
+    let mut warnings = Vec::new();
+    // `--connect-under-reset`: the flash's own halting attach, holding the port's NRST line.
+    let first = if cli.connect_under_reset {
+        let mut o = place.options(true, max_speed_hz);
+        match nrst_line(p, a) {
+            Ok(ch) => o.reset = Some((ch, NRST_HOLD_MS)),
+            Err(m) => {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::CapabilityUnsupported,
+                    m,
+                    Some("oep-spec host-development-guide §8.1 names the lines"),
+                );
+            }
+        }
+        attach_under_reset_retrying(p, wire, o)
+    } else {
+        attach_at(p, wire, place.options(true, max_speed_hz))
+    };
+    let at = match first {
         Ok(a) => a,
+        Err(e) if cli.connect_under_reset => return oep_fail(cli, CMD, e),
+        // en: A target that does not answer (a CH32V205 after its sketch's sleep / watchdog test:
+        // transfer-failed, outcome 0x01, until an attach under reset, 2026-11-13) is attached
+        // again holding the port's NRST line, when its label names one: the flash resets the part
+        // itself right after, so holding it in reset first loses nothing.
+        // ja: 答えない target は、口に NRST のラベルがあれば、NRST を押さえて attach し直す(flash は
+        // すぐ自分で reset するので失うものは無い)。
+        Err(e) if !probe_side(&e) => {
+            let Ok(ch) = nrst_line(p, a) else {
+                return oep_fail(cli, CMD, e);
+            };
+            let mut o = place.options(true, max_speed_hz);
+            o.reset = Some((ch, NRST_HOLD_MS));
+            match attach_under_reset_retrying(p, wire, o) {
+                Ok(at) => {
+                    warnings.push(ch32rv_contract::Warning {
+                        code: "attached-under-reset".to_owned(),
+                        msg: format!(
+                            "the target did not answer an attach ({e}); attached again holding the port's NRST line"
+                        ),
+                    });
+                    at
+                }
+                Err(e2) => {
+                    return fail(
+                        cli,
+                        CMD,
+                        ErrorKind::TransferFailed,
+                        format!("{e}; attached again under reset: {e2}"),
+                        None,
+                    );
+                }
+            }
+        }
         Err(e) => return oep_fail(cli, CMD, e),
     };
     // A broker that went away says why in its log (its stderr goes nowhere).
@@ -1400,7 +1452,15 @@ fn flash_in_session(
             crate::broker::log_path(&t.key()).display()
         )
     });
-    let r = flash_attached(cli, args, bytes, p, at.connection, at.wch_chip_id, log_hint);
+    let r = flash_attached(
+        cli,
+        args,
+        bytes,
+        p,
+        (at.connection, at.wch_chip_id),
+        log_hint,
+        warnings,
+    );
     let _ = detach(p, wire, at.connection);
     r
 }
@@ -1410,11 +1470,16 @@ fn flash_attached(
     args: &FlashArgs,
     bytes: &[u8],
     p: &mut Probe,
-    connection: u32,
-    chip_id: Option<u32>,
+    (connection, chip_id): (u32, Option<u32>),
     log_hint: Option<String>,
+    warnings: Vec<ch32rv_contract::Warning>,
 ) -> ExitCode {
     const CMD: &str = "flash";
+    if !cli.json {
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
+    }
     let mut t = match OepDtm::new(p, connection) {
         Ok(t) => t,
         Err(e) => return oep_fail(cli, CMD, e),
@@ -1548,6 +1613,7 @@ fn flash_attached(
     let (scope, store) = crate::cmd_flash::loader_erase_report(args.erase, bytes);
     if cli.json {
         let mut env = ResultEnvelope::success(CMD);
+        env.warnings = warnings;
         env.result = Some(serde_json::json!({
             "flash": {
                 "bytes": total,
@@ -1740,6 +1806,8 @@ enum Backing {
         parts: (u16, usize, u32, ch32rv_oep::target::Offered),
         channels: crate::source::RttChannels,
         input: Vec<u8>,
+        /// The hart RTT runs through: 0 by the probe's ops, else that hart over raw DMI.
+        hart: u32,
     },
 }
 
@@ -1806,15 +1874,32 @@ impl ConsoleSession {
                 check_family_text(at.wch_chip_id, chip)?;
                 let mut t = OepDtm::new(&mut probe, at.connection).map_err(|e| e.to_string())?;
                 let mut warnings = Vec::new();
-                let found = crate::source::rtt_find(
-                    &mut t,
-                    crate::source::rtt_window(at.wch_chip_id),
-                    &mut warnings,
-                );
+                let window = crate::source::rtt_window(at.wch_chip_id);
+                let found = crate::source::rtt_find(&mut t, window, &mut warnings);
                 // rtt_find leaves the hart halted (found or not): let it run again.
                 let resumed = crate::source::RttTarget::resume(&mut t);
-                let channels = found.map_err(|e| e.to_string())?;
-                resumed.map_err(|e| format!("resume after the RTT scan: {e}"))?;
+                // en: A CH32H417 running a V5F build (the sketch on core 1, core 0 waiting in wfi)
+                // answers no memory access through core 0 (cmderr 3, 2026-11-13): run RTT through
+                // core 1, the core that writes the rings.
+                // ja: V5F のビルドが走る H417 は core 0 からメモリを読めない。RTT は core 1 越しに。
+                let (channels, hart) = match found {
+                    Err(crate::source::OpenError::Dmi(e0))
+                        if family_of(at.wch_chip_id).as_deref() == Some("CH32H417") =>
+                    {
+                        resumed.map_err(|e| format!("resume after the RTT scan: {e}"))?;
+                        let mut h = HartRtt(OnHart { t: &mut t, hart: 1 });
+                        let found = crate::source::rtt_find(&mut h, window, &mut warnings);
+                        let resumed = crate::source::RttTarget::resume(&mut h);
+                        let channels = found.map_err(|e1| format!("{e0}; through core 1: {e1}"))?;
+                        resumed.map_err(|e| format!("resume core 1 after the RTT scan: {e}"))?;
+                        (channels, 1)
+                    }
+                    found => {
+                        let channels = found.map_err(|e| e.to_string())?;
+                        resumed.map_err(|e| format!("resume after the RTT scan: {e}"))?;
+                        (channels, 0)
+                    }
+                };
                 for w in warnings {
                     eprintln!("warning[{}]: {}", w.code, w.msg);
                 }
@@ -1825,6 +1910,7 @@ impl ConsoleSession {
                         parts,
                         channels,
                         input: Vec::new(),
+                        hart,
                     },
                     Some((wire, at.connection)),
                 )
@@ -1892,9 +1978,19 @@ impl ConsoleSession {
                 parts,
                 channels,
                 input,
+                hart,
             } => {
                 let mut t = OepDtm::from_parts(&mut self.probe, *connection, *parts);
-                crate::source::rtt_poll(&mut t, *channels, input).map_err(|e| e.to_string())
+                if *hart == 0 {
+                    crate::source::rtt_poll(&mut t, *channels, input)
+                } else {
+                    let mut h = HartRtt(OnHart {
+                        t: &mut t,
+                        hart: *hart,
+                    });
+                    crate::source::rtt_poll(&mut h, *channels, input)
+                }
+                .map_err(|e| e.to_string())
             }
         }
     }
@@ -2691,6 +2787,29 @@ impl ch32rv_dmi::DtmAccess for OnHart<'_, '_> {
     }
 }
 
+/// en: RTT through a hart other than 0, all by the Debug Module over raw DMI (halt, memory,
+/// resume); the probe's ops are hart 0's only.
+/// ja: hart 0 以外を相手にする RTT。すべて生の DMI 越しの Debug Module で。
+struct HartRtt<'a, 'b>(OnHart<'a, 'b>);
+
+impl crate::source::RttTarget for HartRtt<'_, '_> {
+    fn is_halted(&mut self) -> Result<bool, ch32rv_dmi::DmiError> {
+        ch32rv_dmi::DebugModule::new(&mut self.0).is_halted()
+    }
+    fn halt(&mut self) -> Result<(), ch32rv_dmi::DmiError> {
+        ch32rv_dmi::DebugModule::new(&mut self.0).halt()
+    }
+    fn resume(&mut self) -> Result<(), ch32rv_dmi::DmiError> {
+        ch32rv_dmi::DebugModule::new(&mut self.0).resume()
+    }
+    fn read(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, ch32rv_dmi::DmiError> {
+        ch32rv_dmi::DebugModule::new(&mut self.0).read_mem(addr, len)
+    }
+    fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), ch32rv_dmi::DmiError> {
+        ch32rv_dmi::DebugModule::new(&mut self.0).write_mem(addr, data)
+    }
+}
+
 /// en: `len` bytes at `addr` read through `hart` with the Debug Module over raw DMI: the hart is
 /// halted for the read and resumed if it was running, and DATA0 / DATA1 (where a running
 /// program's dmseq / DMDATA console keeps its frame) are put back before it runs.
@@ -2720,6 +2839,17 @@ fn read_on_hart(t: &mut OepDtm<'_>, hart: u32, addr: u32, len: u32) -> Result<Ve
         let _ = ch32rv_dmi::DebugModule::new(&mut h).resume();
     }
     r
+}
+
+/// The family a WCH chip id resolves to in the built-in DB.
+fn family_of(chip_id: Option<u32>) -> Option<String> {
+    chip_id.and_then(
+        |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
+            ch32rv_target::Resolution::Sku(s) => Some(s.family.clone()),
+            ch32rv_target::Resolution::Family(f, _) => Some(f),
+            ch32rv_target::Resolution::Unknown => None,
+        },
+    )
 }
 
 /// en: The target's individual name (host guide §5.3): `<family>-<unique id hex>`, both lowercase

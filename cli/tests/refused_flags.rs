@@ -41,7 +41,6 @@ fn an_oep_flash_refuses_what_its_loader_path_would_ignore() {
         (&["--monitor", "dmdata"][..], "--monitor"),
         (&["--reset", "halt"][..], "--reset halt"),
         (&["--repeat"][..], "--repeat"),
-        (&["--connect-under-reset"][..], "--connect-under-reset"),
         (&["--attach-wait", "3"][..], "--attach-wait"),
     ] {
         let mut args = vec!["flash", "Cargo.toml", "--probe", OEP];

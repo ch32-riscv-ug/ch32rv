@@ -3001,12 +3001,7 @@ mod tests {
         .expect("parses");
         assert_eq!(
             flash_of(&cli).1,
-            [
-                "--connect-under-reset",
-                "--attach-wait",
-                "--reset halt",
-                "--repeat"
-            ]
+            ["--attach-wait", "--reset halt", "--repeat"]
         );
         // Values no path implements are not accepted at all.
         for gone in [&["--verify", "crc"][..], &["--region", "system"][..]] {

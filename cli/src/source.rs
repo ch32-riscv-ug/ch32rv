@@ -254,9 +254,13 @@ impl RttTarget for Session {
     }
 }
 
-/// Read `len` bytes of target memory into one buffer, chunked so each transfer stays small. Stops
-/// early (returning what it has) if a chunk fails, so a short read still lets the scan try.
-fn read_region(t: &mut impl RttTarget, base: u32, len: u32) -> Vec<u8> {
+/// en: Read `len` bytes of target memory into one buffer, chunked so each transfer stays small.
+/// Stops early (returning what it has) if a later chunk fails, so a short read still lets the scan
+/// try; a failure on the first chunk is the error itself (no RAM read at all is not "no control
+/// block": a CH32H417 running a V5F build answers no memory access through core 0, 2026-11-13).
+/// ja: RAM を塊ごとに読む。途中の塊で失敗したら読めた分を返す。最初の塊の失敗はそのままエラー
+/// (何も読めないのは「control block が無い」ではない)。
+fn read_region(t: &mut impl RttTarget, base: u32, len: u32) -> Result<Vec<u8>, DmiError> {
     let mut buf = Vec::with_capacity(len as usize);
     let mut off = 0u32;
     while off < len {
@@ -266,10 +270,11 @@ fn read_region(t: &mut impl RttTarget, base: u32, len: u32) -> Vec<u8> {
                 buf.append(&mut chunk);
                 off += want;
             }
+            Err(e) if off == 0 => return Err(e),
             Err(_) => break,
         }
     }
-    buf
+    Ok(buf)
 }
 
 /// en: Find the RTT control block in the first `scan_len` bytes of RAM (retried while the target
@@ -285,7 +290,7 @@ pub(crate) fn rtt_find(
     let mut found = None;
     for _ in 0..10 {
         t.halt()?;
-        let snap = read_region(t, window.base, window.len);
+        let snap = read_region(t, window.base, window.len)?;
         if let Some(h) = find_control_block(&snap) {
             found = Some(h);
             break;
@@ -852,6 +857,40 @@ mod tests {
         assert_eq!(le32(&t.ram, 0x130 + 12), 2);
         // Nothing new: nothing out.
         assert!(rtt_poll(&mut t, ch, &mut Vec::new()).unwrap().is_empty());
+    }
+
+    /// A target whose memory cannot be read at all (a CH32H417 V5F build through core 0).
+    struct NoMemTarget;
+
+    impl RttTarget for NoMemTarget {
+        fn is_halted(&mut self) -> Result<bool, DmiError> {
+            Ok(true)
+        }
+        fn halt(&mut self) -> Result<(), DmiError> {
+            Ok(())
+        }
+        fn resume(&mut self) -> Result<(), DmiError> {
+            Ok(())
+        }
+        fn read(&mut self, _: u32, _: u32) -> Result<Vec<u8>, DmiError> {
+            Err(DmiError::OperationFailed("cmderr 3".to_owned()))
+        }
+        fn write(&mut self, _: u32, _: &[u8]) -> Result<(), DmiError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn rtt_scan_with_no_ram_read_is_the_read_error() {
+        let window = RttWindow {
+            base: RTT_RAM_BASE,
+            len: 0x400,
+        };
+        let r = rtt_find(&mut NoMemTarget, window, &mut Vec::new());
+        assert!(
+            matches!(&r, Err(OpenError::Dmi(e)) if e.to_string().contains("cmderr 3")),
+            "expected the read error"
+        );
     }
 
     use super::*;
