@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.30.9 - 2026-11-13
+
 - (EN) Fix: `monitor --source rtt` (and the Arduino monitor's rtt) attached to a running program through a WCH-Link (CH549) streams again, and `read` of SRAM through that Link no longer breaks the program. The CH549 Link 2.12's fast read of the top of SRAM overwrites the halted hart's `s1` (x9) with the end of the read and `a0` (x10) with `0xE0000000`; the RTT scan reads the whole SRAM, so ArduinoCore-CH32RV's console-rtt, keeping 0 in `s1`, hung in its `if (s1) ...` loop and neither read its input nor wrote anything. On that Link, reads reaching into SRAM (RTT, `read`) now go through the Debug Module; flash is still read fast. Flash, the bottom of SRAM and the WCH-LinkE leave every GPR alone. Measured on a CH32V203RBT6 with a WCH-Link (CH549) 2.12: 0.30.8 answered nothing to `ready` after `flash` then `monitor --source rtt` (s1 = 0x20010000 afterwards), now READY twice with s1 left at 0.
 - (JA) 修正: WCH-Link(CH549)越しに、走っている program に後からつないだ `monitor --source rtt`(と Arduino のモニタの rtt)が通るようになり、その Link で SRAM を `read` しても program が壊れなくなった。CH549 の Link 2.12 の高速読み出しで SRAM の上の方を読むと、止めた hart の `s1`(x9)が読み出しの終わりの番地に、`a0`(x10)が `0xE0000000` に書き換わる。RTT は SRAM を全部読むので、`s1` に 0 を持つ ArduinoCore-CH32RV の console-rtt が `if (s1) …` のループに入り、入力を読まず何も書かなかった。その Link では SRAM にかかる読み出し(RTT、`read`)を Debug Module で読む。flash は高速読み出しのまま。flash、SRAM の下側、WCH-LinkE では GPR は変わらない。CH32V203RBT6 と WCH-Link(CH549)2.12 で確かめた: 0.30.8 は `flash` の後に `monitor --source rtt` で `ready` を送っても答えず(後で s1 = 0x20010000)、今は 2 回とも READY を返し、s1 は 0 のまま。
 
