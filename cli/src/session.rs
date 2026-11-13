@@ -483,10 +483,14 @@ pub(crate) fn link_fast_read_clobbers(
 /// - CH32V205 family (CH32V205 and CH32V203CCT6 in the DB): s0 (x8) and dscratch0, with
 ///   0xE000D004 through a WCH-LinkE 2.22, whatever chip type byte goes before the attach
 ///   (`mtval` 0xE000D008; ArduinoCore-CH32RV's DMSeq console stopped answering, 2026-11-12).
+/// - CH32M030: s0 (x8) and dscratch0, with 0x1FFFF7F4 through a WCH-LinkE 2.22 (a value written
+///   before the attach reads back as that after it; ArduinoCore-CH32RV's DMDATA console took a load
+///   access fault in its `loop()`, mcause 5, mtval 0x1FFFF7F4, 2026-11-13).
 ///
 /// wch-protocols `protocols/pc-to-link.ja.md` "V103 attach quirk".
 /// ja: WCH-Link の AttachChip が上書きする生きた GPR(どこにも保存されない)。V103 は s1、
 /// V205 の family(DB では CH32V205 と CH32V203CCT6)は s0(と dscratch0。0xE000D004)。
+/// CH32M030 も s0(と dscratch0。0x1FFFF7F4)。
 pub(crate) fn attach_corrupted_register(family_byte: u8, chip_id: u32) -> Option<&'static str> {
     if attach_corrupts_regs(family_byte) {
         return Some("s1");
@@ -504,7 +508,7 @@ pub(crate) fn attach_corrupted_register(family_byte: u8, chip_id: u32) -> Option
 pub(crate) fn family_attach_corrupts(family: &str) -> Option<&'static str> {
     match family {
         "CH32V103" => Some("s1"),
-        "CH32V205" => Some("s0"),
+        "CH32V205" | "CH32M030" => Some("s0"),
         _ => None,
     }
 }

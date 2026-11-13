@@ -383,6 +383,9 @@ pub enum WchLinkError {
     /// The probe answered a command it does not implement (`0xff`).
     #[error("the probe does not support {0}")]
     Unsupported(&'static str),
+    /// A Debug Module operation through the probe failed (the CH32M030's reset).
+    #[error("debug module: {0}")]
+    Dmi(String),
 }
 
 /// WCH-Link hardware variant, reported by GetProbeInfo (byte 2 of the payload).
@@ -533,8 +536,16 @@ pub fn known_bad_firmware(
 }
 
 /// An opened WCH-Link (RISC-V mode) session.
+/// en: Families whose chip the Link's soft reset (Reset 0x01) does not reset: CH32M030 (0x8E),
+/// measured with a WCH-LinkE 2.22 on 2026-11-13. ja: Link の soft reset で reset されない family。
+fn link_reset_misses(family_byte: u8) -> bool {
+    family_byte == 0x8E
+}
+
 pub struct WchLink {
     selected_hart: u32,
+    /// Family byte of the last AttachChip answer (decides how [`WchLink::soft_reset`] resets).
+    attached_family: Option<u8>,
     iface: UsbInterface,
     timeout: Duration,
 }
@@ -553,6 +564,7 @@ impl WchLink {
             iface,
             timeout: DEFAULT_TIMEOUT,
             selected_hart: 0,
+            attached_family: None,
         })
     }
 
@@ -666,6 +678,7 @@ impl WchLink {
         if payload.len() != 5 {
             return Err(WchLinkError::UnexpectedResponse(payload));
         }
+        self.attached_family = Some(payload[0]);
         Ok(AttachInfo {
             family_byte: payload[0],
             chip_id: u32::from_be_bytes([payload[1], payload[2], payload[3], payload[4]]),
@@ -930,9 +943,21 @@ impl WchLink {
         Ok(())
     }
 
-    /// en: Soft reset and run (Reset 0x01). This is `wlink reset` / the run-after-flash reset.
-    /// ja: soft reset して実行(Reset 0x01)。`wlink reset` 相当。
+    /// en: Soft reset (Reset 0x01). This is `wlink reset` / the run-after-flash reset. A LinkE
+    /// raises `haltreq` and issues a system reset, so the hart comes up halted; the caller resumes
+    /// it. On a CH32M030 the Link's reset does not reset the chip (LinkE 2.22: after `flash` the
+    /// hart stayed halted in the loader at 0x20000004 and the sketch never started), so there the
+    /// Debug Module's `ndmreset` resets it instead, also leaving it halted out of reset.
+    /// ja: soft reset(Reset 0x01)。LinkE は haltreq を立てて system reset し、hart は止まって出てくる
+    /// (resume は呼び出し側)。CH32M030 では Link の reset が石を reset しない(LinkE 2.22: `flash` の後、
+    /// hart は loader の 0x20000004 で止まったまま)ので、DM の `ndmreset` で reset する。
     pub fn soft_reset(&mut self) -> Result<(), WchLinkError> {
+        if self.attached_family.is_some_and(link_reset_misses) {
+            ch32rv_dmi::DebugModule::new(&mut *self)
+                .reset_halt()
+                .map_err(|e| WchLinkError::Dmi(e.to_string()))?;
+            return Ok(());
+        }
         let _ = self.command(&Request::soft_reset())?;
         Ok(())
     }
