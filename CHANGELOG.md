@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) Fix: `target info` through an OEP probe shows a CH32H417's uid while a V5F build runs (ArduinoCore-CH32RV's default: the sketch on core 1, core 0 waiting in wfi). Core 0 then answers no memory access (cmderr 3; the probe's `read_block`, which is core 0's, answers fault 0x03), so the uid was missing; ch32rv now reads it through core 1 with the Debug Module over raw DMI, halting core 1 for the read, putting DATA0 / DATA1 (its console's mailbox) back, and resuming it. The `<family>-<uid>` target name of an `oep://<probe>/<port>/<target>` address uses the same read. Measured on a CH32H417QEU6 behind an ESP32-P4X probe (0.0.55) running ArduinoCore-CH32RV's selfcheck: 0.31.1 gave no uid, now `640ebcdabd679c7f` (the value read under reset), and the sketch answers READY before and after.
+- (JA) 修正: V5F のビルド(ArduinoCore-CH32RV の既定。sketch は core 1、core 0 は wfi で待つ)が走る CH32H417 で、OEP probe 越しの `target info` が uid を出す。このとき core 0 はメモリの読み出しに答えない(cmderr 3。core 0 の op である probe の `read_block` は fault 0x03)ので uid が無かった。core 1 越しに、生の DMI で Debug Module を使って読む(読む間だけ core 1 を止め、DATA0 / DATA1(コンソールの郵便受け)を戻して走らせる)。`oep://<probe>/<port>/<target>` の `<family>-<uid>` の名前も同じ読み方。ESP32-P4X の probe(0.0.55)の先で ArduinoCore-CH32RV の selfcheck が走る CH32H417QEU6 で確かめた: 0.31.1 は uid を出さず、今は `640ebcdabd679c7f`(reset をかけて読んだ値と同じ)で、前後で sketch は READY を返す。
+
 - (EN) Contract: `probe list --json`'s `probes[].firmware` may be `null`, as `network[].firmware` and `probe info` already may: an OEP probe ch32rv could not ask (no CDC port yet, or no answer, as one being plugged in) is listed with `null`, which the schema did not allow.
 - (JA) 契約: `probe list --json` の `probes[].firmware` は `null` のことがある(`network[].firmware` と `probe info` と同じ)。尋ねられなかった OEP の probe(CDC の port がまだ無い、答えない。挿している途中など)は `null` で並び、スキーマがそれを許していなかった。
 

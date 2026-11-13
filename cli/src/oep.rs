@@ -2635,6 +2635,18 @@ fn read_uid_why(x: &mut Attached<'_>) -> Result<String, String> {
     if halted && x.halted_at.is_none() {
         resume_after(&mut x.t);
     }
+    // en: A CH32H417 running a V5F build (the sketch on core 1, core 0 waiting in wfi) answers no
+    // memory access through core 0 (cmderr 3, 2026-11-13); core 1 reads it.
+    // ja: V5F のビルドが走る H417 は core 0 からメモリを読めない(cmderr 3)。core 1 で読む。
+    let words = match words {
+        Err(e0) if x.family.as_deref() == Some("CH32H417") => read_on_hart(&mut x.t, 1, at, 8)
+            .map(|b| {
+                let (words, _) = b.as_chunks::<4>();
+                words.iter().map(|c| u32::from_le_bytes(*c)).collect()
+            })
+            .map_err(|e1| format!("{e0}; through core 1: {e1}")),
+        w => w,
+    };
     let words = words.map_err(|e| format!("reading the unique ID at 0x{at:08x} failed: {e}"))?;
     let [w0, w1] = words[..] else {
         return Err(format!(
@@ -2648,6 +2660,66 @@ fn read_uid_why(x: &mut Attached<'_>) -> Result<String, String> {
         ));
     }
     Ok(format!("{w0:08x}{w1:08x}"))
+}
+
+/// en: The OEP transport addressing another hart through raw DMI (oep-if-debug §4: the probe's
+/// high-level ops are hart 0's only; the host selects another hart inside its own dmi requests).
+/// ja: 生の DMI で別の hart を相手にする OEP の transport(高水準の op は hart 0 だけ)。
+struct OnHart<'a, 'b> {
+    t: &'a mut OepDtm<'b>,
+    hart: u32,
+}
+
+impl ch32rv_dmi::DtmAccess for OnHart<'_, '_> {
+    fn selected_hart(&self) -> u32 {
+        self.hart
+    }
+    fn dmi_read(&mut self, addr: u8) -> Result<u32, ch32rv_dmi::DmiError> {
+        ch32rv_dmi::DtmAccess::dmi_read(self.t, addr)
+    }
+    fn dmi_write(&mut self, addr: u8, value: u32) -> Result<(), ch32rv_dmi::DmiError> {
+        ch32rv_dmi::DtmAccess::dmi_write(self.t, addr, value)
+    }
+    fn dmi_nop(&mut self) -> Result<(), ch32rv_dmi::DmiError> {
+        Ok(())
+    }
+    fn dmi_sequence(
+        &mut self,
+        ops: &[ch32rv_dmi::DmiOp],
+    ) -> Result<Vec<u32>, ch32rv_dmi::DmiError> {
+        ch32rv_dmi::DtmAccess::dmi_sequence(self.t, ops)
+    }
+}
+
+/// en: `len` bytes at `addr` read through `hart` with the Debug Module over raw DMI: the hart is
+/// halted for the read and resumed if it was running, and DATA0 / DATA1 (where a running
+/// program's dmseq / DMDATA console keeps its frame) are put back before it runs.
+/// ja: `hart` 越しに DM で読む。走っていれば止めて読み、DATA0 / DATA1 を戻してから走らせる。
+fn read_on_hart(t: &mut OepDtm<'_>, hart: u32, addr: u32, len: u32) -> Result<Vec<u8>, String> {
+    const DATA0: u8 = 0x04;
+    const DATA1: u8 = 0x05;
+    use ch32rv_dmi::DtmAccess;
+    let mut h = OnHart { t, hart };
+    let was_running = !ch32rv_dmi::DebugModule::new(&mut h)
+        .is_halted()
+        .map_err(|e| e.to_string())?;
+    if was_running {
+        ch32rv_dmi::DebugModule::new(&mut h)
+            .halt()
+            .map_err(|e| format!("halt: {e}"))?;
+    }
+    let kept = (h.dmi_read(DATA0), h.dmi_read(DATA1));
+    let r = ch32rv_dmi::DebugModule::new(&mut h)
+        .read_mem(addr, len)
+        .map_err(|e| e.to_string());
+    if let (Ok(d0), Ok(d1)) = kept {
+        let _ = h.dmi_write(DATA1, d1);
+        let _ = h.dmi_write(DATA0, d0);
+    }
+    if was_running {
+        let _ = ch32rv_dmi::DebugModule::new(&mut h).resume();
+    }
+    r
 }
 
 /// en: The target's individual name (host guide §5.3): `<family>-<unique id hex>`, both lowercase
