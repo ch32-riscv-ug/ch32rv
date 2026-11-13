@@ -2527,7 +2527,7 @@ pub(crate) fn verify(
                 seg.addr & !3,
                 (seg.addr + seg.data.len() as u32).div_ceil(4) * 4,
             );
-            let got = match x.t.read_words(lo, ((hi - lo) / 4) as usize) {
+            let got = match x.read_words_any(lo, ((hi - lo) / 4) as usize) {
                 Ok(w) => w.iter().flat_map(|w| w.to_le_bytes()).collect::<Vec<u8>>(),
                 Err(e) => {
                     resume_after(&mut x.t);
@@ -2590,7 +2590,7 @@ pub(crate) fn read(cli: &Cli, args: &crate::args::ReadArgs, a: &OepAddr) -> Exit
             };
         let lo = start & !3;
         let words = (start + len - lo).div_ceil(4) as usize;
-        let data = match x.t.read_words(lo, words) {
+        let data = match x.read_words_any(lo, words) {
             Ok(w) => {
                 let b: Vec<u8> = w.iter().flat_map(|w| w.to_le_bytes()).collect();
                 b[(start - lo) as usize..(start - lo + len) as usize].to_vec()
@@ -2672,9 +2672,9 @@ pub(crate) fn write(cli: &Cli, addr: u32, bytes: &[u8], a: &OepAddr) -> ExitCode
     let len = bytes.len();
     let check = addr < 0x4000_0000;
     with_attached(cli, CMD, a, true, |x| {
-        let result = x.t.write_words(addr, &words).and_then(|()| {
+        let result = x.write_words_any(addr, &words).and_then(|()| {
             if check {
-                x.t.read_words(addr, words.len())
+                x.read_words_any(addr, words.len())
             } else {
                 Ok(words.clone())
             }
@@ -2854,6 +2854,17 @@ impl crate::source::RttTarget for HartRtt<'_, '_> {
 /// program's dmseq / DMDATA console keeps its frame) are put back before it runs.
 /// ja: `hart` 越しに DM で読む。走っていれば止めて読み、DATA0 / DATA1 を戻してから走らせる。
 fn read_on_hart(t: &mut OepDtm<'_>, hart: u32, addr: u32, len: u32) -> Result<Vec<u8>, String> {
+    on_hart(t, hart, |dm| dm.read_mem(addr, len))
+}
+
+/// en: `f` on `hart`'s Debug Module over raw DMI, as [`read_on_hart`] does: halted for it if it
+/// was running, DATA0 / DATA1 put back before it runs again.
+/// ja: `hart` の DM で `f` をする(走っていれば止め、DATA0 / DATA1 を戻して走らせる)。
+fn on_hart<T>(
+    t: &mut OepDtm<'_>,
+    hart: u32,
+    f: impl FnOnce(&mut ch32rv_dmi::DebugModule<'_, OnHart<'_, '_>>) -> Result<T, ch32rv_dmi::DmiError>,
+) -> Result<T, String> {
     const DATA0: u8 = 0x04;
     const DATA1: u8 = 0x05;
     use ch32rv_dmi::DtmAccess;
@@ -2867,9 +2878,7 @@ fn read_on_hart(t: &mut OepDtm<'_>, hart: u32, addr: u32, len: u32) -> Result<Ve
             .map_err(|e| format!("halt: {e}"))?;
     }
     let kept = (h.dmi_read(DATA0), h.dmi_read(DATA1));
-    let r = ch32rv_dmi::DebugModule::new(&mut h)
-        .read_mem(addr, len)
-        .map_err(|e| e.to_string());
+    let r = f(&mut ch32rv_dmi::DebugModule::new(&mut h)).map_err(|e| e.to_string());
     if let (Ok(d0), Ok(d1)) = kept {
         let _ = h.dmi_write(DATA1, d1);
         let _ = h.dmi_write(DATA0, d0);
@@ -2878,6 +2887,46 @@ fn read_on_hart(t: &mut OepDtm<'_>, hart: u32, addr: u32, len: u32) -> Result<Ve
         let _ = ch32rv_dmi::DebugModule::new(&mut h).resume();
     }
     r
+}
+
+/// en: Memory through core 0 (the probe's ops), or - on a CH32H417 whose core 0 answers no memory
+/// access (a V5F build running: cmderr 3, 2026-11-13) - through core 1 over raw DMI. Core 0 is let
+/// run first: a raw DMI write while the probe holds it halted makes the probe drop the s0 / s1 /
+/// a0 / a1 it kept (see the RTT notes).
+/// ja: core 0(probe の op)でメモリを読み書きし、core 0 が答えない H417(V5F のビルド)では core 1
+/// で。probe が core 0 を止めている間に生の DMI を書くと退避した register を捨てるので、先に走らせる。
+impl Attached<'_> {
+    fn read_words_any(&mut self, addr: u32, count: usize) -> Result<Vec<u32>, String> {
+        match self.t.read_words(addr, count) {
+            Ok(w) => Ok(w),
+            Err(e0) if self.family.as_deref() == Some("CH32H417") => {
+                resume_after(&mut self.t);
+                read_on_hart(&mut self.t, 1, addr, (count * 4) as u32)
+                    .map(|b| {
+                        b.as_chunks::<4>()
+                            .0
+                            .iter()
+                            .map(|c| u32::from_le_bytes(*c))
+                            .collect()
+                    })
+                    .map_err(|e1| format!("{e0}; through core 1: {e1}"))
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn write_words_any(&mut self, addr: u32, words: &[u32]) -> Result<(), String> {
+        match self.t.write_words(addr, words) {
+            Ok(()) => Ok(()),
+            Err(e0) if self.family.as_deref() == Some("CH32H417") => {
+                resume_after(&mut self.t);
+                let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+                on_hart(&mut self.t, 1, |dm| dm.write_mem(addr, &bytes))
+                    .map_err(|e1| format!("{e0}; through core 1: {e1}"))
+            }
+            Err(e) => Err(e.to_string()),
+        }
+    }
 }
 
 /// The family a WCH chip id resolves to in the built-in DB.
