@@ -48,7 +48,7 @@ pub fn info(cli: &Cli) -> ExitCode {
     };
 
     let timeout = Duration::from_millis(cli.timeout.map(|s| s * 1000).unwrap_or(3000));
-    let session = match Session::attach(
+    let mut session = match Session::attach(
         &entry,
         speed,
         timeout,
@@ -76,6 +76,7 @@ pub fn info(cli: &Cli) -> ExitCode {
     }
     // Resolve the SKU from the live chip_id against the generated DB (device_ids join, rev [7:4]
     // masked). Fail-closed: an unknown or cross-family-ambiguous id shows no SKU rather than a guess.
+    let uid = session.uid();
     let db = session.db();
     // A `--chip` part among several that share the ID is the part (data request 0011).
     let resolution = db.resolve_with_chip(session.attach.chip_id, cli.chip.as_deref());
@@ -164,7 +165,7 @@ pub fn info(cli: &Cli) -> ExitCode {
         sku,
         family: Some(family),
         chip_id: Some(format!("0x{:08x}", session.attach.chip_id)),
-        uid: chip.as_ref().map(|c| hex(&c.uuid)),
+        uid,
         verified: sku_verified,
         provisional: sku_provisional,
         protected: None,

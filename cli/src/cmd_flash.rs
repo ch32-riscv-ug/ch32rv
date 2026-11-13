@@ -584,12 +584,8 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
     // The STORE (ELF `.ch32rv_store`) `--erase keep-store` keeps, and the name its host backup
     // takes (the chip's UID, else the probe's serial).
     let store = ch32rv_flash::store_region(&bytes, CODE_FLASH_START);
-    let backup_id = match &session.chip {
-        Some(c) => c
-            .uuid
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect::<String>(),
+    let backup_id = match session.uid() {
+        Some(u) => u,
         None => entry
             .dev
             .serial()

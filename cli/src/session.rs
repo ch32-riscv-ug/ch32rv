@@ -294,6 +294,38 @@ impl Session {
         self.reset_run = true;
     }
 
+    /// en: The chip's unique ID as hex: the probe's ChipInfo UUID, else (a family the Link does not
+    /// answer for: CH32M030) the ESIG UNIID1/UNIID2 words read from memory, as `oep::read_uid`.
+    /// Both give `<word0><word1>` in big-endian hex. The hart is left as it was.
+    /// ja: チップ固有 ID。ChipInfo の UUID、無ければ ESIG をメモリから読む(M030 は Link が返さない)。
+    pub fn uid(&mut self) -> Option<String> {
+        if let Some(c) = &self.chip {
+            return Some(c.uuid.iter().map(|b| format!("{b:02x}")).collect());
+        }
+        let at = ch32rv_target::uid_addr(&self.family()).unwrap_or(0x1FFF_F7E8);
+        let was_running = !self.dm().is_halted().unwrap_or(true);
+        if was_running && self.dm().halt().is_err() {
+            return None;
+        }
+        let bytes = self.dm().read_mem(at, 8);
+        if was_running {
+            let _ = self.dm().resume();
+        }
+        let bytes = bytes.ok()?;
+        let [w0, w1] = [0, 4].map(|i| {
+            u32::from_le_bytes(
+                bytes
+                    .get(i..i + 4)
+                    .and_then(|s| s.try_into().ok())
+                    .unwrap_or([0; 4]),
+            )
+        });
+        if (w0 == 0 && w1 == 0) || (w0 == u32::MAX && w1 == u32::MAX) {
+            return None;
+        }
+        Some(format!("{w0:08x}{w1:08x}"))
+    }
+
     pub fn dm(&mut self) -> DebugModule<'_, WchLink> {
         DebugModule::new(&mut self.link)
     }
