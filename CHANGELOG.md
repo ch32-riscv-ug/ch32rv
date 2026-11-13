@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.31.1 - 2026-11-13
+
 - (EN) Fix: a sketch written to a CH32M030 through a WCH-Link runs. The Link's soft reset does not reset that chip, so after `flash` (and `reset`) the hart stayed halted in ch32rv's loader at 0x20000004; a WCH-Link now resets a CH32M030 through the Debug Module's `ndmreset`. And the LinkE's AttachChip leaves the M030's `s0` (x8) and `dscratch0` at `0x1FFFF7F4`, as it leaves the CH32V205's at `0xE000D004`, so the program is restarted the same way (before a command lets go; right after the attach in `monitor`, the Arduino monitor, the WCH-Link broker and gdb), with the warning `attach-corrupts-register`. Measured on a CH32M030G8R7 with a WCH-LinkE 2.22 and ArduinoCore-CH32RV's console sketches: with 0.31.0 the sketch never started after `flash`, and once started faulted (load access, mtval `0x1FFFF7F4`) when a monitor attached; now dmdata and rtt answer READY after `flash`.
 - (JA) 修正: WCH-Link 越しに CH32M030 に書いた sketch が走る。Link の soft reset はこの石を reset しないので、`flash`(と `reset`)の後も hart は ch32rv のローダーの 0x20000004 で止まったままだった。WCH-Link 越しの CH32M030 の reset は Debug Module の `ndmreset` で行う。また LinkE の AttachChip は、CH32V205 の `s0` を `0xE000D004` にするのと同じく、M030 の `s0`(x8)と `dscratch0` を `0x1FFFF7F4` にするので、program を同じように起動し直す(コマンドが離す前に。`monitor`、Arduino のモニタ、WCH-Link のブローカー、gdb では attach の直後に)。warning は `attach-corrupts-register`。CH32M030G8R7 と WCH-LinkE 2.22、ArduinoCore-CH32RV のコンソールの sketch で確かめた: 0.31.0 では `flash` の後に sketch が走らず、走っても monitor の接続でロードの例外(mtval `0x1FFFF7F4`)になった。今は `flash` の後に dmdata と rtt が READY を返す。
 
