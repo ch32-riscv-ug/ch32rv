@@ -96,6 +96,11 @@ fn a_debug_source_streams_the_oep_console_through_the_broker() {
     assert!(r["message"].as_str().unwrap().contains("conflicts"), "{r}");
 
     assert_eq!(m.cmd("CONFIGURE chip CH32V20x")["message"], "OK");
+    // A fresh listener per OPEN, as arduino-cli makes one: the monitor connects before its
+    // source opens, so the failed OPEN left a connection on the first.
+    drop(l);
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = l.local_addr().unwrap();
     let t0 = Instant::now();
     let r = m.cmd(&format!("OPEN {at} {pty}"));
     assert_eq!(r["message"], "OK", "{r}");

@@ -376,7 +376,7 @@ fn emit(out: &mut impl Write, v: &Value) {
 /// its session does, one timestamped line each - for "which command went unanswered" when an IDE
 /// times out (arduino-cli shows a tool's stderr to nobody).
 /// ja: `CH32RV_MONITOR_LOG=<file>` に、受けた命令・返事・session の出来事を時刻付きで追記する。
-fn mlog(msg: std::fmt::Arguments<'_>) {
+pub(crate) fn mlog(msg: std::fmt::Arguments<'_>) {
     static LOG: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
     let log = LOG.get_or_init(|| {
         let path = std::env::var_os("CH32RV_MONITOR_LOG")?;
@@ -414,7 +414,7 @@ fn memit(out: &mut impl Write, v: &Value) {
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -730,28 +730,33 @@ pub fn monitor(cli: &Cli, protocol: &str) -> ExitCode {
                     continue;
                 }
                 shared.stop.store(false, Ordering::SeqCst);
-                let (tx, rx) = mpsc::channel();
+                let slot: Arc<OpenSlot> = Arc::default();
                 let (client, address) = (client.to_owned(), address.to_owned());
-                let (shared2, env2) = (shared.clone(), env.clone());
-                let handle =
-                    std::thread::spawn(move || session(&client, &address, &shared2, &env2, tx));
-                match rx.recv() {
-                    Ok(Ok(sock)) => {
+                let (shared2, env2, slot2) = (shared.clone(), env.clone(), slot.clone());
+                let handle = std::thread::spawn(move || {
+                    session(&client, &address, &shared2, &env2, &slot2);
+                    // Whatever happened, the OPEN is not left waiting.
+                    slot2.finish(Err("monitor session ended before it opened".to_owned()));
+                });
+                match slot.wait(OPEN_ANSWER_WITHIN) {
+                    Opened::Ready(sock) => {
                         running = Some((handle, sock));
                         memit(&mut out, &json!({"eventType":"open","message":"OK"}));
                     }
-                    Ok(Err(m)) => {
+                    Opened::Still(mut sock) => {
+                        mlog(format_args!("open: still opening, answered OK"));
+                        let _ = write!(
+                            sock,
+                            "[ch32rv monitor] still connecting to the target; its output follows when it answers\r\n"
+                        );
+                        running = Some((handle, sock));
+                        memit(&mut out, &json!({"eventType":"open","message":"OK"}));
+                    }
+                    Opened::Failed(m) => {
                         let _ = handle.join();
                         memit(
                             &mut out,
                             &json!({"eventType":"open","error":true,"message":m}),
-                        );
-                    }
-                    Err(_) => {
-                        let _ = handle.join();
-                        memit(
-                            &mut out,
-                            &json!({"eventType":"open","error":true,"message":"monitor session ended before it opened"}),
                         );
                     }
                 }
@@ -1212,33 +1217,146 @@ fn raw_reader(
 /// `ready` で返し、CLOSE まで流す。開いたままの source 変更は同じ socket で backend を替える。
 /// 失ったときは理由を data の行で IDE に送ってプロセスごと終わる(arduino-cli は tool の stderr を
 /// 見せず、黙ったまま残ってはいけない)。
-fn session(
-    client: &str,
-    address: &str,
-    shared: &Shared,
-    env: &Env,
-    ready: mpsc::Sender<Result<TcpStream, String>>,
-) {
-    let setup = || -> Result<(Resolved, Backend, TcpStream), String> {
-        let r = resolve_address(address)?;
-        let backend = Backend::open(&r, shared.settings(), env)?;
-        let sock = TcpStream::connect(client).map_err(|e| format!("connect {client}: {e}"))?;
-        Ok((r, backend, sock))
-    };
+/// en: How long OPEN waits for the source to open before it answers OK anyway: arduino-cli gives
+/// OPEN 10 s (1.3.1), and an OEP attach right after an upload, while the target enumerates USB,
+/// took longer (2026-11-14). Past it the monitor says so as data and streams once the source is
+/// open, or reports why not and ends, as a session lost later does.
+/// ja: OPEN が source を開くのを待つ時間。これを過ぎたら OK を返し、開けたら流す(開けなければ理由を
+/// data で流して終わる)。arduino-cli は OPEN を 10 秒しか待たない。
+const OPEN_ANSWER_WITHIN: Duration = Duration::from_secs(7);
+
+/// en: Between OPEN and its session thread: the socket (connected first, so OPEN can answer
+/// before the source is open), the open's result, and whether OPEN has already answered.
+/// ja: OPEN と session の間の受け渡し(先につないだ socket、開いた結果、OPEN が返事をしたか)。
+#[derive(Default)]
+struct OpenSlot {
+    state: Mutex<OpenState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct OpenState {
+    sock: Option<TcpStream>,
+    result: Option<Result<(), String>>,
+    answered: bool,
+}
+
+/// What OPEN answers.
+enum Opened {
+    /// The source is open: OK.
+    Ready(TcpStream),
+    /// Still opening past [`OPEN_ANSWER_WITHIN`]: OK, and the session goes on.
+    Still(TcpStream),
+    /// The open failed in time: the error.
+    Failed(String),
+}
+
+impl OpenSlot {
+    fn lock(&self) -> std::sync::MutexGuard<'_, OpenState> {
+        match self.state.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        }
+    }
+
+    /// The session's socket, once connected.
+    fn connected(&self, sock: TcpStream) {
+        self.lock().sock = Some(sock);
+        self.changed.notify_all();
+    }
+
+    /// The open's result; true when OPEN has already answered (the session then reports a
+    /// failure itself). Only the first result counts.
+    fn finish(&self, r: Result<(), String>) -> bool {
+        let mut g = self.lock();
+        if g.answered {
+            return true;
+        }
+        if g.result.is_none() {
+            g.result = Some(r);
+        }
+        drop(g);
+        self.changed.notify_all();
+        false
+    }
+
+    /// OPEN's side: the result within `within`, else (once the socket is there) answer anyway.
+    fn wait(&self, within: Duration) -> Opened {
+        let deadline = std::time::Instant::now() + within;
+        let mut g = self.lock();
+        loop {
+            match g.result.take() {
+                Some(Ok(())) => {
+                    if let Some(sock) = g.sock.take() {
+                        g.answered = true;
+                        return Opened::Ready(sock);
+                    }
+                    return Opened::Failed("the monitor's socket went missing".to_owned());
+                }
+                Some(Err(m)) => {
+                    g.answered = true;
+                    return Opened::Failed(m);
+                }
+                None => {}
+            }
+            let now = std::time::Instant::now();
+            if now >= deadline
+                && let Some(sock) = g.sock.take()
+            {
+                g.answered = true;
+                return Opened::Still(sock);
+            }
+            let step = deadline
+                .saturating_duration_since(now)
+                .max(Duration::from_millis(100));
+            g = match self.changed.wait_timeout(g, step) {
+                Ok((g, _)) => g,
+                Err(p) => p.into_inner().0,
+            };
+        }
+    }
+}
+
+fn session(client: &str, address: &str, shared: &Shared, env: &Env, slot: &OpenSlot) {
     mlog(format_args!("session: opening {address}"));
-    let (resolved, mut backend, mut sock) = match setup() {
-        Ok(v) => v,
+    let fail = |m: String| {
+        mlog(format_args!("session: open failed: {m}"));
+        slot.finish(Err(m))
+    };
+    let resolved = match resolve_address(address) {
+        Ok(r) => r,
         Err(m) => {
-            mlog(format_args!("session: open failed: {m}"));
-            let _ = ready.send(Err(m));
+            fail(m);
+            return;
+        }
+    };
+    // en: Connected before the source opens, so OPEN can answer in time however long the open
+    // takes (arduino-cli listens before it sends OPEN and accepts after the answer).
+    // ja: source を開く前につなぐ(OPEN が時間内に返事をできるように)。
+    let mut sock = match TcpStream::connect(client) {
+        Ok(s) => s,
+        Err(e) => {
+            fail(format!("connect {client}: {e}"));
             return;
         }
     };
     let (Ok(keep), Ok(reader)) = (sock.try_clone(), sock.try_clone()) else {
-        let _ = ready.send(Err("socket clone failed".to_owned()));
+        fail("socket clone failed".to_owned());
         return;
     };
-    if ready.send(Ok(keep)).is_err() {
+    slot.connected(keep);
+    let mut backend = match Backend::open(&resolved, shared.settings(), env) {
+        Ok(b) => b,
+        Err(m) => {
+            if fail(m.clone()) {
+                lost(&mut sock, &m);
+            }
+            return;
+        }
+    };
+    slot.finish(Ok(()));
+    mlog(format_args!("session: open"));
+    if shared.stop.load(Ordering::SeqCst) {
         return;
     }
     let input = source::spawn_reader(reader);
@@ -1299,6 +1417,37 @@ fn lost(sock: &mut TcpStream, why: &str) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn open_answers_in_time_however_long_the_source_takes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let sock = || TcpStream::connect(addr).unwrap();
+        // Opened in time: OK with the socket.
+        let slot = OpenSlot::default();
+        slot.connected(sock());
+        assert!(!slot.finish(Ok(())));
+        assert!(matches!(
+            slot.wait(Duration::from_millis(50)),
+            Opened::Ready(_)
+        ));
+        // Failed in time: the error, whether or not the socket was connected.
+        let slot = OpenSlot::default();
+        assert!(!slot.finish(Err("no probe".to_owned())));
+        assert!(
+            matches!(slot.wait(Duration::from_millis(50)), Opened::Failed(m) if m == "no probe")
+        );
+        // Still opening: OK once the socket is there, and a later failure is the session's to
+        // report (finish says OPEN has answered).
+        let slot = OpenSlot::default();
+        slot.connected(sock());
+        assert!(matches!(
+            slot.wait(Duration::from_millis(50)),
+            Opened::Still(_)
+        ));
+        assert!(slot.finish(Err("attach failed".to_owned())));
+    }
 
     #[test]
     fn the_monitor_takes_a_debug_speed() {

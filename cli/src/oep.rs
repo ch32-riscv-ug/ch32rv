@@ -1837,8 +1837,10 @@ impl ConsoleSession {
             ) => open_broker_directly(t).map_err(|(_, m)| m)?,
             (None, _) => return Err("no route".into()),
         };
+        crate::cmd_arduino::mlog(format_args!("oep: broker link up"));
         apply_timeout(&mut link);
         let mut probe = Probe::connect(link).map_err(|e| e.to_string())?;
+        crate::cmd_arduino::mlog(format_args!("oep: probe connected"));
         probe.set_share(true);
         if let Some(place) = a.place() {
             verify_unit(&mut probe, &place.unit)?;
@@ -1848,6 +1850,7 @@ impl ConsoleSession {
         // transport lingering after its last client, ending it seconds later: wait out its
         // lease as the other commands do (a broker answers open itself and never refuses).
         open_with_lock_rule(&mut probe, false, &owner, 3000).map_err(|e| e.to_string())?;
+        crate::cmd_arduino::mlog(format_args!("oep: session open"));
         let mut relink = None;
         let mut source_name = match wanted {
             StreamWanted::FixtureUart(_) => "fixture-uart",
@@ -1877,6 +1880,7 @@ impl ConsoleSession {
             }
             StreamWanted::Rtt => {
                 let place = choose_place(&mut probe, a, chip)?;
+                crate::cmd_arduino::mlog(format_args!("oep: place chosen"));
                 let wire = place.wire;
                 let at = attach_at(&mut probe, wire, place.options(false, max_speed_hz))
                     .map_err(|e| e.to_string())?;
@@ -1926,6 +1930,7 @@ impl ConsoleSession {
             }
             StreamWanted::Console(_) | StreamWanted::ConsoleDefault => {
                 let place = choose_place(&mut probe, a, chip)?;
+                crate::cmd_arduino::mlog(format_args!("oep: place chosen"));
                 let mech = match wanted {
                     StreamWanted::Console(m) => m,
                     _ => place
@@ -1934,14 +1939,26 @@ impl ConsoleSession {
                 };
                 source_name = mech.name();
                 let wire = place.wire;
+                crate::cmd_arduino::mlog(format_args!("oep: attaching ({wire:?})"));
                 let at = attach_at(&mut probe, wire, place.options(false, max_speed_hz))
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| e.to_string());
+                crate::cmd_arduino::mlog(format_args!(
+                    "oep: attach {:?}",
+                    at.as_ref().map(|a| (a.connection, a.existing))
+                ));
+                let at = at?;
                 check_family_text(at.wch_chip_id, chip)?;
-                let mut s =
+                let s =
                     ch32rv_oep::stream::PosStream::open_console(&mut probe, at.connection, mech)
-                        .map_err(|e| e.to_string())?;
-                s.start_at_last_reset(&mut probe)
-                    .map_err(|e| e.to_string())?;
+                        .map_err(|e| e.to_string());
+                crate::cmd_arduino::mlog(format_args!(
+                    "oep: console open {:?}",
+                    s.as_ref().map(|_| ())
+                ));
+                let mut s = s?;
+                let r = s.start_at_last_reset(&mut probe).map_err(|e| e.to_string());
+                crate::cmd_arduino::mlog(format_args!("oep: from the last reset mark {r:?}"));
+                r?;
                 relink = Some((place, mech));
                 (Backing::Stream(s), Some((wire, at.connection)))
             }
