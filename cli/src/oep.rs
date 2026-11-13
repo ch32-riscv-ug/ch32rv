@@ -2044,8 +2044,33 @@ impl ConsoleSession {
     /// Send input; returns how many bytes were taken (resend the rest later). RTT keeps it and
     /// hands it to the target's down ring on the next polls.
     pub(crate) fn write(&mut self, data: &[u8]) -> Result<usize, String> {
+        let no_resource = |e: &OepError| {
+            matches!(e, OepError::Rejected { reason, .. }
+                if *reason == ch32rv_oep::registry::reject_reasons::NO_RESOURCE)
+        };
         match &mut self.stream {
-            Backing::Stream(s) => s.write(&mut self.probe, data).map_err(|e| e.to_string()),
+            // en: A closed stream answers no_resource (oep-if-console §1) to a write as to a
+            // poll: the target slept or reset and the probe closed its connection. Attach again
+            // as a poll does and hand the input to the new stream; while the target is not back
+            // the input is dropped (a test resends its line), not the monitor ended - a CH32V203
+            // in a 1.8 s standby ended the monitor at its first `ping` (reason 0x0a, 2026-11-13).
+            // ja: 閉じたストリームへの書き込みも no_resource で断られる(target が寝た / reset した)。
+            // poll と同じく attach し直して新しいストリームへ渡す。戻っていなければ捨てる(monitor は
+            // 終えない)。
+            Backing::Stream(s) => match s.write(&mut self.probe, data) {
+                Err(e) if no_resource(&e) => {
+                    self.quiet_since = Instant::now();
+                    self.relink()?;
+                    let Backing::Stream(s) = &mut self.stream else {
+                        return Ok(data.len());
+                    };
+                    match s.write(&mut self.probe, data) {
+                        Err(e) if no_resource(&e) => Ok(data.len()),
+                        r => r.map_err(|e| e.to_string()),
+                    }
+                }
+                r => r.map_err(|e| e.to_string()),
+            },
             Backing::Rtt { input, .. } => {
                 input.extend_from_slice(data);
                 Ok(data.len())
