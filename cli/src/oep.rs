@@ -1425,7 +1425,9 @@ fn flash_attached(
     let chip_id = chip_id.or_else(|| {
         let mut halted = true;
         ch32rv_target::Db::builtin().chip_id_from_memory(|addr| {
-            read_words_halting(&mut t, &mut halted, addr, 1).and_then(|w| w.first().copied())
+            read_words_halting(&mut t, &mut halted, addr, 1)
+                .ok()
+                .and_then(|w| w.first().copied())
         })
     });
     let family = match family(cli, CMD, chip_id) {
@@ -2128,6 +2130,7 @@ pub(crate) fn with_attached_reset(
                     let mut halted = at.halted.is_some();
                     let id = ch32rv_target::Db::builtin().chip_id_from_memory(|addr| {
                         read_words_halting(&mut t, &mut halted, addr, 1)
+                            .ok()
                             .and_then(|w| w.first().copied())
                     });
                     if halted && at.halted.is_none() {
@@ -2602,19 +2605,25 @@ fn read_words_halting(
     halted: &mut bool,
     addr: u32,
     count: usize,
-) -> Option<Vec<u32>> {
+) -> Result<Vec<u32>, String> {
     match t.read_words(addr, count) {
-        Ok(w) => Some(w),
+        Ok(w) => Ok(w),
         Err(_) if !*halted => {
-            t.halt().ok()?;
+            t.halt().map_err(|e| format!("halt for the read: {e}"))?;
             *halted = true;
-            t.read_words(addr, count).ok()
+            t.read_words(addr, count).map_err(|e| e.to_string())
         }
-        Err(_) => None,
+        Err(e) => Err(e.to_string()),
     }
 }
 
 fn read_uid(x: &mut Attached<'_>) -> Option<String> {
+    read_uid_why(x).ok()
+}
+
+/// en: [`read_uid`], or why there is none (for `target info`'s warning `uid-unavailable`).
+/// ja: UID、無ければその理由。
+fn read_uid_why(x: &mut Attached<'_>) -> Result<String, String> {
     // Most families keep it at 0x1FFFF7E8; CH32M030 at 0x1FFFF3A8 (ch32-device-data esig).
     let at = x
         .family
@@ -2626,14 +2635,19 @@ fn read_uid(x: &mut Attached<'_>) -> Option<String> {
     if halted && x.halted_at.is_none() {
         resume_after(&mut x.t);
     }
-    let words = words?;
+    let words = words.map_err(|e| format!("reading the unique ID at 0x{at:08x} failed: {e}"))?;
     let [w0, w1] = words[..] else {
-        return None;
+        return Err(format!(
+            "reading the unique ID at 0x{at:08x} returned {} word(s)",
+            words.len()
+        ));
     };
     if (w0 == 0 && w1 == 0) || (w0 == u32::MAX && w1 == u32::MAX) {
-        return None;
+        return Err(format!(
+            "the unique ID at 0x{at:08x} reads 0x{w0:08x}{w1:08x}, not an ID"
+        ));
     }
-    Some(format!("{w0:08x}{w1:08x}"))
+    Ok(format!("{w0:08x}{w1:08x}"))
 }
 
 /// en: The target's individual name (host guide §5.3): `<family>-<unique id hex>`, both lowercase
@@ -2650,9 +2664,20 @@ pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
         let sku = part.sku.as_ref();
         let flash = part.geometry.map(|g| g.0);
         let sram = part.geometry.map(|g| g.1);
-        let uid = read_uid(x);
+        let (uid, uid_why) = match read_uid_why(x) {
+            Ok(u) => (Some(u), None),
+            Err(why) => (None, Some(why)),
+        };
+        let warnings: Vec<ch32rv_contract::Warning> = uid_why
+            .iter()
+            .map(|why| ch32rv_contract::Warning {
+                code: "uid-unavailable".to_owned(),
+                msg: why.clone(),
+            })
+            .collect();
         if cli.json {
             let mut env = ResultEnvelope::success(CMD);
+            env.warnings = warnings;
             // The same `target` block the WCH-Link path fills, so a caller reads one place.
             env.target = Some(ch32rv_contract::envelope::TargetReport {
                 sku: sku.map(|s| s.sku.clone()),
@@ -2685,6 +2710,9 @@ pub(crate) fn target_info(cli: &Cli, a: &OepAddr) -> ExitCode {
             }
             println!("family:   {}", x.family.as_deref().unwrap_or("unknown"));
             println!("uid:      {}", uid.as_deref().unwrap_or("-"));
+            for w in &warnings {
+                eprintln!("warning[{}]: {}", w.code, w.msg);
+            }
             if let Some(s) = sku {
                 println!("sku:      {}", s.sku);
             } else if !part.candidates.is_empty() {

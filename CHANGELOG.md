@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- (EN) Contract: `probe list --json`'s `probes[].firmware` may be `null`, as `network[].firmware` and `probe info` already may: an OEP probe ch32rv could not ask (no CDC port yet, or no answer, as one being plugged in) is listed with `null`, which the schema did not allow.
+- (JA) 契約: `probe list --json` の `probes[].firmware` は `null` のことがある(`network[].firmware` と `probe info` と同じ)。尋ねられなかった OEP の probe(CDC の port がまだ無い、答えない。挿している途中など)は `null` で並び、スキーマがそれを許していなかった。
+
+- (EN) `target info` through an OEP probe says why it shows no uid: the warning `uid-unavailable` gives the address and the probe's answer (on a CH32H417QEU6 behind an ESP32-P4X probe, `read_block` answers fault 0x03 at every address). The uid was left out of the result with no word before.
+- (JA) OEP probe 越しの `target info` は、uid を出せないときに理由を言う: warning `uid-unavailable` に番地と probe の答えを出す(ESP32-P4X の probe の先の CH32H417QEU6 では、`read_block` がどの番地でも fault 0x03 を返す)。これまでは何も言わずに結果から uid を落としていた。
+
 ## 0.31.1 - 2026-11-13
 
 - (EN) Fix: a sketch written to a CH32M030 through a WCH-Link runs. The Link's soft reset does not reset that chip, so after `flash` (and `reset`) the hart stayed halted in ch32rv's loader at 0x20000004; a WCH-Link now resets a CH32M030 through the Debug Module's `ndmreset`. And the LinkE's AttachChip leaves the M030's `s0` (x8) and `dscratch0` at `0x1FFFF7F4`, as it leaves the CH32V205's at `0xE000D004`, so the program is restarted the same way (before a command lets go; right after the attach in `monitor`, the Arduino monitor, the WCH-Link broker and gdb), with the warning `attach-corrupts-register`. Measured on a CH32M030G8R7 with a WCH-LinkE 2.22 and ArduinoCore-CH32RV's console sketches: with 0.31.0 the sketch never started after `flash`, and once started faulted (load access, mtval `0x1FFFF7F4`) when a monitor attached; now dmdata and rtt answer READY after `flash`.

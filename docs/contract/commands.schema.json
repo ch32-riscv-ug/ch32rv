@@ -297,7 +297,7 @@
               "address": {"type": "string", "description": "--probe に渡せる住所"},
               "mode": {"type": "string", "enum": ["riscv", "dap", "iap", "isp", "unknown"]},
               "firmware": {
-                "type": ["object", "string"],
+                "type": ["object", "string", "null"],
                 "properties": {
                   "raw": {"type": "string", "description": "生 byte の hex"},
                   "norm": {"type": "string", "description": "\"<major>.<minor>\"(0 埋めしない)。比較はこの値で"},
@@ -305,7 +305,7 @@
                   "known_bad": {"type": "boolean"},
                   "mode": {"type": "string", "description": "riscv / arm(CH549 の Link だけ)"}
                 },
-                "description": "WCH-Link は object。OEP の probe は describe の FIRMWARE の文字列"
+                "description": "WCH-Link は object。OEP の probe は describe の FIRMWARE の文字列。読めなかったとき(CDC の port がまだ無い、答えない)は null"
               }
             }
           },
