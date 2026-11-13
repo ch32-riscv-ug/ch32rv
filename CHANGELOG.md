@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) The Arduino monitor answers `QUIT` before it cleans up: arduino-cli 1.3.1 waits 250 ms for the answer and kills the process whatever came back, so a clean-up that took longer ended the monitor with `Port monitor error: timeout waiting for message`. The clean-up itself happens at `CLOSE`, which arduino-cli waits 5 s for. And `CH32RV_MONITOR_LOG=<file>` makes the monitor append each command it is told, its answer and what its session does (opened, failed, why the backend left, the process exiting), timestamped with the PID, to see which command went unanswered when an IDE times out.
+- (JA) Arduino のモニタは、`QUIT` に先に返事をしてから後始末をする。arduino-cli 1.3.1 は返事を 250 ms だけ待ち、返事の有無によらず process を止めるので、後始末が長いとモニタが `Port monitor error: timeout waiting for message` で終わっていた。後始末そのものは、arduino-cli が 5 秒待つ `CLOSE` で行う。また `CH32RV_MONITOR_LOG=<file>` で、モニタは受けた命令・返事・session の出来事(開いた、開けない、backend が抜けた理由、process の終了)を、時刻と PID 付きでそのファイルに追記する。IDE が時間切れになったとき、どの命令に返事が無かったかを見るためのもの。
+
 - (EN) Fix: `read`, `verify` and `write` (RAM) through an OEP probe work on a CH32H417 whose core 0 answers no memory access (a V5F build running, as after ArduinoCore-CH32RV's selfcheck: the probe's `read_block` faults with 0x03). They go through core 1 then, as the uid and RTT already do: core 0 is let run first, core 1 is halted for the access, its DATA0 / DATA1 put back, and resumed. Measured on a CH32H417QEU6 behind an ESP32-P4X probe 0.0.55 right after selfcheck: 0.31.2's `read` and `verify` failed, now both pass and the sketch answers READY afterwards.
 - (JA) 修正: core 0 がメモリの読み書きに答えない CH32H417(V5F のビルドが走る。ArduinoCore-CH32RV の selfcheck の後など。probe の `read_block` は fault 0x03)で、OEP probe 越しの `read`、`verify`、`write`(RAM)が通る。uid と RTT と同じく、そのときは core 1 越しに行う: 先に core 0 を走らせ、core 1 を止めて読み書きし、DATA0 / DATA1 を戻して走らせる。ESP32-P4X の probe 0.0.55 の先の CH32H417QEU6 で、selfcheck の直後に確かめた: 0.31.2 の `read` と `verify` は失敗し、今はどちらも通り、その後も sketch は READY を返す。
 

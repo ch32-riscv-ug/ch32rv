@@ -372,6 +372,45 @@ fn emit(out: &mut impl Write, v: &Value) {
 
 // ---- arduino monitor (Pluggable Monitor protocol) ----
 
+/// en: `CH32RV_MONITOR_LOG=<file>`: the monitor appends what it is told, what it answers and what
+/// its session does, one timestamped line each - for "which command went unanswered" when an IDE
+/// times out (arduino-cli shows a tool's stderr to nobody).
+/// ja: `CH32RV_MONITOR_LOG=<file>` に、受けた命令・返事・session の出来事を時刻付きで追記する。
+fn mlog(msg: std::fmt::Arguments<'_>) {
+    static LOG: std::sync::OnceLock<Option<Mutex<std::fs::File>>> = std::sync::OnceLock::new();
+    let log = LOG.get_or_init(|| {
+        let path = std::env::var_os("CH32RV_MONITOR_LOG")?;
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+            .map(Mutex::new)
+    });
+    if let Some(f) = log {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default();
+        let mut f = match f.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let _ = writeln!(
+            f,
+            "{}.{:03} [{}] {msg}",
+            now.as_secs(),
+            now.subsec_millis(),
+            std::process::id()
+        );
+    }
+}
+
+/// [`emit`] for the monitor: logged too.
+fn memit(out: &mut impl Write, v: &Value) {
+    mlog(format_args!("> {v}"));
+    emit(out, v);
+}
+
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -642,15 +681,16 @@ pub fn monitor(cli: &Cli, protocol: &str) -> ExitCode {
 
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
+        mlog(format_args!("< {line}"));
         let parts: Vec<&str> = line.split_whitespace().collect();
         let word = parts.first().copied().unwrap_or("").to_ascii_uppercase();
         match word.as_str() {
             "" => {}
-            "HELLO" => emit(
+            "HELLO" => memit(
                 &mut out,
                 &json!({"eventType":"hello","protocolVersion":1,"message":"OK"}),
             ),
-            "DESCRIBE" => emit(
+            "DESCRIBE" => memit(
                 &mut out,
                 &json!({
                     "eventType":"describe","message":"OK",
@@ -666,8 +706,8 @@ pub fn monitor(cli: &Cli, protocol: &str) -> ExitCode {
                     _ => Err("CONFIGURE <key> <value>".to_owned()),
                 };
                 match result {
-                    Ok(()) => emit(&mut out, &json!({"eventType":"configure","message":"OK"})),
-                    Err(m) => emit(
+                    Ok(()) => memit(&mut out, &json!({"eventType":"configure","message":"OK"})),
+                    Err(m) => memit(
                         &mut out,
                         &json!({"eventType":"configure","error":true,"message":m}),
                     ),
@@ -676,14 +716,14 @@ pub fn monitor(cli: &Cli, protocol: &str) -> ExitCode {
             "OPEN" => {
                 // OPEN <client-host:port> <port-address>
                 let (Some(&client), Some(&address)) = (parts.get(1), parts.get(2)) else {
-                    emit(
+                    memit(
                         &mut out,
                         &json!({"eventType":"open","error":true,"message":"OPEN needs <host:port> <port>"}),
                     );
                     continue;
                 };
                 if running.is_some() {
-                    emit(
+                    memit(
                         &mut out,
                         &json!({"eventType":"open","error":true,"message":"already open"}),
                     );
@@ -698,18 +738,18 @@ pub fn monitor(cli: &Cli, protocol: &str) -> ExitCode {
                 match rx.recv() {
                     Ok(Ok(sock)) => {
                         running = Some((handle, sock));
-                        emit(&mut out, &json!({"eventType":"open","message":"OK"}));
+                        memit(&mut out, &json!({"eventType":"open","message":"OK"}));
                     }
                     Ok(Err(m)) => {
                         let _ = handle.join();
-                        emit(
+                        memit(
                             &mut out,
                             &json!({"eventType":"open","error":true,"message":m}),
                         );
                     }
                     Err(_) => {
                         let _ = handle.join();
-                        emit(
+                        memit(
                             &mut out,
                             &json!({"eventType":"open","error":true,"message":"monitor session ended before it opened"}),
                         );
@@ -718,14 +758,20 @@ pub fn monitor(cli: &Cli, protocol: &str) -> ExitCode {
             }
             "CLOSE" => {
                 close(&mut running);
-                emit(&mut out, &json!({"eventType":"close","message":"OK"}));
+                memit(&mut out, &json!({"eventType":"close","message":"OK"}));
             }
             "QUIT" => {
+                // en: Answer first: arduino-cli waits 250 ms for it and then kills the process
+                // whatever came back (internal/arduino/monitor/monitor.go, 1.3.1), so a session
+                // still open (no CLOSE before) gets its clean-up only while it is not killed.
+                // CLOSE, which arduino-cli waits 5 s for, is where the clean-up is done.
+                // ja: 先に返事をする(arduino-cli は 250 ms 待ち、返事の有無によらず process を止める)。
+                // 後始末は 5 秒待つ CLOSE で済ませる。
+                memit(&mut out, &json!({"eventType":"quit","message":"OK"}));
                 close(&mut running);
-                emit(&mut out, &json!({"eventType":"quit","message":"OK"}));
                 return ExitCode::SUCCESS;
             }
-            other => emit(
+            other => memit(
                 &mut out,
                 &json!({
                 "eventType": other.to_ascii_lowercase(),"error":true,
@@ -734,6 +780,7 @@ pub fn monitor(cli: &Cli, protocol: &str) -> ExitCode {
         }
     }
     // stdin closed: arduino-cli is gone (or going). Never outlive it.
+    mlog(format_args!("stdin closed"));
     close(&mut running);
     ExitCode::SUCCESS
 }
@@ -856,6 +903,7 @@ enum Backend {
 }
 
 /// Why a backend returned.
+#[derive(Debug)]
 enum Leave {
     /// CLOSE / QUIT / stdin EOF.
     Stop,
@@ -1177,9 +1225,11 @@ fn session(
         let sock = TcpStream::connect(client).map_err(|e| format!("connect {client}: {e}"))?;
         Ok((r, backend, sock))
     };
+    mlog(format_args!("session: opening {address}"));
     let (resolved, mut backend, mut sock) = match setup() {
         Ok(v) => v,
         Err(m) => {
+            mlog(format_args!("session: open failed: {m}"));
             let _ = ready.send(Err(m));
             return;
         }
@@ -1195,7 +1245,9 @@ fn session(
     let wch = resolved.entry.is_some();
     say_reclock(&mut sock, shared.settings().source, wch);
     loop {
-        match backend.run(shared, &mut sock, &input) {
+        let leave = backend.run(shared, &mut sock, &input);
+        mlog(format_args!("session: backend left: {leave:?}"));
+        match leave {
             Leave::Stop => return,
             Leave::Switch => {
                 drop(backend);
@@ -1237,6 +1289,7 @@ fn say_reclock(sock: &mut TcpStream, source: MonitorSource, wch_link: bool) {
 
 /// Tell the IDE why the monitor stops, then end the process.
 fn lost(sock: &mut TcpStream, why: &str) -> ! {
+    mlog(format_args!("session: stopped, process exits: {why}"));
     let _ = write!(sock, "\r\n[ch32rv monitor] stopped: {why}\r\n");
     let _ = sock.flush();
     let _ = sock.shutdown(Shutdown::Both);
