@@ -21,7 +21,7 @@ pub mod pipe;
 pub mod replay;
 pub mod selector;
 
-pub use device::{UsbDeviceInfo, UsbError, UsbInterface, enumerate};
+pub use device::{UsbDeviceInfo, UsbError, UsbInterface, enumerate, with_one_enumeration};
 pub use lock::{
     DeviceLock, LockError, create_oep_brokers_dir, create_runtime_dir, oep_brokers_dir,
     oep_brokers_dir_checked, process_alive, runtime_dir, sanitize as sanitize_key,

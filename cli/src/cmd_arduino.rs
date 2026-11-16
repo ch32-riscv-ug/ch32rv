@@ -18,10 +18,8 @@ use crate::args::Cli;
 
 /// `arduino discovery`: the Pluggable Discovery protocol over stdio.
 pub fn discovery(_cli: &Cli) -> ExitCode {
-    let stdin = std::io::stdin();
     let mut out = std::io::stdout();
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
+    for line in stdin_lines_or_exit() {
         let word = line
             .split_whitespace()
             .next()
@@ -57,15 +55,84 @@ pub fn discovery(_cli: &Cli) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// en: How long one command may still run after stdin closed before the process ends anyway.
+/// A LIST over many probes takes seconds (6 s on the bench); a stuck one never ends.
+/// ja: stdin が閉じた後、1 つのコマンドをどれだけ待ってから終えるか。
+const ORPHAN_GRACE: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// en: stdin's lines, read on a thread of their own, so that stdin closing (arduino-cli quit or
+/// died) is seen even while a command is stuck - a LIST waiting on a probe or on USB. The lines
+/// already read are still answered; but when one command is still running [`ORPHAN_GRACE`] after
+/// stdin closed, the process ends, so a discovery never outlives its IDE holding a port.
+/// ja: stdin の行を別の thread で読む。stdin が閉じても読んだ行には答えるが、閉じた後 1 つの
+/// コマンドが 30 秒を超えて終わらなければプロセスを終える(IDE より長く port を持って残らない)。
+struct StdinLines {
+    rx: std::sync::mpsc::Receiver<String>,
+    /// Milliseconds since `epoch` when the command now running started; 0 while waiting.
+    busy_since: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    epoch: std::time::Instant,
+}
+
+impl Iterator for StdinLines {
+    type Item = String;
+    fn next(&mut self) -> Option<String> {
+        use std::sync::atomic::Ordering;
+        self.busy_since.store(0, Ordering::Relaxed);
+        let line = self.rx.recv().ok()?;
+        let now = (self.epoch.elapsed().as_millis() as u64).max(1);
+        self.busy_since.store(now, Ordering::Relaxed);
+        Some(line)
+    }
+}
+
+fn stdin_lines_or_exit() -> StdinLines {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let (tx, rx) = std::sync::mpsc::channel();
+    let busy_since = std::sync::Arc::new(AtomicU64::new(0));
+    let epoch = std::time::Instant::now();
+    let busy = busy_since.clone();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                return;
+            }
+        }
+        drop(tx);
+        // stdin closed: the lines read are answered, a command stuck past the grace is not.
+        let closed = epoch.elapsed();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let since = busy.load(Ordering::Relaxed);
+            if since == 0 {
+                continue;
+            }
+            let started = std::time::Duration::from_millis(since).max(closed);
+            if epoch.elapsed().saturating_sub(started) > ORPHAN_GRACE {
+                std::process::exit(0);
+            }
+        }
+    });
+    StdinLines {
+        rx,
+        busy_since,
+        epoch,
+    }
+}
+
 /// Enumerate WCH probes as Pluggable-Discovery ports (from USB descriptors only - no AttachChip,
 /// so it never disturbs an in-flight upload/monitor on the same probe).
 pub(crate) fn list_ports() -> Vec<Value> {
-    let mut ports = wchlink_ports();
-    ports.extend(oep_ports());
-    ports.extend(hid_ports());
-    ports.extend(isp_route_ports());
-    ports.push(waiting_port());
-    ports
+    // One USB enumeration for the whole listing (it asked for 49, 6-30 s on a bench of ~200
+    // devices, past arduino-cli's 10 s for a LIST). ja: 一覧全体で USB の列挙を 1 回に。
+    ch32rv_usb::with_one_enumeration(|| {
+        let mut ports = wchlink_ports();
+        ports.extend(oep_ports());
+        ports.extend(hid_ports());
+        ports.extend(isp_route_ports());
+        ports.push(waiting_port());
+        ports
+    })
 }
 
 /// en: The port that is always listed (docs/freeze-decisions.ja.md §2): uploading through it waits

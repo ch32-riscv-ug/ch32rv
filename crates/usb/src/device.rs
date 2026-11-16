@@ -503,6 +503,9 @@ pub fn enumerate() -> Result<Vec<UsbDeviceInfo>, UsbError> {
             inner: Inner::Replay(dev),
         }]);
     }
+    if let Some(devs) = SNAPSHOT.with(|s| s.borrow().clone()) {
+        return Ok(devs);
+    }
     let devices = nusb::list_devices()
         .wait()
         .map_err(|e| UsbError::Enumerate(io::Error::from(e).to_string()))?;
@@ -511,6 +514,37 @@ pub fn enumerate() -> Result<Vec<UsbDeviceInfo>, UsbError> {
             inner: Inner::Nusb(inner),
         })
         .collect())
+}
+
+thread_local! {
+    static SNAPSHOT: std::cell::RefCell<Option<Vec<UsbDeviceInfo>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// en: Run `f` with one enumeration standing in for every [`enumerate`] on this thread inside it.
+/// A listing asks for the devices many times over (per probe kind, per probe connected), and each
+/// enumeration reads every device's sysfs strings: with ~200 USB devices one Arduino `LIST` did 49
+/// of them, 6-30 s against arduino-cli's 10 s. Only for read-mostly passes that take a few
+/// seconds at most: a device that appears or re-enumerates meanwhile is not seen.
+/// ja: `f` の中の(この thread の)`enumerate` を 1 回の列挙で済ませる。一覧は何度も列挙を求め、
+/// 列挙は毎回全 device の sysfs の文字列を読む(USB 約 200 台で 1 回の LIST が 49 回、6〜30 秒)。
+/// 数秒で終わる読み出し中心の処理だけに使う(その間に現れた device は見えない)。
+pub fn with_one_enumeration<T>(f: impl FnOnce() -> T) -> T {
+    let outer = SNAPSHOT.with(|s| s.borrow().is_some());
+    if outer {
+        return f();
+    }
+    if let Ok(devs) = enumerate() {
+        SNAPSHOT.with(|s| *s.borrow_mut() = Some(devs));
+    }
+    struct Clear;
+    impl Drop for Clear {
+        fn drop(&mut self) {
+            SNAPSHOT.with(|s| *s.borrow_mut() = None);
+        }
+    }
+    let _clear = Clear;
+    f()
 }
 
 /// en: An opened device with one bulk OUT/IN endpoint pair and blocking transfers,

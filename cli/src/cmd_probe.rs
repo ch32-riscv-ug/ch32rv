@@ -253,6 +253,11 @@ pub fn list(cli: &Cli, watch: bool) -> ExitCode {
     if watch {
         return watch_probes(cli);
     }
+    // One USB enumeration for the whole listing (see `ch32rv_usb::with_one_enumeration`).
+    ch32rv_usb::with_one_enumeration(|| list_once(cli))
+}
+
+fn list_once(cli: &Cli) -> ExitCode {
     let mut entries = match wch_devices() {
         Ok(e) => e,
         Err(e) => {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- (EN) Fix: `arduino discovery` no longer outlives its IDE holding a port. It reads stdin on a thread of its own, so stdin closing is seen even while a command is stuck; the lines already read are still answered, but a command still running 30 s after stdin closed ends the process. arduino-cli kills a discovery 5 s after QUIT, so this is for an arduino-cli that went away without doing so: a LIST stuck in a serial drain (fixed by itself in 979c41e) held an OEP probe's port for hours. Checked with a fault injection that makes opening `/dev/tty*` hang: the stuck process ended 30 s after stdin closed.
+- (JA) 修正: `arduino discovery` が、port を持ったまま IDE より長く残らない。stdin を別の thread で読むので、コマンドが止まっていても stdin が閉じたことが分かる。読んだ行には答えるが、閉じた後 30 秒を超えて終わらないコマンドがあればプロセスを終える。arduino-cli は QUIT の 5 秒後に discovery を kill するので、これは kill せずに arduino-cli が消えたときのため: serial の送信完了待ちで止まった LIST(それ自体は 979c41e で修正)が、OEP の probe の port を何時間も持っていた。`/dev/tty*` を開くと止まる故障注入で確かめた: 止まったプロセスは stdin が閉じた 30 秒後に終わった。
+- (EN) Fix: an Arduino `LIST` and `probe list` enumerate USB once. Each enumeration reads every device's sysfs strings, and one LIST asked for 49 of them: 18-30 s on a bench of ~200 USB devices, past arduino-cli's 10 s for a LIST answer. Now about 10 s there, of which 5 s is one OEP probe's HID taking the kernel's 5 s to time out a report while another tool uses the probe.
+- (JA) 修正: Arduino の `LIST` と `probe list` は USB を 1 回だけ列挙する。列挙は毎回すべての device の sysfs の文字列を読み、1 回の LIST が 49 回列挙していた: USB の device が約 200 台の台で 18〜30 秒かかり、arduino-cli が LIST の答えを待つ 10 秒を超えていた。今はその台で約 10 秒。うち 5 秒は、別の道具が使っている OEP の probe 1 台の HID で、kernel が report の送信を 5 秒で打ち切るのを待つ分。
+
 - (EN) Fix: OEP serial writes no longer call `flush()` after each frame. On Unix this invokes `tcdrain()`, which can wait indefinitely for a stalled device despite the serial timeout, leaving Arduino discovery holding the port. A Linux PTY fault-injection regression verifies frame delivery and the missing-reply timeout when `tcdrain()` never returns; the USB-side trigger remains unverified.
 - (JA) 修正: OEP の serial 送信で frame ごとの `flush()` を廃止。Unix では `tcdrain()` が serial timeout にかかわらず停止した機器を待ち続け、Arduino discovery が port を保持したまま残りうる。Linux の PTY 故障注入試験で、`tcdrain()` が戻らなくても frame が届き、無応答時に timeout で戻ることを確認。USB 側の発生条件は未確認。
 
