@@ -19,5 +19,7 @@ jobs:
         run: |
           cargo test --locked -p ch32rv-oep
           cargo test --locked -p ch32rv --test oep_flash --test oep_monitor --test broker
+      - name: Stalled serial drain regression (PTY, no hardware)
+        run: python3 scripts/test-serial-drain.py
       - name: Hardware harness guards (no device access)
         run: uv run --project tests/hardware --locked pytest -c tests/hardware/pyproject.toml tests/hardware/test_guards.py

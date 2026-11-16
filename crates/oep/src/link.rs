@@ -964,8 +964,11 @@ struct SerialStream(Box<dyn serialport::SerialPort>);
 
 impl ByteStream for SerialStream {
     fn write_all(&mut self, data: &[u8]) -> io::Result<()> {
-        Write::write_all(&mut self.0, data)?;
-        self.0.flush()
+        // Serial writes are unbuffered here: write_all queues the entire frame.
+        // flush invokes tcdrain on Unix, which can wait forever for a stalled
+        // USB device despite the port timeout. Let the protocol's reply wait
+        // detect an unresponsive probe instead of waiting for driver drain.
+        Write::write_all(&mut self.0, data)
     }
 
     fn set_baud(&mut self, baud: u32) -> io::Result<()> {
@@ -1023,6 +1026,39 @@ pub fn open_tcp(addr: &str) -> Result<Link, LinkError> {
 mod tests {
     use super::*;
     use crate::codec::{cobs_decode, encode_result};
+
+    /// Also run under scripts/test-serial-drain.py: tcdrain never returns there,
+    /// as on the orphaned discovery process, even though write accepted the frame.
+    #[cfg(unix)]
+    #[test]
+    fn serial_confirm_times_out_when_probe_does_not_answer() {
+        use serialport::SerialPort;
+
+        let (mut peer, port) = serialport::TTYPort::pair().unwrap();
+        peer.set_timeout(Duration::from_secs(1)).unwrap();
+        let mut link = Link::new(Box::new(SerialStream(Box::new(port))), Framing::Cobs);
+        let started = Instant::now();
+        assert!(!link.confirm_raw(Duration::from_millis(30)));
+        assert!(started.elapsed() < Duration::from_secs(1));
+
+        // The timeout must not be a failed write: the complete confirm reached
+        // the peer in order, without needing an explicit driver drain.
+        let mut payload = constants::CONFIRM_REQUEST_MAGIC.as_bytes().to_vec();
+        payload.extend_from_slice(&[registry::PROTOCOL_REVISION; 2]);
+        let expected = serial_frame(
+            &Request {
+                corr: link.corr,
+                func: core::FN,
+                op: core::op::CONFIRM,
+                session: None,
+                payload,
+            }
+            .encode(),
+        );
+        let mut received = vec![0; expected.len()];
+        peer.read_exact(&mut received).unwrap();
+        assert_eq!(received, expected);
+    }
 
     /// A relayed push is the message the probe sent (core §10.2): decoding it gives it back.
     #[test]

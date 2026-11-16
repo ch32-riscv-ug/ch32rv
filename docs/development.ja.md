@@ -27,6 +27,13 @@ cargo fmt --all --check                    # 出力 0 行
 cargo deny check
 ```
 
+OEP の serial 送信後に driver の送信完了待ちが戻らない場合の回帰は、Linux で
+`python3 scripts/test-serial-drain.py` を実行する(`cargo` と C compiler の `cc` が必要)。
+PTY と `LD_PRELOAD` を使い、`tcdrain()` が戻らない故障を注入する。確認要求の frame が
+相手に届き、応答が無い場合に timeout で戻ることを検証し、停止した試験 process は
+watchdog が終了する。実機には触れない。USB firmware 側で送信が止まる条件の再現とは別。
+OEP consumer tests の CI でも実行する。
+
 - **workspace lints**: `unsafe_code = forbid`、clippy `unwrap_used` / `expect_used` / `panic` / `todo` / `unimplemented` = deny(テストは局所 `#![allow(...)]` 可)。
   - **例外**: `ch32rv-usb-wch-win`(Windows の WCH 純正ドライバ FFI 島)だけ `unsafe_code` を許可する。その crate は `[lints]` を独自定義し、`unsafe_code=forbid` を継承せず clippy denies は手書きで維持する([windows-wch-driver.ja.md](windows-wch-driver.ja.md) §4、architecture §2 の別バックエンド枠)。
 - **CLI shape は [cli.ja.md](cli.ja.md) で固定**。exit code と JSON は `ch32rv-contract` から来る。
