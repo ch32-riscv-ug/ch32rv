@@ -37,7 +37,7 @@
 |---|---|---|
 | serial に見えるもの(USB CDC、USB-Serial/JTAG、UART bridge) | `COBS(message ‖ crc16_le) 0x00`。CRC-16/CCITT-FALSE。送るときは前にも 0x00 を置く | 要らない。CRC の合わないフレームは捨てる。フレームの外のバイトは雑音として捨てる。欠落は時間切れで判断する |
 | vendor bulk、TCP | `length(u16) message` | core §5.1(50 ms 静かになるまで捨てる → confirm 0..255) |
-| HID | spec の report の詰め方(report ID + count(u16) + 長さ見出しの stream + 詰め物) | 長さ見出しと同じ |
+| HID | spec の report の詰め方(report ID + count(u16) + first(u16) + 長さ見出しの stream + 0 埋め。transports §1、oep-spec 1c80768) | first で読み直す: 自分の読みと first が違えば report が欠けたので読みかけを捨てて first から、開いた直後と壊れた report の後は first を持つ次の report から。静かになるのを待たず、答えの無い要求は送り直す(§5)。645fbad より前の probe の firmware とは HID で話せない |
 
 - decoder は、0xFF block で終わる data の後に空 block を付ける形(参照実装の癖)と、付けない形の両方を受ける。空のフレーム(0x00 の連続)は無視する。
 - serial port の COBS の受け方は oep-transports §1 のとおり。開いた直後から最初の 0x00 までもフレームの候補にし、role か corr の合わないフレームは雑音として捨てる。

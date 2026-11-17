@@ -279,6 +279,10 @@ pub struct Link {
     /// ja: 答えを待つ間にフレームが壊れたら、時間切れを待たずにすぐ送り直す。session が口を持っている
     /// 間だけ正しい(その口のフレームは答えか通知で、raw の出力ではない)。
     pub resend_on_broken: bool,
+    /// en: A lost answer on a length-framed stream resyncs by waiting for quiet (vendor bulk, TCP);
+    /// off where the stream finds frame boundaries itself (HID's `first`, transports §1, §5).
+    /// ja: 長さつきの列で答えが失われたら静かになるのを待って立て直す(HID は first で自分で戻すので無し)。
+    resync_by_quiet: bool,
     /// The serial port's speed at the probe's boot (every revert's target) and now.
     base_baud: Option<u32>,
     baud: Option<u32>,
@@ -314,6 +318,7 @@ impl Link {
             lost: 0,
             resend: true,
             resend_on_broken: false,
+            resync_by_quiet: true,
             base_baud: None,
             baud: None,
             inflight_cap: 0,
@@ -324,6 +329,13 @@ impl Link {
 
     pub fn set_timeout(&mut self, t: Duration) {
         self.timeout = t;
+    }
+
+    /// en: The stream delivers whole frames and finds their boundaries itself (OEP over HID: a
+    /// report's `first`, transports §1): a lost answer is resent without waiting for quiet (§5).
+    /// ja: 列がフレームの境目を自分で見つける(HID の first)。答えが失われても静かになるのを待たない。
+    pub fn set_self_synced(&mut self) {
+        self.resync_by_quiet = false;
     }
 
     pub fn limits(&self) -> Option<Limits> {
@@ -533,7 +545,7 @@ impl Link {
                 Err(LinkError::Timeout(_)) if quick => {
                     resent.timeout = true;
                     self.resends += 1;
-                    if self.framing == Framing::Length {
+                    if self.framing == Framing::Length && self.resync_by_quiet {
                         self.resync()?;
                     }
                 }
@@ -563,7 +575,7 @@ impl Link {
                 Err(LinkError::Timeout(_)) if !resent.timeout && self.resend => {
                     resent.timeout = true;
                     self.resends += 1;
-                    if self.framing == Framing::Length {
+                    if self.framing == Framing::Length && self.resync_by_quiet {
                         self.resync()?;
                     }
                 }

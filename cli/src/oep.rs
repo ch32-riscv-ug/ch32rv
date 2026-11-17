@@ -386,6 +386,9 @@ impl ch32rv_oep::link::ByteStream for VendorBulk {
 struct OepHid {
     dev: hidapi::HidDevice,
     shape: ch32rv_oep::hid::ReportShape,
+    writer: ch32rv_oep::hid::HidWriter,
+    reader: ch32rv_oep::hid::HidReader,
+    /// Whole frames' bytes the reader gave, for the link to read.
     rx: std::collections::VecDeque<u8>,
 }
 
@@ -413,6 +416,8 @@ impl OepHid {
                 return Some(OepHid {
                     dev: h,
                     shape,
+                    writer: ch32rv_oep::hid::HidWriter::new(shape),
+                    reader: ch32rv_oep::hid::HidReader::new(shape),
                     rx: std::collections::VecDeque::new(),
                 });
             }
@@ -423,7 +428,7 @@ impl OepHid {
 
 impl ch32rv_oep::link::ByteStream for OepHid {
     fn write_all(&mut self, data: &[u8]) -> std::io::Result<()> {
-        for r in self.shape.pack(data) {
+        for r in self.writer.pack(data) {
             self.dev.write(&r).map_err(std::io::Error::other)?;
         }
         Ok(())
@@ -437,8 +442,8 @@ impl ch32rv_oep::link::ByteStream for OepHid {
                 .dev
                 .read_timeout(&mut r, ms)
                 .map_err(std::io::Error::other)?;
-            if let Some(d) = self.shape.unpack(&r[..n]) {
-                self.rx.extend(d);
+            for frame in self.reader.push(&r[..n]) {
+                self.rx.extend(frame);
             }
         }
         let n = buf.len().min(self.rx.len());
@@ -542,8 +547,11 @@ fn connect_device(
     hid_first: bool,
     timeout: Option<Duration>,
 ) -> Option<(Probe, &'static str)> {
-    let try_link = |stream: Box<dyn ch32rv_oep::link::ByteStream>| {
+    let try_link = |stream: Box<dyn ch32rv_oep::link::ByteStream>, self_synced: bool| {
         let mut link = ch32rv_oep::link::Link::new(stream, ch32rv_oep::link::Framing::Length);
+        if self_synced {
+            link.set_self_synced();
+        }
         if let Some(t) = timeout {
             link.set_timeout(t);
         }
@@ -551,7 +559,7 @@ fn connect_device(
     };
     if hid_first
         && hid
-        && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
+        && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h), true))
     {
         return Some((p, "hid"));
     }
@@ -564,13 +572,13 @@ fn connect_device(
             )
             .ok()
             .flatten()
-            .and_then(|pipe| try_link(Box::new(VendorBulk(pipe))))
+            .and_then(|pipe| try_link(Box::new(VendorBulk(pipe)), false))
     {
         return Some((p, "vendor-bulk"));
     }
     if !hid_first
         && hid
-        && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h)))
+        && let Some(p) = OepHid::open(d).and_then(|h| try_link(Box::new(h), true))
     {
         return Some((p, "hid"));
     }
