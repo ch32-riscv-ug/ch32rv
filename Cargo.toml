@@ -36,7 +36,6 @@ ch32rv-dmi = { path = "crates/dmi", version = "=0.31.3" }
 ch32rv-target = { path = "crates/target", version = "=0.31.3" }
 ch32rv-flash = { path = "crates/flash", version = "=0.31.3" }
 ch32rv-debug = { path = "crates/debug", version = "=0.31.3" }
-ch32rv-monitor = { path = "crates/monitor", version = "=0.31.3" }
 ch32rv-isp = { path = "crates/isp", version = "=0.31.3" }
 ch32rv-boot = { path = "crates/boot", version = "=0.31.3" }
 
