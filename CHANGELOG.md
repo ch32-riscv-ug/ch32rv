@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.32.0 - 2026-11-17
+
 - (EN) Breaking (oep-spec 1c80768, transports §1, §5): OEP over HID uses the new report form `[report id] count(u16) first(u16) bytes... zero padding`, `first` being where the first frame starting in the report begins (0xFFFF when none). The host packs it across writes, and reading re-reads from a report's `first` when its own reading disagrees (a report was lost: an OS HID driver drops reports it holds too long), or from the next report with one after opening or a broken report; a lost answer over HID is resent without waiting for quiet. A probe firmware before oep-probe-arduino 645fbad does not answer over HID any more: ch32rv goes on to vendor bulk after the reply wait (about 6 s a probe in a listing), so update the probes. Checked against oep-spec's shared vectors (hid_reports.json) and on the bench: 13 OEP probes on 958a231, an Arduino LIST in 4.3 s (10 s before), `?via=hid` answering in 0.37 s. The OEP registry is regenerated from oep-spec 1c80768.
 - (JA) 破壊的変更(oep-spec 1c80768、transports §1、§5): OEP の HID は新しい report の形 `[report ID] count(u16) first(u16) バイト 0 埋め` を使う。first はその report で最初に始まるフレームの位置(無ければ 0xFFFF)。host は書き込みをまたいで正しい first を付け、読むときは自分の読みと first が違えば report が欠けたとして first から読み直す(OS の HID のドライバーは、たまった report を捨てることがある)。開いた直後や壊れた report の後は first を持つ次の report から読む。HID で答えが失われたら静かになるのを待たずに送り直す。oep-probe-arduino 645fbad より前の firmware の probe とは HID で話せなくなる: 答えの待ちの後で vendor bulk に移る(一覧では probe 1 台あたり約 6 秒)ので、probe を更新すること。oep-spec の共有ベクタ(hid_reports.json)と実機で確かめた: 958a231 の OEP の probe 13 台で Arduino の LIST が 4.3 秒(以前は 10 秒)、`?via=hid` は 0.37 秒で答える。OEP の registry を oep-spec 1c80768 から作り直した。
 
