@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.31.4 - 2026-11-17
+
 - (EN) Device DB: ch32-device-data bc3f4da (the EVT documents' 2026-11-13 revisions). CH32V407KEU6 now has its device id `0x46760003` (at `0x1ffff704`), so a chip id resolves to it; not yet confirmed on silicon.
 - (JA) デバイス DB: ch32-device-data bc3f4da(EVT の資料の 2026-11-13 の改版)。CH32V407KEU6 に device id `0x46760003`(`0x1ffff704`)が入り、chip id から引ける。実機ではまだ確かめていない。
 
