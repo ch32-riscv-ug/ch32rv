@@ -1554,8 +1554,7 @@ fn flash_attached(
         });
     if !skipped
         && args.erase == ch32rv_contract::policy::EraseMode::Chip
-        && let Err((kind, msg)) = crate::cmd_flash::loader_chip_erase(
-            &mut t,
+        && let Err((kind, msg)) = crate::cmd_flash::chip_erase_size(
             &family,
             chip_id.and_then(
                 |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
@@ -1564,6 +1563,13 @@ fn flash_attached(
                 },
             ),
         )
+        .and_then(|size| {
+            // A CH32H417 whose core 0 fails it gets it again through core 1.
+            flash_dm_on(&mut t, Some(&family), |dm| {
+                crate::cmd_flash::chip_erase_ops(dm, &family, size)
+            })
+            .map_err(|e| (ErrorKind::TransferFailed, format!("chip erase failed: {e}")))
+        })
     {
         return fail(cli, CMD, kind, msg, None);
     }
@@ -2948,6 +2954,66 @@ fn on_hart<T>(
         let _ = ch32rv_dmi::DebugModule::new(&mut h).resume();
     }
     r
+}
+
+/// en: `f` on the Debug Module through core 0 or, on a CH32H417 when it fails there, again from the
+/// start through core 1 over raw DMI (halted for it, DATA0 / DATA1 kept, resumed if it ran), as
+/// [`Attached::read_words_any`] does for memory. For whole FLASH-controller operations that are
+/// safe to run again from the start (an erase, an option-byte erase + program, which begins from a
+/// clean controller): with a V5F build running, core 0's memory access fails with cmderr 3 now
+/// and then (4 in 30 page erases, 2026-11-19), and an option write stopped between its erase and
+/// its program leaves the option bytes erased, read protection on at the next reset.
+/// ja: core 0 の DM で `f` をし、H417 で失敗したら core 1 で最初からやり直す。最初からやり直して
+/// よい FLASH controller の操作(消去、option の消去+書き込み)用。V5F のビルドが走っていると core 0
+/// のメモリアクセスがときどき cmderr 3 になり、option の消去と書き込みの間で止まると保護がかかる。
+pub(crate) fn on_flash_dm<T>(
+    x: &mut Attached<'_>,
+    f: impl FnMut(
+        &mut ch32rv_dmi::DebugModule<'_, crate::cmd_target::DynDtm<'_>>,
+    ) -> Result<T, ch32rv_dmi::DmiError>,
+) -> Result<T, String> {
+    let family = x.family.clone();
+    flash_dm_on(&mut x.t, family.as_deref(), f)
+}
+
+/// [`on_flash_dm`] on the bare transport, with the target's family.
+pub(crate) fn flash_dm_on<T>(
+    t: &mut OepDtm<'_>,
+    family: Option<&str>,
+    mut f: impl FnMut(
+        &mut ch32rv_dmi::DebugModule<'_, crate::cmd_target::DynDtm<'_>>,
+    ) -> Result<T, ch32rv_dmi::DmiError>,
+) -> Result<T, String> {
+    let first = {
+        let mut d = crate::cmd_target::DynDtm(t);
+        f(&mut ch32rv_dmi::DebugModule::new(&mut d))
+    };
+    match first {
+        Ok(v) => Ok(v),
+        Err(e0) if family == Some("CH32H417") => {
+            resume_after(t);
+            let mut h = OnHart::new(t, 1);
+            let was_running = !ch32rv_dmi::DebugModule::new(&mut h)
+                .is_halted()
+                .map_err(|e| format!("{e0}; core 1: {e}"))?;
+            if was_running {
+                ch32rv_dmi::DebugModule::new(&mut h)
+                    .halt()
+                    .map_err(|e| format!("{e0}; core 1 halt: {e}"))?;
+            }
+            let kept = h.keep_data();
+            let r = {
+                let mut d = crate::cmd_target::DynDtm(&mut h);
+                f(&mut ch32rv_dmi::DebugModule::new(&mut d))
+            };
+            h.restore_data(kept);
+            if was_running {
+                let _ = ch32rv_dmi::DebugModule::new(&mut h).resume();
+            }
+            r.map_err(|e1| format!("{e0}; through core 1: {e1}"))
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// en: Memory through core 0 (the probe's ops), or - on a CH32H417 whose core 0 answers no memory

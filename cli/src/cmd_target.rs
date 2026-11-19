@@ -296,7 +296,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 /// ja: 生の chip_id から DB の family 文字列を引く(attach の family byte より細かい粒度)。
 /// en: A `DtmAccess` behind a trait object, so one `DebugModule<DynDtm>` serves a WCH-Link session
 /// and an OEP connection alike. ja: trait object の裏の `DtmAccess`(WCH と OEP を同じ型で扱う)。
-pub(crate) struct DynDtm<'a>(&'a mut dyn ch32rv_dmi::DtmAccess);
+pub(crate) struct DynDtm<'a>(pub(crate) &'a mut dyn ch32rv_dmi::DtmAccess);
 
 impl ch32rv_dmi::DtmAccess for DynDtm<'_> {
     fn selected_hart(&self) -> u32 {
@@ -399,6 +399,25 @@ impl OnTarget<'_, '_> {
                 ch32rv_dmi::DebugModule::new(&mut d)
                     .read_mem(addr, len)
                     .map_err(|e| e.to_string())
+            }
+        }
+    }
+
+    /// en: `f` on the Debug Module for a whole FLASH-controller operation that is safe to run again
+    /// from the start; on an OEP probe a CH32H417 whose core 0 fails it gets it again through core
+    /// 1 ([`crate::oep::on_flash_dm`]). ja: 最初からやり直してよい FLASH controller の操作を DM で
+    /// する。OEP の H417 で core 0 が失敗したら core 1 で。
+    pub(crate) fn with_flash_dm<T>(
+        &mut self,
+        mut f: impl FnMut(
+            &mut ch32rv_dmi::DebugModule<'_, DynDtm<'_>>,
+        ) -> Result<T, ch32rv_dmi::DmiError>,
+    ) -> Result<T, String> {
+        match self {
+            OnTarget::Oep(x) => crate::oep::on_flash_dm(x, f),
+            _ => {
+                let mut d = self.dtm();
+                f(&mut ch32rv_dmi::DebugModule::new(&mut d)).map_err(|e| e.to_string())
             }
         }
     }
@@ -671,10 +690,7 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
                     );
                 }
             };
-            let mut d = t.dtm();
-            if let Err(e) =
-                ch32rv_dmi::DebugModule::new(&mut d).flash_program_option_bytes(base, new)
-            {
+            if let Err(e) = t.with_flash_dm(|dm| dm.flash_program_option_bytes(base, new)) {
                 return fail(
                     cli,
                     cmd,

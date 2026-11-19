@@ -333,47 +333,67 @@ pub(crate) fn loader_chip_erase<T: ch32rv_dmi::DtmAccess>(
     family: &str,
     flash_size: Option<u32>,
 ) -> Result<(), (ErrorKind, String)> {
-    if let Some(mode) = ch32rv_flash::erase_plan::mass_erase_mode(family) {
-        return ch32rv_dmi::DebugModule::new(dtm)
-            .flash_mass_erase(mode)
-            .map_err(|e| (ErrorKind::TransferFailed, format!("chip erase failed: {e}")));
+    let size = chip_erase_size(family, flash_size)?;
+    chip_erase_ops(&mut ch32rv_dmi::DebugModule::new(dtm), family, size)
+        .map_err(|e| (ErrorKind::TransferFailed, format!("chip erase failed: {e}")))
+}
+
+/// en: The checks of [`loader_chip_erase`] before anything is erased: the code flash size its
+/// erases cover (0 with MER, which needs none), or exit 24 for a family with no FLASH controller
+/// profile or, without MER, no known size. ja: 消す前の検査。消す大きさ(MER なら 0)か exit 24。
+pub(crate) fn chip_erase_size(
+    family: &str,
+    flash_size: Option<u32>,
+) -> Result<u32, (ErrorKind, String)> {
+    if ch32rv_flash::erase_plan::mass_erase_mode(family).is_some() {
+        return Ok(0);
     }
-    let Some(profile) = ch32rv_flash::flash_controller_profile_for(family) else {
+    if ch32rv_flash::flash_controller_profile_for(family).is_none() {
         return Err((
             ErrorKind::CapabilityUnsupported,
             format!("--erase chip: ch32rv has no FLASH controller profile for {family}"),
         ));
-    };
-    let Some(size) = flash_size.filter(|&n| n > 0) else {
-        return Err((
+    }
+    flash_size.filter(|&n| n > 0).ok_or_else(|| {
+        (
             ErrorKind::CapabilityUnsupported,
             format!(
                 "--erase chip: the code flash size of this {family} is not known, so the page erase cannot be sized"
             ),
-        ));
-    };
-    let mut dm = ch32rv_dmi::DebugModule::new(dtm);
-    if profile.mode == ch32rv_dmi::FlashProgMode::PgStartSectorErase8K {
-        for i in 0..size.div_ceil(H417_BLOCK) {
-            let addr = CODE_FLASH_START + i * H417_BLOCK;
-            dm.flash_block_erase(addr, profile.mode).map_err(|e| {
-                (
-                    ErrorKind::TransferFailed,
-                    format!("chip erase failed at the block at 0x{addr:08x}: {e}"),
-                )
-            })?;
-        }
-        return Ok(());
+        )
+    })
+}
+
+/// en: The erases of a whole-chip erase for `family`, `size` bytes of code flash from its base
+/// (MER where the controller has it, CH32H417's 32 KiB blocks, otherwise every page). The caller
+/// has checked the family has a controller profile and, without MER, the size; a failure names
+/// the address. Safe to run again from the start. ja: 全消去の操作だけ(検査は呼ぶ側)。
+pub(crate) fn chip_erase_ops<T: ch32rv_dmi::DtmAccess>(
+    dm: &mut ch32rv_dmi::DebugModule<'_, T>,
+    family: &str,
+    size: u32,
+) -> Result<(), ch32rv_dmi::DmiError> {
+    if let Some(mode) = ch32rv_flash::erase_plan::mass_erase_mode(family) {
+        return dm.flash_mass_erase(mode);
     }
-    let page = profile.page_size;
-    for i in 0..size.div_ceil(page) {
-        let addr = CODE_FLASH_START + i * page;
-        dm.flash_page_erase(addr, profile.mode).map_err(|e| {
-            (
-                ErrorKind::TransferFailed,
-                format!("chip erase failed at 0x{addr:08x}: {e}"),
-            )
-        })?;
+    let Some(profile) = ch32rv_flash::flash_controller_profile_for(family) else {
+        return Err(ch32rv_dmi::DmiError::OperationFailed(format!(
+            "no FLASH controller profile for {family}"
+        )));
+    };
+    let (step, block) = if profile.mode == ch32rv_dmi::FlashProgMode::PgStartSectorErase8K {
+        (H417_BLOCK, true)
+    } else {
+        (profile.page_size, false)
+    };
+    for i in 0..size.div_ceil(step) {
+        let addr = CODE_FLASH_START + i * step;
+        let r = if block {
+            dm.flash_block_erase(addr, profile.mode)
+        } else {
+            dm.flash_page_erase(addr, profile.mode)
+        };
+        r.map_err(|e| ch32rv_dmi::DmiError::OperationFailed(format!("at 0x{addr:08x}: {e}")))?;
     }
     Ok(())
 }
@@ -1811,26 +1831,29 @@ fn erase_oep(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
                     Some("pass --yes to confirm"),
                 );
             }
+            if ch32rv_flash::erase_plan::mass_erase_mode(family).is_none() && flash_bytes == 0 {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::TargetNotInDb,
+                    "the code flash size is not known for this chip id, so --all cannot be sized",
+                    Some("erase a span with --range instead"),
+                );
+            }
             let mut last = None;
             for _ in 0..3 {
                 if let Err(e) = t.halt() {
                     last = Some((ErrorKind::AttachFailed, format!("halt failed: {e}")));
                     continue;
                 }
-                let r = {
-                    let mut d = t.dtm();
-                    loader_chip_erase(&mut d, family, (flash_bytes > 0).then_some(flash_bytes))
-                };
-                match r {
+                match t.with_flash_dm(|dm| chip_erase_ops(dm, family, flash_bytes)) {
                     Ok(()) => {
                         last = None;
                         break;
                     }
-                    Err(e @ (ErrorKind::CapabilityUnsupported, _)) => {
-                        last = Some(e);
-                        break;
+                    Err(e) => {
+                        last = Some((ErrorKind::TransferFailed, format!("chip erase failed: {e}")))
                     }
-                    Err(e) => last = Some(e),
                 }
             }
             if let Some((kind, msg)) = last {
@@ -1913,16 +1936,14 @@ fn erase_oep(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
             );
         }
         // en: A page erase that fails is tried again after halting anew (an erase is idempotent):
-        // on CH32L103 over OEP one in many stopped with a DMI error now and then.
+        // on CH32L103 over OEP one in many stopped with a DMI error now and then. On a CH32H417
+        // whose core 0 fails it, [`OnTarget::with_flash_dm`] runs it again through core 1.
         // ja: 失敗した page erase は、止め直してやり直す(消去は何度やっても同じ)。
         for i in 0..pages {
             let addr = start + i * page;
             let mut last = None;
             for _ in 0..3 {
-                let r = {
-                    let mut d = t.dtm();
-                    ch32rv_dmi::DebugModule::new(&mut d).flash_page_erase(addr, profile.mode)
-                };
+                let r = t.with_flash_dm(|dm| dm.flash_page_erase(addr, profile.mode));
                 match r {
                     Ok(()) => {
                         last = None;
