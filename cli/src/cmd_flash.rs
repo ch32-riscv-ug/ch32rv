@@ -307,14 +307,27 @@ pub(crate) fn loader_refusals(args: &FlashArgs) -> Vec<String> {
 }
 
 /// en: `--erase chip` on the RAM-loader paths: the whole code flash erased over the DM before the
-/// loader writes. A family whose FLASH controller has a mass erase gets MER + STRT; one with a
-/// controller profile but no MER (CH32H417) gets every erase page of the code flash, `flash_size`
-/// bytes from the code flash base (5.9 s for the H417's 960 KiB over a LinkE, measured). A family
-/// with neither, or with no known flash size for the page loop, is refused, exit 24, before
+/// loader writes (and `erase --all` over OEP). A family whose FLASH controller has a mass erase
+/// gets MER + STRT; CH32H417 (no MER) gets its 32 KiB block erases over the code flash, any other
+/// family with a controller profile but no MER every erase page, `flash_size` bytes from the code
+/// flash base (the H417's page loop took 5.9 s for 960 KiB over a LinkE). A family with none of
+/// these, or with no known flash size for the block / page loop, is refused, exit 24, before
 /// anything is erased. The hart must be halted. Err is the failure to report (kind, message).
-/// ja: RAM loader の経路の `--erase chip`。loader が書く前に DM で全消去する。MER のある family は
-/// MER、MER の無い family(H417)は code flash 全体の page を順に消す。どちらもできなければ exit 24
+/// ja: RAM loader の経路の `--erase chip`(と OEP の `erase --all`)。DM で全消去する。MER のある
+/// family は MER、H417 は 32 KiB の block 消去、ほかは page を順に消す。どれもできなければ exit 24
 /// で断る(何も消す前)。
+/// en: CH32H417's block erase step: BER erases 32 KiB, or 64 KiB under FLASH_CFGR0.DBMODE (RM
+/// §46.2.1), so 32 KiB steps cover the code flash either way. ja: H417 の block 消去の歩み。
+const H417_BLOCK: u32 = 32 * 1024;
+
+/// en: Whether [`loader_chip_erase`] erases more than a page at a time for `family`: a mass erase
+/// (MER), or CH32H417's block erase. ja: 全消去か H417 の block 消去を使えるか。
+pub(crate) fn chip_erases_at_once(family: &str) -> bool {
+    ch32rv_flash::erase_plan::mass_erase_mode(family).is_some()
+        || ch32rv_flash::flash_controller_profile_for(family)
+            .is_some_and(|p| p.mode == ch32rv_dmi::FlashProgMode::PgStartSectorErase8K)
+}
+
 pub(crate) fn loader_chip_erase<T: ch32rv_dmi::DtmAccess>(
     dtm: &mut T,
     family: &str,
@@ -339,8 +352,20 @@ pub(crate) fn loader_chip_erase<T: ch32rv_dmi::DtmAccess>(
             ),
         ));
     };
-    let page = profile.page_size;
     let mut dm = ch32rv_dmi::DebugModule::new(dtm);
+    if profile.mode == ch32rv_dmi::FlashProgMode::PgStartSectorErase8K {
+        for i in 0..size.div_ceil(H417_BLOCK) {
+            let addr = CODE_FLASH_START + i * H417_BLOCK;
+            dm.flash_block_erase(addr, profile.mode).map_err(|e| {
+                (
+                    ErrorKind::TransferFailed,
+                    format!("chip erase failed at the block at 0x{addr:08x}: {e}"),
+                )
+            })?;
+        }
+        return Ok(());
+    }
+    let page = profile.page_size;
     for i in 0..size.div_ceil(page) {
         let addr = CODE_FLASH_START + i * page;
         dm.flash_page_erase(addr, profile.mode).map_err(|e| {
@@ -1761,13 +1786,22 @@ fn erase_oep(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
                 None,
             );
         };
-        // en: `--all` on a family whose controller has a mass erase: one MER + STRT, as the
-        // WCH-Link's own chip erase (the page loop took 5 s on a CH32V006 over a Pico OEP probe).
-        // ja: `--all` で MER のある family は一度の全消去(page を回すと V006 で 5 秒かかった)。
-        if args.range.is_none()
-            && args.region.is_none()
-            && let Some(mode) = ch32rv_flash::erase_plan::mass_erase_mode(family)
-        {
+        let page = profile.page_size;
+        let flash_bytes = t
+            .chip_id()
+            .and_then(
+                |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
+                    ch32rv_target::Resolution::Sku(s) => Some(s.flash_bytes),
+                    _ => None,
+                },
+            )
+            .unwrap_or(0);
+        // en: `--all` where the controller erases more than a page at once: one mass erase (MER)
+        // or, on CH32H417, 32 KiB block erases ([`loader_chip_erase`]), as fast as a WCH-Link's
+        // chip erase (the page loop took 5 s on a CH32V006 over an OEP probe). A failure is tried
+        // again after halting anew (an erase is idempotent).
+        // ja: `--all` は MER の全消去か H417 の block 消去(page を回すより速い)。失敗は止め直して再試行。
+        if args.range.is_none() && args.region.is_none() && chip_erases_at_once(family) {
             if let Err(why) = confirm_destructive(cli, "Erase the entire chip flash?") {
                 return fail(
                     cli,
@@ -1780,23 +1814,27 @@ fn erase_oep(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
             let mut last = None;
             for _ in 0..3 {
                 if let Err(e) = t.halt() {
-                    last = Some(format!("halt failed: {e}"));
+                    last = Some((ErrorKind::AttachFailed, format!("halt failed: {e}")));
                     continue;
                 }
                 let r = {
                     let mut d = t.dtm();
-                    ch32rv_dmi::DebugModule::new(&mut d).flash_mass_erase(mode)
+                    loader_chip_erase(&mut d, family, (flash_bytes > 0).then_some(flash_bytes))
                 };
                 match r {
                     Ok(()) => {
                         last = None;
                         break;
                     }
-                    Err(e) => last = Some(format!("chip erase failed: {e}")),
+                    Err(e @ (ErrorKind::CapabilityUnsupported, _)) => {
+                        last = Some(e);
+                        break;
+                    }
+                    Err(e) => last = Some(e),
                 }
             }
-            if let Some(msg) = last {
-                return fail(cli, CMD, ErrorKind::TransferFailed, msg, None);
+            if let Some((kind, msg)) = last {
+                return fail(cli, CMD, kind, msg, None);
             }
             if cli.json {
                 let mut env = ResultEnvelope::success(CMD);
@@ -1806,16 +1844,6 @@ fn erase_oep(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
             println!("erased entire chip flash ({family})");
             return ExitCode::SUCCESS;
         }
-        let page = profile.page_size;
-        let flash_bytes = t
-            .chip_id()
-            .and_then(
-                |id| match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
-                    ch32rv_target::Resolution::Sku(s) => Some(s.flash_bytes),
-                    _ => None,
-                },
-            )
-            .unwrap_or(0);
         let (start, len, scope) = if let Some(r) = &args.range {
             match parse::range(r) {
                 Ok((s, l)) => (s, l, "range"),

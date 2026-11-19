@@ -362,7 +362,8 @@ pub fn read(cli: &Cli, args: &ReadArgs) -> ExitCode {
     };
 
     if args.blank_check {
-        let blank = data.iter().all(|&b| b == 0xff);
+        let db_family = crate::cmd_target::db_family_of(&mut session);
+        let blank = is_blank(&data, start, Some(&db_family));
         if cli.json {
             let mut env = if blank {
                 ResultEnvelope::success(CMD)
@@ -918,5 +919,45 @@ mod tests {
         assert_eq!(parse_u32("0x40901105"), Some(0x4090_1105));
         assert_eq!(parse_u32("42"), Some(42));
         assert_eq!(parse_u32("zz"), None);
+    }
+}
+
+/// en: Whether `data` read from `start` is blank: all 0xff, or, in the code flash, the family's
+/// erased word from the device DB (`0xe339e339` on CH32V20x / V30x / X315 / V407 / H417, whose
+/// erased cells do not read 0xff), matched in the address's byte phase.
+/// ja: 空か。全部 0xff、または code flash なら DB の消去後の値(V20x / V30x / X315 / V407 / H417 は
+/// `0xe339e339`)に、番地の位相を合わせて一致すれば空。
+pub(crate) fn is_blank(data: &[u8], start: u32, db_family: Option<&str>) -> bool {
+    if data.iter().all(|&b| b == 0xff) {
+        return true;
+    }
+    let in_code = (ch32rv_flash::CODE_FLASH_START..0x1000_0000).contains(&start);
+    let Some(word) = db_family
+        .filter(|_| in_code)
+        .and_then(ch32rv_target::flash_geometry)
+        .and_then(|g| g.erased_word)
+    else {
+        return false;
+    };
+    let pat = word.to_le_bytes();
+    data.iter()
+        .enumerate()
+        .all(|(i, &b)| b == pat[(start as usize + i) % 4])
+}
+
+#[cfg(test)]
+mod blank_tests {
+    use super::is_blank;
+
+    #[test]
+    fn blank_is_ff_or_the_families_erased_word_in_the_code_flash() {
+        let e339 = [0x39, 0xe3, 0x39, 0xe3, 0x39, 0xe3, 0x39, 0xe3];
+        assert!(is_blank(&[0xff; 8], 0x0800_0000, None));
+        assert!(is_blank(&e339, 0x0800_0000, Some("CH32H417")));
+        assert!(is_blank(&e339[1..], 0x0800_0001, Some("CH32V20x")));
+        assert!(!is_blank(&e339[1..], 0x0800_0000, Some("CH32H417")));
+        assert!(!is_blank(&e339, 0x0800_0000, Some("CH32V003")));
+        assert!(!is_blank(&e339, 0x2000_0000, Some("CH32H417")));
+        assert!(!is_blank(&e339, 0x0800_0000, None));
     }
 }

@@ -2643,7 +2643,14 @@ pub(crate) fn read(cli: &Cli, args: &crate::args::ReadArgs, a: &OepAddr) -> Exit
         };
         resume_after(&mut x.t);
         if args.blank_check {
-            let blank = data.iter().all(|&b| b == 0xff);
+            let db_family = x.chip_id.and_then(|id| {
+                match ch32rv_target::Db::builtin().resolve_by_chip_id(id) {
+                    ch32rv_target::Resolution::Sku(s) => Some(s.family.clone()),
+                    ch32rv_target::Resolution::Family(fam, _) => Some(fam),
+                    ch32rv_target::Resolution::Unknown => None,
+                }
+            });
+            let blank = crate::cmd_dbg::is_blank(&data, start, db_family.as_deref());
             if cli.json {
                 let mut env = if blank {
                     ResultEnvelope::success(CMD)

@@ -1019,6 +1019,54 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
         Ok(())
     }
 
+    /// en: CH32H417's block erase (CTLR.BER, bit 18, under the fast-mode unlock), as the EVT's
+    /// `FLASH_EraseBlock_Fast`: BER, ADDR, STRT, wait BUSY, BER cleared. It erases the 32 KiB
+    /// block holding `addr`, or the 64 KiB one with FLASH_CFGR0.DBMODE set (RM §46.2.1), so
+    /// stepping by 32 KiB covers a span either way (in double-flash mode every other step erases
+    /// the same block again). The wait goes by time (2 s a block). Only
+    /// [`FlashProgMode::PgStartSectorErase8K`] has it; other modes are refused. The hart must be
+    /// halted.
+    /// ja: H417 の block 消去(BER、bit18)。EVT の FLASH_EraseBlock_Fast と同じ手順。DBMODE で
+    /// 32 / 64 KiB を消すので、32 KiB ずつ進めればどちらでも範囲を覆う。H417 以外は断る。
+    pub fn flash_block_erase(&mut self, addr: u32, mode: FlashProgMode) -> Result<(), DmiError> {
+        if mode != FlashProgMode::PgStartSectorErase8K {
+            return Err(DmiError::OperationFailed(
+                "this family has no block erase (FLASH_CTLR.BER)".to_owned(),
+            ));
+        }
+        const BER: u32 = 1 << 18;
+        self.flash_unlock()?;
+        if self.read_mem32(FLASH_STATR)? & FLASH_BUSY != 0 {
+            return Err(DmiError::OperationFailed("flash busy".to_owned()));
+        }
+        let stale = self.read_mem32(FLASH_STATR)?;
+        if stale & (FLASH_WPRERR | FLASH_EOP) != 0 {
+            self.write_mem32(FLASH_STATR, stale)?;
+        }
+        let ctlr = self.read_mem32(FLASH_CTLR)? & !FLASH_MODE_BITS;
+        self.write_mem32(FLASH_CTLR, ctlr | BER)?;
+        self.write_mem32(FLASH_ADDR, addr & !(BLOCK_32K - 1))?;
+        match self.write_mem32(FLASH_CTLR, ctlr | BER | FLASH_STRT) {
+            Ok(()) | Err(DmiError::Timeout | DmiError::OperationFailed(_)) => {}
+            Err(e) => return Err(e),
+        }
+        let statr = self.flash_wait_through(FLASH_BUSY, std::time::Duration::from_secs(2))?;
+        let mut ctlr = 0;
+        self.retry_through(|dm| {
+            ctlr = dm.read_mem32(FLASH_CTLR)?;
+            Ok(())
+        })?;
+        self.write_mem32(FLASH_CTLR, ctlr & !BER)?;
+        self.write_mem32(FLASH_STATR, statr)?; // write 1s to clear EOP / WPRERR
+        self.flash_lock()?;
+        if statr & FLASH_WPRERR != 0 {
+            return Err(DmiError::OperationFailed(
+                "flash write-protected".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     /// en: Erase the whole code flash with the controller's mass erase (CTLR.MER + STRT), as the
     /// family's EVT `FLASH_EraseAllPages` does: PER / OPTER cleared first (X035 / L103 / V006 /
     /// V205 do), MER, STRT, wait BUSY, MER cleared. No commit write after it - the V103 / M030
@@ -1334,6 +1382,8 @@ const FLASH_ADDR: u32 = 0x4002_2014;
 const FLASH_MODEKEYR: u32 = 0x4002_2024;
 // Undocumented CH32V103 "commit" register (EVT ch32v10x_flash.c writes it after each op).
 const FLASH_MAGIC_V103: u32 = 0x4002_2034;
+/// CH32H417's block erase step: BER erases 32 KiB (64 KiB under FLASH_CFGR0.DBMODE).
+const BLOCK_32K: u32 = 32 * 1024;
 const FLASH_KEY1: u32 = 0x4567_0123;
 const FLASH_KEY2: u32 = 0xCDEF_89AB;
 // CTLR bits.
@@ -1480,6 +1530,25 @@ mod tests {
                 .is_err()
         );
         assert!(m.writes.is_empty());
+    }
+
+    #[test]
+    fn block_erase_is_refused_outside_h417_before_any_access() {
+        for mode in [
+            FlashProgMode::PgStart,
+            FlashProgMode::PgStartPageErase,
+            FlashProgMode::Buffered,
+            FlashProgMode::V103,
+            FlashProgMode::M030,
+        ] {
+            let mut m = MockDtm::default();
+            assert!(
+                DebugModule::new(&mut m)
+                    .flash_block_erase(0x0800_0000, mode)
+                    .is_err()
+            );
+            assert!(m.writes.is_empty());
+        }
     }
 
     #[test]
