@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) Device DB: ch32-device-data 26fa826. The RM names of two CH32L103 / CH32V205 USER bits are now `STOP_RST` / `STANDY_RST` (were `STOPRST` / `STANDYRST`); they are written by their meaning names (`stop-reset`, `standby-reset`) as before.
+- (JA) Device DB: ch32-device-data 26fa826。CH32L103 / CH32V205 の USER の 2 bit の RM 名が `STOP_RST` / `STANDY_RST` になった(以前は `STOPRST` / `STANDYRST`)。書くときは今までどおり意味名(`stop-reset`、`standby-reset`)で。
 - (EN) CH32H417 has no mass erase: `erase --all` on an OEP probe, and the DM chip erase of `flash --erase chip` (OEP, and the WCH-Link paths without a WCH stub), now use its 32 KiB block erase (CTLR.BER, RM §46.2.1; 64 KiB under DBMODE) instead of erasing the code flash page by page: 0.9-2 s for the 960 KiB over an ESP32-P4X OEP probe, where the page loop took about 6 s.
 - (JA) CH32H417 には全消去(MER)が無い。OEP の probe の `erase --all` と、`flash --erase chip` の DM での全消去(OEP と、WCH の stub が無い WCH-Link の経路)は、code flash を page ごとに消す代わりに 32 KiB の block 消去(CTLR.BER、RM §46.2.1。DBMODE では 64 KiB)を使う: ESP32-P4X の OEP probe で 960 KiB が 0.9〜2 秒(page ごとでは約 6 秒)。
 - (EN) Fix: `read --blank-check` took only all-0xff as blank, so a just-erased code flash on CH32V20x / V30x / X315 / V407 / H417 (whose erased cells read `0xe339e339`) was reported NOT BLANK (exit 30). In the code flash it now also takes the family's erased word from the device DB (`db info`'s `erased:`), over a WCH-Link and over OEP.
