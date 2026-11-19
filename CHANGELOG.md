@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.32.2 - 2026-11-19
+
 - (EN) Fix: `target option get` (and `option set`'s reads before and after the write) on an OEP probe read the option bytes with ch32rv's own Debug Module abstract commands through core 0, skipping what `read` does when a CH32H417's core 0 answers no memory access (a V5F build running): read through core 1. On such an H417 `option get` failed now and then with cmderr 3, or showed a stray word as the option bytes (raw `a09a0000` x4 decoded as read-protect on). It now reads as `read` does; 20 of 20 right on the H417 running that build.
 - (JA) 修正: OEP の probe の `target option get`(と `option set` の書く前後の読み出し)は、core 0 越しに ch32rv 自身の Debug Module の abstract command で option bytes を読んでいた。そのため、CH32H417 の core 0 がメモリアクセスに答えないとき(V5F のビルドが動いている)に `read` が行う core 1 からの読み出しを通らなかった。そのような H417 では、`option get` がときどき cmderr 3 で失敗するか、関係の無い値を option bytes として表示した(raw `a09a0000` の 4 回繰り返しを read-protect on と解釈)。今は `read` と同じ読み方をする。そのビルドが動く H417 で 20 回とも正しかった。
 ## 0.32.1 - 2026-11-19
