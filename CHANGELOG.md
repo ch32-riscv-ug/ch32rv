@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.32.1 - 2026-11-19
+
 - (EN) Device DB: ch32-device-data 26fa826. The RM names of two CH32L103 / CH32V205 USER bits are now `STOP_RST` / `STANDY_RST` (were `STOPRST` / `STANDYRST`); they are written by their meaning names (`stop-reset`, `standby-reset`) as before.
 - (JA) Device DB: ch32-device-data 26fa826。CH32L103 / CH32V205 の USER の 2 bit の RM 名が `STOP_RST` / `STANDY_RST` になった(以前は `STOPRST` / `STANDYRST`)。書くときは今までどおり意味名(`stop-reset`、`standby-reset`)で。
 - (EN) CH32H417 has no mass erase: `erase --all` on an OEP probe, and the DM chip erase of `flash --erase chip` (OEP, and the WCH-Link paths without a WCH stub), now use its 32 KiB block erase (CTLR.BER, RM §46.2.1; 64 KiB under DBMODE) instead of erasing the code flash page by page: 0.9-2 s for the 960 KiB over an ESP32-P4X OEP probe, where the page loop took about 6 s.
