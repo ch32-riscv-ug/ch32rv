@@ -165,11 +165,43 @@ fn oep_ports() -> Vec<Value> {
         let Some(path) = crate::oep::oep_port(&dev) else {
             continue;
         };
-        let read = read_oep_listing(&dev, &path);
-        out.extend(listing_or_recent(read, &crate::oep::probe_id(&dev)));
+        let id = crate::oep::probe_id(&dev);
+        let read = read_oep_listing_within(dev, path, OEP_LISTING_WITHIN);
+        out.extend(listing_or_recent(read, &id));
     }
     out.extend(net_oep_ports(&on_usb));
     out
+}
+
+/// en: How long one USB OEP probe may take to give its labels in a LIST (one takes well under 1 s on the
+/// bench). A probe whose USB stalls can hold the open of its serial port in the kernel for about
+/// a minute (an ESP32-P4 probe on the bench, 2026-11-20: 55 s), past arduino-cli's 10 s for
+/// the whole LIST.
+/// ja: LIST で USB の OEP の probe 1 台がラベルを返すまでの時間(台では 1 台 1 秒未満)。USB が
+/// 止まった probe は serial port の open をカーネルの中で 1 分近く止める(台の ESP32-P4 の probe、
+/// 2026-11-20、55 秒)。
+const OEP_LISTING_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// en: [`read_oep_listing`] on a thread of its own: a probe that has not answered `within` counts
+/// as unreadable (its recent listing stands in), and its thread is left to finish or stay stuck on
+/// its own. The thread uses this one's enumeration ([`ch32rv_usb::with_one_enumeration`]).
+/// ja: [`read_oep_listing`] を別の thread で。`within` までに返らなければ読めないものとし(前回の
+/// 一覧で代える)、その thread は待たずに放っておく。
+fn read_oep_listing_within(
+    dev: ch32rv_usb::UsbDeviceInfo,
+    path: String,
+    within: std::time::Duration,
+) -> Option<Vec<Value>> {
+    let snapshot = ch32rv_usb::current_enumeration();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let read = || read_oep_listing(&dev, &path);
+        let _ = tx.send(match snapshot {
+            Some(devs) => ch32rv_usb::with_enumeration(devs, read),
+            None => read(),
+        });
+    });
+    rx.recv_timeout(within).ok().flatten()
 }
 
 /// How long a probe's last listing stands in for it while it cannot be read (another tool holds

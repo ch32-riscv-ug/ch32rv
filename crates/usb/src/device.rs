@@ -530,20 +530,35 @@ thread_local! {
 /// 列挙は毎回全 device の sysfs の文字列を読む(USB 約 200 台で 1 回の LIST が 49 回、6〜30 秒)。
 /// 数秒で終わる読み出し中心の処理だけに使う(その間に現れた device は見えない)。
 pub fn with_one_enumeration<T>(f: impl FnOnce() -> T) -> T {
-    let outer = SNAPSHOT.with(|s| s.borrow().is_some());
-    if outer {
+    if current_enumeration().is_some() {
         return f();
     }
-    if let Ok(devs) = enumerate() {
-        SNAPSHOT.with(|s| *s.borrow_mut() = Some(devs));
+    match enumerate() {
+        Ok(devs) => with_enumeration(devs, f),
+        Err(_) => f(),
     }
-    struct Clear;
-    impl Drop for Clear {
+}
+
+/// en: The enumeration [`with_one_enumeration`] holds on this thread, if any: handed to a thread a
+/// listing spawns, so that its [`enumerate`] calls use it too (through [`with_enumeration`]).
+/// ja: この thread の [`with_one_enumeration`] の列挙(あれば)。一覧が起こす thread に渡す。
+pub fn current_enumeration() -> Option<Vec<UsbDeviceInfo>> {
+    SNAPSHOT.with(|s| s.borrow().clone())
+}
+
+/// en: Run `f` with `devs` standing in for every [`enumerate`] on this thread inside it: the
+/// [`current_enumeration`] of the thread that spawned this one. Same limits as [`with_one_enumeration`].
+/// ja: `f` の中の(この thread の)`enumerate` を `devs` で済ませる(起こした側の thread の列挙)。
+pub fn with_enumeration<T>(devs: Vec<UsbDeviceInfo>, f: impl FnOnce() -> T) -> T {
+    let outer = SNAPSHOT.with(|s| s.borrow_mut().replace(devs));
+    struct Restore(Option<Vec<UsbDeviceInfo>>);
+    impl Drop for Restore {
         fn drop(&mut self) {
-            SNAPSHOT.with(|s| *s.borrow_mut() = None);
+            let outer = self.0.take();
+            SNAPSHOT.with(|s| *s.borrow_mut() = outer);
         }
     }
-    let _clear = Clear;
+    let _restore = Restore(outer);
     f()
 }
 
