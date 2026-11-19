@@ -127,10 +127,24 @@ jobs:
         if: inputs.republish_tag == ''
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        # The body is this version's CHANGELOG section (the one scripts/release.sh just cut from
+        # "Unreleased"), after the platform note.
         run: |
+          NOTES_FILE="$(mktemp)"
+          python3 - "$VERSION" "$NOTES_FILE" <<'PY'
+          import pathlib, re, sys
+          version, out = sys.argv[1], sys.argv[2]
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          m = re.search(rf"^## {re.escape(version)}\b[^\n]*\n(?P<body>.*?)(?=^## |\Z)", text, re.S | re.M)
+          notes = m.group("body").strip() if m else ""
+          body = "Verified on Linux x86_64 and Windows x86_64; macOS and arm binaries are experimental."
+          body += f"\n\n## Changelog\n\n{notes}" if notes else "\n\nSee CHANGELOG.md."
+          pathlib.Path(out).write_text(body + "\n", encoding="utf-8")
+          PY
           gh release create "${{ steps.ver.outputs.tag }}" \
             --title "${{ steps.ver.outputs.tag }}" \
-            --notes "See CHANGELOG.md. Verified on Linux x86_64 and Windows x86_64; macOS and arm binaries are experimental."
+            --notes-file "$NOTES_FILE"
 
   crates-io:
     needs: prepare
