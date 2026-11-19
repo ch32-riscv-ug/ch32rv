@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- (EN) `erase --all` on an OEP probe uses the FLASH controller's mass erase (MER + STRT) over the Debug Module where the family has one, as fast as a WCH-Link's chip erase: 0.23 s on a CH32V006 over an ESP32-P4 OEP probe, where the page-by-page erase took 5 s or more. A family without MER (CH32H417) still erases the code flash page by page. The prompt and the output are those of a WCH-Link (`Erase the entire chip flash?`, `erased entire chip flash (<family>)`, JSON `scope: chip`).
+- (JA) OEP の probe の `erase --all` は、MER のある family なら Debug Module 越しに FLASH controller の全消去(MER + STRT)を使う。WCH-Link の chip erase と同じ速さになった: ESP32-P4 の OEP probe + CH32V006 で 0.23 秒(page ごとに消していたときは 5 秒以上)。MER の無い family(CH32H417)は今までどおり code flash を page ごとに消す。確認と出力は WCH-Link と同じ(`Erase the entire chip flash?`、`erased entire chip flash (<family>)`、JSON は `scope: chip`)。
+
 ## 0.32.0 - 2026-11-17
 
 - (EN) Breaking (oep-spec 1c80768, transports §1, §5): OEP over HID uses the new report form `[report id] count(u16) first(u16) bytes... zero padding`, `first` being where the first frame starting in the report begins (0xFFFF when none). The host packs it across writes, and reading re-reads from a report's `first` when its own reading disagrees (a report was lost: an OS HID driver drops reports it holds too long), or from the next report with one after opening or a broken report; a lost answer over HID is resent without waiting for quiet. A probe firmware before oep-probe-arduino 645fbad does not answer over HID any more: ch32rv goes on to vendor bulk after the reply wait (about 6 s a probe in a listing), so update the probes. Checked against oep-spec's shared vectors (hid_reports.json) and on the bench: 13 OEP probes on 958a231, an Arduino LIST in 4.3 s (10 s before), `?via=hid` answering in 0.37 s. The OEP registry is regenerated from oep-spec 1c80768.

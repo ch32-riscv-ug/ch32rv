@@ -1742,11 +1742,13 @@ pub fn erase(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
         ExitCode::SUCCESS
     }
 }
-/// en: `erase` through an OEP probe: page erases by the FLASH controller over the Debug Module,
-/// for `--all` the whole code flash (the size from the DB by the chip id), for `--range` /
-/// `--region` the page-aligned span. A WCH-Link's own chip erase is not there.
-/// ja: OEP の probe での `erase`。Debug Module で FLASH controller の page 消去を回す。`--all` は
-/// code flash 全体(大きさは chip id から DB で引く)、`--range` / `--region` は page 境界の範囲。
+/// en: `erase` through an OEP probe: over the Debug Module, `--all` is one mass erase (MER) where
+/// the controller has one (as the WCH-Link's own chip erase), otherwise page erases by the FLASH
+/// controller over the whole code flash (the size from the DB by the chip id); `--range` /
+/// `--region` erase the page-aligned span page by page.
+/// ja: OEP の probe での `erase`。Debug Module 越し。`--all` は MER のある family なら一度の全消去、
+/// 無ければ code flash 全体(大きさは chip id から DB で引く)を page ごとに消す。`--range` /
+/// `--region` は page 境界の範囲を page ごとに消す。
 fn erase_oep(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
     const CMD: &str = "erase";
     crate::cmd_target::on_target(cli, CMD, |t, family, _db_family| {
@@ -1759,6 +1761,51 @@ fn erase_oep(cli: &Cli, args: &crate::args::EraseArgs) -> ExitCode {
                 None,
             );
         };
+        // en: `--all` on a family whose controller has a mass erase: one MER + STRT, as the
+        // WCH-Link's own chip erase (the page loop took 5 s on a CH32V006 over a Pico OEP probe).
+        // ja: `--all` で MER のある family は一度の全消去(page を回すと V006 で 5 秒かかった)。
+        if args.range.is_none()
+            && args.region.is_none()
+            && let Some(mode) = ch32rv_flash::erase_plan::mass_erase_mode(family)
+        {
+            if let Err(why) = confirm_destructive(cli, "Erase the entire chip flash?") {
+                return fail(
+                    cli,
+                    CMD,
+                    ErrorKind::Usage,
+                    why,
+                    Some("pass --yes to confirm"),
+                );
+            }
+            let mut last = None;
+            for _ in 0..3 {
+                if let Err(e) = t.halt() {
+                    last = Some(format!("halt failed: {e}"));
+                    continue;
+                }
+                let r = {
+                    let mut d = t.dtm();
+                    ch32rv_dmi::DebugModule::new(&mut d).flash_mass_erase(mode)
+                };
+                match r {
+                    Ok(()) => {
+                        last = None;
+                        break;
+                    }
+                    Err(e) => last = Some(format!("chip erase failed: {e}")),
+                }
+            }
+            if let Some(msg) = last {
+                return fail(cli, CMD, ErrorKind::TransferFailed, msg, None);
+            }
+            if cli.json {
+                let mut env = ResultEnvelope::success(CMD);
+                env.result = Some(serde_json::json!({ "scope": "chip", "family": family }));
+                return crate::print_envelope(&env);
+            }
+            println!("erased entire chip flash ({family})");
+            return ExitCode::SUCCESS;
+        }
         let page = profile.page_size;
         let flash_bytes = t
             .chip_id()

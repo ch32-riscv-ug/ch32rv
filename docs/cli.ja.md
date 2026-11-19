@@ -312,6 +312,8 @@ ch32rv erase (--all | --region <r> | --range <a>..<b>)                範囲指�
 
 **`erase --range` / `--region`**: `--all`(chip 全消去)に加え、**page 単位の部分消去**を持つ。WCH-Link stub の write 経路は部分書き込みを受け付けない(probe が reason 0x55 で拒否)ため、**FLASH controller(0x4002_2000)を DMI 経由で直接叩く**経路を使う(`DebugModule::flash_page_erase` / `flash_program_page`。KEYR/MODEKEYR unlock → FTER/FTPG + STRT/PGSTART → STATR busy 待ち)。消去は page 粒度なので **start と length を page 境界に揃えることを必須**とし(fail-closed。ズレは Usage error + page サイズを提示)、隣接 page を巻き込まない。`--region code[+off[+len]]` は probe 報告の flash サイズから解決。program は family 別に 3 方式(PgStart=V20x/V30x、Buffered=V003/V00x/X035/L103、V103=標準 16bit halfword+commit)。**対応 family: V20x/V30x・V003/CH641(64B)・V00x(256B)・X035/CH643・L103・V103(128B)**。実機検証: V307 で page1 だけ消去し page0(reset vector)/page2 無傷、V003 で 64B page、V103 で 128B page 消去(隣接無傷)、**L103 で 256B page を surgical に消去(先頭 firmware・中間 blank 域とも無傷、program/verify 往復 OK)**。**注意: 消去済みセルの read 値は family 差あり(RM の系統 B=V20x/V30x=`0xe339e339`、系統 A=X035/V003=`0xff`)**ので、erase 完了判定は read でなく controller の STATR(BUSY クリア + WPRERR 無し)で行う。この直接 FLASH controller 経路は flash SW breakpoint(trigger 無し core)と option byte 書き込みの土台にもなっている。
 
+**OEP の probe の `erase --all`**: WCH-Link の chip erase は無いので、Debug Module 越しに FLASH controller の MER + STRT で一度に全消去する(WCH-Link の chip erase と同じ速さ。実機: CH32V006 + ESP32-P4 の OEP probe で 0.23 秒。以前の page を順に消す方法では 128 page で 5 秒以上)。MER の無い family(CH32H417)は code flash 全体(大きさは chip id から DB で引く)を page ごとに消す。
+
 #### reset / run / recover
 
 ```text
