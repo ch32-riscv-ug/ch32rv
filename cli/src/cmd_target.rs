@@ -379,6 +379,30 @@ impl OnTarget<'_, '_> {
         }
     }
 
+    /// en: Read `len` bytes from `addr` (word-aligned). On an OEP probe this is the read `read`
+    /// uses (`Attached::read_words_any`): the probe's own memory read through core 0, or through
+    /// core 1 over raw DMI when a CH32H417's core 0 answers no memory access (a V5F build running,
+    /// cmderr 3). ch32rv's own abstract commands through core 0 skipped that, and `target option
+    /// get` on such an H417 failed with cmderr 3 or decoded a stray word (`a09a0000` x4) as the
+    /// option bytes. Elsewhere the Debug Module's memory read.
+    /// ja: `addr` から `len` byte 読む。OEP は `read` と同じ読み出し(core 0 が答えない H417 は core 1
+    /// から)。DM を直接叩くとそれを通らず、option get が cmderr 3 や化けた値になった。
+    pub(crate) fn read_mem(&mut self, addr: u32, len: u32) -> Result<Vec<u8>, String> {
+        match self {
+            OnTarget::Oep(x) => x.read_words_any(addr, len.div_ceil(4) as usize).map(|w| {
+                let mut b: Vec<u8> = w.iter().flat_map(|w| w.to_le_bytes()).collect();
+                b.truncate(len as usize);
+                b
+            }),
+            _ => {
+                let mut d = self.dtm();
+                ch32rv_dmi::DebugModule::new(&mut d)
+                    .read_mem(addr, len)
+                    .map_err(|e| e.to_string())
+            }
+        }
+    }
+
     /// The chip id the attach read (DMI 0x7F on WCH parts), when there is one.
     pub(crate) fn chip_id(&self) -> Option<u32> {
         match self {
@@ -586,8 +610,7 @@ fn read_option_bytes_full(cli: &Cli, cmd: &str) -> Result<(String, String, [u8; 
                 None,
             );
         }
-        let mut d = t.dtm();
-        match ch32rv_dmi::DebugModule::new(&mut d).read_mem(base, 16) {
+        match t.read_mem(base, 16) {
             Ok(v) if v.len() >= 16 => {
                 let mut a = [0u8; 16];
                 a.copy_from_slice(&v[..16]);
@@ -636,9 +659,7 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
             );
         }
         let before = {
-            let mut d = t.dtm();
-            let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
-            let before = match dm.read_mem(base, 16) {
+            let before = match t.read_mem(base, 16) {
                 Ok(v) => v,
                 Err(e) => {
                     return fail(
@@ -650,7 +671,10 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
                     );
                 }
             };
-            if let Err(e) = dm.flash_program_option_bytes(base, new) {
+            let mut d = t.dtm();
+            if let Err(e) =
+                ch32rv_dmi::DebugModule::new(&mut d).flash_program_option_bytes(base, new)
+            {
                 return fail(
                     cli,
                     cmd,
@@ -686,13 +710,11 @@ fn program_option(cli: &Cli, cmd: &str, new: &[u8; 16]) -> ExitCode {
         }
         let mut after = Vec::new();
         {
-            let mut d = t.dtm();
-            let mut dm = ch32rv_dmi::DebugModule::new(&mut d);
             for attempt in 0..3 {
                 if attempt > 0 {
                     std::thread::sleep(Duration::from_millis(50));
                 }
-                after = match dm.read_mem(base, 16) {
+                after = match t.read_mem(base, 16) {
                     Ok(v) => v,
                     Err(e) => {
                         return fail(

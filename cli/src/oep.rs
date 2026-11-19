@@ -2957,7 +2957,7 @@ fn on_hart<T>(
 /// ja: core 0(probe の op)でメモリを読み書きし、core 0 が答えない H417(V5F のビルド)では core 1
 /// で。probe が core 0 を止めている間に生の DMI を書くと退避した register を捨てるので、先に走らせる。
 impl Attached<'_> {
-    fn read_words_any(&mut self, addr: u32, count: usize) -> Result<Vec<u32>, String> {
+    pub(crate) fn read_words_any(&mut self, addr: u32, count: usize) -> Result<Vec<u32>, String> {
         let words = |b: Vec<u8>| -> Vec<u32> {
             b.as_chunks::<4>()
                 .0
