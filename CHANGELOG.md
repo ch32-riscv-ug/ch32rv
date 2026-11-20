@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.32.3 - 2026-11-20
+
 - (EN) Fix: an OEP probe whose USB stalls held `arduino discovery`'s LIST for about a minute (the kernel kept the open of its serial port 55 s on the bench, 2026-11-20), past arduino-cli's 10 s for the LIST, so the IDE listed no ports. Each USB OEP probe now has 3 s to give its labels; one that has not is listed from its recent listing (30 s), or left out.
 - (JA) 修正: USB が止まった OEP の probe があると、`arduino discovery` の LIST が 1 分近く返らなかった(台で serial port の open がカーネルの中で 55 秒止まった、2026-11-20)。arduino-cli の LIST の 10 秒を超え、IDE にポートが 1 つも出なかった。USB の OEP の probe 1 台ごとにラベルを返すまで 3 秒とし、返らない probe は直前(30 秒以内)の一覧で出すか、出さない。
 - (EN) Fix (safety): on an OEP probe, a CH32H417 running a V5F build answers core 0's memory access with cmderr 3 now and then (4 of 30 page erases failed even after three tries, 2026-11-19). The FLASH-controller operations over the Debug Module (`target option set` / `write-raw` / `reset`, `erase --all|--range|--region`, `flash --erase chip`'s chip erase) now run again from the start through core 1 when core 0 fails them on an H417, as `read` already did. Before, an option write stopped between its erase and its program would have left the option bytes erased (read protection on at the next reset). Measured with such a build running: 30 of 30 page erases, 20 of 20 option writes, 5 of 5 `erase --all` + `flash --erase chip`.
