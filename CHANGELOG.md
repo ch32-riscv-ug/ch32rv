@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) `--probe` takes a USB serial number as it is (`--probe FBC18F0680B0`, as `serial:FBC18F0680B0`): letters and digits, at least one digit, so that a mistyped keyword is still refused. When several WCH-Links match, each `candidate:` line now starts with the probe's address (`wchlink://<serial>`, or `wchlink://usb-<bus>-<ports>` without a serial), which `--probe` takes as it is; the JSON candidates carry it as `address`. Before, a candidate was a JSON object that could not be pasted.
+- (JA) `--probe` に USB の serial number をそのまま渡せる(`--probe FBC18F0680B0` は `serial:FBC18F0680B0` と同じ)。英数字だけで数字を 1 つ以上含むもの(キーワードの打ち間違いは今までどおり断る)。WCH-Link が複数当てはまったときの `candidate:` の行は、先頭が probe の住所(`wchlink://<serial>`、serial の無いものは `wchlink://usb-<bus>-<ports>`)になり、そのまま `--probe` に渡せる。JSON の候補には `address` として入る。以前は候補が JSON の object で、そのまま貼れなかった。
 ## 0.32.3 - 2026-11-20
 
 - (EN) Fix: an OEP probe whose USB stalls held `arduino discovery`'s LIST for about a minute (the kernel kept the open of its serial port 55 s on the bench, 2026-11-20), past arduino-cli's 10 s for the LIST, so the IDE listed no ports. Each USB OEP probe now has 3 s to give its labels; one that has not is listed from its recent listing (30 s), or left out.

@@ -142,6 +142,7 @@ chip = "CH32V203C8T6"
 --probe <selector>
   VID:PID[:SERIAL]      canonical(probe-rs 互換)。例 1a86:8010:434A124C5596
   serial:<sn>           serial だけで指定
+  <sn>                  serial をそのまま(英数字だけで数字を 1 つ以上含むもの)。例 FBC18F0680B0
   name:<alias>          設定ファイルの別名(値は下のどの形でもよい。?via= 付きの住所も書ける)
   topology:<bus>-<ports>  USB の位置(固定 hub の物理 port。HIL lane 用)
   <IDE の住所>          IDE の port の住所をそのまま: probe の serial port(/dev/ttyACM0、COM3。symlink 可)、

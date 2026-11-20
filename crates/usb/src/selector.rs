@@ -4,6 +4,7 @@
 //! ```text
 //! VID:PID[:SERIAL]      canonical (probe-rs compatible), e.g. 1a86:8010:434A124C5596
 //! serial:<sn>           select by serial only
+//! <sn>                  the serial as it is (letters and digits, at least one digit), e.g. FBC18F0680B0
 //! name:<alias>          alias from the config file
 //! topology:<bus>-<ports>  USB position (physical port on a fixed hub; for HIL lanes)
 //! <address>             an IDE port address as it is: a probe's serial port (/dev/ttyACM0,
@@ -27,7 +28,7 @@ pub enum Selector {
         pid: u16,
         serial: SerialFilter,
     },
-    /// `serial:<sn>`
+    /// `serial:<sn>`, `wchlink://<sn>`, or the serial as it is
     Serial(String),
     /// `name:<alias>` (resolved through the config file)
     Name(String),
@@ -57,7 +58,7 @@ pub enum SelectorParseError {
     #[error("empty value after `{0}:`")]
     EmptyValue(&'static str),
     #[error(
-        "`{0}` is not a probe selector: use VID:PID[:SERIAL] (hex, e.g. 1a86:8010), serial:<sn>, name:<alias>, topology:<bus>-<ports>, or an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>])"
+        "`{0}` is not a probe selector: use VID:PID[:SERIAL] (hex, e.g. 1a86:8010), a USB serial number as it is or serial:<sn>, name:<alias>, topology:<bus>-<ports>, or an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>])"
     )]
     Unrecognized(String),
     /// A write target's address (a bootloader or an application), not a debug probe.
@@ -93,6 +94,14 @@ impl FromStr for Selector {
         // ja: IDE の port の住所はそのまま selector。
         if let Some(r) = address(s) {
             return r;
+        }
+
+        // en: A USB serial number as it is (`FBC18F0680B0`, what `probe list` and an ambiguity
+        // error show): letters and digits only, at least one digit, so that a mistyped keyword
+        // (`wchlink`) is still refused.
+        // ja: USB のシリアル番号そのまま(英数字だけで数字を 1 つ以上含む)。
+        if s.chars().all(|c| c.is_ascii_alphanumeric()) && s.chars().any(|c| c.is_ascii_digit()) {
+            return Ok(Selector::Serial(s.to_owned()));
         }
 
         // en: VID:PID[:SERIAL], when the first two fields are 1-4 hex digits each; a serial may
@@ -441,6 +450,18 @@ mod tests {
                 other => panic!("{gone}: {other:?}"),
             }
         }
+    }
+
+    #[test]
+    fn a_bare_serial_is_a_serial() {
+        assert_eq!(
+            "FBC18F0680B0".parse::<Selector>().unwrap(),
+            Selector::Serial("FBC18F0680B0".to_owned())
+        );
+        assert_eq!(
+            "30eda0e31451".parse::<Selector>().unwrap(),
+            Selector::Serial("30eda0e31451".to_owned())
+        );
     }
 
     #[test]

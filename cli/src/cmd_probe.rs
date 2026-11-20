@@ -82,7 +82,12 @@ pub(crate) fn select_entry(cli: &Cli, cmd: &str) -> Result<Entry, ExitCode> {
                 .iter()
                 .filter_map(|&i| entries.get(i))
                 .map(|e| {
+                    let address = match e.dev.serial() {
+                        Some(sn) => format!("wchlink://{sn}"),
+                        None => format!("wchlink://usb-{}", e.dev.topology()),
+                    };
                     serde_json::json!({
+                        "address": address,
                         "usb": e.dev.usb_id(),
                         "serial": e.dev.serial(),
                         "topology": e.dev.topology(),
@@ -95,7 +100,9 @@ pub(crate) fn select_entry(cli: &Cli, cmd: &str) -> Result<Entry, ExitCode> {
                 cmd,
                 ErrorKind::DeviceAmbiguous,
                 format!("{} probes match; specify --probe", candidates.len()),
-                Some("select one with --probe VID:PID:SERIAL or topology:<bus>-<ports>"),
+                Some(
+                    "select one with --probe <address> (a candidate's first field, as `probe list` shows it)",
+                ),
                 candidates,
             ));
         }
@@ -660,13 +667,41 @@ pub(crate) fn fail_with_candidates(
     } else {
         eprintln!("ch32rv: error[{}]: {msg}", kind.as_str());
         for c in &candidates {
-            eprintln!("  candidate: {c}");
+            eprintln!("  candidate: {}", candidate_line(c));
         }
         if let Some(h) = hint {
             eprintln!("  hint: {h}");
         }
     }
     kind.exit_code().into()
+}
+
+/// en: A candidate as one line, its `address` (a `--probe` selector as it is) first so that it
+/// can be copied alone: `wchlink://FBC18F0680B0  mode=riscv topology=3-3.4.2 usb=1a86:8010`.
+/// ja: 候補を 1 行に。`address`(そのまま `--probe` に渡せる)を先頭に置き、単独でコピーできるように。
+fn candidate_line(c: &serde_json::Value) -> String {
+    let Some(obj) = c.as_object() else {
+        return c.as_str().map_or_else(|| c.to_string(), str::to_owned);
+    };
+    let mut line = obj
+        .get("address")
+        .and_then(|a| a.as_str())
+        .unwrap_or("")
+        .to_owned();
+    for (k, v) in obj.iter().filter(|(k, _)| k.as_str() != "address") {
+        let v = v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+        line.push_str(&format!(
+            "{}{k}={v}",
+            if line.is_empty() {
+                ""
+            } else if line.contains('=') {
+                " "
+            } else {
+                "  "
+            }
+        ));
+    }
+    line
 }
 
 thread_local! {

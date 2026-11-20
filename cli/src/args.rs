@@ -25,7 +25,7 @@ pub struct Cli {
 
     // en: Global options (docs/cli.ja.md §3.1).
     // ja: グローバルオプション(docs/cli.ja.md §3.1)。
-    /// Probe selector: VID:PID[:SERIAL] | serial:<sn> | name:<alias> | topology:<bus>-<ports> | an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>]). A debug probe only: isp / boot take the device they write with --device
+    /// Probe selector: VID:PID[:SERIAL] | <serial> | serial:<sn> | name:<alias> | topology:<bus>-<ports> | an IDE port address as it is (/dev/ttyACM0, COM3, wchlink://<sn>, oep://<probe>[/<port>[/<target>]][?via=usb|bulk|hid|cdc|net|tcp:<host>:<port>|tty:<path>]). A debug probe only: isp / boot take the device they write with --device
     #[arg(long, global = true, env = "CH32RV_PROBE")]
     pub probe: Option<String>,
     /// en: Whether `--probe` was on the command line (not from `CH32RV_PROBE`). Set by main.
