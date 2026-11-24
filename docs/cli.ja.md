@@ -670,10 +670,10 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
       | protocol | source |
       |---|---|
       | `serial` | `uart`、`sdi`、`dmdata`、`dmseq`、`rtt`、`fixture-uart` |
-      | `wchlink` | `dmdata`、`dmseq`、`sdi`、`rtt` |
+      | `wchlink` | `uart`、`dmdata`、`dmseq`、`sdi`、`rtt` |
       | `oep` | `dmseq`、`dmdata`、`sdi`、`fixture-uart`、`rtt` |
 
-      `wchlink` に `uart` と `fixture-uart` は無い(uart は Link の CDC を `serial` で開く)。`ch32rv-app` / `ch32rv-isp` / `ch32rv-hid` の source は `serial` と同じ並び。`--protocol` はこの 6 つだけを受け、ほかは usage(exit 2)。
+      `wchlink` の `uart`(既定)は、その Link の CDC(`probe list` の `ports` と同じ逆引き)を `serial` の `uart` と同じに開く(attach も lock もしない)。`fixture-uart` は無い。`ch32rv-app` / `ch32rv-isp` / `ch32rv-hid` の source は `serial` と同じ並び。`--protocol` はこの 6 つだけを受け、ほかは usage(exit 2)。
     - `baudrate` / `dtr` / `rts`: `uart` 用。値と既定は組み込みの serial-monitor と同じ(9600、on、on)。他の source でも受けて無視する。開いたまま変えるとすぐ効く。
     - `speed`: `--speed` と同じ意味(attach する source の debug の速さ。板の `monitor_port.<protocol>.speed` を IDE が渡す入口)。値は `low` / `medium` / `high`(既定はコマンド行の `--speed`、無ければ `high`)。`wchlink` は Link の速さ、`oep` は attach の速さの上限(400 kHz / 4 MHz / 6 MHz、つなぎ直しも同じ)。`uart` / `fixture-uart` では受けて無視する。OPEN と source の切り替えのときに効く。PB8/PB9 が USB と同じ端子の CH32H417 の板では、`high` で読み続けると USB の列挙が乱れることがあり、`low` で乱れなかった。
     - `chip`: `--chip` と同じ意味(板の `monitor_port.serial.chip` を IDE が渡す入口)。値は `auto`(既定、= 指定なし)と DB の family / SKU(`--chip`・core の `build.ch32rv_chip` と同じ綴り)。attach する source(sdi / dmdata / dmseq / rtt)で fail-closed に照合し、合わなければ OPEN が error。`uart` は attach しないので照合しない。

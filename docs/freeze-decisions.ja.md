@@ -29,10 +29,10 @@
 | protocol | source(先頭が既定) |
 |---|---|
 | `serial` | `uart`、`sdi`、`dmdata`、`dmseq`、`rtt`、`fixture-uart` |
-| `wchlink` | `dmdata`、`dmseq`、`sdi`、`rtt` |
+| `wchlink` | `uart`、`dmdata`、`dmseq`、`sdi`、`rtt` |
 | `oep` | `dmseq`、`dmdata`、`sdi`、`fixture-uart`、`rtt` |
 
-- `wchlink` に `uart` と `fixture-uart` は無い(uart は Link の CDC を `serial` で開く)。
+- `wchlink` の `uart` は、その Link の CDC(`probe list` の `ports` と同じ逆引き)を `serial` の `uart` と同じに開く(素通し、attach も lock もしない)。既定を `uart` にするのは、IDE は書き込みの `wchlink://` のままモニターを開くので、何も選ばずにスケッチの `Serial` が見え、attach で target のクロックを組み替えない(CH32V205 では s0 も壊す)ため(2026-11-24、0.32.3 までは `dmdata` が既定で `uart` は無かった)。DMI の console が要る板は、板の既定 `monitor_port.wchlink.source` で選ぶ。`fixture-uart` は無い。
 - `arduino monitor` の `baudrate` の既定は 9600(組み込みの serial-monitor に合わせる)。CLI の `monitor --baud` の既定は 115200(別のもの)。
 - `--protocol` は `serial` / `wchlink` / `oep` / `ch32rv-app` / `ch32rv-isp` / `ch32rv-hid` / `ch32rv-bootloader` を受ける。ほかは usage の誤り(exit 2)。後ろの 4 つの source の並びは `serial` と同じ(`ch32rv-app` はアプリの CDC を開き、`ch32rv-isp`・`ch32rv-hid`・`ch32rv-bootloader` は OPEN を断る)。
 

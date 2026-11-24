@@ -1,13 +1,12 @@
 //! en: `arduino discovery` / `arduino monitor` (docs/cli.ja.md §4.11): the Arduino Pluggable
 //! Discovery and Monitor protocols (line-based stdio JSON). Discovery exposes each WCH probe as a
-//! `wchlink://<serial>` port; Monitor wraps the DMI sources (dmdata / rtt) as the IDE's Serial
-//! Monitor, both ways (what the user types reaches the sketch). uart / sdi need no wrapper: the
-//! IDE opens the probe's CDC port with its builtin serial monitor. Machine-facing: never mixes
-//! human text onto stdout.
+//! `wchlink://<serial>` port; Monitor serves the IDE's Serial Monitor from the probe's CDC (uart /
+//! sdi) or the DMI sources (dmdata / dmseq / rtt), both ways (what the user types reaches the
+//! sketch). Machine-facing: never mixes human text onto stdout.
 //! ja: `arduino discovery`/`monitor`。Arduino の Pluggable Discovery/Monitor プロトコル(行単位の
 //! stdio JSON)。discovery は各 WCH probe を `wchlink://<serial>` port として公開、monitor は DMI
-//! source(dmdata / rtt)を IDE の Serial Monitor として双方向に wrap する。uart / sdi は IDE の
-//! builtin serial monitor が CDC を直接開くので wrap 不要。
+//! IDE の Serial Monitor を probe の CDC(uart / sdi)か DMI の source(dmdata / dmseq / rtt)で
+//! 双方向に提供する。
 
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
@@ -551,13 +550,19 @@ const OEP_SOURCES: [MonitorSource; 5] = [
     MonitorSource::Rtt,
 ];
 
-/// en: The sources a `wchlink://` port offers (uart needs the user to pick the Link's CDC port,
-/// where the baud rate and modem lines are theirs to set); `dmdata` is the default.
-/// ja: `wchlink://` の source(uart は Link の CDC を選んで使う。baud と modem 線はそちらで)。既定は dmdata。
-const WCHLINK_SOURCES: [MonitorSource; 4] = [
+/// en: The sources a `wchlink://` port offers. `uart` (the default) is the Link's CDC, found as
+/// `probe list`'s `ports` finds it, opened as a serial port's `uart` is (no attach, no probe lock):
+/// what the IDE picks for a `wchlink://` upload port then shows the sketch's `Serial` without
+/// touching the target (an attach re-clocks it, and breaks a CH32V205's s0).
+/// ja: `wchlink://` の source。既定の `uart` は Link の CDC(`probe list` の `ports` と同じに引く)を
+/// serial の `uart` と同じに開く(attach しない、lock なし)。IDE が書き込みの `wchlink://` のまま
+/// モニターを開いても、target に触れずにスケッチの `Serial` が見える(attach はクロックを組み替え、
+/// CH32V205 の s0 を壊す)。
+const WCHLINK_SOURCES: [MonitorSource; 5] = [
+    MonitorSource::Uart,
     MonitorSource::Dmdata,
-    MonitorSource::Sdi,
     MonitorSource::Dmseq,
+    MonitorSource::Sdi,
     MonitorSource::Rtt,
 ];
 
@@ -1575,6 +1580,12 @@ mod tests {
         assert_eq!(s.speed, "low");
         // A kHz `--speed` from the command line is listed as it is.
         let s = Settings::new("wchlink", None, "4000".to_owned());
+        // A `wchlink://` port opens the Link's CDC unless told otherwise.
+        assert_eq!(s.source, MonitorSource::Uart);
+        assert_eq!(
+            s.describe("wchlink")["configuration_parameters"]["source"]["value"],
+            json!(["uart", "dmdata", "dmseq", "sdi", "rtt"])
+        );
         assert_eq!(
             s.describe("wchlink")["configuration_parameters"]["speed"]["value"],
             json!(["low", "medium", "high", "4000"])
