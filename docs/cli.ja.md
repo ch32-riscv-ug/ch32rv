@@ -643,6 +643,8 @@ ch32rv complete <bash|zsh|fish|powershell>          補完スクリプトを std
 
 ### 4.11 arduino
 
+IDE が起動する機械向けのコマンドなので、`ch32rv --help` の一覧には出さない(`ch32rv arduino --help` は説明を出す)。discovery と monitor は stdin から命令を待ち続けるので、手で起動すると返ってこない。
+
 ```text
 ch32rv arduino discovery       Pluggable Discovery protocol(stdio JSON)。WCH-Link を wchlink://<serial>、
                                OEP の probe の口を oep://<probe>/<port>(名前つきの口が無い probe は oep://<probe>)、

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) `ch32rv --help` no longer lists `arduino`: its discovery and monitor are the IDE's to start, and run by hand they wait on stdin for the IDE's commands (they look hung). `ch32rv arduino --help` still describes them.
+- (JA) `ch32rv --help` の一覧から `arduino` を外した。discovery と monitor は IDE が起動するもので、手で起動すると stdin で IDE の命令を待ち続ける(止まったように見える)。`ch32rv arduino --help` は今までどおり説明を出す。
 ## 0.33.0 - 2026-11-24
 
 - (EN) `--probe` takes a USB serial number as it is (`--probe FBC18F0680B0`, as `serial:FBC18F0680B0`): letters and digits, at least one digit, so that a mistyped keyword is still refused. When several WCH-Links match, each `candidate:` line now starts with the probe's address (`wchlink://<serial>`, or `wchlink://usb-<bus>-<ports>` without a serial), which `--probe` takes as it is; the JSON candidates carry it as `address`. Before, a candidate was a JSON object that could not be pasted.

@@ -157,8 +157,9 @@ pub enum Command {
     Version,
     /// Generate shell completions
     Complete(CompleteArgs),
-    /// Arduino IDE integration protocols (machine-facing)
-    #[command(subcommand)]
+    /// Arduino IDE integration protocols (machine-facing: the IDE starts them; not listed in
+    /// `--help`, `ch32rv arduino --help` still describes them)
+    #[command(subcommand, hide = true)]
     Arduino(ArduinoCmd),
     /// The per-probe OEP broker (docs/oep-host.ja.md §7.2)
     #[command(subcommand)]
