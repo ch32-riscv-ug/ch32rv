@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.33.0 - 2026-11-24
+
 - (EN) `--probe` takes a USB serial number as it is (`--probe FBC18F0680B0`, as `serial:FBC18F0680B0`): letters and digits, at least one digit, so that a mistyped keyword is still refused. When several WCH-Links match, each `candidate:` line now starts with the probe's address (`wchlink://<serial>`, or `wchlink://usb-<bus>-<ports>` without a serial), which `--probe` takes as it is; the JSON candidates carry it as `address`. Before, a candidate was a JSON object that could not be pasted.
 - (JA) `--probe` に USB の serial number をそのまま渡せる(`--probe FBC18F0680B0` は `serial:FBC18F0680B0` と同じ)。英数字だけで数字を 1 つ以上含むもの(キーワードの打ち間違いは今までどおり断る)。WCH-Link が複数当てはまったときの `candidate:` の行は、先頭が probe の住所(`wchlink://<serial>`、serial の無いものは `wchlink://usb-<bus>-<ports>`)になり、そのまま `--probe` に渡せる。JSON の候補には `address` として入る。以前は候補が JSON の object で、そのまま貼れなかった。
 - (EN) `arduino monitor --protocol wchlink` offers `uart`, now its default: the Link's CDC (found as `probe list`'s `ports` finds it), opened as a serial port's `uart` is (no attach, no probe lock). The IDE opens the monitor on the `wchlink://` port the upload used, so the sketch's `Serial` now shows without picking another port, and the monitor no longer attaches by default (an attach re-clocks the target, and breaks a CH32V205's s0). dmdata / dmseq / sdi / rtt stay selectable; a board that wants a DMI console names it with `monitor_port.wchlink.source`. Before, a `wchlink://` port had no `uart` and attached for `dmdata`.
