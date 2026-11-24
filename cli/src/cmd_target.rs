@@ -493,6 +493,53 @@ pub(crate) fn on_target_halted(
     }
 }
 
+/// en: The part a write went to, when the chip id (narrowed by `--chip`) names one: what the
+/// summary line shows instead of the family, and `result.flash.sku`.
+/// ja: 書き込んだ先の型番(chip id を `--chip` で絞って 1 つに決まったとき)。要約の行は family の
+/// 代わりにこれを出し、`result.flash.sku` にも入れる。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FlashedPart {
+    pub sku: String,
+    pub flash_bytes: u32,
+    pub sram_bytes: u32,
+}
+
+pub(crate) fn flashed_part(
+    db: &ch32rv_target::Db,
+    chip_id: u32,
+    chip: Option<&str>,
+) -> Option<FlashedPart> {
+    match db.resolve_with_chip(chip_id, chip) {
+        ch32rv_target::Resolution::Sku(s) => Some(FlashedPart {
+            sku: s.sku.clone(),
+            flash_bytes: s.flash_bytes,
+            sram_bytes: s.sram_bytes,
+        }),
+        _ => None,
+    }
+}
+
+/// en: The summary line's target: `CH32V203C8T6 (64 KiB flash, 20 KiB SRAM; --chip CH32V20x)`
+/// when the part is known (the `--chip` part only when it named something else, a family or a
+/// series), else the family.
+/// ja: 要約の行の書き込み先。型番が分かれば型番と大きさ(`--chip` が型番以外を名指したときはそれも)、
+/// 分からなければ family。
+pub(crate) fn flashed_to(family: &str, part: Option<&FlashedPart>, chip: Option<&str>) -> String {
+    let Some(p) = part else {
+        return family.to_owned();
+    };
+    let chip = chip
+        .filter(|c| !c.eq_ignore_ascii_case(&p.sku))
+        .map(|c| format!("; --chip {c}"))
+        .unwrap_or_default();
+    format!(
+        "{} ({} KiB flash, {} KiB SRAM{chip})",
+        p.sku,
+        p.flash_bytes / 1024,
+        p.sram_bytes / 1024
+    )
+}
+
 pub(crate) fn db_family_of(session: &mut Session) -> String {
     let db = session.db();
     match db.resolve_by_chip_id(session.attach.chip_id) {
@@ -1324,6 +1371,35 @@ mod tests {
         // No debug place read that UID (a word-swapped serial from an older core): left as it was.
         assert_eq!(rows[2][4], "-");
         assert!(out[2]["runs_on"].is_null());
+    }
+
+    #[test]
+    fn flashed_to_names_the_part_and_a_family_chip() {
+        use crate::cmd_target::{FlashedPart, flashed_part, flashed_to};
+        let p = FlashedPart {
+            sku: "CH32V203C8T6".to_owned(),
+            flash_bytes: 64 * 1024,
+            sram_bytes: 20 * 1024,
+        };
+        assert_eq!(
+            flashed_to("CH32V20x", Some(&p), Some("CH32V20x")),
+            "CH32V203C8T6 (64 KiB flash, 20 KiB SRAM; --chip CH32V20x)"
+        );
+        assert_eq!(
+            flashed_to("CH32V20x", Some(&p), Some("ch32v203c8t6")),
+            "CH32V203C8T6 (64 KiB flash, 20 KiB SRAM)"
+        );
+        assert_eq!(
+            flashed_to("CH32V20x", Some(&p), None),
+            "CH32V203C8T6 (64 KiB flash, 20 KiB SRAM)"
+        );
+        assert_eq!(flashed_to("CH32V20x", None, Some("CH32V20x")), "CH32V20x");
+        let db = ch32rv_target::Db::builtin();
+        assert_eq!(
+            flashed_part(&db, 0x2031_0500, Some("CH32V20x")),
+            Some(p.clone())
+        );
+        assert_eq!(flashed_part(&db, 0x2099_0500, None), None);
     }
 
     #[test]

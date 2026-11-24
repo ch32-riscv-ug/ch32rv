@@ -1275,18 +1275,22 @@ fn finish_flash(
     // broker reopens its consoles first, so the firmware's first output is polled.
     // ja: ブローカーから借りた Link は reset ごと返す(ブローカーが console を開き直してから reset
     // するので、firmware の最初の出力を汲める)。
+    let part =
+        crate::cmd_target::flashed_part(session.db(), session.attach.chip_id, cli.chip.as_deref());
+    let part = part.as_ref();
     if reset == ResetPolicy::Run && crate::broker::lend_active() {
         let family = session.family();
         drop(session);
         running = crate::broker::hand_back_with_reset();
         if confirm.is_some() && running != Some(true) {
             return finish_lent(
-                cli, cmd, &family, programmer, total, erase, skipped, verified, running, warnings,
+                cli, cmd, &family, part, programmer, total, erase, skipped, verified, running,
+                warnings,
             );
         }
         return finish_lent_ok(
-            cli, cmd, &family, programmer, total, erase, skipped, verified, running, warnings,
-            monitor,
+            cli, cmd, &family, part, programmer, total, erase, skipped, verified, running,
+            warnings, monitor,
         );
     }
     match reset {
@@ -1302,6 +1306,7 @@ fn finish_flash(
                         cli,
                         cmd,
                         &session.family(),
+                        part,
                         programmer,
                         total,
                         erase,
@@ -1344,6 +1349,7 @@ fn finish_flash(
         cli,
         cmd,
         &session.family(),
+        part,
         programmer,
         total,
         erase,
@@ -1375,6 +1381,7 @@ fn finish_lent(
     cli: &Cli,
     cmd: &str,
     family: &str,
+    part: Option<&crate::cmd_target::FlashedPart>,
     programmer: &str,
     total: u64,
     erase: &EraseReport,
@@ -1387,6 +1394,7 @@ fn finish_lent(
         cli,
         cmd,
         family,
+        part,
         programmer,
         total,
         erase,
@@ -1407,6 +1415,7 @@ fn finish_lent_ok(
     cli: &Cli,
     cmd: &str,
     family: &str,
+    part: Option<&crate::cmd_target::FlashedPart>,
     programmer: &str,
     total: u64,
     erase: &EraseReport,
@@ -1417,7 +1426,8 @@ fn finish_lent_ok(
     monitor: Option<MonitorSource>,
 ) -> ExitCode {
     let exit = finish(
-        cli, cmd, family, programmer, total, erase, skipped, verified, running, warnings, None,
+        cli, cmd, family, part, programmer, total, erase, skipped, verified, running, warnings,
+        None,
     );
     if let Some(source) = monitor {
         let margs = crate::args::MonitorArgs {
@@ -1479,6 +1489,8 @@ fn flash_via_loader(
         return c;
     }
     let family = crate::cmd_target::db_family_of(&mut session);
+    let part =
+        crate::cmd_target::flashed_part(session.db(), session.attach.chip_id, cli.chip.as_deref());
     let Some(plan) = ch32rv_flash::loader::plan_for_family(&family) else {
         return fail(
             cli,
@@ -1582,6 +1594,7 @@ fn flash_via_loader(
                 "bytes": total,
                 "programmer": "loader",
                 "family": family,
+                "sku": part.as_ref().map(|p| p.sku.clone()),
                 "pages": report.pages,
                 "rewritten": report.rewritten,
                 "restarted_runs": report.restarted_runs,
@@ -1603,8 +1616,11 @@ fn flash_via_loader(
             eprintln!("warning[{}]: {}", w.code, w.msg);
         }
         println!(
-            "flashed {total} bytes to {family} with the ch32rv loader in {secs:.2} s: {} page(s), {} rewritten, {} run(s) re-issued, verified",
-            report.pages, report.rewritten, report.restarted_runs
+            "flashed {total} bytes to {} with the ch32rv loader in {secs:.2} s: {} page(s), {} rewritten, {} run(s) re-issued, verified",
+            crate::cmd_target::flashed_to(&family, part.as_ref(), cli.chip.as_deref()),
+            report.pages,
+            report.rewritten,
+            report.restarted_runs
         );
         ExitCode::SUCCESS
     }
@@ -1676,6 +1692,7 @@ fn finish(
     cli: &Cli,
     cmd: &str,
     family: &str,
+    part: Option<&crate::cmd_target::FlashedPart>,
     programmer: &str,
     total_bytes: u64,
     erase: &EraseReport,
@@ -1696,6 +1713,7 @@ fn finish(
             "flash": {
                 "bytes": total_bytes,
                 "family": family,
+                "sku": part.map(|p| p.sku.clone()),
                 "programmer": programmer,
                 "skipped": skipped,
                 "scope": erase.scope,
@@ -1714,7 +1732,10 @@ fn finish(
                 // --preverify: the target already held the image, so nothing was erased/programmed.
                 println!("preverify: target already matches - skipped");
             } else {
-                println!("flashed {total_bytes} bytes to {family}");
+                println!(
+                    "flashed {total_bytes} bytes to {}",
+                    crate::cmd_target::flashed_to(family, part, cli.chip.as_deref())
+                );
                 println!("erase:   {}", erase.human());
                 if let Some(v) = verified {
                     println!(

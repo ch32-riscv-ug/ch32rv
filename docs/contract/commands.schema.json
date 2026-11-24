@@ -14,6 +14,10 @@
           "type": ["string", "null"],
           "description": "target の family(例 CH32V30x)。経路が知らなければ null(hid、dfu)"
         },
+        "sku": {
+          "type": ["string", "null"],
+          "description": "書いた先の型番(例 CH32V203C8T6)。chip id(と型番の --chip)で 1 つに決まったときだけ。WCH-Link と OEP の経路が出し、決まらない・経路が知らないときは null か無し"
+        },
         "programmer": {
           "type": "string",
           "description": "書いた経路。既知の値: stub(WCH-Link と flash stub)、controller(WCH-Link が FLASH controller を直接)、loader(WCH-Link と ch32rv の RAM loader)、oep-loader(OEP の probe と RAM loader)、hid(HID bootloader)、isp(factory ISP bootloader)、dfu(DFU 1.1)。値は足すことがある"

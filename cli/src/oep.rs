@@ -1281,6 +1281,22 @@ fn family(cli: &Cli, cmd: &str, chip_id: Option<u32>) -> Result<String, ExitCode
                 Some("pass the correct --chip, or omit it to use auto-detection"),
             ))
         }
+        // A part number is checked as that part (its device id), not only its family: an image
+        // built for a larger part must not go to a smaller one.
+        (Some(_), Some((c, _)))
+            if let Some(other) = chip_id.and_then(|id| db.sku_conflict(c, id)) =>
+        {
+            Err(fail(
+                cli,
+                cmd,
+                ErrorKind::TargetAmbiguous,
+                format!(
+                    "--chip {c} conflicts with the detected {other} (chip id 0x{:08x})",
+                    chip_id.unwrap_or(0)
+                ),
+                Some("pass the correct --chip, or omit it to use auto-detection"),
+            ))
+        }
         (Some(d), _) => Ok(d),
         (None, Some((_, fams))) if fams.len() == 1 => Ok(fams[0].clone()),
         (None, Some((c, _))) => Err(fail(
@@ -1619,6 +1635,9 @@ fn flash_attached(
             }
         }
     }
+    let part = chip_id.and_then(|id| {
+        crate::cmd_target::flashed_part(&ch32rv_target::Db::builtin(), id, cli.chip.as_deref())
+    });
     let total = image.total_len();
     let (scope, store) = crate::cmd_flash::loader_erase_report(args.erase, bytes);
     if cli.json {
@@ -1629,6 +1648,7 @@ fn flash_attached(
                 "bytes": total,
                 "programmer": "oep-loader",
                 "family": family,
+                "sku": part.as_ref().map(|p| p.sku.clone()),
                 "chip_id": chip_id.map(|c| format!("0x{c:08x}")),
                 "pages": report.pages,
                 "rewritten": report.rewritten,
@@ -1650,8 +1670,11 @@ fn flash_attached(
         ExitCode::SUCCESS
     } else {
         println!(
-            "flashed {total} bytes to {family} over OEP in {secs:.2} s: {} page(s), {} rewritten, {} run(s) re-issued, verified",
-            report.pages, report.rewritten, report.restarted_runs
+            "flashed {total} bytes to {} over OEP in {secs:.2} s: {} page(s), {} rewritten, {} run(s) re-issued, verified",
+            crate::cmd_target::flashed_to(&family, part.as_ref(), cli.chip.as_deref()),
+            report.pages,
+            report.rewritten,
+            report.restarted_runs
         );
         ExitCode::SUCCESS
     }
