@@ -185,6 +185,23 @@ pub fn flash_size(id: Identity) -> Option<usize> {
     }
 }
 
+/// en: The target-DB families a device type's bootloader can be, for matching Identify's chip id
+/// to a part: the DB device id's second byte (`0x035e0601` -> `0x5e`) is the chip id the
+/// bootloader answers (measured on CH32X035, wch-protocols pc-to-device-isp §X035). Empty where
+/// the relation is not known to hold (CH32V103's ids do not fit it) or the type is unknown.
+/// ja: device type の bootloader がなりうる DB の family。DB の device id の 2 バイト目が
+/// bootloader の返す chip id(CH32X035 で実測)。当てはまらない(V103)・知らない type は空。
+pub fn db_families(device_type: u8) -> &'static [&'static str] {
+    match device_type {
+        0x17 => &["CH32V307"],
+        0x18 => &["CH32V20x", "CH32V205"],
+        0x20 | 0x21 | 0x25 => &["CH32V003", "CH32V006"],
+        0x23 => &["CH32X035"],
+        0x24 => &["CH32L103"],
+        _ => &[],
+    }
+}
+
 /// en: Series name by Identify's device type, for display. ja: 表示用の系列名。
 pub fn series_name(device_type: u8) -> Option<&'static str> {
     Some(match device_type {

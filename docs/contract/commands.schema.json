@@ -16,7 +16,7 @@
         },
         "sku": {
           "type": ["string", "null"],
-          "description": "書いた先の型番(例 CH32V203C8T6)。chip id(と型番の --chip)で 1 つに決まったときだけ。WCH-Link と OEP の経路が出し、決まらない・経路が知らないときは null か無し"
+          "description": "書いた先の型番(例 CH32V203C8T6)。chip id(と型番の --chip)で 1 つに決まったときだけ。WCH-Link・OEP・isp の経路が出し(isp は Identify の chip_id から)、決まらない・経路が知らないときは null か無し"
         },
         "programmer": {
           "type": "string",

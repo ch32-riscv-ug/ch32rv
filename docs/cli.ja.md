@@ -188,6 +188,7 @@ chip = "CH32V203C8T6"
 - `flash` の結果は経路(`isp flash`、`boot dfu flash`、`boot hid flash` を含む)によらず `result.flash` の 1 つの形。検証の結果はどのコマンドでも `verified`(bool。検証しなかったら null)。
 - WCH-Link と OEP の `flash` は、chip id(型番の `--chip` で絞る)で型番が 1 つに決まると、`result.flash.sku` に型番を入れ、human の要約の行で family の代わりに型番と大きさを出す。`--chip` が family / series なら、それも括弧に添える(`flashed 65536 bytes to CH32V203C8T6 (64 KiB flash, 20 KiB SRAM; --chip CH32V20x) over OEP in 5.03 s: …`)。`--chip` が family / series のまま書くのは、どの品でも動くイメージを書くために選ぶこともあるので、型番を名指すよう勧めはしない。決まらなければ今までどおり family。
 - 型番の `--chip` は、その型番の device id と照合する(family が同じでも別の型番なら exit 23、`target-ambiguous`)。大きい品で組んだイメージを小さい品に書かないため。WCH-Link でも OEP の probe でも同じ(OEP の `flash` は 0.33.0 まで family だけで照合していた)。
+- `isp flash` / `isp verify` / `isp info` も、bootloader の Identify から型番を引く。Identify の `chip_id` は DB の device id の 2 バイト目(`0x035e0601` → `0x5e`)で、`device_type` が決める family の中で引く(`device_type` と family の対応は `ch32rv_isp::db_families`。V103 は id がこの形に合わないので引かない。H417・V407・M030・X315 は `device_type` が未確認で引かない)。型番が決まれば要約の行と `isp info` の `chip:` に型番と大きさを出し、JSON は `result.flash.sku` / `result.sku`。型番の `--chip` が別の `chip_id`、family / series の `--chip` が別の family なら、書く前に exit 23(`target-ambiguous`)。引けない `device_type` では照合しない(今までどおり)。CH32X035F8U6(BTVER 2.60)で、`--chip CH32X035C8T6` が止まり、`--chip CH32X035` で `flashed 63488 byte(s) through the ISP bootloader (CH32X035F8U6 (62 KiB flash, 20 KiB SRAM; --chip CH32X035) at topology:3-3.2), …` を確かめた(2026-11-24)。
 
 ```json
 {"contract":"5","ok":true,"cmd":"flash",

@@ -395,12 +395,77 @@ fn series(id: Identity) -> String {
     )
 }
 
+/// en: The part the bootloader's Identify names (narrowed by a part-number `chip`), if one.
+/// ja: bootloader の Identify が指す型番(型番の `chip` で絞る)。
+fn isp_part(chip: Option<&str>, id: Identity) -> Option<crate::cmd_target::FlashedPart> {
+    let db = ch32rv_target::Db::builtin();
+    match db.resolve_isp(ch32rv_isp::db_families(id.device_type), id.chip_id, chip) {
+        ch32rv_target::Resolution::Sku(s) => Some(crate::cmd_target::FlashedPart {
+            sku: s.sku.clone(),
+            flash_bytes: s.flash_bytes,
+            sram_bytes: s.sram_bytes,
+        }),
+        _ => None,
+    }
+}
+
+/// en: `--chip` against the bootloader's Identify, fail-closed where the device type maps to DB
+/// families: a name in none of them, or a part number whose device id is another chip, stops the
+/// command before it writes (an image built for a larger part must not go to a smaller one). A
+/// device type the DB has no families for is not checked.
+/// ja: `--chip` と Identify の照合。device type が DB の family に結びつくときだけ fail-closed で、
+/// family が違う名前、別の chip の型番なら書く前に止める。結びつかない type は照合しない。
+fn check_chip(cli: &Cli, cmd: &str, id: Identity) -> Result<(), ExitCode> {
+    let Some(chip) = cli.chip.as_deref() else {
+        return Ok(());
+    };
+    let families = ch32rv_isp::db_families(id.device_type);
+    if families.is_empty() {
+        return Ok(());
+    }
+    let db = ch32rv_target::Db::builtin();
+    let named = db.families_for_chip_name(chip);
+    let conflict = if !named
+        .iter()
+        .any(|n| families.iter().any(|f| f.eq_ignore_ascii_case(n)))
+    {
+        Some(series(id))
+    } else {
+        let want = db
+            .skus()
+            .iter()
+            .find(|s| s.sku.eq_ignore_ascii_case(chip))
+            .and_then(|s| s.device_id);
+        match want {
+            Some(d) if (d >> 16) as u8 != id.chip_id => Some(isp_part(None, id).map_or_else(
+                || format!("{} chip 0x{:02x}", series(id), id.chip_id),
+                |p| p.sku,
+            )),
+            _ => None,
+        }
+    };
+    match conflict {
+        Some(other) => Err(fail(
+            cli,
+            cmd,
+            ErrorKind::TargetAmbiguous,
+            format!(
+                "--chip {chip} conflicts with the bootloader's {other} (chip 0x{:02x}, type 0x{:02x})",
+                id.chip_id, id.device_type
+            ),
+            Some("pass the correct --chip, or omit it"),
+        )),
+        None => Ok(()),
+    }
+}
+
 fn describe(o: &Opened) -> serde_json::Value {
     serde_json::json!({
         "usb": o.usb,
         "topology": o.topology,
         "at": o.at,
         "series": ch32rv_isp::series_name(o.id.device_type),
+        "sku": isp_part(None, o.id).map(|p| p.sku),
         "chip_id": format!("0x{:02x}", o.id.chip_id),
         "device_type": format!("0x{:02x}", o.id.device_type),
         "btver": o.cfg.btver_text(),
@@ -483,12 +548,23 @@ fn info(cli: &Cli, args: &IspArgs) -> ExitCode {
         Some(usb) => println!("usb:      {usb} at {}", o.at),
         None => println!("port:     {}", o.at),
     }
-    println!(
-        "chip:     {} (chip 0x{:02x}, type 0x{:02x})",
-        series(o.id),
-        o.id.chip_id,
-        o.id.device_type
-    );
+    match isp_part(cli.chip.as_deref(), o.id) {
+        Some(p) => println!(
+            "chip:     {} ({}, chip 0x{:02x}, type 0x{:02x}; {} KiB flash, {} KiB SRAM)",
+            p.sku,
+            series(o.id),
+            o.id.chip_id,
+            o.id.device_type,
+            p.flash_bytes / 1024,
+            p.sram_bytes / 1024
+        ),
+        None => println!(
+            "chip:     {} (chip 0x{:02x}, type 0x{:02x})",
+            series(o.id),
+            o.id.chip_id,
+            o.id.device_type
+        ),
+    }
     if let Some(n) = ch32rv_isp::flash_size(o.id) {
         println!("flash:    {} KiB", n / 1024);
     }
@@ -602,6 +678,9 @@ fn flash(
         Ok(o) => o,
         Err(c) => return c,
     };
+    if let Err(c) = check_chip(cli, CMD, o.id) {
+        return c;
+    }
     if let Err(c) = check_size(cli, CMD, &o, &image) {
         return c;
     }
@@ -635,6 +714,7 @@ fn flash(
     }
     let running = reset == IspReset::Run;
     let summary = describe(&o);
+    let part = isp_part(cli.chip.as_deref(), o.id);
     if let Err(e) = o.dev.end(running) {
         return isp_fail(cli, CMD, e);
     }
@@ -645,6 +725,7 @@ fn flash(
                 "bytes": image.len(),
                 "programmer": "isp",
                 "family": summary["series"],
+                "sku": part.as_ref().map(|p| p.sku.clone()),
                 "usb": summary["usb"],
                 "chip_id": summary["chip_id"],
                 "erased_sectors": erased,
@@ -668,7 +749,7 @@ fn flash(
         println!(
             "flashed {} byte(s) through the ISP bootloader ({} at {}){}{}",
             image.len(),
-            series(o.id),
+            crate::cmd_target::flashed_to(&series(o.id), part.as_ref(), cli.chip.as_deref()),
             o.at,
             if verified { ", verified" } else { "" },
             if running {
@@ -726,6 +807,9 @@ fn verify_only(cli: &Cli, args: &IspArgs, file: &std::path::Path) -> ExitCode {
         Ok(o) => o,
         Err(c) => return c,
     };
+    if let Err(c) = check_chip(cli, CMD, o.id) {
+        return c;
+    }
     if let Err(c) = check_size(cli, CMD, &o, &image) {
         return c;
     }

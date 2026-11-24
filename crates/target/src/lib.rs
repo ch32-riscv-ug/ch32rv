@@ -938,6 +938,44 @@ impl Db {
         })
     }
 
+    /// en: The part an ISP bootloader's Identify names: among `families`, the parts whose device id
+    /// has `chip_id` as its second byte, narrowed by a part-number `chip` as
+    /// [`Self::resolve_with_chip`] does. Fail-closed like [`Self::resolve_by_chip_id`].
+    /// ja: ISP の bootloader の Identify が指す型番。`families` の中で device id の 2 バイト目が
+    /// `chip_id` のもの。型番の `chip` で絞る。
+    pub fn resolve_isp(
+        &self,
+        families: &[&str],
+        chip_id: u8,
+        chip: Option<&str>,
+    ) -> Resolution<'_> {
+        let hits: Vec<&SkuRecord> = self
+            .skus
+            .iter()
+            .filter(|s| {
+                families.iter().any(|f| f.eq_ignore_ascii_case(&s.family))
+                    && s.device_id.map(|d| (d >> 16) as u8) == Some(chip_id)
+            })
+            .collect();
+        match hits.as_slice() {
+            [] => Resolution::Unknown,
+            [one] => Resolution::Sku(one),
+            many => {
+                if let Some(one) =
+                    chip.and_then(|c| many.iter().find(|s| s.sku.eq_ignore_ascii_case(c)))
+                {
+                    return Resolution::Sku(one);
+                }
+                let fam = &many[0].family;
+                if many.iter().all(|s| &s.family == fam) {
+                    Resolution::Family(fam.clone(), hits)
+                } else {
+                    Resolution::Unknown
+                }
+            }
+        }
+    }
+
     /// en: [`Self::resolve_by_chip_id`], then narrowed by the part the user named: when the ID
     /// leaves several candidates (parts that share one ID, data request 0011) and `--chip` names
     /// one of them, that part is the answer. A family or series name narrows nothing.
@@ -1375,6 +1413,30 @@ CH32FICTIONAL,CH32V006,CH32V006,0x00990900,0x1ffff704,1,1,false,9999\n";
     #[test]
     fn option_user_fields_unknown_family_is_empty() {
         assert!(option_user_fields("CH32NOPE").is_empty());
+    }
+
+    #[test]
+    fn an_isp_chip_id_is_the_device_ids_second_byte() {
+        let db = Db::builtin();
+        let x = ["CH32X035"];
+        assert!(
+            matches!(db.resolve_isp(&x, 0x5e, None), Resolution::Sku(s) if s.sku == "CH32X035F8U6")
+        );
+        assert!(
+            matches!(db.resolve_isp(&x, 0x51, None), Resolution::Sku(s) if s.sku == "CH32X035C8T6")
+        );
+        assert!(matches!(
+            db.resolve_isp(&x, 0x99, None),
+            Resolution::Unknown
+        ));
+        let v = ["CH32V20x", "CH32V205"];
+        assert!(
+            matches!(db.resolve_isp(&v, 0x31, None), Resolution::Sku(s) if s.sku == "CH32V203C8T6")
+        );
+        assert!(matches!(
+            db.resolve_isp(&[], 0x31, None),
+            Resolution::Unknown
+        ));
     }
 
     #[test]
