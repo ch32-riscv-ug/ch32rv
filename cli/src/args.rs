@@ -114,56 +114,56 @@ pub enum SwitchState {
 pub enum Command {
     /// Program the target (with erase/verify/reset/confirm-run policies)
     Flash(FlashArgs),
-    /// Compare target contents against an image (mismatch: exit 30)
-    Verify(VerifyArgs),
-    /// Read memory/flash: dump and blank check
-    Read(ReadArgs),
-    /// Raw memory/region write (advanced)
-    Write(WriteArgs),
-    /// Erase flash (--all / --region / --range)
-    Erase(EraseArgs),
-    /// Reset the target (default: reset, run, detach)
-    Reset(ResetArgs),
     /// Flash, run, monitor output, and propagate the exit code (for HIL)
     Run(RunArgs),
-    /// Diagnose a target that will not flash, and recover it (power-off / nrst / unprotect / unbrick / auto)
-    Recover(RecoverArgs),
-    /// Manage the probe itself
-    #[command(subcommand)]
-    Probe(ProbeCmd),
-    /// Identify and configure the target
-    #[command(subcommand)]
-    Target(TargetCmd),
-    /// One-shot execution control
-    #[command(subcommand)]
-    Dbg(DbgCmd),
     /// Runtime I/O (uart / sdi / dmdata / dmseq / rtt)
     Monitor(MonitorArgs),
     /// GDB server (never modifies flash on attach)
     Gdb(GdbArgs),
+    /// Reset the target (default: reset, run, detach)
+    Reset(ResetArgs),
+    /// Compare target contents against an image (mismatch: exit 30)
+    Verify(VerifyArgs),
+    /// Read memory/flash: dump and blank check
+    Read(ReadArgs),
+    /// Erase flash (--all / --region / --range)
+    Erase(EraseArgs),
+    /// Raw memory/region write (advanced)
+    Write(WriteArgs),
+    /// One-shot execution control
+    #[command(subcommand)]
+    Dbg(DbgCmd),
+    /// Identify and configure the target
+    #[command(subcommand)]
+    Target(TargetCmd),
+    /// Manage the probe itself
+    #[command(subcommand)]
+    Probe(ProbeCmd),
+    /// Diagnose a target that will not flash, and recover it (power-off / nrst / unprotect / unbrick / auto)
+    Recover(RecoverArgs),
     /// Factory ISP route: the chip's own USB bootloader
     Isp(IspArgs),
     /// Custom bootloader route
     #[command(subcommand)]
     Boot(BootCmd),
+    /// Diagnose the environment and suggest next steps
+    Doctor(DoctorArgs),
+    /// Capability matrix: probe x firmware x target x operation
+    Capabilities,
     /// Inspect the target DB
     #[command(subcommand)]
     Db(DbCmd),
-    /// Capability matrix: probe x firmware x target x operation
-    Capabilities,
-    /// Diagnose the environment and suggest next steps
-    Doctor(DoctorArgs),
     /// Show tool/contract/DB/stub versions
     Version,
     /// Generate shell completions
     Complete(CompleteArgs),
+    /// The per-probe OEP broker (docs/oep-host.ja.md §7.2)
+    #[command(subcommand)]
+    Broker(BrokerCmd),
     /// Arduino IDE integration protocols (machine-facing: the IDE starts them; not listed in
     /// `--help`, `ch32rv arduino --help` still describes them)
     #[command(subcommand, hide = true)]
     Arduino(ArduinoCmd),
-    /// The per-probe OEP broker (docs/oep-host.ja.md §7.2)
-    #[command(subcommand)]
-    Broker(BrokerCmd),
 }
 
 // en: §4.1 programming commands. / ja: §4.1 書き込み系。
@@ -471,20 +471,23 @@ pub enum OptionCmd {
 
 #[derive(Subcommand)]
 pub enum DbgCmd {
+    /// Halt the hart and show where it stopped
     Halt {
+        /// Reset the system first, then halt
         #[arg(long)]
         reset: bool,
     },
+    /// Let the halted hart run
     Resume {
         /// H417 over a WCH-Link: resume the other core too
         #[arg(long)]
         all: bool,
     },
-    Step {
-        n: Option<u32>,
-    },
+    /// Execute single instructions (N, default 1)
+    Step { n: Option<u32> },
     /// Dump GPRs + pc (dpc)
     Regs,
+    /// Read or write one register
     #[command(subcommand)]
     Reg(RegCmd),
     /// Direct DM register access (expert)
@@ -495,13 +498,9 @@ pub enum DbgCmd {
 #[derive(Subcommand)]
 pub enum RegCmd {
     /// x1..x31 | pc | csr:<addr>
-    Read {
-        name: String,
-    },
-    Write {
-        name: String,
-        value: String,
-    },
+    Read { name: String },
+    /// x1..x31 | pc | csr:<addr> <value>
+    Write { name: String, value: String },
 }
 
 #[derive(Subcommand)]
@@ -681,6 +680,7 @@ pub enum BootCmd {
     /// omitted
     #[command(subcommand)]
     Dfu(DfuCmd),
+    /// rv003usb-style HID bootloader (UIAPduino, 1209:b803 / 1209:b003)
     #[command(subcommand)]
     Hid(HidBootCmd),
 }
@@ -714,6 +714,7 @@ pub enum DfuCmd {
 
 #[derive(Subcommand)]
 pub enum HidBootCmd {
+    /// Program a bin / hex / elf through the HID bootloader and start it
     Flash {
         file: PathBuf,
         /// Override bootloader USB identity (VID:PID, e.g. 1209:b803)
@@ -737,15 +738,17 @@ pub enum HidBootCmd {
 
 #[derive(Subcommand)]
 pub enum DbCmd {
+    /// The SKUs the DB knows
     List {
+        /// Only this family
         #[arg(long)]
         family: Option<String>,
+        /// Only SKUs verified on hardware
         #[arg(long)]
         verified_only: bool,
     },
-    Info {
-        sku: String,
-    },
+    /// One SKU: chip id, sizes, flash geometry, debug interface, whether verified
+    Info { sku: String },
 }
 
 #[derive(Args)]
