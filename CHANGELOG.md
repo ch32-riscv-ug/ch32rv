@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.34.0 - 2026-11-25
+
 - (EN) `flash` over a WCH-Link or an OEP probe names the part it wrote when the chip id (narrowed by a part-number `--chip`) settles on one: the summary line shows it and its size instead of the family, with a family / series `--chip` beside it (`flashed 65536 bytes to CH32V203C8T6 (64 KiB flash, 20 KiB SRAM; --chip CH32V20x) over OEP in 5.03 s: ...`), and `result.flash` carries it as `sku`. A build for a family name fits the family's smallest part; this tells which part is there.
 - (JA) WCH-Link と OEP の probe の `flash` は、chip id(型番の `--chip` で絞る)で型番が 1 つに決まると、書いた先の型番を出す。要約の行は family の代わりに型番と大きさを出し、`--chip` が family / series ならそれも添える(`flashed 65536 bytes to CH32V203C8T6 (64 KiB flash, 20 KiB SRAM; --chip CH32V20x) over OEP in 5.03 s: ...`)。`result.flash` には `sku` として入る。family の名前で組んだイメージはその family の最小の品に収まるので、どの品がつながっているかを知らせる。
 - (EN) `isp flash` / `isp verify` / `isp info` name the part from the bootloader's Identify (its chip id is the second byte of the part's device id, within the families its device type stands for): the summary line and `isp info` show the part and its size, and `result.flash.sku` / `result.sku` carry it. A part-number `--chip` for another chip id, or a family / series `--chip` for another family, now stops before anything is written (exit 23, `target-ambiguous`); before, `isp flash` did not check `--chip` against the chip. Device types the DB has no families for (CH32V103; H417 / V407 / M030 / X315 unmeasured) are not checked, as before. Measured on a CH32X035F8U6 (BTVER 2.60).
