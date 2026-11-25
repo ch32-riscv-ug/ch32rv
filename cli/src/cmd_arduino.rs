@@ -529,7 +529,8 @@ use crate::source::{self, DmiSource};
 /// `uart`, which is what the IDE would do anyway.
 /// ja: serial port の source。先頭(`uart` = port をそのまま)が既定。WCH probe の無い素の serial
 /// port は `uart` だけ。
-const SERIAL_SOURCES: [MonitorSource; 7] = [
+const SERIAL_SOURCES: [MonitorSource; 8] = [
+    MonitorSource::Auto,
     MonitorSource::Uart,
     MonitorSource::Sdi,
     MonitorSource::Dmdata,
@@ -543,7 +544,8 @@ const SERIAL_SOURCES: [MonitorSource; 7] = [
 /// dmdata, sdi), the probe's fixture UART, and RTT (run by ch32rv over the probe's riscv-dm).
 /// ja: `oep://` の port の source。target の console(dmseq 既定 / dmdata / sdi)、fixture の UART、RTT
 /// (ch32rv が probe の riscv-dm の上で行う)。
-const OEP_SOURCES: [MonitorSource; 5] = [
+const OEP_SOURCES: [MonitorSource; 6] = [
+    MonitorSource::Auto,
     MonitorSource::Dmseq,
     MonitorSource::Dmdata,
     MonitorSource::Sdi,
@@ -559,7 +561,8 @@ const OEP_SOURCES: [MonitorSource; 5] = [
 /// serial の `uart` と同じに開く(attach しない、lock なし)。IDE が書き込みの `wchlink://` のまま
 /// モニターを開いても、target に触れずにスケッチの `Serial` が見える(attach はクロックを組み替え、
 /// CH32V205 の s0 を壊す)。
-const WCHLINK_SOURCES: [MonitorSource; 6] = [
+const WCHLINK_SOURCES: [MonitorSource; 7] = [
+    MonitorSource::Auto,
     MonitorSource::Uart,
     MonitorSource::Dmdata,
     MonitorSource::Dmseq,
@@ -1006,6 +1009,11 @@ enum Backend {
         src: Box<DmiSource>,
         session: Box<Session>,
     },
+    /// `auto`: every path the target talks on, merged.
+    Auto {
+        auto: Box<crate::auto_console::Auto>,
+        applied: Settings,
+    },
     /// A console stream on an OEP probe, through its broker.
     Oep {
         console: Box<crate::oep::ConsoleSession>,
@@ -1038,6 +1046,9 @@ fn lock_for(entry: &Entry, env: &Env) -> Result<DeviceLock, String> {
 
 impl Backend {
     fn open(r: &Resolved, s: Settings, env: &Env) -> Result<Self, String> {
+        if s.source == MonitorSource::Auto {
+            return Self::open_auto(r, s, env);
+        }
         // en: A debug source on a serial port no WCH-Link owns: an OEP probe, through its broker.
         // (uart stays the port as it is - opening an unknown port to send an OEP confirm would put
         // bytes on someone's device; an OEP UART-bridge probe streams its bound console raw there.)
@@ -1072,6 +1083,7 @@ impl Backend {
                             .to_owned(),
                     );
                 }
+                MonitorSource::Auto => unreachable!("auto opens in open_auto"),
                 MonitorSource::Uart => {
                     return Err(
                         "uart is not available on an OEP probe (it offers dmseq, dmdata, sdi, fixture-uart and rtt)"
@@ -1093,6 +1105,7 @@ impl Backend {
             });
         }
         match s.source {
+            MonitorSource::Auto => unreachable!("auto opens in open_auto"),
             MonitorSource::FixtureUart => {
                 Err("fixture-uart is an OEP probe's source (this port is not one)".to_owned())
             }
@@ -1171,9 +1184,56 @@ impl Backend {
         }
     }
 
+    /// en: `auto`: a WCH-Link's CDC and its debug paths (reset to run), an OEP probe's fixture
+    /// UART and consoles, or only the serial port (a port no WCH-Link owns is never sent an OEP
+    /// confirm: it may be anyone's device).
+    /// ja: `auto`。WCH-Link は CDC とデバッグの経路(reset して走らせる)、OEP は fixture の UART と
+    /// console、それ以外は serial の口だけ(WCH-Link のものでない口に OEP の confirm は送らない)。
+    fn open_auto(r: &Resolved, s: Settings, env: &Env) -> Result<Self, String> {
+        use crate::auto_console::Auto;
+        let open_port = |path: &str| -> Result<Box<dyn SerialPort>, String> {
+            let mut port = serialport::new(path, s.baud)
+                .timeout(Duration::from_millis(1))
+                .open()
+                .map_err(|e| format!("open {path}: {e}"))?;
+            let _ = port.write_data_terminal_ready(s.dtr);
+            let _ = port.write_request_to_send(s.rts);
+            Ok(port)
+        };
+        let auto = if let Some(entry) = r.entry.as_ref() {
+            // The CDC is the UART group; a Link without one (or with it busy) still has the rest.
+            let port = r.port.as_deref().and_then(|p| open_port(p).ok());
+            let (speed, _) = crate::parse::speed(&s.speed)?;
+            Auto::open_wch(entry, port, speed, env.lock_timeout, s.chip.as_deref())?
+        } else if let Some(oep @ crate::oep::OepAddr::Named { .. }) = r.oep.as_ref() {
+            let (speed, _) = crate::parse::speed(&s.speed)?;
+            Auto::open_oep(
+                oep,
+                s.chip.as_deref(),
+                Some(crate::oep::speed_hz(speed)),
+                s.baud,
+            )?
+        } else {
+            let path = r
+                .port
+                .as_deref()
+                .ok_or("this port has no serial port to monitor")?;
+            Auto::open_uart(open_port(path)?)
+        };
+        Ok(Backend::Auto {
+            auto: Box::new(auto),
+            applied: s,
+        })
+    }
+
     /// Pump until stopped, switched or failed.
     fn run(&mut self, shared: &Shared, sock: &mut TcpStream, input: &Receiver<Vec<u8>>) -> Leave {
         let mut pending = Vec::new();
+        // en: `auto` on a WCH-Link has just reset the target: what was typed before is dropped.
+        // ja: WCH-Link の `auto` は target を reset したところなので、それまでの入力は捨てる。
+        if matches!(self, Backend::Auto { .. }) {
+            source::drain_input(input, &mut Vec::new());
+        }
         let mut buf = [0u8; 512];
         loop {
             if shared.stop.load(Ordering::SeqCst) {
@@ -1222,6 +1282,30 @@ impl Backend {
                         Ok(Ok(_)) | Err(RecvTimeoutError::Disconnected) => {
                             Err("the serial port closed (probe disconnected?)".to_owned())
                         }
+                    }
+                }
+                Backend::Auto { auto, applied } => {
+                    if now.source != MonitorSource::Auto {
+                        return Leave::Switch;
+                    }
+                    if (now.baud, now.dtr, now.rts) != (applied.baud, applied.dtr, applied.rts) {
+                        if let Err(e) = auto.set_line(now.baud, now.dtr, now.rts) {
+                            return Leave::Failed(e);
+                        }
+                        *applied = now.clone();
+                    }
+                    auto.input(&pending);
+                    pending.clear();
+                    match auto.poll() {
+                        Ok(b) => {
+                            if b.is_empty()
+                                && let Ok(chunk) = input.recv_timeout(auto.idle())
+                            {
+                                pending.extend_from_slice(&chunk);
+                            }
+                            Ok(b)
+                        }
+                        Err(e) => Err(e),
                     }
                 }
                 Backend::Oep {
@@ -1524,7 +1608,8 @@ fn session(client: &str, address: &str, shared: &Shared, env: &Env, slot: &OpenS
 /// 可能性がある。IDE の利用者が読むのはモニタだけなので、そこに全 target で「可能性」として出す。
 fn say_reclock(sock: &mut TcpStream, source: MonitorSource, wch_link: bool) {
     // Only a WCH-Link's attach touches the clock; an OEP probe's does not.
-    if source == MonitorSource::Uart || !wch_link {
+    // `auto` resets the target after its attach, which undoes it.
+    if matches!(source, MonitorSource::Uart | MonitorSource::Auto) || !wch_link {
         return;
     }
     let _ = write!(
@@ -1594,11 +1679,19 @@ mod tests {
         assert_eq!(s.speed, "low");
         // A kHz `--speed` from the command line is listed as it is.
         let s = Settings::new("wchlink", None, "4000".to_owned());
-        // A `wchlink://` port opens the Link's CDC unless told otherwise.
-        assert_eq!(s.source, MonitorSource::Uart);
+        // A `wchlink://` port reads everything the target talks on unless told otherwise.
+        assert_eq!(s.source, MonitorSource::Auto);
         assert_eq!(
             s.describe("wchlink")["configuration_parameters"]["source"]["value"],
-            json!(["uart", "dmdata", "dmseq", "sdi", "rtt", "sdi-forward"])
+            json!([
+                "auto",
+                "uart",
+                "dmdata",
+                "dmseq",
+                "sdi",
+                "rtt",
+                "sdi-forward"
+            ])
         );
         assert_eq!(
             s.describe("wchlink")["configuration_parameters"]["speed"]["value"],

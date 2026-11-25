@@ -48,6 +48,35 @@ pub struct SdiPoll {
     pub other: bool,
 }
 
+/// en: Which console's framing a mailbox (DATA0 / DATA1) holds, judged by the word's shape alone:
+/// WCH SDI_Printf (bit 7 clear, count 1..=7), dmseq (bit 7 set and its CRC holds), dmdata (bit 7
+/// set, `0x80 | (count + 4)` with count 0..=7, no dmseq CRC). Nothing is written.
+/// ja: 郵便受け(DATA0 / DATA1)の語の形だけで、どの console の framing かを決める。何も書かない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MailboxShape {
+    Empty,
+    Sdi,
+    Dmseq,
+    Dmdata,
+    /// Something else (what attach / flash left: 0xffffffff, 0xe339e339).
+    Other,
+}
+
+#[must_use]
+pub fn mailbox_shape(d0: u32, d1: u32) -> MailboxShape {
+    if d0 == 0 {
+        MailboxShape::Empty
+    } else if is_sdi_frame(d0) {
+        MailboxShape::Sdi
+    } else if crate::dmseq::is_frame(d0, d1) {
+        MailboxShape::Dmseq
+    } else if d0 & 0x80 != 0 && (4..=11).contains(&(d0 & 0x3f)) {
+        MailboxShape::Dmdata
+    } else {
+        MailboxShape::Other
+    }
+}
+
 /// en: Whether `word` (DATA0) is a WCH SDI_Printf frame: bit 7 clear and a count of 1..=7 in the
 /// low byte. dmdata / dmseq target words have bit 7 set, so the two never read as each other.
 /// ja: `word`(DATA0)が WCH の SDI_Printf の frame か: bit 7 が 0 で、低 byte の文字数が 1..=7。
@@ -544,6 +573,21 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// set with a frame's count) are left as they are.
     /// ja: SDI の郵便受けを読む前の準備。attach や flash が DATA0 に残した語は target を待たせ続ける
     /// ので消す。SDI の frame と、別の framing の frame(bit 7 が立ち、frame の文字数)は残す。
+    /// en: Read DATA0 and DATA1 without writing anything (to tell the framing apart).
+    /// ja: DATA0 と DATA1 を読むだけ(framing を見分けるため)。
+    pub fn mailbox_words(&mut self) -> Result<(u32, u32), DmiError> {
+        Ok((self.read(DMDATA0)?, self.read(DMDATA1)?))
+    }
+
+    /// en: Put DATA0 and DATA1 back (after a memory access through the Debug Module, which uses
+    /// DATA0 / DATA1 and so overwrites a console's mailbox). The hart must be halted.
+    /// ja: DATA0 と DATA1 を戻す(DM 越しのメモリの読み書きは DATA0 / DATA1 を使うので、console の
+    /// 郵便受けを上書きする)。hart は止まっていること。
+    pub fn set_mailbox_words(&mut self, d0: u32, d1: u32) -> Result<(), DmiError> {
+        self.write(DMDATA1, d1)?;
+        self.write(DMDATA0, d0)
+    }
+
     pub fn sdi_prepare(&mut self) -> Result<(), DmiError> {
         let d0 = self.read(DMDATA0)?;
         let other_frame = d0 & 0x80 != 0 && (4..=11).contains(&(d0 & 0x3f));
@@ -1661,6 +1705,23 @@ mod tests {
         let mut m = MockDtm::default();
         let got = DebugModule::new(&mut m).sdi_poll().unwrap();
         assert_eq!(got, SdiPoll::default());
+    }
+
+    #[test]
+    fn mailbox_shapes_are_told_apart() {
+        use crate::dmseq::crc8;
+        assert_eq!(mailbox_shape(0, 0), MailboxShape::Empty);
+        assert_eq!(mailbox_shape(0x7470_7507, 0x2065_6d69), MailboxShape::Sdi);
+        // dmdata "ABC" and its empty invitation frame.
+        assert_eq!(mailbox_shape(0x4342_4187, 0), MailboxShape::Dmdata);
+        assert_eq!(mailbox_shape(0x0000_0084, 0), MailboxShape::Dmdata);
+        // A dmseq frame: status T|SYN with N = 2, payload "hi", CRC.
+        let b0 = 0x80 | 0x08 | 2u8;
+        let c = crc8(&[b0, b'h', b'i']);
+        let d0 = u32::from_le_bytes([b0, b'h', b'i', c]);
+        assert_eq!(mailbox_shape(d0, 0), MailboxShape::Dmseq);
+        assert_eq!(mailbox_shape(0xffff_ffff, 0xffff_ffff), MailboxShape::Other);
+        assert_eq!(mailbox_shape(0xe339_e339, 0xe339_e339), MailboxShape::Other);
     }
 
     #[test]

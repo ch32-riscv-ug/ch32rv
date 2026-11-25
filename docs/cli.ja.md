@@ -44,7 +44,7 @@ ch32rv
 │  ├─ regs / reg <read|write> <name>                                               [wlink regs]
 │  └─ dmi <read|write>         DM レジスタ直接操作(expert)                        [minichlink -s/-m, wlink write-reg]
 │
-├─ monitor [--source uart|sdi|sdi-forward|dmdata|dmseq|rtt|fixture-uart]   実行時 I/O(sdi / sdi-forward 以外は双方向)
+├─ monitor [--source auto|uart|sdi|sdi-forward|dmdata|dmseq|rtt|fixture-uart]   実行時 I/O(sdi / sdi-forward 以外は双方向)
 │  ├─ list                     monitor 候補 port の列挙
 │  └─ sdi <on|off>             SDI print の有効/無効                               [wlink sdi-print]
 │
@@ -472,7 +472,7 @@ ch32rv dbg dmi read|write <addr> [<value>]          DM レジスタ直接(expert
 ### 4.5 monitor
 
 ```text
-ch32rv monitor [--source uart|sdi|sdi-forward|dmdata|dmseq|rtt|fixture-uart]
+ch32rv monitor [--source auto|uart|sdi|sdi-forward|dmdata|dmseq|rtt|fixture-uart]
   --source 省略時: WCH-Link では uart、OEP の probe では target の console(dmseq)
   --port <serial port の path>   省略時は --probe の probe の CDC(どの probe かは --probe で選ぶ)
   --baud 115200      uart と fixture-uart の速さ。ほかの source には当てはまらない
@@ -511,6 +511,13 @@ ch32rv monitor sdi <on|off>
 要点:
 
 - **`sdi`(既定の SDI の経路)は ch32rv が DMI で郵便受けを読む**(0.34.0 までの `sdi` は今の `sdi-forward`)。LinkE の SDI 転送を使わないので、`uart`(CDC)と同時に読め、Link の設定に触らない。LinkE の転送が有効のまま(ほかの道具で有効にした直後など)だと LinkE が先に frame を取るので、3 秒 frame が来なければ warning `sdi-quiet`(`ch32rv monitor sdi off` を案内)。郵便受けに別の framing(bit 7 の立った dmdata / dmseq の語)があれば warning `sdi-no-console`。開くときに attach や flash が data0 に残した語(`0xffffffff`、`0xe339e339`)を消す(SDI_Printf は data0 が 0 になるまで待つため)。SDI_Printf は郵便受けが空くまで待つので、USB 越しの DMI で読む分、LinkE の転送(約 30 µs ごと)より出力の多い sketch は遅くなる。CH32M030(LinkE 2.23)で、100 ms ごとの行が 5 秒で 50 行、欠けずに届いた(`monitor` と `arduino monitor` の `wchlink://` とも、2026-11-26)。 ArduinoCore-CH32RV の確かめ(V307、LinkE 38EF8F06BDC2、6da9dd6): SDI / DMDATA / DMSeq の sketch を 3 回ずつ、`dmseq` → `sdi` → `dmdata` の順に開き、9 回とも正しい 1 つだけが読めた(化け 0)。違う方式では `dmseq-no-console` / `sdi-no-console` が出て(`dmdata` は黙る)、その間も sketch は止まらなかった。`uart` と `sdi` を同じ Link で同時に開き、12 秒で両方 24 行ずつ届いた。
+- **`auto`(`arduino monitor` の既定、`monitor --source auto`)**: target が使う経路を全部同時に読み、1 本にまとめる(`cli/src/auto_console.rs`)。
+  - 読む組: UART 系(serial の口 / WCH-Link の CDC の `uart`、OEP は口のラベルに rx / tx があるときの `fixture-uart`)、郵便受け系の 1 つ(dmseq / sdi / dmdata の sketch が使うもの)、RTT(control block があるとき)。出力は経路ごとに行でまとめて出す(2 つの経路の行が混ざらないように。途中の行は 100 ms で出す)。決まった経路を `[ch32rv monitor] auto: uart + dmseq + rtt` の行で知らせる(変わるたび)。
+  - **WCH-Link**: CDC を先に開き、attach → DATA0 を 0 に → reset して走らせる(attach のクロックとレジスタの副作用は reset で消えるので、`attach-reclocks-target` などは出さない。開くたびに sketch は最初から走る)。郵便受けは 1 つの読み手が語の形で見分ける(bit 7 が 0 で 1〜7 なら sdi、bit 7 が 1 で CRC が合えば dmseq、残りの `0x80 \| (n+4)` は dmdata)。見分けた後に `*-no-console` が出れば見分け直す。RTT は開いた後(と dmseq の SYN = target の再起動の後)0.5 / 2 / 4 秒に 1 回ずつ探し、見つかれば 50 ms ごとに読む。RTT で hart を止めている間は DATA0 / DATA1 を控えて戻す(DM 越しのメモリの読み書きは DATA0 / DATA1 を通るので、戻さないと SDI と DMDATA の入出力が切れた。V307 で実測)。
+  - **OEP の probe**: target を reset しない。console の方式を dmseq → sdi → dmdata の順に 3 秒ずつ試し、データが来たものに決める(違う方式は黙るだけ)。RTT は開いて 0.5 秒後に 1 回探す。OEP では target の再起動で見分け直さない。
+  - **素の serial の口**(WCH-Link も OEP の住所も無い): `uart` だけ(知らない口に OEP の confirm は送らない)。
+  - **送信**: sketch の出力が最後に来た経路へ(uart / dmseq / dmdata / rtt。sdi は返せないので UART)。何も来ていなければ UART。UART が無ければ、受け取れる経路が決まるまで取っておく。経路ごとに順を保ち、落とさない(dmseq は 2 byte、dmdata は 3 byte ずつ)。target の再起動(dmseq の SYN)では、送っていない入力を捨てる。WCH-Link の開くときの reset の前に打った分も捨てる。
+  - 実測(2026-11-26、ArduinoCore-CH32RV の mixprobe: Serial・郵便受け・RTT に同じ行を 0.5 秒ごと、受けた行を全経路に返す): V307(LinkE 38EF8F06BDC2)の SDI / DMDATA / DMSeq / DMSeq+RTT の 4 つで、決まった経路が正しく、12 秒の行が全経路で欠けず(DMSeq+RTT は 3 経路で 72 行)、入力は最後に出力が来た経路に届いた(SDI のときは UART)。`arduino monitor` の `wchlink://` でも同じ。WeAct X035(OEP、`fixture-uart` のラベルなし)の SDI / DMDATA / DMSeq / DMSeq+RTT で、方式を順に試して決まり(DMDATA は 6 秒後)、入力は決まった経路へ届いた。CH32M030 の SDI で 6 秒 55 行、欠けなし。
 - **`sdi-forward` は LinkE の CDC を使う**。「LinkE に SDI forward を有効化させる」probe 側の**設定変更**で、転送の間は **CDC に UART の出力が届かない**(UART の橋渡しが止まる。ArduinoCore-CH32RV の確かめ)。SDI 転送は LinkE 専用(CH549/LinkW 不可)、firmware 2.10+ を capability で判定。
 - **`sdi`・`dmdata`・`dmseq` は同じ DM data0/data1 レジスタを使うが framing が違う**。SerialSDI は WCH SDI_Printf の framing(低 byte が文字数 1〜7、bit 7 は 0)、SerialDMDATA は minichlink framing(低 byte が `0x80 | (文字数+4)`)。bit 7 で 2 つは分かれ、ch32rv の `sdi` は bit 7 の立った語に触らない。target sketch は SerialSDI・SerialDMDATA・SerialDMSeq のどれか 1 つのみ(排他)。
 - **`dmdata` / `rtt` は CDC を一切使わず host が debug transport(DMI)で読む**。LinkE forward 不要でどの probe でも動き、双方向。これが「UART/SDI 以外の形式」。`dmdata` は SerialSDI 出力も(LinkE forward せず)DMI 直読みできる利点がある。
@@ -680,9 +687,9 @@ Arduino 専用の書き込みロジックは持たない。recipe は §5 の通
 
       | protocol | source |
       |---|---|
-      | `serial` | `uart`、`sdi`、`dmdata`、`dmseq`、`rtt`、`fixture-uart`、`sdi-forward` |
-      | `wchlink` | `uart`、`dmdata`、`dmseq`、`sdi`、`rtt`、`sdi-forward` |
-      | `oep` | `dmseq`、`dmdata`、`sdi`、`fixture-uart`、`rtt` |
+      | `serial` | `auto`、`uart`、`sdi`、`dmdata`、`dmseq`、`rtt`、`fixture-uart`、`sdi-forward` |
+      | `wchlink` | `auto`、`uart`、`dmdata`、`dmseq`、`sdi`、`rtt`、`sdi-forward` |
+      | `oep` | `auto`、`dmseq`、`dmdata`、`sdi`、`fixture-uart`、`rtt` |
 
       `wchlink` の `uart`(既定)は、その Link の CDC(`probe list` の `ports` と同じ逆引き)を `serial` の `uart` と同じに開く(attach も lock もしない)。`fixture-uart` は無い。`ch32rv-app` / `ch32rv-isp` / `ch32rv-hid` の source は `serial` と同じ並び。`--protocol` はこの 6 つだけを受け、ほかは usage(exit 2)。
     - `baudrate` / `dtr` / `rts`: `uart` 用。値と既定は組み込みの serial-monitor と同じ(9600、on、on)。他の source でも受けて無視する。開いたまま変えるとすぐ効く。

@@ -60,6 +60,17 @@ pub fn crc8(bytes: &[u8]) -> u8 {
     crc
 }
 
+/// en: Whether the mailbox words `d0` / `d1` hold a valid dmseq target frame (T set, N <= 6, the
+/// CRC right after the payload). ja: `d0` / `d1` が dmseq の target の frame として正しいか。
+#[must_use]
+pub fn is_frame(d0: u32, d1: u32) -> bool {
+    let mut b = [0u8; 8];
+    b[..4].copy_from_slice(&d0.to_le_bytes());
+    b[4..].copy_from_slice(&d1.to_le_bytes());
+    let n = (b[0] & MASK_N) as usize;
+    b[0] & BIT_T != 0 && n <= MAX_TARGET_PAYLOAD && crc8(&b[..1 + n]) == b[1 + n]
+}
+
 /// Result of one [`DebugModule::dmseq_poll`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DmSeqPoll {
@@ -103,6 +114,9 @@ pub struct DmSeq {
     pub duplicates: u64,
     /// Words rejected as invalid - bad CRC or N > 6 (diagnostics).
     pub invalid: u64,
+    /// en: SYN frames accepted after the session had synced: the target restarted.
+    /// ja: 同期した後に受けた SYN の frame の数(target の再起動)。
+    pub restarts: u64,
 }
 
 impl DmSeq {
@@ -159,6 +173,9 @@ impl DmSeq {
         let duplicate = self.synced && s == self.last_s && (!syn || self.last_syn);
         // Rule 3, continuing into rule 4 (not a separate branch).
         if !duplicate && (syn || !self.synced) {
+            if self.synced && syn {
+                self.restarts += 1;
+            }
             self.last_s = !s;
             self.h = !a;
             self.pending.clear();

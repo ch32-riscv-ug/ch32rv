@@ -8,6 +8,7 @@
 //! monitor、target/probe/db/capabilities、arduino)。isp と boot hid / boot dfu も実装済み。
 
 mod args;
+mod auto_console;
 mod broker;
 mod broker_lock;
 mod broker_wch;
@@ -126,7 +127,7 @@ fn borrow_link(cli: &Cli) -> Result<Option<broker::Lend>, broker::ClientLinkErro
             m.cmd.is_some()
                 || matches!(
                     m.source,
-                    Some(MonitorSource::SdiForward | MonitorSource::Rtt)
+                    Some(MonitorSource::SdiForward | MonitorSource::Rtt | MonitorSource::Auto)
                 )
         }
         _ => false,

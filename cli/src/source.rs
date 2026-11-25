@@ -304,8 +304,21 @@ pub(crate) fn rtt_find(
     window: RttWindow,
     warnings: &mut Vec<Warning>,
 ) -> Result<RttChannels, OpenError> {
+    rtt_find_tries(t, window, warnings, 10)
+}
+
+/// [`rtt_find`] with `tries` scans (100 ms apart); the core runs between and after a failed one.
+pub(crate) fn rtt_find_tries(
+    t: &mut impl RttTarget,
+    window: RttWindow,
+    warnings: &mut Vec<Warning>,
+    tries: usize,
+) -> Result<RttChannels, OpenError> {
     let mut found = None;
-    for _ in 0..10 {
+    for i in 0..tries {
+        if i > 0 {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         t.halt()?;
         let snap = read_region(t, window.base, window.len)?;
         if let Some(h) = find_control_block(&snap) {
@@ -313,7 +326,6 @@ pub(crate) fn rtt_find(
             break;
         }
         t.resume()?;
-        std::thread::sleep(Duration::from_millis(100));
     }
     let Some(h) = found else {
         return Err(OpenError::NoControlBlock { window });
@@ -440,9 +452,18 @@ impl DmiSource {
                 }))
             }
             MonitorSource::Rtt => Self::open_rtt(session, warnings),
-            MonitorSource::Uart | MonitorSource::SdiForward | MonitorSource::FixtureUart => {
-                Err(OpenError::NotDmi)
-            }
+            MonitorSource::Auto
+            | MonitorSource::Uart
+            | MonitorSource::SdiForward
+            | MonitorSource::FixtureUart => Err(OpenError::NotDmi),
+        }
+    }
+
+    /// The dmseq session's target restarts seen so far (0 for the other sources).
+    pub(crate) fn restarts(&self) -> u64 {
+        match self {
+            DmiSource::Dmseq(st) => st.session.restarts,
+            _ => 0,
         }
     }
 

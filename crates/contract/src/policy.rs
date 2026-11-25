@@ -90,6 +90,8 @@ policy_enum! {
     /// same COM port (docs/cli.ja.md §4.5).
     /// ja: monitor の transport。同じ COM に見えても別物として扱う。
     MonitorSource {
+        /// Everything the target talks on at once, merged (`cli/src/auto_console.rs`).
+        Auto => "auto",
         Uart => "uart",
         /// WCH's SDI_Printf mailbox, read by ch32rv over the Debug Module (a WCH-Link) or by an
         /// OEP probe's console.

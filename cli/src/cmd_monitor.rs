@@ -39,6 +39,9 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Ok(a) => a,
         Err(c) => return c,
     };
+    if args.source == Some(MonitorSource::Auto) {
+        return run_auto(cli, args, addr);
+    }
     match (&addr, args.source) {
         // A WCH-Link's broker: rtt, sdi-forward and uart (the default) open the Link / its CDC as
         // before (borrowing it).
@@ -80,6 +83,88 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
             "fixture-uart is an OEP probe's source, served by `arduino monitor`",
             None,
         ),
+        MonitorSource::Auto => run_auto(cli, args, None),
+    }
+}
+
+/// en: `--source auto` (`crate::auto_console`): a WCH-Link's CDC (`--port`, else the Link's own)
+/// and debug paths after a reset, or an OEP probe's fixture UART and consoles, merged to stdout
+/// (NDJSON `output` events under `--json`); stdin goes to the path the output last came from.
+/// ja: `--source auto`。WCH-Link は CDC(`--port`、無ければ Link のもの)と reset 後のデバッグの経路、
+/// OEP は fixture の UART と console を 1 本で stdout へ。stdin は出力が最後に来た経路へ。
+fn run_auto(cli: &Cli, args: &MonitorArgs, addr: Option<crate::oep::OepAddr>) -> ExitCode {
+    use crate::auto_console::Auto;
+    const CMD: &str = "monitor";
+    let (speed, warnings) = match parse::speed(&cli.speed) {
+        Ok(v) => v,
+        Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
+    };
+    let opened = match addr {
+        Some(a) if !matches!(a, crate::oep::OepAddr::Wch(_)) => Auto::open_oep(
+            &a,
+            cli.chip.as_deref(),
+            Some(crate::oep::speed_hz(speed)),
+            args.baud,
+        ),
+        _ => {
+            let entry = match select_entry(cli, CMD) {
+                Ok(e) => e,
+                Err(c) => return c,
+            };
+            let path = args
+                .port
+                .clone()
+                .or_else(|| entry.dev.serial_ports().into_iter().next());
+            let port = path.and_then(|p| {
+                serialport::new(&p, args.baud)
+                    .timeout(Duration::from_millis(1))
+                    .open()
+                    .ok()
+            });
+            Auto::open_wch(
+                &entry,
+                port,
+                speed,
+                Duration::from_secs(cli.lock_timeout),
+                cli.chip.as_deref(),
+            )
+        }
+    };
+    let mut auto = match opened {
+        Ok(a) => a,
+        Err(m) => return fail(cli, CMD, ErrorKind::TargetNoResponse, m, None),
+    };
+    let mut warnings = warnings;
+    warnings.append(&mut auto.warnings);
+    if !cli.json {
+        eprintln!(
+            "monitor: auto (Ctrl-C to stop; stdin goes to the path the output last came from)"
+        );
+        for w in &warnings {
+            eprintln!("warning[{}]: {}", w.code, w.msg);
+        }
+    }
+    let input = source::spawn_reader(std::io::stdin());
+    let mut sink = Sink::new(cli, "auto");
+    let deadline = run_duration(cli).map(|d| Instant::now() + d);
+    let mut pending = Vec::new();
+    let result = loop {
+        if deadline.is_some_and(|dl| Instant::now() >= dl) {
+            break Ok(());
+        }
+        source::drain_input(&input, &mut pending);
+        auto.input(&pending);
+        pending.clear();
+        match auto.poll() {
+            Ok(out) if out.is_empty() => std::thread::sleep(auto.idle()),
+            Ok(out) => sink.write(&out),
+            Err(e) => break Err(e),
+        }
+    };
+    sink.finish();
+    match result {
+        Ok(()) => finish_ok(cli, CMD, "auto", warnings),
+        Err(m) => fail(cli, CMD, ErrorKind::TransferFailed, m, None),
     }
 }
 
@@ -717,6 +802,7 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
         Some(MonitorSource::Sdi) => StreamWanted::Console(Mechanism::Sdi),
         Some(MonitorSource::FixtureUart) => StreamWanted::FixtureUart(args.baud),
         Some(MonitorSource::Rtt) => StreamWanted::Rtt,
+        Some(MonitorSource::Auto) => unreachable!("auto runs in run_auto"),
         Some(MonitorSource::SdiForward) => {
             return fail(
                 cli,
