@@ -35,7 +35,7 @@ pub mod dm;
 pub mod dmseq;
 
 pub use access::{DmTarget, ResetMode, ResetResult, RunResult, TargetAccess, resume_ch32};
-pub use dm::{DebugModule, DmdataPoll, FlashProgMode, RegName};
+pub use dm::{DebugModule, DmdataPoll, FlashProgMode, RegName, SdiPoll, is_sdi_frame};
 pub use dmseq::{DmSeq, DmSeqPoll};
 
 use thiserror::Error;

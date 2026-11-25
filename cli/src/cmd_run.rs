@@ -56,14 +56,18 @@ pub fn run(cli: &Cli, args: &RunArgs) -> ExitCode {
         None | Some(ExitOn::Timeout) => ExitMode::Timeout(cli.duration.map(Duration::from_secs)),
     };
 
-    // run streams over DMI only (probe-agnostic, no CDC involved): dmdata (default) or rtt.
+    // run streams over DMI only (probe-agnostic, no CDC involved): dmdata (default), dmseq, sdi
+    // or rtt.
     let source = args.source.unwrap_or(MonitorSource::Dmdata);
-    if matches!(source, MonitorSource::Uart | MonitorSource::Sdi) {
+    if matches!(
+        source,
+        MonitorSource::Uart | MonitorSource::SdiForward | MonitorSource::FixtureUart
+    ) {
         return fail(
             cli,
             CMD,
             ErrorKind::CapabilityUnsupported,
-            "run streams over DMI: --source dmdata or rtt (uart/sdi are `monitor` sources)",
+            "run streams over DMI: --source dmdata, dmseq, sdi or rtt (uart / sdi-forward / fixture-uart are `monitor` sources)",
             None,
         );
     }

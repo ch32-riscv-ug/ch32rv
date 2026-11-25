@@ -40,11 +40,11 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Err(c) => return c,
     };
     match (&addr, args.source) {
-        // A WCH-Link's broker: rtt and uart (the default) open the Link / its CDC as before
-        // (borrowing it).
+        // A WCH-Link's broker: rtt, sdi-forward and uart (the default) open the Link / its CDC as
+        // before (borrowing it).
         (
             Some(crate::oep::OepAddr::Wch(_)),
-            None | Some(MonitorSource::Uart | MonitorSource::Rtt),
+            None | Some(MonitorSource::Uart | MonitorSource::Rtt | MonitorSource::SdiForward),
         )
         | (None, _) => {}
         // en: An OEP probe has no "uart" of its own: say so, rather than falling through to the
@@ -69,8 +69,10 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
     let source = args.source.unwrap_or(MonitorSource::Uart);
     match source {
         MonitorSource::Uart => run_uart(cli, args),
-        MonitorSource::Sdi => run_sdi(cli, args),
-        MonitorSource::Dmdata | MonitorSource::Dmseq | MonitorSource::Rtt => run_dmi(cli, source),
+        MonitorSource::SdiForward => run_sdi(cli, args),
+        MonitorSource::Dmdata | MonitorSource::Dmseq | MonitorSource::Sdi | MonitorSource::Rtt => {
+            run_dmi(cli, source)
+        }
         MonitorSource::FixtureUart => fail(
             cli,
             "monitor",
@@ -394,7 +396,7 @@ fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         CMD,
         &port,
         args.baud,
-        "sdi",
+        "sdi-forward",
         Some(&mut forwarding),
         warnings,
     )
@@ -715,6 +717,15 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
         Some(MonitorSource::Sdi) => StreamWanted::Console(Mechanism::Sdi),
         Some(MonitorSource::FixtureUart) => StreamWanted::FixtureUart(args.baud),
         Some(MonitorSource::Rtt) => StreamWanted::Rtt,
+        Some(MonitorSource::SdiForward) => {
+            return fail(
+                cli,
+                CMD,
+                ErrorKind::CapabilityUnsupported,
+                "sdi-forward is a WCH-LinkE's own forwarding to its CDC port, not an OEP probe's",
+                Some("`--source sdi` reads the SDI mailbox"),
+            );
+        }
         Some(MonitorSource::Uart) => {
             return fail(
                 cli,

@@ -529,13 +529,14 @@ use crate::source::{self, DmiSource};
 /// `uart`, which is what the IDE would do anyway.
 /// ja: serial port の source。先頭(`uart` = port をそのまま)が既定。WCH probe の無い素の serial
 /// port は `uart` だけ。
-const SERIAL_SOURCES: [MonitorSource; 6] = [
+const SERIAL_SOURCES: [MonitorSource; 7] = [
     MonitorSource::Uart,
     MonitorSource::Sdi,
     MonitorSource::Dmdata,
     MonitorSource::Dmseq,
     MonitorSource::Rtt,
     MonitorSource::FixtureUart,
+    MonitorSource::SdiForward,
 ];
 
 /// en: The sources an `oep://<probe>[/<port>]` port offers: the target's console (dmseq, the default,
@@ -558,12 +559,13 @@ const OEP_SOURCES: [MonitorSource; 5] = [
 /// serial の `uart` と同じに開く(attach しない、lock なし)。IDE が書き込みの `wchlink://` のまま
 /// モニターを開いても、target に触れずにスケッチの `Serial` が見える(attach はクロックを組み替え、
 /// CH32V205 の s0 を壊す)。
-const WCHLINK_SOURCES: [MonitorSource; 5] = [
+const WCHLINK_SOURCES: [MonitorSource; 6] = [
     MonitorSource::Uart,
     MonitorSource::Dmdata,
     MonitorSource::Dmseq,
     MonitorSource::Sdi,
     MonitorSource::Rtt,
+    MonitorSource::SdiForward,
 ];
 
 /// The `chip` value that means "no board family given: detect".
@@ -1047,8 +1049,11 @@ impl Backend {
         // rtt and sdi still open the Link themselves.
         // ja: WCH-Link の dmdata / dmseq もブローカー経由(同じ Link を gdb や flash が同時に使える)。
         let wch_via_broker = r.entry.as_ref().and_then(|e| {
-            matches!(s.source, MonitorSource::Dmdata | MonitorSource::Dmseq)
-                .then(|| crate::oep::OepAddr::Wch(crate::broker::BrokerTarget::wch(e)))
+            matches!(
+                s.source,
+                MonitorSource::Dmdata | MonitorSource::Dmseq | MonitorSource::Sdi
+            )
+            .then(|| crate::oep::OepAddr::Wch(crate::broker::BrokerTarget::wch(e)))
         });
         if let Some(oep) = wch_via_broker.as_ref().or(r.oep.as_ref())
             && (s.source != MonitorSource::Uart || matches!(oep, crate::oep::OepAddr::Named { .. }))
@@ -1061,6 +1066,12 @@ impl Backend {
                 MonitorSource::Dmseq => StreamWanted::Console(Mechanism::Dmseq),
                 MonitorSource::FixtureUart => StreamWanted::FixtureUart(s.baud),
                 MonitorSource::Rtt => StreamWanted::Rtt,
+                MonitorSource::SdiForward => {
+                    return Err(
+                        "sdi-forward is a WCH-LinkE's own forwarding (this port is not one)"
+                            .to_owned(),
+                    );
+                }
                 MonitorSource::Uart => {
                     return Err(
                         "uart is not available on an OEP probe (it offers dmseq, dmdata, sdi, fixture-uart and rtt)"
@@ -1103,15 +1114,15 @@ impl Backend {
                 let _ = port.write_request_to_send(s.rts);
                 Ok(Backend::Uart { port, applied: s })
             }
-            MonitorSource::Sdi => {
+            MonitorSource::SdiForward => {
                 let entry = r
                     .entry
                     .as_ref()
-                    .ok_or("sdi needs a WCH-LinkE (this serial port is not one)")?;
+                    .ok_or("sdi-forward needs a WCH-LinkE (this serial port is not one)")?;
                 let path = r
                     .port
                     .as_deref()
-                    .ok_or("this probe has no serial port for sdi")?;
+                    .ok_or("this probe has no serial port for sdi-forward")?;
                 let lock = lock_for(entry, env)?;
                 let (speed, _) = crate::parse::speed(&s.speed)?;
                 crate::cmd_monitor::enable_sdi(entry, speed, s.chip.as_deref())
@@ -1124,7 +1135,10 @@ impl Backend {
                     _lock: lock,
                 })
             }
-            MonitorSource::Dmdata | MonitorSource::Dmseq | MonitorSource::Rtt => {
+            MonitorSource::Dmdata
+            | MonitorSource::Dmseq
+            | MonitorSource::Sdi
+            | MonitorSource::Rtt => {
                 let entry = r.entry.as_ref().ok_or_else(|| {
                     format!(
                         "{} needs a WCH-Link (this serial port is not one)",
@@ -1196,7 +1210,7 @@ impl Backend {
                     }
                 }
                 Backend::Sdi { rx, .. } => {
-                    if now.source != MonitorSource::Sdi {
+                    if now.source != MonitorSource::SdiForward {
                         return Leave::Switch;
                     }
                     // SDI carries no input.
@@ -1584,7 +1598,7 @@ mod tests {
         assert_eq!(s.source, MonitorSource::Uart);
         assert_eq!(
             s.describe("wchlink")["configuration_parameters"]["source"]["value"],
-            json!(["uart", "dmdata", "dmseq", "sdi", "rtt"])
+            json!(["uart", "dmdata", "dmseq", "sdi", "rtt", "sdi-forward"])
         );
         assert_eq!(
             s.describe("wchlink")["configuration_parameters"]["speed"]["value"],

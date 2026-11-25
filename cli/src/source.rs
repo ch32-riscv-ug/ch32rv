@@ -155,7 +155,24 @@ pub(crate) struct RttChannels {
 pub(crate) enum DmiSource {
     Dmdata,
     Dmseq(Box<DmseqStream>),
+    Sdi(SdiStream),
     Rtt(RttChannels),
+}
+
+/// en: How long to read no SDI frame before saying so: the mailbox holding another framing's word
+/// means another console (dmdata / dmseq), an empty one may be a LinkE's own SDI forwarding taking
+/// the frames first (or a sketch that has not printed).
+/// ja: SDI の frame が来ないと言うまでの時間。郵便受けに別の framing の語があれば別の console、
+/// 空なら LinkE の SDI 転送が先に取っている(か、まだ何も出していない)。
+const SDI_QUIET_AFTER: Duration = Duration::from_secs(3);
+
+/// One `sdi` session over the Debug Module.
+pub(crate) struct SdiStream {
+    opened: Instant,
+    seen_frame: bool,
+    seen_other: bool,
+    reported: bool,
+    notices: Vec<(&'static str, String)>,
 }
 
 /// en: How long to read nothing that is a dmseq frame before saying there is no dmseq console on
@@ -411,8 +428,19 @@ impl DmiSource {
                     notices: Vec::new(),
                 })))
             }
+            MonitorSource::Sdi => {
+                // A leftover of attach / flash in DATA0 would keep an SDI_Printf target waiting.
+                session.dm().sdi_prepare()?;
+                Ok(DmiSource::Sdi(SdiStream {
+                    opened: Instant::now(),
+                    seen_frame: false,
+                    seen_other: false,
+                    reported: false,
+                    notices: Vec::new(),
+                }))
+            }
             MonitorSource::Rtt => Self::open_rtt(session, warnings),
-            MonitorSource::Uart | MonitorSource::Sdi | MonitorSource::FixtureUart => {
+            MonitorSource::Uart | MonitorSource::SdiForward | MonitorSource::FixtureUart => {
                 Err(OpenError::NotDmi)
             }
         }
@@ -431,6 +459,7 @@ impl DmiSource {
     pub(crate) fn take_notices(&mut self) -> Vec<(&'static str, String)> {
         match self {
             DmiSource::Dmseq(st) => std::mem::take(&mut st.notices),
+            DmiSource::Sdi(st) => std::mem::take(&mut st.notices),
             DmiSource::Dmdata | DmiSource::Rtt(_) => Vec::new(),
         }
     }
@@ -439,6 +468,7 @@ impl DmiSource {
         match self {
             DmiSource::Dmdata => "dmdata",
             DmiSource::Dmseq(_) => "dmseq",
+            DmiSource::Sdi(_) => "sdi",
             DmiSource::Rtt(_) => "rtt",
         }
     }
@@ -450,6 +480,9 @@ impl DmiSource {
             // The target waits 1 s for an answer once it has had one, and drops what it writes
             // after that, so the poll interval is what decides whether output survives.
             DmiSource::Dmseq(_) => Duration::from_millis(2),
+            // SDI_Printf waits while the mailbox is full: the sooner it is read, the less the
+            // sketch waits.
+            DmiSource::Sdi(_) => Duration::from_millis(1),
             DmiSource::Rtt(_) => Duration::from_millis(50),
         }
     }
@@ -459,6 +492,7 @@ impl DmiSource {
         match self {
             DmiSource::Dmdata => "dmdata (DMI mailbox, core runs)".to_owned(),
             DmiSource::Dmseq(_) => "dmseq (DMI mailbox, sequenced + CRC, core runs)".to_owned(),
+            DmiSource::Sdi(_) => "sdi (WCH SDI_Printf mailbox over DMI, core runs)".to_owned(),
             DmiSource::Rtt(ch) => format!(
                 "rtt (RAM ring @ 0x{:08x}, core briefly halts per poll)",
                 ch.up - RTT_HEADER_LEN
@@ -508,6 +542,37 @@ impl DmiSource {
                             st.session.invalid
                         ),
                     ));
+                }
+                Ok(r.received)
+            }
+            DmiSource::Sdi(st) => {
+                // SDI carries nothing from host to target.
+                input.clear();
+                let r = session.dm().sdi_poll()?;
+                st.seen_frame |= !r.received.is_empty();
+                st.seen_other |= r.other;
+                if !st.seen_frame && !st.reported && st.opened.elapsed() >= SDI_QUIET_AFTER {
+                    st.reported = true;
+                    st.notices.push(if st.seen_other {
+                        (
+                            "sdi-no-console",
+                            format!(
+                                "no SDI frame in {} s, and the mailbox holds another framing: this \
+                                 target may print with dmdata or dmseq instead",
+                                SDI_QUIET_AFTER.as_secs()
+                            ),
+                        )
+                    } else {
+                        (
+                            "sdi-quiet",
+                            format!(
+                                "no SDI frame in {} s: the sketch has not printed over SDI yet, or \
+                                 a WCH-LinkE's SDI print forwarding is on and takes the frames to \
+                                 its CDC port (`ch32rv monitor sdi off` turns it off)",
+                                SDI_QUIET_AFTER.as_secs()
+                            ),
+                        )
+                    });
                 }
                 Ok(r.received)
             }

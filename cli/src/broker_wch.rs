@@ -100,9 +100,20 @@ pub(crate) fn declared_ops(func: u16) -> Option<&'static [u8]> {
 
 /// The console mechanisms this broker offers, in describe order: the wire value is the place
 /// (from 1) in this list (a named list, core §7.7).
-const MECHANISMS: [&str; 2] = [
+/// The monitor source a mechanism's place in [`MECHANISMS`] (1-based) reads with.
+fn mechanism_source(place: u8) -> Option<MonitorSource> {
+    match MECHANISMS.get(usize::from(place).wrapping_sub(1)) {
+        Some(&m) if m == console::names::mechanism::DMDATA => Some(MonitorSource::Dmdata),
+        Some(&m) if m == console::names::mechanism::DMSEQ => Some(MonitorSource::Dmseq),
+        Some(&m) if m == console::names::mechanism::SDI => Some(MonitorSource::Sdi),
+        _ => None,
+    }
+}
+
+const MECHANISMS: [&str; 3] = [
     console::names::mechanism::DMDATA,
     console::names::mechanism::DMSEQ,
+    console::names::mechanism::SDI,
 ];
 
 struct Console {
@@ -381,7 +392,7 @@ impl WchUpstream {
                         v
                     }
                     FN_CONSOLE => {
-                        // Mechanisms: a named list, one text TLV each (place 1 dmdata, 2 dmseq).
+                        // Mechanisms: a named list, one text TLV each (place 1 dmdata, 2 dmseq, 3 sdi).
                         // No marks: marks / clear / mark are optional and not offered.
                         let mut v: Vec<Vec<u8>> = MECHANISMS
                             .iter()
@@ -481,13 +492,7 @@ impl WchUpstream {
         };
         self.dirty = false;
         for x in self.consoles.values_mut() {
-            let source = if MECHANISMS.get(usize::from(x.mech).wrapping_sub(1))
-                == Some(&console::names::mechanism::DMSEQ)
-            {
-                MonitorSource::Dmseq
-            } else {
-                MonitorSource::Dmdata
-            };
+            let source = mechanism_source(x.mech).unwrap_or(MonitorSource::Dmdata);
             if let Ok(src) = DmiSource::open(&mut s, source, &mut warnings) {
                 x.src = src;
             }
@@ -848,10 +853,8 @@ impl WchUpstream {
                 if let Some((&id, _)) = self.consoles.iter().find(|(_, x)| x.mech == mech) {
                     return ok(id.to_le_bytes().to_vec());
                 }
-                let source = match MECHANISMS.get(usize::from(mech).wrapping_sub(1)) {
-                    Some(&m) if m == console::names::mechanism::DMDATA => MonitorSource::Dmdata,
-                    Some(&m) if m == console::names::mechanism::DMSEQ => MonitorSource::Dmseq,
-                    _ => return rejected_unsupported_fixed(),
+                let Some(source) = mechanism_source(mech) else {
+                    return rejected_unsupported_fixed();
                 };
                 if self.next_stream == u32::MAX {
                     return unavailable(oep_core::enums::unavailable_cause::LIMIT);

@@ -38,6 +38,23 @@ pub struct DmdataPoll {
     pub sent: usize,
 }
 
+/// en: What one [`DebugModule::sdi_poll`] found in the mailbox.
+/// ja: [`DebugModule::sdi_poll`] 1 回で郵便受けに見たもの。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SdiPoll {
+    /// The characters of an SDI frame (empty when the mailbox held none).
+    pub received: Vec<u8>,
+    /// A word of another framing sat in the mailbox (dmdata / dmseq: bit 7 set), left untouched.
+    pub other: bool,
+}
+
+/// en: Whether `word` (DATA0) is a WCH SDI_Printf frame: bit 7 clear and a count of 1..=7 in the
+/// low byte. dmdata / dmseq target words have bit 7 set, so the two never read as each other.
+/// ja: `word`(DATA0)が WCH の SDI_Printf の frame か: bit 7 が 0 で、低 byte の文字数が 1..=7。
+pub fn is_sdi_frame(word: u32) -> bool {
+    (1..=7).contains(&(word & 0xff))
+}
+
 // Debug Module register addresses (DMI address space).
 pub(crate) const DMDATA0: u8 = 0x04;
 pub(crate) const DMDATA1: u8 = 0x05;
@@ -480,6 +497,60 @@ impl<'a, T: DtmAccess> DebugModule<'a, T> {
     /// 取り違えられない。
     pub fn dmdata_clear(&mut self) -> Result<(), DmiError> {
         self.write(DMDATA0, 0)
+    }
+
+    /// en: One read of WCH's SDI_Printf mailbox, as a WCH-LinkE does when its SDI print
+    /// forwarding is on (wch-protocols link-to-target §sdi-monitor, measured on the wire): DATA0's
+    /// low byte is the count (1..=7) with the first three characters above it, DATA1 the next
+    /// four; the host takes them and writes DATA0 = 0, which lets the target post the next frame
+    /// (it waits while DATA0 is not 0). The core keeps running. A word of another framing (bit 7
+    /// set: dmdata / dmseq) is not ours and is left alone. Target to host only.
+    /// ja: WCH の SDI_Printf の郵便受けを 1 回読む(LinkE の SDI 転送と同じ。線上で実測)。DATA0 の
+    /// 低 byte が文字数(1..=7)、上位 3 byte が先頭 3 文字、DATA1 が次の 4 文字。読んだら DATA0 = 0 を
+    /// 書く(target は DATA0 が 0 でない間待つ)。core は走ったまま。bit 7 の立った別の framing の
+    /// 語には触らない。target から host への向きだけ。
+    pub fn sdi_poll(&mut self) -> Result<SdiPoll, DmiError> {
+        let d0 = self.read(DMDATA0)?;
+        if d0 == 0 {
+            return Ok(SdiPoll::default());
+        }
+        if !is_sdi_frame(d0) {
+            return Ok(SdiPoll {
+                received: Vec::new(),
+                other: d0 & 0x80 != 0,
+            });
+        }
+        let count = (d0 & 0xff) as usize;
+        let d1 = if count > 3 { self.read(DMDATA1)? } else { 0 };
+        let bytes = [
+            (d0 >> 8) as u8,
+            (d0 >> 16) as u8,
+            (d0 >> 24) as u8,
+            d1 as u8,
+            (d1 >> 8) as u8,
+            (d1 >> 16) as u8,
+            (d1 >> 24) as u8,
+        ];
+        self.write(DMDATA0, 0)?;
+        Ok(SdiPoll {
+            received: bytes[..count].to_vec(),
+            other: false,
+        })
+    }
+
+    /// en: Make the SDI mailbox usable before reading it: a word attach or flash left in DATA0
+    /// (0xffffffff, the erase pattern 0xe339e339) would keep the target waiting forever, so it is
+    /// cleared. A pending SDI frame and a word of another framing (a dmdata / dmseq frame: bit 7
+    /// set with a frame's count) are left as they are.
+    /// ja: SDI の郵便受けを読む前の準備。attach や flash が DATA0 に残した語は target を待たせ続ける
+    /// ので消す。SDI の frame と、別の framing の frame(bit 7 が立ち、frame の文字数)は残す。
+    pub fn sdi_prepare(&mut self) -> Result<(), DmiError> {
+        let d0 = self.read(DMDATA0)?;
+        let other_frame = d0 & 0x80 != 0 && (4..=11).contains(&(d0 & 0x3f));
+        if d0 != 0 && !is_sdi_frame(d0) && !other_frame {
+            self.write(DMDATA0, 0)?;
+        }
+        Ok(())
     }
 
     pub fn dmdata_poll(&mut self, host_input: &[u8]) -> Result<DmdataPoll, DmiError> {
@@ -1560,6 +1631,56 @@ mod tests {
         let mut running = MockDtm::default();
         running.set(DMSTATUS, DMSTATUS_ALLRUNNING | DMSTATUS_ANYRUNNING);
         assert!(!DebugModule::new(&mut running).is_halted().unwrap());
+    }
+
+    #[test]
+    fn sdi_poll_reads_a_frame_and_clears_the_mailbox() {
+        // Measured on the wire (LinkE -> L103 HelloSDI): 7 characters "uptime ".
+        let mut m = MockDtm::default();
+        m.set(DMDATA0, 0x7470_7507);
+        m.set(DMDATA1, 0x2065_6d69);
+        let got = DebugModule::new(&mut m).sdi_poll().unwrap();
+        assert_eq!(got.received, b"uptime ".to_vec());
+        assert_eq!(m.writes.last(), Some(&(DMDATA0, 0)));
+        // 2 characters "\r\n": DATA1 is not needed.
+        let mut m = MockDtm::default();
+        m.set(DMDATA0, 0x000a_0d02);
+        let got = DebugModule::new(&mut m).sdi_poll().unwrap();
+        assert_eq!(got.received, b"\r\n".to_vec());
+    }
+
+    #[test]
+    fn sdi_poll_leaves_other_framings_alone() {
+        // A dmdata frame (bit 7 set) is not SDI: nothing read, nothing written.
+        let mut m = MockDtm::default();
+        m.set(DMDATA0, 0x4342_4187);
+        let got = DebugModule::new(&mut m).sdi_poll().unwrap();
+        assert!(got.received.is_empty() && got.other);
+        assert!(m.writes.is_empty());
+        // An empty mailbox.
+        let mut m = MockDtm::default();
+        let got = DebugModule::new(&mut m).sdi_poll().unwrap();
+        assert_eq!(got, SdiPoll::default());
+    }
+
+    #[test]
+    fn sdi_prepare_clears_only_leftovers() {
+        for (word, cleared) in [
+            (0xffff_ffffu32, true),
+            (0xe339_e339, true),
+            (0x7470_7507, false),
+            (0x4342_4187, false),
+            (0, false),
+        ] {
+            let mut m = MockDtm::default();
+            m.set(DMDATA0, word);
+            DebugModule::new(&mut m).sdi_prepare().unwrap();
+            assert_eq!(
+                m.writes.last() == Some(&(DMDATA0, 0)),
+                cleared,
+                "{word:08x}"
+            );
+        }
     }
 
     #[test]

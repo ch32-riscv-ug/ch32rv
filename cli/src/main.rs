@@ -103,7 +103,7 @@ fn main() -> std::process::ExitCode {
 /// en: A command that opens a WCH-Link itself borrows it from the Link's broker when one runs
 /// (a monitor holds the Link through it), and hands it back when it returns. The commands that go
 /// through the broker on their own (flash, verify, read, reset, target info, the dmdata / dmseq /
-/// fixture-uart monitors) are not among them.
+/// sdi / fixture-uart monitors) are not among them.
 /// A broker of another ch32rv that keeps the Link through `--lock-timeout` is `Err` (exit 13).
 /// ja: WCH-Link を自分で開くコマンドは、その Link のブローカーが動いていれば Link を借り、終わったら
 /// 返す。自分でブローカーを通るコマンドは対象外。別の版のブローカーが `--lock-timeout` の後も
@@ -123,7 +123,11 @@ fn borrow_link(cli: &Cli) -> Result<Option<broker::Lend>, broker::ClientLinkErro
         | Command::Write(_)
         | Command::Run(_) => true,
         Command::Monitor(m) => {
-            m.cmd.is_some() || matches!(m.source, Some(MonitorSource::Sdi | MonitorSource::Rtt))
+            m.cmd.is_some()
+                || matches!(
+                    m.source,
+                    Some(MonitorSource::SdiForward | MonitorSource::Rtt)
+                )
         }
         _ => false,
     };
