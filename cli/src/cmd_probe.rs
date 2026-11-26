@@ -796,18 +796,18 @@ pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
             let (kind, hint) = match &err {
                 WchLinkError::Usb(UsbError::Busy(_)) => (
                     ErrorKind::DeviceBusy,
-                    "another process has claimed this probe; close it and retry",
+                    "another process has claimed this probe; close it and retry".to_owned(),
                 ),
                 WchLinkError::Usb(UsbError::AccessDenied(_)) => (
                     ErrorKind::DeviceOpenFailed,
-                    crate::session::ACCESS_DENIED_FIX,
+                    crate::session::access_denied_fix(),
                 ),
                 _ => (
                     ErrorKind::DeviceOpenFailed,
-                    "check the probe connection, or whether another tool holds it",
+                    "check the probe connection, or whether another tool holds it".to_owned(),
                 ),
             };
-            fail(cli, cmd, kind, err.to_string(), Some(hint))
+            fail(cli, cmd, kind, err.to_string(), Some(&hint))
         }
         SessionError::NoTarget => fail(
             cli,

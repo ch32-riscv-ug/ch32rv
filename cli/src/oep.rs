@@ -527,7 +527,7 @@ fn connect_ordered(
         ch32rv_oep::link::LinkError::Io(io)
             if io.kind() == std::io::ErrorKind::PermissionDenied =>
         {
-            format!("{e}: {}", crate::session::ACCESS_DENIED_FIX)
+            format!("{e}: {}", crate::session::access_denied_fix())
         }
         _ => e.to_string(),
     })?;

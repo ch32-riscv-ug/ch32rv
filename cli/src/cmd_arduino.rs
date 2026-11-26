@@ -197,7 +197,7 @@ fn oep_ports() -> Vec<Value> {
         if listed.is_empty() && denied {
             out.push(json!({
                 "address": format!("oep://{id}"),
-                "label": format!("OEP probe {id} (no permission: run `ch32rv doctor`)"),
+                "label": format!("OEP probe {id} (no permission: udev rules missing)"),
                 "protocol": "oep",
                 "protocolLabel": "OEP probe",
                 "hardwareId": id,
@@ -206,6 +206,7 @@ fn oep_ports() -> Vec<Value> {
                     "pid": format!("0x{:04x}", dev.pid()),
                     "port": path,
                     "error": "permission",
+                    "fix": crate::session::access_denied_fix(),
                 },
             }));
         }

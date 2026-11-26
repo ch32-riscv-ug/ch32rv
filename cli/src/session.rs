@@ -58,17 +58,48 @@ pub enum SessionError {
     Busy(LockError),
 }
 
-/// en: What to do when opening a probe's USB device is denied. On Linux that is the missing udev
-/// rule, so the exact commands (the core ships the same rule file, but where the platform lives
-/// varies, so `doctor --emit-udev` is the form to print); elsewhere the driver binding.
-/// ja: probe の USB device を開けないときの直し方。Linux は udev のルールが無いので、そのコマンドを
-/// そのまま出す(core も同じファイルを持つが、置き場所が環境で変わるので doctor の形)。他は driver。
-pub(crate) const ACCESS_DENIED_FIX: &str = if cfg!(target_os = "linux") {
-    "install the udev rules: `ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules` \
-     then `sudo udevadm control --reload-rules && sudo udevadm trigger`, and replug the probe"
-} else {
-    "check the probe's driver binding (run `ch32rv doctor`)"
-};
+/// en: What to do when opening a probe's USB device (or an OEP probe's serial port) is denied. On
+/// Linux that is the missing udev rule, so the exact commands, naming this very executable by its
+/// full path: an IDE's or a core's ch32rv lives in the Arduino packages directory, not on PATH, so
+/// a bare `ch32rv` would not be found (the core ships the same rule file, but where the platform
+/// lives varies, so `doctor --emit-udev` is the form to print). Elsewhere the driver binding.
+/// ja: probe の USB device(や OEP の probe の serial port)を開けないときの直し方。Linux は udev の
+/// ルールが無いので、そのコマンドを、この実行ファイルの絶対パスで出す(IDE や core の ch32rv は
+/// Arduino のパッケージの中にあり PATH に無いので、`ch32rv` だけでは見つからない)。他は driver。
+pub(crate) fn access_denied_fix() -> String {
+    let exe = std::env::current_exe()
+        .ok()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| "ch32rv".to_owned());
+    // Quoted for the shell when the path has a space or a quote.
+    let exe = if exe.contains([' ', '\'', '"']) {
+        format!("'{}'", exe.replace('\'', "'\\''"))
+    } else {
+        exe
+    };
+    if cfg!(target_os = "linux") {
+        format!(
+            "install the udev rules: `{exe} doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules` \
+             then `sudo udevadm control --reload-rules && sudo udevadm trigger`, and replug the probe"
+        )
+    } else {
+        format!("check the probe's driver binding (run `{exe} doctor`)")
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn the_access_fix_names_this_executable() {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let exe = exe.display().to_string();
+    assert!(
+        access_denied_fix().contains(&exe),
+        "{}",
+        access_denied_fix()
+    );
+}
 
 impl SessionError {
     /// Opening the probe's USB device was denied (permissions / driver binding).
@@ -80,10 +111,10 @@ impl SessionError {
         )
     }
 
-    /// The one-line text, with [`ACCESS_DENIED_FIX`] when access was denied.
+    /// The one-line text, with [`access_denied_fix`] when access was denied.
     pub(crate) fn with_fix(&self) -> String {
         if self.access_denied() {
-            format!("{self}: {ACCESS_DENIED_FIX}")
+            format!("{self}: {}", access_denied_fix())
         } else {
             self.to_string()
         }
