@@ -437,6 +437,18 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
         Ok(a) => a,
         Err(c) => return c,
     };
+    // en: A serial port that is a CH32RV application's own (its CDC), not a debug probe's: the IDE
+    // passes the port the user picked as `--probe` as it is. It is written through the factory ISP
+    // bootloader the application reboots into, as `isp flash --entry auto --device <port>` does;
+    // taken for an OEP probe, it timed out ("COM6: transport: semaphore timeout", Windows).
+    // ja: debug probe のではなく CH32RV のアプリ自身の serial port(CDC)。IDE は選ばれた port を
+    // そのまま `--probe` に渡す。アプリが再起動して入る工場の ISP の bootloader で書く
+    // (`isp flash --entry auto --device <port>` と同じ)。OEP の probe とみなすとタイムアウトした。
+    if let Some(crate::oep::OepAddr::Serial(port)) = &addr
+        && crate::cmd_isp::is_app_port(port)
+    {
+        return crate::cmd_isp::flash_through_app(cli, args, port);
+    }
     if addr
         .as_ref()
         .is_some_and(|a| !matches!(a, crate::oep::OepAddr::Wch(_)))

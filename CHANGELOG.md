@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) Fix: `flash --probe <serial port>` where the port is a running CH32RV application's own (its CDC, as the IDE passes the port the user picked) took it for an OEP probe and timed out ("COM6: transport: semaphore timeout" on Windows). Such a port is now written through the factory ISP bootloader the application reboots into, as `isp flash --entry auto --device <port>` does. Not yet run on hardware (no bench application has a CDC).
+- (JA) 修正: `flash --probe <serial port>` の port が走っている CH32RV のアプリ自身のもの(CDC。IDE は選ばれた port をそのまま渡す)だと、OEP の probe とみなしてタイムアウトしていた(Windows で「COM6: transport: セマフォがタイムアウトしました」)。今はアプリが再起動して入る工場の ISP の bootloader で書く(`isp flash --entry auto --device <port>` と同じ)。実機ではまだ試していない(台に CDC を持つアプリが無い)。
 - (EN) Fix (Windows): `isp flash --entry auto` (the IDE's upload to a running CH32RV application) did not get the chip into its bootloader when the application's DFU run-time interface could not be opened - on Windows it has no driver unless the application names WinUSB ("Could not find DeviceInterfaceGUIDs in registry") - and waited for a bootloader that never came. When nothing could be sent that way and the application has a serial port, it is now touched at 1200 bps instead.
 - (JA) 修正(Windows): `isp flash --entry auto`(IDE で走っている CH32RV のアプリへの書き込み)は、アプリの DFU run-time interface が開けないとき(Windows では、アプリが WinUSB を名乗らなければドライバが付かない。「Could not find DeviceInterfaceGUIDs in registry」)、chip を bootloader に入れられず、来ない bootloader を待っていた。そうして何も送れず、アプリに serial port があるときは、代わりに 1200 bps のタッチで入れる。
 ## 0.35.6 - 2026-11-26

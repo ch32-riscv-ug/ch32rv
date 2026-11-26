@@ -1777,6 +1777,55 @@ pub(crate) fn find_app(id: &str) -> Result<UsbDeviceInfo, (ErrorKind, String)> {
 }
 
 /// A device with a DFU run-time interface named [`APP_ENTRY_NAME`].
+/// en: Whether `port` is a serial port of a running CH32RV application (not an OEP probe's).
+/// ja: `port` が走っている CH32RV のアプリの serial port か(OEP の probe のものではない)。
+pub(crate) fn is_app_port(port: &str) -> bool {
+    ch32rv_usb::enumerate().is_ok_and(|devs| {
+        devs.iter().any(|d| {
+            !crate::oep::is_oep_device(d)
+                && is_ch32rv_app(d)
+                && d.serial_ports()
+                    .iter()
+                    .any(|p| p.eq_ignore_ascii_case(port))
+        })
+    })
+}
+
+/// en: `flash --probe <the application's serial port>`: `isp flash --entry auto --device <port>`
+/// with the flash's erase / verify / reset (a halt leaves it in the bootloader).
+/// ja: アプリの serial port への `flash`。`isp flash --entry auto --device <port>` で書く。
+pub(crate) fn flash_through_app(cli: &Cli, f: &crate::args::FlashArgs, port: &str) -> ExitCode {
+    use crate::args::{IspReset, IspTransport, IspVerify};
+    use ch32rv_contract::policy::{ResetPolicy, VerifyMode};
+    if !cli.json {
+        eprintln!(
+            "{port} is a CH32RV application's serial port: writing through its USB bootloader (isp flash --entry auto)"
+        );
+    }
+    let args = IspArgs {
+        cmd: crate::args::IspCmd::Flash {
+            file: f.file.clone(),
+            erase: f.erase,
+            verify: match f.verify {
+                VerifyMode::None => IspVerify::None,
+                _ => IspVerify::On,
+            },
+            reset: match f.reset {
+                ResetPolicy::Run => IspReset::Run,
+                _ => IspReset::None,
+            },
+        },
+        transport: IspTransport::Usb,
+        port: None,
+        baud: None,
+        device: Some(port.to_owned()),
+        wait: 0,
+        entry: IspEntry::Auto,
+        app_device: None,
+    };
+    isp(cli, &args)
+}
+
 pub(crate) fn is_ch32rv_app(d: &UsbDeviceInfo) -> bool {
     d.dfu_runtime_interface().is_some_and(|n| {
         d.interface_names()
