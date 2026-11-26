@@ -17,7 +17,23 @@ use crate::args::Cli;
 
 /// `arduino discovery`: the Pluggable Discovery protocol over stdio.
 pub fn discovery(_cli: &Cli) -> ExitCode {
-    let mut out = std::io::stdout();
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    let out = Arc::new(Mutex::new(std::io::stdout()));
+    let say = |v: &Value| {
+        if let Ok(mut o) = out.lock() {
+            emit(&mut *o, v);
+        }
+    };
+    // The sync watcher's stop flag. Not joined: a round may be reading a probe for a few seconds,
+    // and the answer to STOP / QUIT must not wait for it; the round checks the flag before it
+    // says anything.
+    let mut sync: Option<Arc<AtomicBool>> = None;
+    let stop_sync = |sync: &mut Option<Arc<AtomicBool>>| {
+        if let Some(stop) = sync.take() {
+            stop.store(true, Ordering::SeqCst);
+        }
+    };
     for line in stdin_lines_or_exit() {
         let word = line
             .split_whitespace()
@@ -26,27 +42,27 @@ pub fn discovery(_cli: &Cli) -> ExitCode {
             .to_ascii_uppercase();
         match word.as_str() {
             "" => {}
-            "HELLO" => emit(
-                &mut out,
-                &json!({"eventType":"hello","protocolVersion":1,"message":"OK"}),
-            ),
-            "START" => emit(&mut out, &json!({"eventType":"start","message":"OK"})),
-            "STOP" => emit(&mut out, &json!({"eventType":"stop","message":"OK"})),
-            "LIST" => emit(&mut out, &json!({"eventType":"list","ports": list_ports()})),
+            "HELLO" => say(&json!({"eventType":"hello","protocolVersion":1,"message":"OK"})),
+            "START" => say(&json!({"eventType":"start","message":"OK"})),
+            "STOP" => {
+                stop_sync(&mut sync);
+                say(&json!({"eventType":"stop","message":"OK"}));
+            }
+            "LIST" => say(&json!({"eventType":"list","ports": list_ports()})),
             "START_SYNC" => {
-                // We do not watch USB hotplug yet: acknowledge, emit the current ports once as
-                // `add` events, then rely on the IDE's periodic re-LIST for changes.
-                emit(&mut out, &json!({"eventType":"start_sync","message":"OK"}));
-                for p in list_ports() {
-                    emit(&mut out, &json!({"eventType":"add","port": p}));
-                }
+                stop_sync(&mut sync);
+                say(&json!({"eventType":"start_sync","message":"OK"}));
+                let stop = Arc::new(AtomicBool::new(false));
+                let (o, s) = (out.clone(), stop.clone());
+                std::thread::spawn(move || sync_watch(o, s));
+                sync = Some(stop);
             }
             "QUIT" => {
-                emit(&mut out, &json!({"eventType":"quit","message":"OK"}));
+                stop_sync(&mut sync);
+                say(&json!({"eventType":"quit","message":"OK"}));
                 return ExitCode::SUCCESS;
             }
-            other => emit(
-                &mut out,
+            other => say(
                 &json!({"eventType": other.to_ascii_lowercase(), "error": true, "message": format!("unknown command {other}")}),
             ),
         }
@@ -178,42 +194,156 @@ fn oep_ports() -> Vec<Value> {
     let devices = crate::oep::oep_devices();
     let on_usb: Vec<String> = devices.iter().map(crate::oep::probe_id).collect();
     for dev in devices {
-        let Some(path) = crate::oep::oep_port(&dev) else {
-            continue;
-        };
-        let id = crate::oep::probe_id(&dev);
-        let denied = no_access(&path);
-        let read = if denied {
-            None
-        } else {
-            read_oep_listing_within(dev.clone(), path.clone(), OEP_LISTING_WITHIN)
-        };
-        let listed = listing_or_recent(read, &id);
-        // en: A probe this user may not open (no udev rule) is still shown, as the unit, with the
-        // reason in its label: its ports cannot be read, and leaving it out made the probe look
-        // absent with nothing saying why. Opening it fails with the exact fix.
-        // ja: 開く権限の無い probe(udev のルールが無い)も、unit として理由を label に添えて出す。
-        // 口は読めず、出さないと probe が無いように見えて理由も分からなかった。開けば直し方が出る。
-        if listed.is_empty() && denied {
-            out.push(json!({
-                "address": format!("oep://{id}"),
-                "label": format!("OEP probe {id} (no permission: udev rules missing)"),
-                "protocol": "oep",
-                "protocolLabel": "OEP probe",
-                "hardwareId": id,
-                "properties": {
-                    "vid": format!("0x{:04x}", dev.vid()),
-                    "pid": format!("0x{:04x}", dev.pid()),
-                    "port": path,
-                    "error": "permission",
-                    "fix": crate::session::access_denied_fix(),
-                },
-            }));
-        }
-        out.extend(listed);
+        out.extend(oep_device_ports(dev));
     }
     out.extend(net_oep_ports(&on_usb));
     out
+}
+
+/// One USB OEP probe's ports (its labels read), or the unit when this user may not open it.
+fn oep_device_ports(dev: ch32rv_usb::UsbDeviceInfo) -> Vec<Value> {
+    let mut out = Vec::new();
+    let Some(path) = crate::oep::oep_port(&dev) else {
+        return out;
+    };
+    let id = crate::oep::probe_id(&dev);
+    let denied = no_access(&path);
+    let read = if denied {
+        None
+    } else {
+        read_oep_listing_within(dev.clone(), path.clone(), OEP_LISTING_WITHIN)
+    };
+    let listed = listing_or_recent(read, &id);
+    // en: A probe this user may not open (no udev rule) is still shown, as the unit, with the
+    // reason in its label: its ports cannot be read, and leaving it out made the probe look
+    // absent with nothing saying why. Opening it fails with the exact fix.
+    // ja: 開く権限の無い probe(udev のルールが無い)も、unit として理由を label に添えて出す。
+    // 口は読めず、出さないと probe が無いように見えて理由も分からなかった。開けば直し方が出る。
+    if listed.is_empty() && denied {
+        out.push(json!({
+            "address": format!("oep://{id}"),
+            "label": format!("OEP probe {id} (no permission: udev rules missing)"),
+            "protocol": "oep",
+            "protocolLabel": "OEP probe",
+            "hardwareId": id,
+            "properties": {
+                "vid": format!("0x{:04x}", dev.vid()),
+                "pid": format!("0x{:04x}", dev.pid()),
+                "port": path,
+                "error": "permission",
+                "fix": crate::session::access_denied_fix(),
+            },
+        }));
+    }
+    out.extend(listed);
+    out
+}
+
+/// en: How often sync mode looks at USB again, and how often it browses the network for OEP probes
+/// (a browse takes 600 ms).
+/// ja: sync mode が USB を見直す間隔と、ネットワークの OEP の probe を探す間隔(1 回 600 ms)。
+const SYNC_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+const SYNC_NET_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// en: Sync mode's view of the ports. USB is enumerated every round (it opens nothing); a USB OEP
+/// probe's labels are read once when it appears (a read opens its serial port) and kept while it
+/// stays; the network is browsed now and then.
+/// ja: sync mode の一覧。USB は毎回列挙(何も開かない)。USB の OEP の probe のラベルは現れたときに
+/// 1 回読み(serial port を開くので)、居る間は覚えておく。ネットワークは時々探す。
+#[derive(Default)]
+struct SyncView {
+    oep: std::collections::HashMap<String, Vec<Value>>,
+    net: Vec<Value>,
+    net_at: Option<std::time::Instant>,
+}
+
+impl SyncView {
+    fn ports(&mut self) -> Vec<Value> {
+        ch32rv_usb::with_one_enumeration(|| {
+            let mut ports = wchlink_ports();
+            let devices = crate::oep::oep_devices();
+            let on_usb: Vec<String> = devices.iter().map(crate::oep::probe_id).collect();
+            self.oep.retain(|id, _| on_usb.contains(id));
+            for dev in devices {
+                let id = crate::oep::probe_id(&dev);
+                if !self.oep.contains_key(&id) {
+                    let listed = oep_device_ports(dev);
+                    self.oep.insert(id.clone(), listed);
+                }
+                ports.extend(self.oep[&id].iter().cloned());
+            }
+            if self.net_at.is_none_or(|t| t.elapsed() >= SYNC_NET_EVERY) {
+                self.net = net_oep_ports(&on_usb);
+                self.net_at = Some(std::time::Instant::now());
+            }
+            ports.extend(self.net.iter().cloned());
+            ports.extend(hid_ports());
+            ports.extend(isp_route_ports());
+            ports.push(waiting_port());
+            ports
+        })
+    }
+}
+
+/// en: The events that take the IDE from `known` to `now`: `remove` for a port gone or changed,
+/// then `add` for a port new or changed. ja: `known` から `now` への event。
+fn sync_events(known: &[Value], now: &[Value]) -> Vec<Value> {
+    let same =
+        |a: &Value, b: &Value| a["address"] == b["address"] && a["protocol"] == b["protocol"];
+    let mut events = Vec::new();
+    for old in known {
+        match now.iter().find(|n| same(n, old)) {
+            Some(n) if n == old => {}
+            _ => events.push(json!({"eventType": "remove", "port": {
+                "address": old["address"], "protocol": old["protocol"],
+            }})),
+        }
+    }
+    for new in now {
+        if !known.iter().any(|o| o == new) {
+            events.push(json!({"eventType": "add", "port": new}));
+        }
+    }
+    events
+}
+
+/// en: Sync mode (START_SYNC): the ports now as `add` events, then every [`SYNC_EVERY`] the ports
+/// that came (`add`) and went (`remove`; a port whose description changed is removed and added
+/// again), until `stop` is set. arduino-cli and IDE 2 do not LIST again in sync mode: before this,
+/// a device that appeared after the start (a bootloader brought up with BOOT, a probe plugged in)
+/// never showed.
+/// ja: sync mode。今のポートを `add` で出し、その後 [`SYNC_EVERY`] ごとに、来たもの(`add`)と
+/// 消えたもの(`remove`。説明が変わったものは remove して add)を知らせる。arduino-cli と IDE 2 は
+/// sync mode では LIST し直さないので、以前は開始の後に現れた device(BOOT で出した bootloader、
+/// 挿した probe)が出なかった。
+fn sync_watch(
+    out: std::sync::Arc<std::sync::Mutex<std::io::Stdout>>,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    let mut view = SyncView::default();
+    let mut known: Vec<Value> = Vec::new();
+    loop {
+        let now = view.ports();
+        if stop.load(Ordering::SeqCst) {
+            return;
+        }
+        let events = sync_events(&known, &now);
+        if !events.is_empty() {
+            let Ok(mut o) = out.lock() else { return };
+            for e in &events {
+                emit(&mut *o, e);
+            }
+        }
+        known = now;
+        let until = std::time::Instant::now() + SYNC_EVERY;
+        while std::time::Instant::now() < until {
+            if stop.load(Ordering::SeqCst) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
 }
 
 /// en: How long one USB OEP probe may take to give its labels in a LIST (one takes well under 1 s on the
@@ -1598,6 +1728,25 @@ mod tests {
             json!(["auto", "uart", "dmdata", "dmseq", "sdi", "rtt"])
         );
         assert_eq!(s.speed, "4000");
+    }
+
+    #[test]
+    fn sync_mode_says_what_came_went_and_changed() {
+        let a = json!({"address": "wchlink://A", "protocol": "wchlink", "label": "A"});
+        let b = json!({"address": "ch32rv-hid://1-4", "protocol": "ch32rv-hid", "label": "HID"});
+        let a2 = json!({"address": "wchlink://A", "protocol": "wchlink", "label": "A (changed)"});
+        let one = std::slice::from_ref(&a);
+        assert!(sync_events(one, one).is_empty());
+        // A bootloader brought up after the start is added; gone, it is removed.
+        let e = sync_events(one, &[a.clone(), b.clone()]);
+        assert_eq!(e, vec![json!({"eventType": "add", "port": b})]);
+        let e = sync_events(&[a.clone(), b.clone()], one);
+        assert_eq!(e[0]["eventType"], "remove");
+        assert_eq!(e[0]["port"]["address"], "ch32rv-hid://1-4");
+        // A changed description: removed, then added again.
+        let e = sync_events(one, std::slice::from_ref(&a2));
+        assert_eq!(e[0]["eventType"], "remove");
+        assert_eq!(e[1], json!({"eventType": "add", "port": a2}));
     }
 
     #[test]
