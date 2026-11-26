@@ -111,7 +111,38 @@ struct Wch {
     rtt_scans: usize,
     /// dmseq restarts seen.
     restarts: u64,
+    /// When DMSTATUS was last looked at for a reset.
+    reset_checked: Instant,
+    /// `allresumeack` was set by our resume request, so its falling means a reset.
+    armed: bool,
 }
+
+/// DMSTATUS `allresumeack`.
+const ALLRESUMEACK: u32 = 1 << 17;
+
+/// en: Set `allresumeack` by halting the hart for a moment and resuming it (WCH's Debug Module
+/// acks no resume request to a hart already running, measured on a CH32V307), so that a reset
+/// shows as its falling. Whether it is set now. The mailbox is untouched by a halt.
+/// ja: hart を一瞬止めて走らせ、`allresumeack` を立てる(WCH の DM は走っている hart への resume を
+/// ack しない。V307 で実測)。立ったかを返す。止めても郵便受けは変わらない。
+fn arm_restart_watch(session: &mut Session) -> bool {
+    let _ = session.dm().halt();
+    let _ = session.dm().resume();
+    session.dm().dmstatus().is_ok_and(|s| s & ALLRESUMEACK != 0)
+}
+
+/// en: How often a WCH-Link target's DMSTATUS is read for `anyhavereset`: a sketch that restarts
+/// itself (and may come up with another console) is seen within this.
+/// ja: WCH-Link の target の DMSTATUS の `anyhavereset` を見る間隔(sketch の再起動に気づく)。
+const RESET_CHECK: Duration = Duration::from_millis(200);
+/// DMSTATUS `anyhavereset`.
+const ANYHAVERESET: u32 = 1 << 18;
+/// en: How long an OEP console that was decided may stay silent before the mechanisms are tried
+/// again (an OEP target's restart is not seen otherwise; a sketch that now uses another console
+/// would leave the decided one silent).
+/// ja: 決まった OEP の console が黙ってよい時間。過ぎたら方式を試し直す(OEP では target の再起動が
+/// 見えないため)。
+const OEP_QUIET: Duration = Duration::from_secs(5);
 
 struct Oep {
     addr: crate::oep::OepAddr,
@@ -123,6 +154,8 @@ struct Oep {
     trying: usize,
     since: Instant,
     locked: bool,
+    /// When the decided console last carried data.
+    heard: Instant,
     rtt: Option<crate::oep::ConsoleSession>,
     rtt_tried: bool,
     rtt_polled: Instant,
@@ -149,7 +182,10 @@ pub(crate) struct Auto {
 /// en: How long a path's unfinished line (a prompt, say) waits for the rest before it is given
 /// out as it is.
 /// ja: 経路の途中の行(プロンプトなど)が続きを待つ時間。過ぎたらそのまま出す。
-const LINE_WAIT: Duration = Duration::from_millis(100);
+const LINE_WAIT: Duration = Duration::from_millis(150);
+/// en: The longest an unfinished line is held even while it keeps growing.
+/// ja: 伸び続けていても、途中の行を持つのはここまで。
+const LINE_HOLD_MAX: Duration = Duration::from_secs(1);
 
 /// en: One path's output, given out a line at a time so that two paths do not cut into each
 /// other's lines (measured: a DMSeq and a UART line of one TICK came out interleaved).
@@ -157,7 +193,9 @@ const LINE_WAIT: Duration = Duration::from_millis(100);
 #[derive(Default)]
 struct Lines {
     buf: Vec<u8>,
+    /// When the unfinished line began, and when it last grew.
     since: Option<Instant>,
+    grew: Option<Instant>,
 }
 
 impl Lines {
@@ -169,16 +207,26 @@ impl Lines {
         if let Some(i) = self.buf.iter().rposition(|&b| b == b'\n') {
             out.extend(self.buf.drain(..=i));
             self.since = None;
+            self.grew = None;
         }
-        if !self.buf.is_empty() && self.since.is_none() {
-            self.since = Some(Instant::now());
+        if !self.buf.is_empty() {
+            // en: A slow path (dmdata: 7 bytes a round trip, the sketch printing a prefix and the
+            // text apart) keeps a line growing for longer than a fixed wait: it is held while it
+            // grows (measured: a UART line cut into a DMDATA one on a CH32V307 with a fixed 100 ms).
+            // ja: 遅い経路は行が長く伸びるので、伸びている間は持つ(V307 の DMDATA で固定 100 ms
+            // のとき UART の行が割り込んだ)。
+            self.since.get_or_insert_with(Instant::now);
+            self.grew = Some(Instant::now());
         }
     }
 
     fn flush_old(&mut self, out: &mut Vec<u8>) {
-        if self.since.is_some_and(|t| t.elapsed() >= LINE_WAIT) {
+        let quiet = self.grew.is_some_and(|t| t.elapsed() >= LINE_WAIT);
+        let long = self.since.is_some_and(|t| t.elapsed() >= LINE_HOLD_MAX);
+        if quiet || long {
             out.append(&mut self.buf);
             self.since = None;
+            self.grew = None;
         }
     }
 }
@@ -224,8 +272,15 @@ impl Auto {
             .dmdata_clear()
             .map_err(|e| format!("mailbox: {e}"))?;
         // The reset undoes what the attach did (the clock, a V103 / V205 / H417 register).
+        // What the UART had before the reset is not the restarted sketch's (cleared before the
+        // reset: after it, the sketch's first byte may already be in).
+        let mut port = port;
+        if let Some(p) = port.as_mut() {
+            let _ = p.clear(serialport::ClearBuffer::Input);
+        }
         crate::cmd_flash::soft_reset_and_run(&mut session)?;
         follow_running_hart(&mut session);
+        let armed = arm_restart_watch(&mut session);
         // The attach's own warnings (re-clocking, corrupted registers) no longer apply.
         warnings.retain(|w| {
             !matches!(
@@ -246,6 +301,8 @@ impl Auto {
                 rtt_from: now,
                 rtt_scans: 0,
                 restarts: 0,
+                reset_checked: now,
+                armed,
             })),
             port,
         );
@@ -279,6 +336,7 @@ impl Auto {
             trying: 0,
             since: Instant::now(),
             locked: false,
+            heard: Instant::now(),
             rtt: None,
             rtt_tried: false,
             rtt_polled: Instant::now(),
@@ -515,8 +573,53 @@ fn follow_running_hart(session: &mut Session) {
 }
 
 impl Wch {
+    /// en: After our own halt and resume (RTT), which may leave `allresumeack` clear (measured: a
+    /// scan made it fall, read as a restart): set it again so that only a real reset clears it.
+    /// ja: こちらの halt と resume(RTT)の後。`allresumeack` が落ちていたら立て直す(走査で落ちて、
+    /// 再起動と取り違えた実測)。
+    fn rearm(&mut self) {
+        let set = self
+            .session
+            .dm()
+            .dmstatus()
+            .is_ok_and(|s| s & ALLRESUMEACK != 0);
+        self.armed = set || arm_restart_watch(&mut self.session);
+    }
+
     fn poll(&mut self, q_mail: &mut Vec<u8>, q_rtt: &mut Vec<u8>) -> Result<Got, String> {
         let mut got = Got::default();
+        // en: A reset of any kind (the sketch restarting itself, the board's button) latches
+        // `anyhavereset`: the sketch may now use another console, so it is decided again, RTT is
+        // looked for again, and what was typed and not sent is dropped.
+        // ja: どんな reset でも `anyhavereset` が立つ。console を決め直し、RTT を探し直し、送って
+        // いない入力を捨てる。
+        if self.reset_checked.elapsed() >= RESET_CHECK {
+            self.reset_checked = Instant::now();
+            let status = self
+                .session
+                .dm()
+                .dmstatus()
+                .map_err(|e| format!("dmstatus: {e}"))?;
+            // en: WCH's Debug Module does not latch `anyhavereset` for a sketch's own restart
+            // (CH32RV.restart(), measured on a CH32V307: DMSTATUS 0x00030c82 -> 0x00000c82), but
+            // the reset clears `allresumeack`, which a resume request sets again: armed that way,
+            // its falling is the restart.
+            // ja: WCH の DM は sketch 自身の再起動で `anyhavereset` を立てない(V307 で実測)が、
+            // reset で `allresumeack` が落ちる。resume 要求で立て直しておき、落ちたら再起動とする。
+            let resumeack_fell = self.armed && status & ALLRESUMEACK == 0;
+            if status & ANYHAVERESET != 0 || resumeack_fell {
+                let _ = self.session.dm().ack_have_reset();
+                // The ack selects hart 0: follow the sketch's hart again (H417).
+                follow_running_hart(&mut self.session);
+                self.armed = arm_restart_watch(&mut self.session);
+                self.mail = None;
+                self.other_run = 0;
+                self.rtt = None;
+                self.rtt_scans = 0;
+                self.rtt_from = Instant::now();
+                got.restarted = true;
+            }
+        }
         match &mut self.mail {
             None => {
                 let (d0, d1) = self
@@ -597,6 +700,7 @@ impl Wch {
                     }
                     // Found or not, the core runs on (with its mailbox put back).
                     let _ = keep.resume();
+                    self.rearm();
                 }
             }
             Some(ch) => {
@@ -608,6 +712,7 @@ impl Wch {
                     };
                     got.rtt = crate::source::rtt_poll(&mut keep, *ch, q_rtt)
                         .map_err(|e| format!("rtt failed: {e}"))?;
+                    self.rearm();
                 }
             }
         }
@@ -655,7 +760,15 @@ impl Oep {
             got.mail_is_sdi = is_sdi;
             if !got.mail.is_empty() {
                 self.locked = true;
+                self.heard = Instant::now();
             }
+        }
+        if self.locked && self.heard.elapsed() >= OEP_QUIET {
+            // Silent too long: the sketch may have restarted with another console.
+            self.locked = false;
+            self.since = Instant::now()
+                .checked_sub(OEP_TRY)
+                .unwrap_or_else(Instant::now);
         }
         if !self.locked && self.since.elapsed() >= OEP_TRY {
             // Not this one: the next mechanism (a wrong one only stays quiet).
