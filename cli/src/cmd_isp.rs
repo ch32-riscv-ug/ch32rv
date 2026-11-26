@@ -1437,11 +1437,32 @@ fn enter_via_app(
         // en: The application may drop off the bus before the status stage completes (seen as a
         // stall on Linux); it still detaches, so the error is only reported.
         // ja: status stage の前に bus から消えることがある(Linux では stall)が、detach はするので報告だけ。
-        if let Err(e) = app.dev.dfu_detach(intf, DETACH_TIMEOUT_MS) {
-            crate::warn(
-                "dfu-detach",
-                format!("{e} (waiting for the bootloader anyway)"),
-            );
+        match app.dev.dfu_detach(intf, DETACH_TIMEOUT_MS) {
+            Ok(()) => {}
+            // en: The interface could not be opened, so nothing was sent: on Windows the DFU
+            // run-time interface has no WinUSB driver unless the application names one ("Could not
+            // find DeviceInterfaceGUIDs in registry", measured). With `auto` and a serial port,
+            // the 1200 bps touch is the way in instead (below); otherwise say it and wait.
+            // ja: interface が開けず何も送っていない(Windows では、アプリが WinUSB を名乗らない
+            // DFU run-time にはドライバが付かない。実測)。`auto` で serial port があれば、代わりに
+            // 1200 bps のタッチで入れる(下)。無ければ言って待つ。
+            Err(
+                e @ (ch32rv_usb::UsbError::Open(_)
+                | ch32rv_usb::UsbError::AccessDenied(_)
+                | ch32rv_usb::UsbError::Busy(_)),
+            ) if entry == IspEntry::Auto && app.port.is_some() => {
+                crate::warn(
+                    "dfu-detach",
+                    format!("{e} (touching the serial port at 1200 bps instead)"),
+                );
+                return touch_into_bootloader(cli, cmd, app.port.as_deref().unwrap_or(""), &at);
+            }
+            Err(e) => {
+                crate::warn(
+                    "dfu-detach",
+                    format!("{e} (waiting for the bootloader anyway)"),
+                );
+            }
         }
         if !cli.json {
             eprintln!("sent DFU_DETACH to topology:{at} (interface {intf})");
@@ -1460,7 +1481,17 @@ fn enter_via_app(
             )),
         };
     };
-    touch1200(&port).map_err(|e| {
+    touch_into_bootloader(cli, cmd, &port, &at)
+}
+
+/// The 1200 bps touch on the application's `port`, reported; `at` is where the bootloader comes up.
+fn touch_into_bootloader(
+    cli: &Cli,
+    cmd: &str,
+    port: &str,
+    at: &str,
+) -> Result<Option<String>, ExitCode> {
+    touch1200(port).map_err(|e| {
         fail(
             cli,
             cmd,
@@ -1472,7 +1503,7 @@ fn enter_via_app(
     if !cli.json {
         eprintln!("1200 bps touch on {port} (topology:{at})");
     }
-    Ok(Some(at))
+    Ok(Some(at.to_owned()))
 }
 
 /// The `wDetachTimeOut` sent with DFU_DETACH (ms).

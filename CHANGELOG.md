@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) Fix (Windows): `isp flash --entry auto` (the IDE's upload to a running CH32RV application) did not get the chip into its bootloader when the application's DFU run-time interface could not be opened - on Windows it has no driver unless the application names WinUSB ("Could not find DeviceInterfaceGUIDs in registry") - and waited for a bootloader that never came. When nothing could be sent that way and the application has a serial port, it is now touched at 1200 bps instead.
+- (JA) 修正(Windows): `isp flash --entry auto`(IDE で走っている CH32RV のアプリへの書き込み)は、アプリの DFU run-time interface が開けないとき(Windows では、アプリが WinUSB を名乗らなければドライバが付かない。「Could not find DeviceInterfaceGUIDs in registry」)、chip を bootloader に入れられず、来ない bootloader を待っていた。そうして何も送れず、アプリに serial port があるときは、代わりに 1200 bps のタッチで入れる。
 ## 0.35.6 - 2026-11-26
 
 - (EN) Fix (Windows): a factory ISP bootloader (1a86:55e0) with WCH's CH372 / CH375 driver bound (`CH375_A64.SYS`, as WCHISPTool installs it) still failed `isp` with "incompatible driver" in 0.35.5: that driver registers its own interface GUID, `{5E7F6BDF-1CE5-4D78-BBCF-D20C44329F7D}`, not the WCH-Link driver's. It is now looked for too.
