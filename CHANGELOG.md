@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.9 - 2026-11-26
+
 - (EN) Fix: `flash --probe /dev/serial/by-id/...` (a symbolic link to a CH32RV application's serial port) was taken for an OEP probe's port, whose broker never started; the link is now resolved, as everywhere else ports are compared. The plain tty, which arduino-cli passes, worked already.
 - (JA) 修正: `flash --probe /dev/serial/by-id/...`(CH32RV のアプリの serial port へのシンボリックリンク)が OEP の probe の port とみなされ、ブローカーが起動せず失敗していた。他で port を比べる所と同じくリンクを解決する。arduino-cli が渡す素の tty では前から通っていた。
 ## 0.35.8 - 2026-11-26
