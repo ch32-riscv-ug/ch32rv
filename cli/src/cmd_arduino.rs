@@ -1077,7 +1077,7 @@ impl Backend {
                     None,
                     &mut warnings,
                 )
-                .map_err(|e| format!("attach: {e}"))?;
+                .map_err(|e| format!("attach: {}", e.with_fix()))?;
                 // CH32V103: the attach overwrote s1; restart the program before watching it.
                 session.keep_running();
                 let src = DmiSource::open(&mut session, s.source, &mut warnings)
@@ -1112,7 +1112,14 @@ impl Backend {
             // The CDC is the UART group; a Link without one (or with it busy) still has the rest.
             let port = r.port.as_deref().and_then(|p| open_port(p).ok());
             let (speed, _) = crate::parse::speed(&s.speed)?;
-            Auto::open_wch(entry, port, speed, env.lock_timeout, s.chip.as_deref())?
+            match Auto::open_wch(entry, port, speed, env.lock_timeout, s.chip.as_deref()) {
+                Ok(a) => a,
+                // The debug paths do not open (no USB access, no target): the UART still does.
+                Err(why) => match r.port.as_deref() {
+                    Some(p) => Auto::open_uart_only(open_port(p)?, &why),
+                    None => return Err(why),
+                },
+            }
         } else if let Some(oep @ crate::oep::OepAddr::Named { .. }) = r.oep.as_ref() {
             let (speed, _) = crate::parse::speed(&s.speed)?;
             Auto::open_oep(

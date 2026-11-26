@@ -800,7 +800,7 @@ pub(crate) fn session_error(cli: &Cli, cmd: &str, e: SessionError) -> ExitCode {
                 ),
                 WchLinkError::Usb(UsbError::AccessDenied(_)) => (
                     ErrorKind::DeviceOpenFailed,
-                    "check permissions/udev rules (run `ch32rv doctor`) or the driver binding",
+                    crate::session::ACCESS_DENIED_FIX,
                 ),
                 _ => (
                     ErrorKind::DeviceOpenFailed,

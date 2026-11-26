@@ -253,6 +253,20 @@ impl Auto {
         a
     }
 
+    /// en: A probe's serial port whose debug paths could not be opened (`why`): the UART alone,
+    /// with a warning line naming the cause, rather than no monitor at all (measured: a Linux
+    /// host without the udev rules failed the whole OPEN on the WCH-Link's USB access).
+    /// ja: デバッグの経路が開けなかった probe の serial の口。開かないよりも、UART だけで開き、
+    /// 原因を warning の行で言う(udev のルールの無い Linux で、Link の USB が開けず OPEN ごと
+    /// 失敗した実例)。
+    pub(crate) fn open_uart_only(port: Box<dyn SerialPort>, why: &str) -> Self {
+        let mut a = Auto::open_uart(port);
+        a.notes.extend(note(&format!(
+            "warning: reading the UART only; the debug paths did not open: {why}"
+        )));
+        a
+    }
+
     /// en: A WCH-Link: its CDC (`uart`, if it has one), then attach, empty the mailbox, reset to
     /// run. The CDC is opened first so that the sketch's first lines are not missed.
     /// ja: WCH-Link。CDC(あれば)を先に開き、attach → 郵便受けを空に → reset して走らせる。
@@ -273,7 +287,7 @@ impl Auto {
             None,
             &mut warnings,
         )
-        .map_err(|e| format!("attach: {e}"))?;
+        .map_err(|e| format!("attach: {}", e.with_fix()))?;
         // A word attach left in DATA0 would keep an SDI_Printf target waiting and make a dmdata
         // target read input nobody typed; 0 is silence to all three framings.
         session

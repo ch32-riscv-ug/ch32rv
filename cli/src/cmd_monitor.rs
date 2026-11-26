@@ -114,19 +114,27 @@ fn run_auto(cli: &Cli, args: &MonitorArgs, addr: Option<crate::oep::OepAddr>) ->
                 .port
                 .clone()
                 .or_else(|| entry.dev.serial_ports().into_iter().next());
-            let port = path.and_then(|p| {
-                serialport::new(&p, args.baud)
+            let open_port = |p: &str| {
+                serialport::new(p, args.baud)
                     .timeout(Duration::from_millis(1))
                     .open()
                     .ok()
-            });
-            Auto::open_wch(
+            };
+            let port = path.as_deref().and_then(open_port);
+            match Auto::open_wch(
                 &entry,
                 port,
                 speed,
                 Duration::from_secs(cli.lock_timeout),
                 cli.chip.as_deref(),
-            )
+            ) {
+                // The debug paths do not open (no USB access, no target): the UART still does.
+                Err(why) => match path.as_deref().and_then(open_port) {
+                    Some(p) => Ok(Auto::open_uart_only(p, &why)),
+                    None => Err(why),
+                },
+                ok => ok,
+            }
         }
     };
     let mut auto = match opened {

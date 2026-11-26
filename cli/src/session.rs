@@ -58,6 +58,38 @@ pub enum SessionError {
     Busy(LockError),
 }
 
+/// en: What to do when opening a probe's USB device is denied. On Linux that is the missing udev
+/// rule, so the exact commands (the core ships the same rule file, but where the platform lives
+/// varies, so `doctor --emit-udev` is the form to print); elsewhere the driver binding.
+/// ja: probe の USB device を開けないときの直し方。Linux は udev のルールが無いので、そのコマンドを
+/// そのまま出す(core も同じファイルを持つが、置き場所が環境で変わるので doctor の形)。他は driver。
+pub(crate) const ACCESS_DENIED_FIX: &str = if cfg!(target_os = "linux") {
+    "install the udev rules: `ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules` \
+     then `sudo udevadm control --reload-rules && sudo udevadm trigger`, and replug the probe"
+} else {
+    "check the probe's driver binding (run `ch32rv doctor`)"
+};
+
+impl SessionError {
+    /// Opening the probe's USB device was denied (permissions / driver binding).
+    pub(crate) fn access_denied(&self) -> bool {
+        matches!(
+            self,
+            SessionError::Open(WchLinkError::Usb(ch32rv_usb::UsbError::AccessDenied(_)))
+                | SessionError::ProbeInfo(WchLinkError::Usb(ch32rv_usb::UsbError::AccessDenied(_)))
+        )
+    }
+
+    /// The one-line text, with [`ACCESS_DENIED_FIX`] when access was denied.
+    pub(crate) fn with_fix(&self) -> String {
+        if self.access_denied() {
+            format!("{self}: {ACCESS_DENIED_FIX}")
+        } else {
+            self.to_string()
+        }
+    }
+}
+
 /// One line for places that can only show text (the Arduino monitor's data stream).
 impl std::fmt::Display for SessionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
