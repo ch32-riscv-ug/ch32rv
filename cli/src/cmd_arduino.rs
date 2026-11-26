@@ -156,6 +156,23 @@ fn waiting_port() -> Value {
 /// ja: OEP の probe を、ラベルが名指すポートごとに `oep://<probe>[/<port>]` で出す。ラベルは lock 無しで読む
 /// (ブローカーが動いていればそこ経由、ここでは起動しない。無ければ serial port を短く開く)。読めなければ
 /// 少しの間だけ前回の一覧。普通の serial port は開かない。
+/// en: Whether this user may not read and write the serial port `path` (checked without opening
+/// it: an open would toggle its modem lines).
+/// ja: この利用者が serial port `path` を読み書きできないか(開かずに調べる。開くと modem 線が動く)。
+#[cfg(unix)]
+fn no_access(path: &str) -> bool {
+    use rustix::fs::{Access, access};
+    matches!(
+        access(path, Access::READ_OK | Access::WRITE_OK),
+        Err(e) if e == rustix::io::Errno::ACCESS || e == rustix::io::Errno::PERM
+    )
+}
+
+#[cfg(not(unix))]
+fn no_access(_path: &str) -> bool {
+    false
+}
+
 fn oep_ports() -> Vec<Value> {
     let mut out = Vec::new();
     let devices = crate::oep::oep_devices();
@@ -165,8 +182,34 @@ fn oep_ports() -> Vec<Value> {
             continue;
         };
         let id = crate::oep::probe_id(&dev);
-        let read = read_oep_listing_within(dev, path, OEP_LISTING_WITHIN);
-        out.extend(listing_or_recent(read, &id));
+        let denied = no_access(&path);
+        let read = if denied {
+            None
+        } else {
+            read_oep_listing_within(dev.clone(), path.clone(), OEP_LISTING_WITHIN)
+        };
+        let listed = listing_or_recent(read, &id);
+        // en: A probe this user may not open (no udev rule) is still shown, as the unit, with the
+        // reason in its label: its ports cannot be read, and leaving it out made the probe look
+        // absent with nothing saying why. Opening it fails with the exact fix.
+        // ja: 開く権限の無い probe(udev のルールが無い)も、unit として理由を label に添えて出す。
+        // 口は読めず、出さないと probe が無いように見えて理由も分からなかった。開けば直し方が出る。
+        if listed.is_empty() && denied {
+            out.push(json!({
+                "address": format!("oep://{id}"),
+                "label": format!("OEP probe {id} (no permission: run `ch32rv doctor`)"),
+                "protocol": "oep",
+                "protocolLabel": "OEP probe",
+                "hardwareId": id,
+                "properties": {
+                    "vid": format!("0x{:04x}", dev.vid()),
+                    "pid": format!("0x{:04x}", dev.pid()),
+                    "port": path,
+                    "error": "permission",
+                },
+            }));
+        }
+        out.extend(listed);
     }
     out.extend(net_oep_ports(&on_usb));
     out

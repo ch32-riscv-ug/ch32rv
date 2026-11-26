@@ -523,7 +523,14 @@ fn connect_ordered(
             "the OEP device behind {path} did not answer on its {what} interface"
         ));
     }
-    let mut link = ch32rv_oep::link::open_serial(path).map_err(|e| e.to_string())?;
+    let mut link = ch32rv_oep::link::open_serial(path).map_err(|e| match &e {
+        ch32rv_oep::link::LinkError::Io(io)
+            if io.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            format!("{e}: {}", crate::session::ACCESS_DENIED_FIX)
+        }
+        _ => e.to_string(),
+    })?;
     if let Some(t) = timeout {
         link.set_timeout(t);
     }

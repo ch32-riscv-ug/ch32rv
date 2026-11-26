@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- (EN) Fix: on Linux without the udev rules, the `auto` monitor on a WCH-Link's serial port failed its whole OPEN (`attach: access denied opening device ... (errno 13)`), although the UART could be read. Now a probe's serial port whose debug paths do not open (no USB access, no target) opens with the UART alone and a warning line naming the cause. A denied open of a WCH-Link (any command) or of an OEP probe's serial port names the exact fix on Linux: `ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules`, `sudo udevadm control --reload-rules && sudo udevadm trigger`, replug.
+- (JA) 修正: udev のルールの無い Linux で、WCH-Link の serial の口の `auto` の monitor が OPEN ごと失敗していた(`attach: access denied opening device ... (errno 13)`)。UART は読めるのに開けなかった。今は、デバッグの経路が開けない(USB に権限が無い、target が無い)probe の serial の口は UART だけで開き、原因を warning の行で言う。WCH-Link(どのコマンドでも)と OEP の probe の serial port が開けないエラーには、Linux では直し方をそのまま添える。
+- (EN) `arduino discovery` shows an OEP probe this user may not open (no udev rule): as `oep://<unit>` labelled `OEP probe <unit> (no permission: run `ch32rv doctor`)`, with `error: permission` in its properties. Before, it was left out and looked absent. (WCH-Links were already listed: listing them opens nothing.)
+- (JA) `arduino discovery` は、開く権限の無い OEP の probe(udev のルールが無い)も出す: `oep://<unit>` で、label は `OEP probe <unit> (no permission: run `ch32rv doctor`)`、properties に `error: permission`。以前は一覧から消え、無いように見えた(WCH-Link は開かずに列挙するので前から出ていた)。
+- (EN) The udev rules (`doctor --emit-udev`) also give the seat's user (`uaccess`) the serial ports of WCH-Links (the UART bridge) and of OEP probes, so a user outside `dialout` can open them; the ttys keep their group.
+- (JA) udev のルール(`doctor --emit-udev`)は、WCH-Link(UART bridge)と OEP の probe の serial port にも `uaccess` を付ける。`dialout` に入っていない利用者も開ける(tty の group はそのまま)。
 ## 0.35.3 - 2026-11-26
 
 - (EN) The `auto` monitor says its status once, right after the open (`[ch32rv monitor] auto: uart; looking for dmseq / sdi / dmdata, rtt`), and no more: not when a mailbox console or RTT is found, a search stops, or the target restarts. `auto` does not tell its paths apart, and a path's output in the window shows it is read; problems still come as warnings. Before, a line came at each of those, among them one that only said the RTT search had stopped.

@@ -1013,7 +1013,15 @@ pub fn open_serial(path: &str) -> Result<Link, LinkError> {
     let mut port = serialport::new(path, 115_200)
         .timeout(Duration::from_millis(20))
         .open()
-        .map_err(|e| LinkError::Io(io::Error::other(format!("open {path}: {e}"))))?;
+        .map_err(|e| {
+            // The kind is kept so that a caller can tell "no permission" (no udev rule) apart.
+            let kind = match e.kind() {
+                serialport::ErrorKind::Io(k) => k,
+                serialport::ErrorKind::NoDevice => io::ErrorKind::NotFound,
+                _ => io::ErrorKind::Other,
+            };
+            LinkError::Io(io::Error::new(kind, format!("open {path}: {e}")))
+        })?;
     let _ = port.write_data_terminal_ready(true);
     let _ = port.write_request_to_send(true);
     let mut link = Link::new(Box::new(SerialStream(port)), Framing::Cobs);
