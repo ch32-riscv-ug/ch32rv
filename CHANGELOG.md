@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.4 - 2026-11-26
+
 - (EN) Fix: on Linux without the udev rules, the `auto` monitor on a WCH-Link's serial port failed its whole OPEN (`attach: access denied opening device ... (errno 13)`), although the UART could be read. Now a probe's serial port whose debug paths do not open (no USB access, no target) opens with the UART alone and a warning line naming the cause. A denied open of a WCH-Link (any command) or of an OEP probe's serial port names the exact fix on Linux, with this ch32rv by its full path (an IDE's or a core's ch32rv is not on PATH): `<path>/ch32rv doctor --emit-udev | sudo tee /etc/udev/rules.d/60-ch32rv.rules`, `sudo udevadm control --reload-rules && sudo udevadm trigger`, replug.
 - (JA) 修正: udev のルールの無い Linux で、WCH-Link の serial の口の `auto` の monitor が OPEN ごと失敗していた(`attach: access denied opening device ... (errno 13)`)。UART は読めるのに開けなかった。今は、デバッグの経路が開けない(USB に権限が無い、target が無い)probe の serial の口は UART だけで開き、原因を warning の行で言う。WCH-Link(どのコマンドでも)と OEP の probe の serial port が開けないエラーには、Linux では直し方をそのまま添える(ch32rv はこの実行ファイルの絶対パスで書く。IDE や core の ch32rv は PATH に無いため)。
 - (EN) `arduino discovery` shows an OEP probe this user may not open (no udev rule): as `oep://<unit>` labelled `OEP probe <unit> (no permission: udev rules missing)`, with `error: permission` and the fix (`fix`) in its properties. Before, it was left out and looked absent. (WCH-Links were already listed: listing them opens nothing.)
