@@ -124,11 +124,7 @@ fn borrow_link(cli: &Cli) -> Result<Option<broker::Lend>, broker::ClientLinkErro
         | Command::Write(_)
         | Command::Run(_) => true,
         Command::Monitor(m) => {
-            m.cmd.is_some()
-                || matches!(
-                    m.source,
-                    Some(MonitorSource::SdiForward | MonitorSource::Rtt | MonitorSource::Auto)
-                )
+            m.cmd.is_some() || matches!(m.source, Some(MonitorSource::Rtt | MonitorSource::Auto))
         }
         _ => false,
     };

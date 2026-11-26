@@ -43,11 +43,11 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         return run_auto(cli, args, addr);
     }
     match (&addr, args.source) {
-        // A WCH-Link's broker: rtt, sdi-forward and uart (the default) open the Link / its CDC as
-        // before (borrowing it).
+        // A WCH-Link's broker: rtt and uart (the default) open the Link / its CDC as before
+        // (borrowing it).
         (
             Some(crate::oep::OepAddr::Wch(_)),
-            None | Some(MonitorSource::Uart | MonitorSource::Rtt | MonitorSource::SdiForward),
+            None | Some(MonitorSource::Uart | MonitorSource::Rtt),
         )
         | (None, _) => {}
         // en: An OEP probe has no "uart" of its own: say so, rather than falling through to the
@@ -72,7 +72,6 @@ pub fn monitor(cli: &Cli, args: &MonitorArgs) -> ExitCode {
     let source = args.source.unwrap_or(MonitorSource::Uart);
     match source {
         MonitorSource::Uart => run_uart(cli, args),
-        MonitorSource::SdiForward => run_sdi(cli, args),
         MonitorSource::Dmdata | MonitorSource::Dmseq | MonitorSource::Sdi | MonitorSource::Rtt => {
             run_dmi(cli, source)
         }
@@ -238,25 +237,17 @@ fn resolve_port(
     }
 }
 
-/// en: Stream the probe's CDC port until the deadline / Ctrl-C.
-/// `sdi` (raw) opens the tty as a plain file (like `cat`) WITHOUT touching modem control, which
-/// is required for SDI: the serialport crate asserts DTR on open and the WCH-LinkE then stops
-/// forwarding SDI after one line (measured). That path is receive-only. Without `sdi` it uses the
-/// serialport crate so `--baud` takes effect for the physical UART bridge (where DTR is
-/// harmless) and forwards stdin to the port.
-/// ja: probe の CDC を流す。`sdi` は tty を生ファイルで開き modem 線を触らない(SDI 必須。
-/// serialport は DTR を assert して forward を止める実測)、受信のみ。`sdi` が無ければ serialport で
-/// baud を効かせ(物理 UART bridge 用、DTR 無害)、stdin を port へ流す。
+/// en: Stream the probe's CDC port until the deadline / Ctrl-C, through the serialport crate so
+/// that `--baud` takes effect, with stdin going to the port.
+/// ja: probe の CDC を流す(serialport で baud を効かせ、stdin を port へ)。
 fn stream_port(
     cli: &Cli,
     cmd: &str,
     port_path: &str,
     baud: u32,
     label: &'static str,
-    sdi: Option<&mut SdiForwarding>,
     warnings: Vec<ch32rv_contract::Warning>,
 ) -> ExitCode {
-    let raw = sdi.is_some();
     if !cli.json {
         eprintln!("monitor: {label} on {port_path} @ {baud} baud (Ctrl-C to stop)");
         for w in &warnings {
@@ -266,103 +257,6 @@ fn stream_port(
     let deadline = run_duration(cli).map(|d| Instant::now() + d);
     let mut sink = Sink::new(cli, label);
     let mut buf = [0u8; 512];
-
-    #[cfg(unix)]
-    if raw {
-        use std::io::Read;
-        // en: Plain blocking open, exactly like `cat`. Opening with O_NONBLOCK, or via the
-        // serialport crate (which asserts DTR), makes the WCH-LinkE stop forwarding SDI after
-        // one line (measured); this blocking file read keeps it streaming.
-        // ja: cat と同じ素のブロッキング open。O_NONBLOCK や serialport(DTR assert)だと LinkE の
-        // SDI forward が 1 行で止まる(実測)。ブロッキング読みなら流れ続ける。
-        let mut file = match open_raw(port_path) {
-            Ok(f) => f,
-            Err(e) => {
-                return fail(
-                    cli,
-                    cmd,
-                    ErrorKind::DeviceOpenFailed,
-                    format!("open {port_path}: {e}"),
-                    None,
-                );
-            }
-        };
-        // en: The read blocks until the probe forwards something, so it runs on a thread of its
-        // own and this loop waits on it with a timeout. `--duration` has to end the stream even
-        // while the target prints nothing: checked only after a read returned, a silent target
-        // kept `monitor --source sdi --duration 4` open for 34.8 s (CH32L103, 2026-09-25). The
-        // fd stays a plain blocking one (see above for why it must); on the deadline the reader
-        // is simply left blocked and goes away with the process.
-        // ja: read は probe が何か流すまで戻らないので専用スレッドで回し、このループは timeout 付きで
-        // 待つ。`--duration` は target が無音でも効かなければならない(read が戻った後にしか確認
-        // しない実装では、無音の L103 で `--duration 4` が 34.8 秒続いた)。fd は素のブロッキングの
-        // まま(理由は上)。締め切りでは reader をブロックさせたまま置いていき、プロセスと共に消える。
-        if let Some(guard) = sdi
-            && let Ok(ctl) = file.try_clone()
-        {
-            guard.watch_cdc(ctl);
-        }
-        let (tx, rx) = std::sync::mpsc::channel::<std::io::Result<Vec<u8>>>();
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 512];
-            loop {
-                let r = file.read(&mut chunk).map(|n| chunk[..n].to_vec());
-                let last = !matches!(&r, Ok(v) if !v.is_empty());
-                if tx.send(r).is_err() || last {
-                    break;
-                }
-            }
-        });
-        loop {
-            let wait = match deadline {
-                Some(dl) => match dl.checked_duration_since(Instant::now()) {
-                    Some(left) if !left.is_zero() => left,
-                    _ => {
-                        sink.finish();
-                        return finish_ok(cli, cmd, label, warnings);
-                    }
-                },
-                None => Duration::from_secs(3600),
-            };
-            if INTERRUPTED.load(Ordering::SeqCst) {
-                sink.finish();
-                return finish_ok(cli, cmd, label, warnings);
-            }
-            // Wake up now and then to see a Ctrl-C.
-            let wait = wait.min(Duration::from_millis(200));
-            match rx.recv_timeout(wait) {
-                Ok(Ok(data)) if !data.is_empty() => sink.write(&data),
-                Ok(Ok(_)) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    sink.finish();
-                    return fail(
-                        cli,
-                        cmd,
-                        ErrorKind::DeviceNotFound,
-                        format!("{port_path} closed (probe disconnected?)"),
-                        None,
-                    );
-                }
-                Ok(Err(e)) => {
-                    sink.finish();
-                    return fail(
-                        cli,
-                        cmd,
-                        ErrorKind::TransferFailed,
-                        format!("read {port_path}: {e}"),
-                        None,
-                    );
-                }
-                // Nothing yet: go round and re-check the deadline.
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-            }
-        }
-    }
-
-    // en: The raw-open path above is unix-only; on other platforms `raw` has no effect here, so
-    // consume it explicitly (otherwise it is an unused variable on e.g. Windows).
-    // ja: 上の raw open は unix 限定。他 OS では raw は無効なので明示的に消費(でないと Windows 等で未使用)。
-    #[cfg(not(unix))]
-    let _ = (raw, sdi);
 
     let mut sp = match serialport::new(port_path, baud)
         .timeout(Duration::from_millis(200))
@@ -431,117 +325,12 @@ fn run_uart(cli: &Cli, args: &MonitorArgs) -> ExitCode {
         Ok(p) => p,
         Err(c) => return c,
     };
-    stream_port(cli, CMD, &port, args.baud, "uart", None, Vec::new())
+    stream_port(cli, CMD, &port, args.baud, "uart", Vec::new())
 }
 
-/// en: `sdi`: attach the chip (so the LinkE knows the family / DM data address), resume the
-/// core (SerialSDI only prints while running), enable forwarding, then read the CDC while the
-/// session is held open. LinkE only.
-/// ja: `sdi`: chip を attach(LinkE に family=DM data 番地を知らせる)→ resume → forward 有効化
-/// → session を保持したまま CDC を読む。LinkE 専用。
-fn run_sdi(cli: &Cli, args: &MonitorArgs) -> ExitCode {
-    const CMD: &str = "monitor";
-    let entry = match select_entry(cli, CMD) {
-        Ok(e) => e,
-        Err(c) => return c,
-    };
-    if entry.mode != ch32rv_contract::ProbeMode::Riscv {
-        return fail(
-            cli,
-            CMD,
-            ErrorKind::CapabilityUnsupported,
-            "sdi needs a RISC-V-mode LinkE",
-            None,
-        );
-    }
-    // Hold the per-probe lock while streaming so a concurrent flash/attach waits (docs §3.7).
-    let _lock = match crate::cmd_probe::lock_probe(cli, CMD, &entry) {
-        Ok(l) => l,
-        Err(c) => return c,
-    };
-    let (speed, mut warnings) = match parse::speed(&cli.speed) {
-        Ok(v) => v,
-        Err(m) => return fail(cli, CMD, ErrorKind::Usage, m, None),
-    };
-    let port = match resolve_port(cli, CMD, &entry, &args.port) {
-        Ok(p) => p,
-        Err(c) => return c,
-    };
-    // en: Ctrl-C / SIGTERM end the stream like `--duration` does, so the guard below turns the
-    // forwarding off (a second handler cannot be set; then the signal just kills, as before).
-    // ja: Ctrl-C / SIGTERM は `--duration` と同じく stream を終わらせ、下の guard が転送を止める。
-    let _ = ctrlc::set_handler(|| INTERRUPTED.store(true, Ordering::SeqCst));
-    match enable_sdi(&entry, speed, cli.chip.as_deref()) {
-        Ok(w) => warnings.extend(w),
-        Err(e) => return fail(cli, CMD, e.kind, e.msg, e.hint),
-    }
-    let mut forwarding = SdiForwarding::new(&entry);
-    stream_port(
-        cli,
-        CMD,
-        &port,
-        args.baud,
-        "sdi-forward",
-        Some(&mut forwarding),
-        warnings,
-    )
-}
-
-/// en: Set by `run_sdi`'s Ctrl-C / SIGTERM handler: the stream ends as at `--duration`.
-/// ja: `run_sdi` の Ctrl-C / SIGTERM handler が立てる。stream は `--duration` と同じく終わる。
+/// en: Set by the Ctrl-C / SIGTERM handler: the stream ends as at `--duration`.
+/// ja: Ctrl-C / SIGTERM の handler が立てる。stream は `--duration` と同じく終わる。
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-
-/// en: A LinkE's SDI forwarding that ch32rv turned on for a monitor; dropping it turns it off
-/// again and empties the LinkE's CDC buffer. Left on with nobody reading the CDC, the LinkE keeps
-/// pulling the target's SDI output into the buffer its UART bridge sends from, and later sends
-/// that old output in place of the UART's bytes, as much of it per transfer as the UART received:
-/// a UART test on a WCH-LinkE 2.22 + CH32V203 got `SDI <build> <n>` lines from a sketch flashed
-/// over minutes earlier instead of its 64-byte echo, on every open, `monitor sdi off` alone did
-/// not clear it, and only a probe power cycle did (2026-11-12). Turning the forwarding off while
-/// the CDC is still open stops the filling; a line-rate change ([`clear_linke_cdc`]) empties
-/// what is already there.
-/// ja: monitor のために ch32rv が有効にした LinkE の SDI 転送。drop で止め、LinkE の CDC の
-/// buffer を空にする。CDC を誰も読まないまま有効にしておくと、LinkE は target の SDI 出力を UART
-/// bridge の送り出す buffer に溜め続け、あとで UART の byte の代わりに(UART が受けた量ずつ)
-/// その古い出力を送る(LinkE 2.22 + V203 の UART 試験で、何分も前に書き換えた sketch の
-/// `SDI <build> <n>` の行が 64 byte の折り返しの代わりに開くたびに届き、`monitor sdi off` だけでは
-/// 直らず、probe の電源の入れ直しで直った。2026-11-12)。CDC を開いたまま転送を止めれば溜まらず、
-/// 溜まった分は line rate の変更([`clear_linke_cdc`])で消える。
-pub(crate) struct SdiForwarding {
-    dev: ch32rv_usb::UsbDeviceInfo,
-    cdc: Option<std::fs::File>,
-}
-
-impl SdiForwarding {
-    pub(crate) fn new(entry: &Entry) -> Self {
-        Self {
-            dev: entry.dev.clone(),
-            cdc: None,
-        }
-    }
-
-    /// en: The CDC the monitor reads (a second handle on it): emptied on drop.
-    /// ja: monitor が読む CDC(別の handle)。drop で空にする。
-    pub(crate) fn watch_cdc(&mut self, cdc: std::fs::File) {
-        self.cdc = Some(cdc);
-    }
-}
-
-impl Drop for SdiForwarding {
-    fn drop(&mut self) {
-        if let Ok(mut link) = ch32rv_wchlink::WchLink::open(&self.dev) {
-            let _ = link.set_sdi_print_enabled(false);
-        }
-        #[cfg(unix)]
-        if let Some(cdc) = &self.cdc {
-            let _ = clear_linke_cdc(cdc);
-        }
-        // en: Windows: a COM handle has no termios; the forwarding is off, the buffer stays.
-        // ja: Windows: COM の handle に termios は無い。転送は止め、buffer はそのまま。
-        #[cfg(not(unix))]
-        let _ = &self.cdc;
-    }
-}
 
 /// en: Empty a WCH-LinkE's CDC buffer: a change of the line rate makes the LinkE drop what it
 /// holds for the host (setting the same rate again does not), so switch to another rate and
@@ -583,29 +372,6 @@ pub(crate) fn open_raw(path: &str) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
-#[cfg(not(unix))]
-pub(crate) fn open_raw(path: &str) -> std::io::Result<std::fs::File> {
-    // Windows opens a COM port exclusively by itself.
-    std::fs::File::open(path)
-}
-
-/// Why [`enable_sdi`] failed, in the terms `fail` reports.
-pub(crate) struct SdiError {
-    pub(crate) kind: ErrorKind,
-    pub(crate) msg: String,
-    pub(crate) hint: Option<&'static str>,
-}
-
-impl SdiError {
-    fn new(kind: ErrorKind, msg: String) -> Self {
-        Self {
-            kind,
-            msg,
-            hint: None,
-        }
-    }
-}
-
 /// en: One DMI read (dmstatus) between the attach and the SDI enable. Without it, a LinkE 2.22
 /// on a running CH32V307VCT6 took the enable (answer `00`) but about every other time did not
 /// forward: it printed "Please check the SDI, and Enable this function through the upper
@@ -618,91 +384,6 @@ impl SdiError {
 fn settle_before_sdi_enable(link: &mut ch32rv_wchlink::WchLink) {
     // dmstatus (Debug Spec 0x11).
     let _ = ch32rv_dmi::DtmAccess::dmi_read(link, 0x11);
-}
-
-/// en: Turn on the LinkE's SDI print forwarding to its CDC (shared by `monitor --source sdi` and
-/// `arduino monitor`). Returns the warnings to report.
-/// ja: LinkE の SDI print の CDC への転送を有効にする(`monitor --source sdi` と `arduino monitor` が共用)。
-pub(crate) fn enable_sdi(
-    entry: &Entry,
-    speed: ch32rv_wchlink::Speed,
-    chip: Option<&str>,
-) -> Result<Vec<ch32rv_contract::Warning>, SdiError> {
-    // en: Minimal wlink-equivalent on a raw link (no ChipInfo read, no halt, no detach):
-    // SetSpeed(placeholder) -> AttachChip (learn the family, does not halt) -> enable
-    // forwarding. Then KEEP the link open while reading the CDC: dropping the nusb interface
-    // mid-process resets the probe and stops forwarding, so the vendor interface is held for
-    // the whole session (the CDC is a separate interface on the same device).
-    // ja: raw link で最小の wlink 相当。enable 後は link を保持したまま CDC を読む(nusb interface を
-    // 途中で drop すると probe がリセットされ forward が止まるため)。
-    let warnings = {
-        let mut link = match ch32rv_wchlink::WchLink::open(&entry.dev) {
-            Ok(l) => l,
-            Err(e) => return Err(SdiError::new(ErrorKind::DeviceOpenFailed, e.to_string())),
-        };
-        match link.probe_info() {
-            Ok(info) if matches!(info.variant, ch32rv_wchlink::Variant::LinkE) => {}
-            Ok(_) => {
-                return Err(SdiError {
-                    kind: ErrorKind::CapabilityUnsupported,
-                    msg: "SDI print forwarding is only available on a WCH-LinkE".to_owned(),
-                    hint: Some(
-                        "use --source dmdata (host-side DMI) which works on any probe including the CH549 Link",
-                    ),
-                });
-            }
-            Err(e) => return Err(SdiError::new(ErrorKind::DeviceOpenFailed, e.to_string())),
-        }
-        // en: Exactly wlink's `sdi-print enable` sequence (verified by usbmon): SetSpeed(0x01)
-        // -> AttachChip (learn the family; does not halt) -> SetSpeed(real family, so the LinkE
-        // forwards from the right DM data address) -> enable (`ee 00`). No detach, no halt.
-        // ja: wlink の `sdi-print enable` と同一手順(usbmon 確認): SetSpeed(0x01)→ AttachChip →
-        // SetSpeed(実 family)→ enable(`ee 00`)。detach/halt しない。
-        let _ = link.set_speed_default(speed);
-        let attach = match link.attach_chip() {
-            Ok(a) => a,
-            Err(e) => return Err(SdiError::new(ErrorKind::AttachFailed, e.to_string())),
-        };
-        if let Some(requested) = chip
-            && let Err(e) =
-                crate::session::check_chip(&ch32rv_target::Db::builtin(), requested, &attach)
-        {
-            let _ = link.detach_chip();
-            return Err(SdiError::new(ErrorKind::TargetAmbiguous, e.to_string()));
-        }
-        let _ = link.set_speed(attach.family_byte, speed);
-        let mut warnings = vec![attach_reclocks_warning(
-            "press the board's reset, or use `ch32rv run <elf> --no-flash --source dmdata|dmseq|rtt`",
-        )];
-        // CH32V103 / V205 / H417 with only core 0 running: the attach overwrote a GPR; restart the
-        // program before forwarding its output. Otherwise, on a CH32H417, the attach stopped the
-        // hart the sketch runs on (core 1 with the default build): resume what ran.
-        let ran = crate::session::harts_that_ran(&mut link, attach.family_byte);
-        if let Some(reg) =
-            crate::session::attach_corrupted_register_in(attach.family_byte, attach.chip_id, ran)
-        {
-            let _ = crate::cmd_flash::soft_reset_and_run_link(&mut link);
-            let _ = link.select_hart(0);
-            warnings.push(crate::session::attach_corrupts_register_warning(reg));
-        } else {
-            if crate::session::h417_both_cores_ran(attach.family_byte, ran) {
-                warnings.push(crate::session::h417_core0_a0_warning());
-            }
-            crate::session::resume_running_harts(&mut link, attach.family_byte);
-        }
-        settle_before_sdi_enable(&mut link);
-        if let Err(e) = link.set_sdi_print_enabled(true) {
-            return Err(SdiError::new(
-                ErrorKind::TransferFailed,
-                format!("enable SDI failed: {e}"),
-            ));
-        }
-        // link drops here, releasing the vendor interface (wlink exits at this point too).
-        warnings
-    };
-    // Give the LinkE a moment to start forwarding before the CDC is opened.
-    std::thread::sleep(Duration::from_millis(200));
-    Ok(warnings)
 }
 
 // ---- DMI backend (dmdata / rtt) ----
@@ -803,15 +484,6 @@ fn run_oep(cli: &Cli, args: &MonitorArgs, a: &crate::oep::OepAddr) -> ExitCode {
         Some(MonitorSource::FixtureUart) => StreamWanted::FixtureUart(args.baud),
         Some(MonitorSource::Rtt) => StreamWanted::Rtt,
         Some(MonitorSource::Auto) => unreachable!("auto runs in run_auto"),
-        Some(MonitorSource::SdiForward) => {
-            return fail(
-                cli,
-                CMD,
-                ErrorKind::CapabilityUnsupported,
-                "sdi-forward is a WCH-LinkE's own forwarding to its CDC port, not an OEP probe's",
-                Some("`--source sdi` reads the SDI mailbox"),
-            );
-        }
         Some(MonitorSource::Uart) => {
             return fail(
                 cli,
@@ -992,10 +664,14 @@ fn sdi_toggle(cli: &Cli, state: SwitchState) -> ExitCode {
             None,
         );
     }
-    // en: Off also empties the CDC buffer, where SDI output that nobody read waits to come out in
-    // place of the UART's bytes (see [`SdiForwarding`]).
-    // ja: off は CDC の buffer も空にする。誰も読まなかった SDI 出力が、UART の byte の代わりに
-    // 出てくるのを待っている([`SdiForwarding`])。
+    // en: Off also empties the CDC buffer. Left on with nobody reading the CDC, the LinkE keeps
+    // pulling the target's SDI output into the buffer its UART bridge sends from, and later sends
+    // that old output in place of the UART's bytes (a WCH-LinkE 2.22 + CH32V203, 2026-11-12: only
+    // a probe power cycle cleared it before this); a line-rate change ([`clear_linke_cdc`]) empties
+    // it.
+    // ja: off は CDC の buffer も空にする。CDC を誰も読まないまま転送を有効にしておくと、LinkE は
+    // target の SDI 出力を UART bridge の buffer に溜め続け、あとで UART の byte の代わりに送る
+    // (LinkE 2.22 + V203)。line rate の変更で消える。
     let cleared = if on {
         None
     } else {

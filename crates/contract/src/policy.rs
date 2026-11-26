@@ -96,9 +96,6 @@ policy_enum! {
         /// WCH's SDI_Printf mailbox, read by ch32rv over the Debug Module (a WCH-Link) or by an
         /// OEP probe's console.
         Sdi => "sdi",
-        /// A WCH-LinkE's own SDI print forwarding to its CDC port (it stops the CDC's UART bridge
-        /// while on).
-        SdiForward => "sdi-forward",
         Dmdata => "dmdata",
         Dmseq => "dmseq",
         Rtt => "rtt",

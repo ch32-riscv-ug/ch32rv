@@ -511,13 +511,12 @@ fn memit(out: &mut impl Write, v: &Value) {
 
 use std::net::{Shutdown, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
+use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ch32rv_contract::policy::MonitorSource;
-use ch32rv_usb::DeviceLock;
 use serialport::SerialPort;
 
 use crate::cmd_probe::Entry;
@@ -529,7 +528,7 @@ use crate::source::{self, DmiSource};
 /// `uart`, which is what the IDE would do anyway.
 /// ja: serial port の source。先頭(`uart` = port をそのまま)が既定。WCH probe の無い素の serial
 /// port は `uart` だけ。
-const SERIAL_SOURCES: [MonitorSource; 8] = [
+const SERIAL_SOURCES: [MonitorSource; 7] = [
     MonitorSource::Auto,
     MonitorSource::Uart,
     MonitorSource::Sdi,
@@ -537,7 +536,6 @@ const SERIAL_SOURCES: [MonitorSource; 8] = [
     MonitorSource::Dmseq,
     MonitorSource::Rtt,
     MonitorSource::FixtureUart,
-    MonitorSource::SdiForward,
 ];
 
 /// en: The sources an `oep://<probe>[/<port>]` port offers: the target's console (dmseq, the default,
@@ -561,14 +559,13 @@ const OEP_SOURCES: [MonitorSource; 6] = [
 /// serial の `uart` と同じに開く(attach しない、lock なし)。IDE が書き込みの `wchlink://` のまま
 /// モニターを開いても、target に触れずにスケッチの `Serial` が見える(attach はクロックを組み替え、
 /// CH32V205 の s0 を壊す)。
-const WCHLINK_SOURCES: [MonitorSource; 7] = [
+const WCHLINK_SOURCES: [MonitorSource; 6] = [
     MonitorSource::Auto,
     MonitorSource::Uart,
     MonitorSource::Dmdata,
     MonitorSource::Dmseq,
     MonitorSource::Sdi,
     MonitorSource::Rtt,
-    MonitorSource::SdiForward,
 ];
 
 /// The `chip` value that means "no board family given: detect".
@@ -999,12 +996,6 @@ enum Backend {
         port: Box<dyn SerialPort>,
         applied: Settings,
     },
-    Sdi {
-        rx: Receiver<std::io::Result<Vec<u8>>>,
-        /// Turns the forwarding off on CLOSE / switch / failure, before the lock goes.
-        _forwarding: Box<crate::cmd_monitor::SdiForwarding>,
-        _lock: DeviceLock,
-    },
     Dmi {
         src: Box<DmiSource>,
         session: Box<Session>,
@@ -1032,16 +1023,6 @@ enum Leave {
     Switch,
     /// The session is lost; the string is the reason for the user.
     Failed(String),
-}
-
-fn lock_for(entry: &Entry, env: &Env) -> Result<DeviceLock, String> {
-    let key = entry
-        .dev
-        .serial()
-        .map(str::to_owned)
-        .unwrap_or_else(|| entry.dev.topology());
-    DeviceLock::acquire(&key, env.lock_timeout)
-        .map_err(|e| format!("{e} (another ch32rv is using this probe)"))
 }
 
 impl Backend {
@@ -1077,12 +1058,6 @@ impl Backend {
                 MonitorSource::Dmseq => StreamWanted::Console(Mechanism::Dmseq),
                 MonitorSource::FixtureUart => StreamWanted::FixtureUart(s.baud),
                 MonitorSource::Rtt => StreamWanted::Rtt,
-                MonitorSource::SdiForward => {
-                    return Err(
-                        "sdi-forward is a WCH-LinkE's own forwarding (this port is not one)"
-                            .to_owned(),
-                    );
-                }
                 MonitorSource::Auto => unreachable!("auto opens in open_auto"),
                 MonitorSource::Uart => {
                     return Err(
@@ -1126,27 +1101,6 @@ impl Backend {
                 let _ = port.write_data_terminal_ready(s.dtr);
                 let _ = port.write_request_to_send(s.rts);
                 Ok(Backend::Uart { port, applied: s })
-            }
-            MonitorSource::SdiForward => {
-                let entry = r
-                    .entry
-                    .as_ref()
-                    .ok_or("sdi-forward needs a WCH-LinkE (this serial port is not one)")?;
-                let path = r
-                    .port
-                    .as_deref()
-                    .ok_or("this probe has no serial port for sdi-forward")?;
-                let lock = lock_for(entry, env)?;
-                let (speed, _) = crate::parse::speed(&s.speed)?;
-                crate::cmd_monitor::enable_sdi(entry, speed, s.chip.as_deref())
-                    .map_err(|e| e.msg)?;
-                let mut forwarding = crate::cmd_monitor::SdiForwarding::new(entry);
-                let rx = raw_reader(path, &mut forwarding)?;
-                Ok(Backend::Sdi {
-                    rx,
-                    _forwarding: Box::new(forwarding),
-                    _lock: lock,
-                })
             }
             MonitorSource::Dmdata
             | MonitorSource::Dmseq
@@ -1269,21 +1223,6 @@ impl Backend {
                         Err(e) => Err(format!("serial port read failed: {e}")),
                     }
                 }
-                Backend::Sdi { rx, .. } => {
-                    if now.source != MonitorSource::SdiForward {
-                        return Leave::Switch;
-                    }
-                    // SDI carries no input.
-                    pending.clear();
-                    match rx.recv_timeout(TICK) {
-                        Ok(Ok(d)) if !d.is_empty() => Ok(d),
-                        Err(RecvTimeoutError::Timeout) => Ok(Vec::new()),
-                        Ok(Err(e)) => Err(format!("serial port read failed: {e}")),
-                        Ok(Ok(_)) | Err(RecvTimeoutError::Disconnected) => {
-                            Err("the serial port closed (probe disconnected?)".to_owned())
-                        }
-                    }
-                }
                 Backend::Auto { auto, applied } => {
                     if now.source != MonitorSource::Auto {
                         return Leave::Switch;
@@ -1380,36 +1319,6 @@ impl Backend {
             }
         }
     }
-}
-
-/// en: Read `path` as a plain blocking file, exactly like `cat`, on a thread of its own: opening
-/// it through the serialport crate asserts DTR, and O_NONBLOCK too makes the WCH-LinkE stop
-/// forwarding SDI after one line (measured, see `cmd_monitor::stream_port`). On CLOSE the thread
-/// stays blocked in its read and ends at the next chunk or with the process.
-/// ja: `path` を cat と同じ素のブロッキング file として別スレッドで読む(serialport は DTR を立て、
-/// O_NONBLOCK も LinkE の SDI 転送を 1 行で止める実測)。CLOSE 後のスレッドは read で待ったまま、
-/// 次の chunk かプロセスの終わりで消える。
-fn raw_reader(
-    path: &str,
-    forwarding: &mut crate::cmd_monitor::SdiForwarding,
-) -> Result<Receiver<std::io::Result<Vec<u8>>>, String> {
-    use std::io::Read;
-    let mut file = crate::cmd_monitor::open_raw(path).map_err(|e| format!("open {path}: {e}"))?;
-    if let Ok(ctl) = file.try_clone() {
-        forwarding.watch_cdc(ctl);
-    }
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let mut chunk = [0u8; 512];
-        loop {
-            let r = file.read(&mut chunk).map(|n| chunk[..n].to_vec());
-            let last = !matches!(&r, Ok(v) if !v.is_empty());
-            if tx.send(r).is_err() || last {
-                break;
-            }
-        }
-    });
-    Ok(rx)
 }
 
 /// en: The session thread: resolve `address`, open the selected source, connect to the IDE and
@@ -1683,15 +1592,7 @@ mod tests {
         assert_eq!(s.source, MonitorSource::Auto);
         assert_eq!(
             s.describe("wchlink")["configuration_parameters"]["source"]["value"],
-            json!([
-                "auto",
-                "uart",
-                "dmdata",
-                "dmseq",
-                "sdi",
-                "rtt",
-                "sdi-forward"
-            ])
+            json!(["auto", "uart", "dmdata", "dmseq", "sdi", "rtt"])
         );
         assert_eq!(
             s.describe("wchlink")["configuration_parameters"]["speed"]["value"],
