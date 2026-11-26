@@ -160,6 +160,7 @@ fn open_usb(
         })
     };
     let mut wait = Duration::from_secs(args.wait);
+    let mut waiting = waiting;
     if waiting {
         wait = wait.max(BOOT_WAIT);
     }
@@ -168,13 +169,22 @@ fn open_usb(
         let via = match entry {
             IspEntry::Probe => Via::Probe,
             _ => match enter_via_app(cli, cmd, args, entry, app)? {
-                Some(at) => {
+                AppEntry::Sent(at) => {
                     // The bootloader comes up where the application was (same USB port).
                     want.get_or_insert(at);
                     Via::App
                 }
-                None if entry == IspEntry::Auto && cli.probe.is_some() => Via::Probe,
-                None => Via::Nothing,
+                AppEntry::Unanswered(_) if cli.probe.is_some() => Via::Probe,
+                // The user brings it up with BOOT: wait as the IDE's waiting port does (the BOOT
+                // key with a reset or a replug brings it up on the same USB port).
+                AppEntry::Unanswered(at) => {
+                    want.get_or_insert(at);
+                    waiting = true;
+                    wait = wait.max(BOOT_WAIT);
+                    Via::Nothing
+                }
+                AppEntry::Nothing if entry == IspEntry::Auto && cli.probe.is_some() => Via::Probe,
+                AppEntry::Nothing => Via::Nothing,
             },
         };
         if via == Via::Probe {
@@ -316,7 +326,10 @@ fn open_uart(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
             wait = wait.max(ENTER_WAIT);
         }
         _ => {
-            let via_app = enter_via_app(cli, cmd, args, entry, None)?.is_some();
+            let via_app = matches!(
+                enter_via_app(cli, cmd, args, entry, None)?,
+                AppEntry::Sent(_)
+            );
             if !via_app && entry == IspEntry::Auto && cli.probe.is_some() {
                 enter_via_probe(cli, cmd)?;
             }
@@ -1317,13 +1330,25 @@ fn find_usb_device(sel: &str) -> Result<AppDevice, Miss> {
 /// port への 1200 bps touch(`auto` はこの順)。app の USB の位置(bootloader が現れる所)を返す。
 /// touch は `--device` で名指しされた device にだけ送る(他の板の serial を reset しない)。
 /// `resolved` is the application `--device` already named, if the caller looked it up.
+/// What asking the application to reboot into its bootloader came to.
+enum AppEntry {
+    /// Asked; the bootloader comes up at this position.
+    Sent(String),
+    /// Nothing to ask (`auto` found no application, nor a way in).
+    Nothing,
+    /// en: The application did not take the request (its serial port does not open: a sketch that
+    /// stopped servicing USB); the user is told to bring the bootloader up with BOOT, at this
+    /// position. ja: アプリが依頼を受けなかった。BOOT で入れるよう案内し、この位置で待つ。
+    Unanswered(String),
+}
+
 fn enter_via_app(
     cli: &Cli,
     cmd: &str,
     args: &IspArgs,
     entry: IspEntry,
     resolved: Option<AppDevice>,
-) -> Result<Option<String>, ExitCode> {
+) -> Result<AppEntry, ExitCode> {
     // en: The IDE's port may be the bootloader itself (discovery's `ch32rv-isp://`): nothing to
     // ask, just use the ISP device there. ja: IDE の port が bootloader そのものなら頼む相手は無い。
     if let Some(t) = args
@@ -1331,7 +1356,7 @@ fn enter_via_app(
         .as_deref()
         .and_then(|d| d.strip_prefix(ISP_SCHEME))
     {
-        return Ok(Some(t.to_owned()));
+        return Ok(AppEntry::Sent(t.to_owned()));
     }
     let app = match (resolved, args.device.as_deref()) {
         (Some(a), _) => Some(a),
@@ -1415,7 +1440,7 @@ fn enter_via_app(
         (None, None) => None,
     };
     let Some(app) = app else {
-        return Ok(None);
+        return Ok(AppEntry::Nothing);
     };
     let at = app.dev.topology();
     let dfu = app.dev.dfu_runtime_interface();
@@ -1460,7 +1485,13 @@ fn enter_via_app(
                         "DFU_DETACH not sent ({e}); touching the serial port at 1200 bps instead"
                     );
                 }
-                return touch_into_bootloader(cli, cmd, app.port.as_deref().unwrap_or(""), &at);
+                return touch_into_bootloader(
+                    cli,
+                    cmd,
+                    entry,
+                    app.port.as_deref().unwrap_or(""),
+                    &at,
+                );
             }
             Err(e) => {
                 crate::warn(
@@ -1472,11 +1503,11 @@ fn enter_via_app(
         if !cli.json {
             println!("sent DFU_DETACH to topology:{at} (interface {intf})");
         }
-        return Ok(Some(at));
+        return Ok(AppEntry::Sent(at));
     }
     let Some(port) = app.port else {
         return match entry {
-            IspEntry::Auto => Ok(None),
+            IspEntry::Auto => Ok(AppEntry::Nothing),
             _ => Err(fail(
                 cli,
                 cmd,
@@ -1486,29 +1517,45 @@ fn enter_via_app(
             )),
         };
     };
-    touch_into_bootloader(cli, cmd, &port, &at)
+    touch_into_bootloader(cli, cmd, entry, &port, &at)
 }
 
 /// The 1200 bps touch on the application's `port`, reported; `at` is where the bootloader comes up.
+/// en: With `auto`, a port that does not open (the application stopped servicing USB: Windows
+/// answered "the device attached to the system is not functioning", measured) is not the end:
+/// the user brings the bootloader up with BOOT instead, and it is waited for.
+/// ja: `auto` では、port が開かない(アプリが USB を止めた。Windows で実測)ときも終わりにせず、
+/// BOOT で入れてもらい、それを待つ。
 fn touch_into_bootloader(
     cli: &Cli,
     cmd: &str,
+    entry: IspEntry,
     port: &str,
     at: &str,
-) -> Result<Option<String>, ExitCode> {
-    touch1200(port).map_err(|e| {
-        fail(
-            cli,
-            cmd,
-            ErrorKind::DeviceOpenFailed,
-            format!("1200 bps touch on {port}: {e}"),
-            None,
-        )
-    })?;
+) -> Result<AppEntry, ExitCode> {
+    match touch1200(port) {
+        Ok(()) => {}
+        Err(e) if entry == IspEntry::Auto => {
+            // The user must act: stderr, which an IDE always shows.
+            eprintln!(
+                "the application did not take the request to reboot (1200 bps touch on {port}: {e})"
+            );
+            return Ok(AppEntry::Unanswered(at.to_owned()));
+        }
+        Err(e) => {
+            return Err(fail(
+                cli,
+                cmd,
+                ErrorKind::DeviceOpenFailed,
+                format!("1200 bps touch on {port}: {e}"),
+                None,
+            ));
+        }
+    }
     if !cli.json {
         println!("1200 bps touch on {port} (topology:{at})");
     }
-    Ok(Some(at.to_owned()))
+    Ok(AppEntry::Sent(at.to_owned()))
 }
 
 /// The `wDetachTimeOut` sent with DFU_DETACH (ms).
