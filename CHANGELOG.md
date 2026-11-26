@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.6 - 2026-11-26
+
 - (EN) Fix (Windows): a factory ISP bootloader (1a86:55e0) with WCH's CH372 / CH375 driver bound (`CH375_A64.SYS`, as WCHISPTool installs it) still failed `isp` with "incompatible driver" in 0.35.5: that driver registers its own interface GUID, `{5E7F6BDF-1CE5-4D78-BBCF-D20C44329F7D}`, not the WCH-Link driver's. It is now looked for too.
 - (JA) 修正(Windows): WCH の CH372 / CH375 ドライバ(WCHISPTool が入れる `CH375_A64.SYS`)の付いた工場の ISP の bootloader(1a86:55e0)は、0.35.5 でも `isp` が「incompatible driver」で失敗していた。このドライバは WCH-Link のドライバとは別の interface GUID(`{5E7F6BDF-1CE5-4D78-BBCF-D20C44329F7D}`)を登録する。それでも探すようにした。
 ## 0.35.5 - 2026-11-26
