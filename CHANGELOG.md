@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) `flash --probe <a write target>` - `ch32rv-app://`, `ch32rv-isp://`, `ch32rv-bootloader://WAIT_FOR_BOOT`, `ch32rv-hid://`, as the IDE passes the port the user picked - writes through it, as `isp flash --entry auto --device <address>` / `boot hid flash --device <address>` do. Before, it was refused (exit 2, "names a write target, not a debug probe"). Other commands still refuse such an address as `--probe`.
+- (JA) `flash --probe <書き込み先>`(`ch32rv-app://`・`ch32rv-isp://`・`ch32rv-bootloader://WAIT_FOR_BOOT`・`ch32rv-hid://`。IDE は選ばれた port をそのまま渡す)は、それを通して書く(`isp flash --entry auto --device <住所>` / `boot hid flash --device <住所>` と同じ)。以前は「debug probe ではない」と exit 2 で断っていた。ほかのコマンドは今までどおり断る。
 ## 0.35.9 - 2026-11-26
 
 - (EN) Fix: `flash --probe /dev/serial/by-id/...` (a symbolic link to a CH32RV application's serial port) was taken for an OEP probe's port, whose broker never started; the link is now resolved, as everywhere else ports are compared. The plain tty, which arduino-cli passes, worked already.

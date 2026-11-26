@@ -1854,9 +1854,18 @@ pub(crate) fn flash_through_app(cli: &Cli, f: &crate::args::FlashArgs, port: &st
     use crate::args::{IspReset, IspTransport, IspVerify};
     use ch32rv_contract::policy::{ResetPolicy, VerifyMode};
     if !cli.json {
-        println!(
-            "{port} is a CH32RV application's serial port: writing through its USB bootloader (isp flash --entry auto)"
-        );
+        if [APP_SCHEME, ISP_SCHEME, BOOTLOADER_SCHEME]
+            .iter()
+            .any(|s| port.starts_with(s))
+        {
+            println!(
+                "{port} is a USB bootloader route, not a debug probe: writing through it (isp flash --entry auto --device {port})"
+            );
+        } else {
+            println!(
+                "{port} is a CH32RV application's serial port: writing through its USB bootloader (isp flash --entry auto)"
+            );
+        }
     }
     let args = IspArgs {
         cmd: crate::args::IspCmd::Flash {

@@ -429,6 +429,28 @@ pub(crate) fn refuse_flags(cli: &Cli, path: &str, flags: &[String]) -> Option<Ex
 }
 
 pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
+    // en: The IDE passes the port the user picked as `--probe` as it is; when that is a write target
+    // (a CH32RV application, its USB bootloader, the waiting port, an HID bootloader), write
+    // through it as `isp flash` / `boot hid flash` would, rather than refuse it as no debug probe.
+    // ja: IDE は選ばれた port をそのまま `--probe` に渡す。書き込み先(CH32RV のアプリ、その USB の
+    // bootloader、待つポート、HID の bootloader)なら、断らずに `isp flash` / `boot hid flash` と同じに書く。
+    if let Some(addr) = cli.probe.as_deref() {
+        use crate::cmd_isp::{APP_SCHEME, BOOTLOADER_SCHEME, ISP_SCHEME};
+        if [APP_SCHEME, ISP_SCHEME, BOOTLOADER_SCHEME]
+            .iter()
+            .any(|s| addr.starts_with(s))
+        {
+            return crate::cmd_isp::flash_through_app(cli, args, addr);
+        }
+        if addr.starts_with(crate::cmd_boot::HID_SCHEME) {
+            if !cli.json {
+                println!(
+                    "{addr} is an HID bootloader, not a debug probe: writing through it (boot hid flash --device {addr})"
+                );
+            }
+            return crate::cmd_boot::hid_flash(cli, &args.file, None, 30, Some(addr), args.erase);
+        }
+    }
     // en: An OEP probe's path is known from the address alone: refuse what it cannot do before
     // connecting (`--repeat` too, whose wait for the next target only looks through a WCH-Link).
     // ja: OEP の経路はアドレスだけで分かるので、つなぐ前に断る(`--repeat` も。次の target を待つ
