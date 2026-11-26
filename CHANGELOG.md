@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) `isp` (and `flash` through an application's serial port) says its progress on stdout - the ISP device found, the reset over the debug wire, DFU_DETACH sent, the 1200 bps touch, the port taken as an application's - instead of stderr, which an IDE shows in red: a successful upload looked like an error. A DFU run-time interface that cannot be opened when the 1200 bps touch then gets the chip into its bootloader (every time on Windows) is no longer a warning; `--verbose` says it. What the user must do (put the chip in its bootloader) stays on stderr, which an IDE always shows.
+- (JA) `isp`(とアプリの serial port 経由の `flash`)の経過の行(ISP device を見つけた、debug 線で reset した、DFU_DETACH を送った、1200 bps のタッチ、port をアプリのものとした)を stderr ではなく stdout に出す。IDE は stderr を赤で出すので、成功した書き込みがエラーのように見えた。DFU run-time interface が開けず、続く 1200 bps のタッチで bootloader に入れたとき(Windows では毎回)は warning にせず、`--verbose` のときだけ言う。利用者がすべきこと(bootloader に入れる)は、IDE がいつも見せる stderr のまま。
 ## 0.35.7 - 2026-11-26
 
 - (EN) Fix: `flash --probe <serial port>` where the port is a running CH32RV application's own (its CDC, as the IDE passes the port the user picked) took it for an OEP probe and timed out ("COM6: transport: semaphore timeout" on Windows). Such a port is now written through the factory ISP bootloader the application reboots into, as `isp flash --entry auto --device <port>` does. Not yet run on hardware (no bench application has a CDC).

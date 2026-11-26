@@ -271,8 +271,8 @@ fn open_usb(
         countdown.tick();
         std::thread::sleep(Duration::from_millis(200));
     };
-    if told {
-        eprintln!("ISP device found at topology:{}", dev.topology());
+    if told && !cli.json {
+        println!("ISP device found at topology:{}", dev.topology());
     }
     let usb = dev.usb_id();
     let topology = dev.topology();
@@ -1009,7 +1009,7 @@ fn enter_via_probe(cli: &Cli, cmd: &str) -> Result<(), ExitCode> {
         return Err(code);
     }
     if !cli.json {
-        eprintln!("reset into the bootloader over the debug wire");
+        println!("reset into the bootloader over the debug wire");
     }
     Ok(())
 }
@@ -1081,7 +1081,7 @@ fn enter_via_wchlink(cli: &Cli, cmd: &str) -> Result<(), ExitCode> {
         )
     })?;
     if !cli.json {
-        eprintln!("reset into the bootloader over the debug wire");
+        println!("reset into the bootloader over the debug wire");
     }
     Ok(())
 }
@@ -1451,10 +1451,15 @@ fn enter_via_app(
                 | ch32rv_usb::UsbError::AccessDenied(_)
                 | ch32rv_usb::UsbError::Busy(_)),
             ) if entry == IspEntry::Auto && app.port.is_some() => {
-                crate::warn(
-                    "dfu-detach",
-                    format!("{e} (touching the serial port at 1200 bps instead)"),
-                );
+                // en: Expected on Windows, and the touch that follows gets it there: not a warning
+                // (an IDE shows stderr in red), a progress line under --verbose.
+                // ja: Windows では毎回で、続くタッチで入れるので warning にしない(IDE は stderr を
+                // 赤で出す)。--verbose のときだけ経過として出す。
+                if cli.verbose > 0 && !cli.json {
+                    println!(
+                        "DFU_DETACH not sent ({e}); touching the serial port at 1200 bps instead"
+                    );
+                }
                 return touch_into_bootloader(cli, cmd, app.port.as_deref().unwrap_or(""), &at);
             }
             Err(e) => {
@@ -1465,7 +1470,7 @@ fn enter_via_app(
             }
         }
         if !cli.json {
-            eprintln!("sent DFU_DETACH to topology:{at} (interface {intf})");
+            println!("sent DFU_DETACH to topology:{at} (interface {intf})");
         }
         return Ok(Some(at));
     }
@@ -1501,7 +1506,7 @@ fn touch_into_bootloader(
         )
     })?;
     if !cli.json {
-        eprintln!("1200 bps touch on {port} (topology:{at})");
+        println!("1200 bps touch on {port} (topology:{at})");
     }
     Ok(Some(at.to_owned()))
 }
@@ -1798,7 +1803,7 @@ pub(crate) fn flash_through_app(cli: &Cli, f: &crate::args::FlashArgs, port: &st
     use crate::args::{IspReset, IspTransport, IspVerify};
     use ch32rv_contract::policy::{ResetPolicy, VerifyMode};
     if !cli.json {
-        eprintln!(
+        println!(
             "{port} is a CH32RV application's serial port: writing through its USB bootloader (isp flash --entry auto)"
         );
     }
