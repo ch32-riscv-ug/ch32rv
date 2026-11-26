@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) Fix (Windows): a factory ISP bootloader (1a86:55e0) with WCH's CH372 / CH375 driver bound (`CH375_A64.SYS`, as WCHISPTool installs it) still failed `isp` with "incompatible driver" in 0.35.5: that driver registers its own interface GUID, `{5E7F6BDF-1CE5-4D78-BBCF-D20C44329F7D}`, not the WCH-Link driver's. It is now looked for too.
+- (JA) 修正(Windows): WCH の CH372 / CH375 ドライバ(WCHISPTool が入れる `CH375_A64.SYS`)の付いた工場の ISP の bootloader(1a86:55e0)は、0.35.5 でも `isp` が「incompatible driver」で失敗していた。このドライバは WCH-Link のドライバとは別の interface GUID(`{5E7F6BDF-1CE5-4D78-BBCF-D20C44329F7D}`)を登録する。それでも探すようにした。
 ## 0.35.5 - 2026-11-26
 
 - (EN) Fix: `arduino discovery`'s sync mode (START_SYNC, what arduino-cli and IDE 2 use) reported the ports once and never again, so a device that appeared afterwards - an ISP or HID bootloader brought up with BOOT, a probe plugged in - never showed in the IDE (it does not LIST again in sync mode). Now USB is enumerated again every second and the ports that came and went are sent as `add` / `remove`. A USB OEP probe's labels are read once when it appears; network probes are browsed every 15 s. Measured: a CH32X035 put in its ISP bootloader after the start was added within 3 s and removed when the bootloader left.

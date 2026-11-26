@@ -467,12 +467,15 @@ impl UsbDeviceInfo {
     /// interface 0 のみ対象。endpoint は claim 不要で転送ごとに指定する。
     #[cfg(windows)]
     fn open_ch375(&self, interface: u8, ep_out: u8, ep_in: u8) -> Option<Ch375Backend> {
-        use ch32rv_usb_wch_win::{GUID_CH375, list_interfaces};
+        use ch32rv_usb_wch_win::{GUID_CH375, GUID_CH375_ISP, list_interfaces};
 
         if interface != 0 {
             return None;
         }
-        let candidates = list_interfaces(&GUID_CH375).ok()?;
+        // The WCH-Link driver's GUID, and the one WCH's CH372 / CH375 driver registers for an ISP
+        // bootloader (it registers no other).
+        let mut candidates = list_interfaces(&GUID_CH375).unwrap_or_default();
+        candidates.extend(list_interfaces(&GUID_CH375_ISP).unwrap_or_default());
         let open = |c: &ch32rv_usb_wch_win::DeviceInterface| {
             c.open().ok().map(|dev| Ch375Backend {
                 dev,

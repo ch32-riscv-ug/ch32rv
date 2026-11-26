@@ -31,6 +31,7 @@ ch32rv は x86_64 で配るので、DLL を使わず IOCTL を直接出す(minic
 ### 3.1 列挙と open
 
 - device interface GUID: `{F8D5EDCA-B647-4E9C-9BD3-A5BD2328D55C}`(`GUID_CH375`)。WCH の CH375 系ドライバが登録する interface で、接続中の WCH-Link の MI_00 ごとに 1 つある。
+- 工場の ISP の bootloader(`1a86:55e0`)に WCHISPTool が入れる CH372 / CH375 ドライバ(`CH375_A64.SYS` 3.5.2025.8)は、`GUID_CH375` ではなく `{5E7F6BDF-1CE5-4D78-BBCF-D20C44329F7D}`(`GUID_CH375_ISP`)を登録する(Windows のレジストリの DeviceClasses で確認)。ch32rv は両方を列挙する。bootloader は serial を持たないので、nusb の列挙の Windows の instance ID と、interface の(composite でなければ自分の、composite なら親の)instance ID で突き合わせる。
 - `wchlinkwdm.inf` はレジストリ(`DeviceInterfaceGUIDs`)経由でもう 1 つの GUID `{CDB3B5AD-293B-4663-AA36-1AAE46463776}`(`GUID_WCHLINK_INF`)も登録する。ch32rv が使うのは `GUID_CH375` で、もう一方は定数として置いてあるだけ。
 - 列挙は cfgmgr32 の `CM_Get_Device_Interface_List_SizeW` → `CM_Get_Device_Interface_ListW`(`CM_GET_DEVICE_INTERFACE_LIST_PRESENT`。抜いた device は返らない)。サイズ取得と取得の間に hotplug があると `CR_BUFFER_SMALL` になるので、数回やり直す。
 - open は `CreateFileW(path, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)`。handle は drop で `CloseHandle` する。管理者権限は要らない。

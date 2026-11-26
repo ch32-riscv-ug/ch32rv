@@ -56,6 +56,19 @@ pub const GUID_WCHLINK_INF: InterfaceGuid = InterfaceGuid {
     data4: [0xAA, 0x36, 0x1A, 0xAE, 0x46, 0x46, 0x37, 0x76],
 };
 
+/// en: `{5E7F6BDF-1CE5-4D78-BBCF-D20C44329F7D}` - the interface GUID WCH's CH372 / CH375 driver
+/// (`CH375_A64.SYS` 3.5.2025.8, as WCHISPTool installs it) registers for a factory ISP bootloader
+/// (`1a86:55e0`), read from the registry's DeviceClasses on a Windows host. It does not register
+/// [`GUID_CH375`].
+/// ja: WCH の CH372 / CH375 ドライバ(WCHISPTool が入れる `CH375_A64.SYS`)が工場の ISP の bootloader
+/// に登録する interface GUID(Windows のレジストリの DeviceClasses で確認)。[`GUID_CH375`] は登録しない。
+pub const GUID_CH375_ISP: InterfaceGuid = InterfaceGuid {
+    data1: 0x5E7F_6BDF,
+    data2: 0x1CE5,
+    data3: 0x4D78,
+    data4: [0xBB, 0xCF, 0xD2, 0x0C, 0x44, 0x32, 0x9F, 0x7D],
+};
+
 /// Errors from enumeration, open, and transfers.
 #[derive(Debug, Error)]
 #[non_exhaustive]
