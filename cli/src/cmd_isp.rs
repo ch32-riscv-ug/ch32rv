@@ -1832,13 +1832,17 @@ pub(crate) fn find_app(id: &str) -> Result<UsbDeviceInfo, (ErrorKind, String)> {
 /// en: Whether `port` is a serial port of a running CH32RV application (not an OEP probe's).
 /// ja: `port` が走っている CH32RV のアプリの serial port か(OEP の probe のものではない)。
 pub(crate) fn is_app_port(port: &str) -> bool {
+    // en: A symbolic link (`/dev/serial/by-id/...`, a udev name) is resolved as the selector does:
+    // compared as written it was taken for an OEP probe's port and its broker never started.
+    // ja: シンボリックリンク(`/dev/serial/by-id/...` など)は selector と同じく解決する。
+    let want = ch32rv_usb::selector::normalize_port(port);
     ch32rv_usb::enumerate().is_ok_and(|devs| {
         devs.iter().any(|d| {
             !crate::oep::is_oep_device(d)
                 && is_ch32rv_app(d)
                 && d.serial_ports()
                     .iter()
-                    .any(|p| p.eq_ignore_ascii_case(port))
+                    .any(|p| ch32rv_usb::selector::normalize_port(p) == want)
         })
     })
 }

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) Fix: `flash --probe /dev/serial/by-id/...` (a symbolic link to a CH32RV application's serial port) was taken for an OEP probe's port, whose broker never started; the link is now resolved, as everywhere else ports are compared. The plain tty, which arduino-cli passes, worked already.
+- (JA) 修正: `flash --probe /dev/serial/by-id/...`(CH32RV のアプリの serial port へのシンボリックリンク)が OEP の probe の port とみなされ、ブローカーが起動せず失敗していた。他で port を比べる所と同じくリンクを解決する。arduino-cli が渡す素の tty では前から通っていた。
 ## 0.35.8 - 2026-11-26
 
 - (EN) `isp flash --entry auto` through a running application whose serial port does not open (a sketch that stopped servicing USB; Windows: "the device attached to the system is not functioning") no longer fails at the 1200 bps touch: it says the application did not take the request, tells the user to bring the bootloader up with BOOT, and waits for it at the same USB position for at least 60 s, as the IDE's waiting port does.
