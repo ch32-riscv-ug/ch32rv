@@ -134,7 +134,7 @@ fn arm_restart_watch(session: &mut Session) -> bool {
 /// en: How often a WCH-Link target's DMSTATUS is read for `anyhavereset`: a sketch that restarts
 /// itself (and may come up with another console) is seen within this.
 /// ja: WCH-Link の target の DMSTATUS の `anyhavereset` を見る間隔(sketch の再起動に気づく)。
-const RESET_CHECK: Duration = Duration::from_millis(200);
+const RESET_CHECK: Duration = Duration::from_millis(50);
 /// DMSTATUS `anyhavereset`.
 const ANYHAVERESET: u32 = 1 << 18;
 /// en: How long an OEP console that was decided may stay silent before the mechanisms are tried
@@ -174,6 +174,9 @@ pub(crate) struct Auto {
     said: String,
     /// Lines for the user, given out with the next poll.
     notes: Vec<u8>,
+    /// The path that gave out the last bytes, and whether they ended a line.
+    out_path: Option<usize>,
+    at_line_start: bool,
     /// Each path's output, merged a line at a time (uart, mailbox, rtt).
     lines: [Lines; 3],
     pub(crate) warnings: Vec<Warning>,
@@ -218,6 +221,12 @@ impl Lines {
             self.since.get_or_insert_with(Instant::now);
             self.grew = Some(Instant::now());
         }
+    }
+
+    /// Move the held line's clocks forward by `d` (time in which it could not grow).
+    fn postpone(&mut self, d: Duration) {
+        self.since = self.since.map(|t| t + d);
+        self.grew = self.grew.map(|t| t + d);
     }
 
     fn flush_old(&mut self, out: &mut Vec<u8>) {
@@ -363,6 +372,8 @@ impl Auto {
             said: String::new(),
             notes: Vec::new(),
             lines: Default::default(),
+            out_path: None,
+            at_line_start: true,
             warnings: Vec::new(),
         }
     }
@@ -466,6 +477,11 @@ impl Auto {
     /// ja: 全経路を 1 周: 溜まった入力を送り、来たものを読む。返すのは target の出力と状態の行。
     pub(crate) fn poll(&mut self) -> Result<Vec<u8>, String> {
         let mut out = std::mem::take(&mut self.notes);
+        if !out.is_empty() {
+            // A note ends its own line.
+            self.at_line_start = true;
+            self.out_path = None;
+        }
         let mut from_uart = Vec::new();
         // The UART group.
         if let Some(p) = self.uart.as_mut() {
@@ -485,11 +501,23 @@ impl Auto {
                 Err(e) => return Err(format!("serial port read failed: {e}")),
             }
         }
+        let round = Instant::now();
         let got = match &mut self.kind {
             Kind::Uart => Got::default(),
             Kind::Wch(w) => w.poll(&mut self.q_mail, &mut self.q_rtt)?,
             Kind::Oep(o) => o.poll(&mut self.q_uart, &mut self.q_mail, &mut self.q_rtt)?,
         };
+        // en: A long round (an RTT scan halts the hart for hundreds of ms) is time in which no
+        // path could grow its line: it does not count toward a held line's wait (measured: a
+        // DMDATA and an SDI line were cut by a UART one right after a scan on a CH32V307).
+        // ja: 長い 1 周(RTT の走査は hart を数百 ms 止める)の間は、どの経路も行を伸ばせない。その分は
+        // 持っている行の待ちに数えない(V307 で走査の直後に DMDATA と SDI の行が UART の行に割られた)。
+        let took = round.elapsed();
+        if took >= Duration::from_millis(20) {
+            for l in &mut self.lines {
+                l.postpone(took);
+            }
+        }
         if got.restarted {
             self.restarted();
         }
@@ -505,7 +533,9 @@ impl Auto {
             } else {
                 &bytes
             };
-            self.lines[path as usize].push(merged, &mut out);
+            let mut whole = Vec::new();
+            self.lines[path as usize].push(merged, &mut whole);
+            self.emit(path as usize, &whole, &mut out);
             if !merged.is_empty() {
                 // sdi carries nothing back: its output leaves the UART the way back.
                 self.last = Some(if path == Path::Mail && got.mail_is_sdi {
@@ -528,12 +558,33 @@ impl Auto {
         for (code, msg) in got.notices {
             self.notes.extend(note(&format!("{code}: {msg}")));
         }
-        for l in &mut self.lines {
-            l.flush_old(&mut out);
+        for i in 0..self.lines.len() {
+            let mut part = Vec::new();
+            self.lines[i].flush_old(&mut part);
+            self.emit(i, &part, &mut out);
         }
         self.say();
-        out.extend(std::mem::take(&mut self.notes));
+        if !self.notes.is_empty() {
+            out.append(&mut self.notes);
+            self.at_line_start = true;
+            self.out_path = None;
+        }
         Ok(out)
+    }
+
+    /// en: Give out a path's bytes; when the last bytes out were another path's unfinished line
+    /// (held past its wait), start a new line first so the two do not share one.
+    /// ja: 経路の出力を出す。直前に別の経路の途中の行を出していたら、先に改行する。
+    fn emit(&mut self, path: usize, data: &[u8], out: &mut Vec<u8>) {
+        if data.is_empty() {
+            return;
+        }
+        if !self.at_line_start && self.out_path != Some(path) {
+            out.extend_from_slice(b"\r\n");
+        }
+        out.extend_from_slice(data);
+        self.out_path = Some(path);
+        self.at_line_start = data.ends_with(b"\n");
     }
 
     fn has_uart(&self) -> bool {
