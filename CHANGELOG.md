@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.5 - 2026-11-26
+
 - (EN) Fix: `arduino discovery`'s sync mode (START_SYNC, what arduino-cli and IDE 2 use) reported the ports once and never again, so a device that appeared afterwards - an ISP or HID bootloader brought up with BOOT, a probe plugged in - never showed in the IDE (it does not LIST again in sync mode). Now USB is enumerated again every second and the ports that came and went are sent as `add` / `remove`. A USB OEP probe's labels are read once when it appears; network probes are browsed every 15 s. Measured: a CH32X035 put in its ISP bootloader after the start was added within 3 s and removed when the bootloader left.
 - (JA) 修正: `arduino discovery` の sync mode(START_SYNC。arduino-cli と IDE 2 が使う)は、ポートを 1 回知らせるだけで、その後は知らせなかった。そのため、開始の後に現れた device(BOOT で出した ISP / HID の bootloader、挿した probe)が IDE に出なかった(sync mode では LIST し直さない)。今は 1 秒ごとに USB を列挙し直し、来たポートと消えたポートを `add` / `remove` で知らせる。USB の OEP の probe のラベルは現れたときに 1 回読み、ネットワークの probe は 15 秒ごとに探す。開始の後に ISP の bootloader に入れた CH32X035 が 3 秒以内に `add` され、bootloader が抜けると `remove` された。
 - (EN) Fix (Windows): `isp` could not open a factory ISP bootloader (1a86:55e0) with WCH's driver bound ("incompatible driver is installed for this device"): it has no serial number, which the WCH-driver path matched by. It is now found by its Windows instance ID. The open error's hint names the driver on Windows (WinUSB or WCH's), not the udev rule. Not yet run on Windows.
