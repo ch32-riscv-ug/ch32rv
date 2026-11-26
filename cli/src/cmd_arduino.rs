@@ -568,9 +568,6 @@ const WCHLINK_SOURCES: [MonitorSource; 6] = [
     MonitorSource::Rtt,
 ];
 
-/// The `chip` value that means "no board family given: detect".
-const CHIP_AUTO: &str = "auto";
-
 /// The builtin serial-monitor's baud list, so a board's `monitor_port.serial.baudrate` means the
 /// same here.
 const BAUDS: [u32; 20] = [
@@ -652,21 +649,14 @@ impl Settings {
             }
             "dtr" => self.dtr = on_off(value)?,
             "rts" => self.rts = on_off(value)?,
-            "chip" if value.eq_ignore_ascii_case(CHIP_AUTO) => self.chip = None,
-            "chip" => {
-                // The same names `--chip` takes (SKU / family / series, case aside).
-                if ch32rv_target::Db::builtin()
-                    .families_for_chip_name(value)
-                    .is_empty()
-                {
-                    return Err(format!("`{value}` is not a chip in ch32rv's DB"));
-                }
-                self.chip = Some(value.to_owned());
-            }
-            "speed" => {
-                crate::parse::speed(value)?;
-                self.speed = value.to_owned();
-            }
+            // en: No longer offered (0.35.1 and before did): IDE 2 keeps every setting it was once
+            // offered in pluggable-monitor-settings.json and sends it back on each open, and a saved
+            // part number made OPEN fail after the board's Part Number changed. Taken and ignored,
+            // so such a file still opens; `--chip` / `--speed` on the command line still apply.
+            // ja: もう出さない(0.35.1 までは出していた)。IDE 2 は一度出された設定を保存し、開くたびに
+            // 送り返す。保存された型番は Part Number を変えた後の OPEN を失敗させた。受けて無視する
+            // (そのファイルでも開ける)。コマンド行の `--chip` / `--speed` は効く。
+            "chip" | "speed" => {}
             _ => return Err(format!("unknown setting `{key}`")),
         }
         Ok(())
@@ -678,62 +668,26 @@ impl Settings {
             "protocol": protocol,
             "configuration_parameters": {
                 "source": {
-                    "label": "Runtime output source", "type": "enum",
+                    "label": "Monitor Source", "type": "enum",
                     "value": self.sources.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                     "selected": self.source.as_str(),
                 },
                 "baudrate": {
-                    "label": "Baudrate (uart)", "type": "enum",
+                    "label": "Baud Rate (UART)", "type": "enum",
                     "value": BAUDS.iter().map(u32::to_string).collect::<Vec<_>>(),
                     "selected": self.baud.to_string(),
                 },
                 "dtr": {
-                    "label": "DTR (uart)", "type": "enum",
+                    "label": "DTR (UART)", "type": "enum",
                     "value": ["on", "off"], "selected": on_off(self.dtr),
                 },
                 "rts": {
-                    "label": "RTS (uart)", "type": "enum",
+                    "label": "RTS (UART)", "type": "enum",
                     "value": ["on", "off"], "selected": on_off(self.rts),
-                },
-                "speed": {
-                    "label": "Debug speed", "type": "enum",
-                    "value": speed_values(&self.speed),
-                    "selected": self.speed,
-                },
-                "chip": {
-                    "label": "Board chip", "type": "enum",
-                    "value": std::iter::once(CHIP_AUTO.to_owned()).chain(chip_names()).collect::<Vec<_>>(),
-                    "selected": self.chip.as_deref().unwrap_or(CHIP_AUTO),
                 },
             }
         })
     }
-}
-
-/// en: The `speed` values: `--speed`'s steps, and the value in use when it is a kHz number given
-/// on the command line. ja: `speed` の値(`--speed` の段と、コマンド行の kHz 指定)。
-fn speed_values(current: &str) -> Vec<String> {
-    let mut v: Vec<String> = ["low", "medium", "high"].map(str::to_owned).to_vec();
-    if !v.iter().any(|s| s == current) {
-        v.push(current.to_owned());
-    }
-    v
-}
-
-/// en: Every name `chip` accepts: the DB's families, series and SKUs, spelled as `--chip` takes
-/// them (the core's `build.ch32rv_chip`, docs/freeze-decisions.ja.md §1). The IDE only passes
-/// values listed here.
-/// ja: `chip` が受ける名前 = DB の family・series・SKU(`--chip` / core の `build.ch32rv_chip` と同じ綴り)。
-fn chip_names() -> Vec<String> {
-    let db = ch32rv_target::Db::builtin();
-    let mut names: Vec<String> = db
-        .skus()
-        .iter()
-        .flat_map(|s| [s.family.clone(), s.series.clone(), s.sku.clone()])
-        .collect();
-    names.sort();
-    names.dedup();
-    names
 }
 
 /// What the backends need from the command line (the `Cli` itself stays on the main thread).
@@ -1574,19 +1528,17 @@ mod tests {
     }
 
     #[test]
-    fn the_monitor_takes_a_debug_speed() {
-        let mut s = Settings::new("oep", None, "high".to_owned());
+    fn chip_and_speed_come_from_the_command_line_only() {
+        let mut s = Settings::new("oep", Some("CH32V20x".to_owned()), "high".to_owned());
         let d = s.describe("oep");
-        assert_eq!(d["configuration_parameters"]["speed"]["selected"], "high");
-        assert_eq!(
-            d["configuration_parameters"]["speed"]["value"],
-            json!(["low", "medium", "high"])
-        );
+        // Not offered, so IDE 2 does not save them...
+        assert!(d["configuration_parameters"].get("speed").is_none());
+        assert!(d["configuration_parameters"].get("chip").is_none());
+        // ...and a file that saved them still opens: taken, ignored.
         assert!(s.set("speed", "low").is_ok());
-        assert_eq!(s.speed, "low");
-        assert!(s.set("speed", "fast").is_err());
-        assert_eq!(s.speed, "low");
-        // A kHz `--speed` from the command line is listed as it is.
+        assert!(s.set("chip", "CH32V305RBT6").is_ok());
+        assert_eq!(s.speed, "high");
+        assert_eq!(s.chip.as_deref(), Some("CH32V20x"));
         let s = Settings::new("wchlink", None, "4000".to_owned());
         // A `wchlink://` port reads everything the target talks on unless told otherwise.
         assert_eq!(s.source, MonitorSource::Auto);
@@ -1594,10 +1546,7 @@ mod tests {
             s.describe("wchlink")["configuration_parameters"]["source"]["value"],
             json!(["auto", "uart", "dmdata", "dmseq", "sdi", "rtt"])
         );
-        assert_eq!(
-            s.describe("wchlink")["configuration_parameters"]["speed"]["value"],
-            json!(["low", "medium", "high", "4000"])
-        );
+        assert_eq!(s.speed, "4000");
     }
 
     #[test]

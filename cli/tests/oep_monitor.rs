@@ -46,7 +46,13 @@ struct Monitor {
 
 impl Monitor {
     fn start() -> Self {
+        Self::start_with(&[])
+    }
+
+    /// With global options before the subcommand (`--chip`, ...).
+    fn start_with(global: &[&str]) -> Self {
         let mut child = uv::with_runtime(Command::new(env!("CARGO_BIN_EXE_ch32rv")))
+            .args(global)
             .args(["arduino", "monitor", "--protocol", "serial"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -83,19 +89,22 @@ fn a_debug_source_streams_the_oep_console_through_the_broker() {
     ]) else {
         return;
     };
+    // A wrong board chip (`--chip`) fails OPEN, before anything streams.
+    let mut wrong = Monitor::start_with(&["--chip", "CH32X035"]);
+    wrong.cmd("HELLO 1 \"test\"");
+    assert_eq!(wrong.cmd("CONFIGURE source dmseq")["message"], "OK");
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let at = l.local_addr().unwrap();
+    let r = wrong.cmd(&format!("OPEN {at} {pty}"));
+    assert_eq!(r["error"], true, "{r}");
+    assert!(r["message"].as_str().unwrap().contains("conflicts"), "{r}");
+    drop(wrong);
+
     let mut m = Monitor::start();
     m.cmd("HELLO 1 \"test\"");
     assert_eq!(m.cmd("CONFIGURE source dmseq")["message"], "OK");
-
-    // A wrong board chip fails OPEN, before anything streams.
+    // A `chip` an IDE saved from an older ch32rv is taken and ignored.
     assert_eq!(m.cmd("CONFIGURE chip CH32X035")["message"], "OK");
-    let l = TcpListener::bind("127.0.0.1:0").unwrap();
-    let at = l.local_addr().unwrap();
-    let r = m.cmd(&format!("OPEN {at} {pty}"));
-    assert_eq!(r["error"], true, "{r}");
-    assert!(r["message"].as_str().unwrap().contains("conflicts"), "{r}");
-
-    assert_eq!(m.cmd("CONFIGURE chip CH32V20x")["message"], "OK");
     // A fresh listener per OPEN, as arduino-cli makes one: the monitor connects before its
     // source opens, so the failed OPEN left a connection on the first.
     drop(l);
@@ -256,21 +265,21 @@ fn uart_on_an_oep_probe_says_so_and_rtt_looks_for_the_block() {
 }
 
 #[test]
-fn describe_lists_every_chip_name_configure_takes() {
-    // docs/freeze-decisions.ja.md §1: family, series and SKU, plus `auto`.
+fn describe_offers_source_and_the_uart_line_settings_only() {
     let mut m = Monitor::start();
     m.cmd("HELLO 1 \"test\"");
     let d = m.cmd("DESCRIBE");
-    let values: Vec<&str> = d["port_description"]["configuration_parameters"]["chip"]["value"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(serde_json::Value::as_str)
-        .collect();
-    for name in ["auto", "CH32V20x", "CH32V203", "CH32V203C8T6"] {
-        assert!(values.contains(&name), "{name} not in {values:?}");
-        assert_eq!(m.cmd(&format!("CONFIGURE chip {name}"))["message"], "OK");
-    }
+    let p = &d["port_description"]["configuration_parameters"];
+    let mut keys: Vec<&str> = p.as_object().unwrap().keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, ["baudrate", "dtr", "rts", "source"]);
+    assert_eq!(p["source"]["label"], "Monitor Source");
+    assert_eq!(p["baudrate"]["label"], "Baud Rate (UART)");
+    assert_eq!(p["dtr"]["label"], "DTR (UART)");
+    assert_eq!(p["rts"]["label"], "RTS (UART)");
+    // What an IDE saved from an older ch32rv still opens: taken and ignored.
+    assert_eq!(m.cmd("CONFIGURE chip CH32V305RBT6")["message"], "OK");
+    assert_eq!(m.cmd("CONFIGURE speed low")["message"], "OK");
 }
 
 #[test]
