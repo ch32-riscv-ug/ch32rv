@@ -149,7 +149,7 @@ chip = "CH32V203C8T6"
                         wchlink://<serial>、oep://<probe>[/<port>[/<target>]][?via=<経路>]
 ```
 
-`--probe` は debug probe(WCH-Link、OEP の probe)だけを名指す。書き込み先の住所(`ch32rv-hid://`、`ch32rv-app://`、`ch32rv-isp://`)は probe ではないので、`--probe` では exit 2 で断り、`isp` / `boot dfu` / `boot hid` の `--device` に渡す(§4.7、§4.8)。
+`--probe` は debug probe(WCH-Link、OEP の probe)だけを名指す。書き込み先の住所(`ch32rv-hid://`、`ch32rv-app://`、`ch32rv-isp://`)は probe ではないので、`--probe` では exit 2 で断り、`isp` / `boot dfu` / `boot hid` の `--device` に渡す(§4.7、§4.8)。ただし `flash` だけは、`--probe` の書き込み先の住所をその経路(`isp flash` / `boot hid flash`)で書く(下の「`flash --probe <書き込み先の住所>`」。arduino-cli が port のプロトコルをまだ知らないと `serial` の書き込み手順で呼ぶため)。
 
 `oep://` の住所(oep-spec host ガイド §5.3)は、場所(probe の unit_id、口、target)と、そこへ届く経路 `via` からなる。`via` は場所の一部ではない。
 
