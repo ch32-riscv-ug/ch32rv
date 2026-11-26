@@ -359,12 +359,21 @@ fn open_uart(cli: &Cli, cmd: &str, args: &IspArgs, entry: IspEntry) -> Result<Op
 
 const ENTRY_HINT: &str = "put the chip in its bootloader: CH32X03x - plug in USB with the BOOT/DOWNLOAD key (PC17 = D+ high) held, or `--entry probe` over a debug probe; BOOT0 parts - BOOT0 high at reset";
 
+/// en: Why the bootloader's USB device may not open, per OS: Windows - a driver that is neither
+/// WinUSB nor WCH's CH375-class one; elsewhere - permissions (no udev rule).
+/// ja: bootloader の USB device が開けない理由(OS ごと)。Windows は WinUSB でも WCH の CH375 系
+/// でもないドライバ、他は権限(udev のルール)。
+const OPEN_HINT: &str = if cfg!(windows) {
+    "the bootloader's USB device (1a86:55e0) has a driver ch32rv cannot use: WinUSB (e.g. installed with Zadig) and WCH's own driver work; check it in Device Manager"
+} else {
+    "check permissions for the device: the udev rule for 1a86:55e0 / 4348:55e0 (`ch32rv doctor --emit-udev`)"
+};
+
 fn isp_fail(cli: &Cli, cmd: &str, e: IspError) -> ExitCode {
     let (kind, hint) = match &e {
-        IspError::Usb(ch32rv_usb::UsbError::Open(_)) => (
-            ErrorKind::DeviceOpenFailed,
-            Some("check permissions for the device (udev rule for 1a86:55e0 / 4348:55e0)"),
-        ),
+        IspError::Usb(ch32rv_usb::UsbError::Open(_) | ch32rv_usb::UsbError::AccessDenied(_)) => {
+            (ErrorKind::DeviceOpenFailed, Some(OPEN_HINT))
+        }
         IspError::Serial(_) => (ErrorKind::DeviceOpenFailed, None),
         IspError::Usb(_)
         | IspError::ShortWrite { .. }

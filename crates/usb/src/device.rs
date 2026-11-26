@@ -472,8 +472,36 @@ impl UsbDeviceInfo {
         if interface != 0 {
             return None;
         }
-        let serial = self.serial()?;
-        for candidate in list_interfaces(&GUID_CH375).ok()? {
+        let candidates = list_interfaces(&GUID_CH375).ok()?;
+        let open = |c: &ch32rv_usb_wch_win::DeviceInterface| {
+            c.open().ok().map(|dev| Ch375Backend {
+                dev,
+                ep_out,
+                ep_in,
+                data_eps: None,
+            })
+        };
+        // en: A device without a serial number (the factory ISP bootloader, 1a86:55e0) is found by
+        // its Windows instance ID instead: the CH375 interface's own (a single-interface device) or
+        // its parent's (a composite one). Measured on Windows: the X035's bootloader with WCH's
+        // driver bound failed `isp flash` with "incompatible driver" before this.
+        // ja: serial の無い device(工場の ISP の bootloader)は、Windows の instance ID で探す
+        // (単独の interface の device は自分の、composite は親の)。Windows で WCH のドライバの付いた
+        // X035 の bootloader が「incompatible driver」で書けなかった。
+        let Some(serial) = self.serial().filter(|s| !s.is_empty()) else {
+            let Inner::Nusb(d) = &self.inner else {
+                return None;
+            };
+            let want = d.instance_id().to_string_lossy().to_uppercase();
+            return candidates.iter().find_map(|c| {
+                let own = c.instance_id().ok().map(|i| i.to_uppercase());
+                let parent = c.parent_instance_id().ok().map(|i| i.to_uppercase());
+                (own.as_deref() == Some(want.as_str()) || parent.as_deref() == Some(want.as_str()))
+                    .then(|| open(c))
+                    .flatten()
+            });
+        };
+        for candidate in candidates {
             let parent = match candidate.parent_instance_id() {
                 Ok(p) => p,
                 Err(_) => continue,
@@ -481,13 +509,7 @@ impl UsbDeviceInfo {
             // Parent instance ID: `USB\VID_xxxx&PID_xxxx\<serial>`.
             let candidate_serial = parent.rsplit('\\').next().unwrap_or("");
             if candidate_serial.eq_ignore_ascii_case(serial) {
-                let dev = candidate.open().ok()?;
-                return Some(Ch375Backend {
-                    dev,
-                    ep_out,
-                    ep_in,
-                    data_eps: None,
-                });
+                return open(&candidate);
             }
         }
         None
