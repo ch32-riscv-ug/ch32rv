@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.8 - 2026-11-26
+
 - (EN) `isp flash --entry auto` through a running application whose serial port does not open (a sketch that stopped servicing USB; Windows: "the device attached to the system is not functioning") no longer fails at the 1200 bps touch: it says the application did not take the request, tells the user to bring the bootloader up with BOOT, and waits for it at the same USB position for at least 60 s, as the IDE's waiting port does.
 - (JA) serial port が開かない(USB を止めたスケッチ。Windows で「システムに接続されたデバイスが機能していません」)走っているアプリへの `isp flash --entry auto` は、1200 bps のタッチで失敗しなくなった。アプリが依頼を受けなかったと言い、BOOT で bootloader に入れるよう案内し、同じ USB の位置に現れるのを少なくとも 60 秒待つ(IDE の待つポートと同じ)。
 - (EN) `isp` (and `flash` through an application's serial port) says its progress on stdout - the ISP device found, the reset over the debug wire, DFU_DETACH sent, the 1200 bps touch, the port taken as an application's - instead of stderr, which an IDE shows in red: a successful upload looked like an error. A DFU run-time interface that cannot be opened when the 1200 bps touch then gets the chip into its bootloader (every time on Windows) is no longer a warning; `--verbose` says it. What the user must do (put the chip in its bootloader) stays on stderr, which an IDE always shows.
