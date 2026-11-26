@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.2 - 2026-11-26
+
 - (EN) `arduino monitor`'s DESCRIBE offers `source`, `baudrate`, `dtr` and `rts` only, labelled "Monitor Source", "Baud Rate (UART)", "DTR (UART)" and "RTS (UART)" (as ArduinoCore-CH32RV's Tools menu says them). `chip` and `speed` are no longer offered: IDE 2 saves every offered setting with its whole value list and sends it back on each open over the board's default (arduino-ide#2988), the IDE shows neither, and a saved part number made OPEN fail after the board's Part Number changed. A `chip` / `speed` CONFIGURE from such a saved file is taken and ignored, so it still opens; `--chip` / `--speed` on the command line still apply.
 - (JA) `arduino monitor` の DESCRIBE は `source`・`baudrate`・`dtr`・`rts` だけを出し、label を「Monitor Source」「Baud Rate (UART)」「DTR (UART)」「RTS (UART)」にした(ArduinoCore-CH32RV のツールメニューの呼び方)。`chip` と `speed` は出さない: IDE 2 は出された設定を値の一覧ごと保存し、開くたびに板の既定より優先して送り返す(arduino-ide#2988)。IDE はどちらも見せず、保存された型番は板の Part Number を変えた後の OPEN を失敗させた。そうして保存されたファイルの CONFIGURE `chip` / `speed` は受けて無視する(開ける)。コマンド行の `--chip` / `--speed` は効く。
 ## 0.35.1 - 2026-11-26
