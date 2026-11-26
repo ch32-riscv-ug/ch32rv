@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.3 - 2026-11-26
+
 - (EN) The `auto` monitor says its status once, right after the open (`[ch32rv monitor] auto: uart; looking for dmseq / sdi / dmdata, rtt`), and no more: not when a mailbox console or RTT is found, a search stops, or the target restarts. `auto` does not tell its paths apart, and a path's output in the window shows it is read; problems still come as warnings. Before, a line came at each of those, among them one that only said the RTT search had stopped.
 - (JA) `auto` の monitor の状態の行は、開いた直後の 1 行だけにした(`[ch32rv monitor] auto: uart; looking for dmseq / sdi / dmdata, rtt`)。郵便受けの console や RTT が見つかったとき、探すのをやめたとき、target の再起動では出さない。`auto` は経路を区別しない作りで、出力が窓に出れば読めていると分かる。問題は今までどおり warning で知らせる。以前はそのたびに行が出て、RTT を探すのをやめただけの行もあった。
 ## 0.35.2 - 2026-11-26
