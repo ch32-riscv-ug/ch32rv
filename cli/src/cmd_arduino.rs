@@ -257,6 +257,23 @@ struct SyncView {
     net_at: Option<std::time::Instant>,
 }
 
+/// en: The ports that need nothing opened (WCH-Links, HID / ISP bootloaders, CH32RV applications,
+/// the waiting port): sync mode says these first, so that a port is known within arduino-cli's 1 s
+/// wait at an upload - the whole first round (OEP labels read) took 6 s on the bench, and an
+/// upload to a port not yet known goes out with the protocol `serial`.
+/// ja: 何も開かずに分かるポート。sync mode はこれを先に出す(書き込みの時の arduino-cli の待ちは
+/// 1 秒。OEP のラベルを読む最初の 1 周は台で 6 秒かかり、まだ知らない port への書き込みは
+/// protocol `serial` で出ていった)。
+fn quick_ports() -> Vec<Value> {
+    ch32rv_usb::with_one_enumeration(|| {
+        let mut ports = wchlink_ports();
+        ports.extend(hid_ports());
+        ports.extend(isp_route_ports());
+        ports.push(waiting_port());
+        ports
+    })
+}
+
 impl SyncView {
     fn ports(&mut self) -> Vec<Value> {
         ch32rv_usb::with_one_enumeration(|| {
@@ -323,6 +340,16 @@ fn sync_watch(
     use std::sync::atomic::Ordering;
     let mut view = SyncView::default();
     let mut known: Vec<Value> = Vec::new();
+    // The quick ones first; the next round adds the OEP probes' ports.
+    let first = quick_ports();
+    if !stop.load(Ordering::SeqCst) {
+        let Ok(mut o) = out.lock() else { return };
+        for e in sync_events(&known, &first) {
+            emit(&mut *o, &e);
+        }
+        drop(o);
+        known = first;
+    }
     loop {
         let now = view.ports();
         if stop.load(Ordering::SeqCst) {

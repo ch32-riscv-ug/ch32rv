@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) `arduino discovery`'s sync mode says the ports that need nothing opened (WCH-Links, HID / ISP bootloaders, CH32RV applications, the waiting port) at once, and the OEP probes' ports when their labels are read (3 s on the bench). Before, the first ports came only after every OEP probe was read (6 s on the bench); arduino-cli waits 1 s for an upload's port, and a port it did not know yet went out with the protocol `serial`.
+- (JA) `arduino discovery` の sync mode は、何も開かずに分かるポート(WCH-Link、HID / ISP の bootloader、CH32RV のアプリ、待つポート)をすぐに出し、OEP の probe のポートはラベルを読めたら足す(台で 3 秒)。以前は全部の OEP の probe を読み終えてから出していた(台で 6 秒)。arduino-cli は書き込みの port を 1 秒しか待たず、まだ知らない port は protocol `serial` で出ていった。
 - (EN) `flash --probe <a write target>` - `ch32rv-app://`, `ch32rv-isp://`, `ch32rv-bootloader://WAIT_FOR_BOOT`, `ch32rv-hid://`, as the IDE passes the port the user picked - writes through it, as `isp flash --entry auto --device <address>` / `boot hid flash --device <address>` do. Before, it was refused (exit 2, "names a write target, not a debug probe"). Other commands still refuse such an address as `--probe`.
 - (JA) `flash --probe <書き込み先>`(`ch32rv-app://`・`ch32rv-isp://`・`ch32rv-bootloader://WAIT_FOR_BOOT`・`ch32rv-hid://`。IDE は選ばれた port をそのまま渡す)は、それを通して書く(`isp flash --entry auto --device <住所>` / `boot hid flash --device <住所>` と同じ)。以前は「debug probe ではない」と exit 2 で断っていた。ほかのコマンドは今までどおり断る。
 ## 0.35.9 - 2026-11-26
