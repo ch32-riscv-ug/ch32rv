@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.35.1 - 2026-11-26
+
 - (EN) The `sdi-forward` monitor source is gone (`monitor --source`, `arduino monitor`'s source list): a monitor no longer changes the LinkE's SDI print forwarding on its own. The explicit switches stay: `monitor sdi on|off` and `flash --sdi on|off`; to read through the forwarding, turn it on and read with `uart` (while it is on, the LinkE's CDC carries the SDI output in place of the UART's). `sdi` reads the mailbox over the Debug Module as in 0.35.0. Measured with 48-byte lines and none lost: `sdi` over DMI about 194 lines/s on a CH32V307, the forwarding about 395, an OEP probe's `sdi` about 560 on a CH32V203.
 - (JA) monitor の source から `sdi-forward` を外した(`monitor --source`、`arduino monitor` の source の一覧)。monitor が LinkE の SDI 転送の設定を勝手に変えることは無くなった。明示して切り替える `monitor sdi on|off` と `flash --sdi on|off` は残す。転送で読むなら、有効にして `uart` で読む(有効の間、LinkE の CDC は UART の代わりに SDI の出力を流す)。`sdi` は 0.35.0 と同じく Debug Module で郵便受けを読む。48 byte の行で欠けなしの速さ: DMI の `sdi` が CH32V307 で約 194 行/秒、転送が約 395 行/秒、OEP の probe の `sdi` が CH32V203 で約 560 行/秒。
 ## 0.35.0 - 2026-11-26
