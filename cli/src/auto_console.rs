@@ -380,7 +380,7 @@ impl Auto {
 
     /// en: The paths open now, as the status line names them.
     /// ja: 今開いている経路(状態の行の名前)。
-    pub(crate) fn status(&self) -> String {
+    pub(crate) fn status(&self) -> (String, Option<String>) {
         let mut parts: Vec<String> = Vec::new();
         let mut looking: Vec<&str> = Vec::new();
         match &self.kind {
@@ -415,23 +415,30 @@ impl Auto {
                 }
             }
         }
-        let mut s = if parts.is_empty() {
+        let read = if parts.is_empty() {
             "auto: (nothing yet)".to_owned()
         } else {
             format!("auto: {}", parts.join(" + "))
         };
-        if !looking.is_empty() {
-            s.push_str(&format!("; looking for {}", looking.join(", ")));
-        }
-        s
+        let looking =
+            (!looking.is_empty()).then(|| format!("; looking for {}", looking.join(", ")));
+        (read, looking)
     }
 
     /// Queue the status line when it changed.
+    /// en: The first line only, right after the open, with what is still looked for: it shows that
+    /// `auto` is in effect. Later finds, given-up searches and restarts are not said: `auto` does
+    /// not tell its paths apart, and a path's output in the window already shows it is read.
+    /// Problems come as warnings.
+    /// ja: 開いた直後の 1 行だけ(探しているものも添える)。`auto` が効いていることが分かる。その後の
+    /// 見つかった・探すのをやめた・再起動は言わない(経路を区別しない作りで、出力が見えれば読めている)。
+    /// 問題は warning で知らせる。
     fn say(&mut self) {
-        let s = self.status();
-        if s != self.said {
-            self.notes.extend(note(&s));
-            self.said = s;
+        if self.said.is_empty() {
+            let (read, looking) = self.status();
+            self.notes
+                .extend(note(&format!("{read}{}", looking.unwrap_or_default())));
+            self.said = read;
         }
     }
 
