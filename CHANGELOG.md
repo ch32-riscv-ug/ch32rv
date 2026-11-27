@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) Fix: `isp` opened a factory ISP bootloader the moment it enumerated, before udev had applied the rule's mode and ACL, and failed now and then with "access denied" although the rule was installed (1 of 3 back-to-back DFU_DETACH entries, CH32X035, Linux). A refusal (access denied, busy) is now waited out for up to 2 s; a missing rule still fails after that, with the fix.
+- (JA) 修正: `isp` は、工場の ISP の bootloader を列挙された瞬間に開き、udev がルールの mode と ACL を付ける前だと、ルールがあるのに「access denied」で失敗することがあった(続けて 3 回の DFU_DETACH のうち 1 回。CH32X035、Linux)。今は拒否(access denied、busy)を 2 秒まで待つ。ルールが無ければ、その後に直し方を添えて失敗する。
 ## 0.36.0 - 2026-11-27
 
 - (EN) `arduino discovery` labels a CH32RV application with its id and serial port (`CH32RV Arduino AFC6ABCD17D0BC3D (COM6)`; before, its product name alone, `CH32RV Arduino (CH32RV, USB)`), so that two boards running the same sketch are told apart in the IDE's port menu, which shows only the label; a factory ISP bootloader with its USB position (`WCH ISP bootloader (USB 1.3.2)`).

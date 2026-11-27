@@ -286,7 +286,24 @@ fn open_usb(
     }
     let usb = dev.usb_id();
     let topology = dev.topology();
-    let mut isp = IspDevice::open(&dev).map_err(|e| isp_fail(cli, cmd, e))?;
+    // en: A bootloader that has just enumerated is often not ours yet: udev applies the rule's mode
+    // and ACL a moment later (access denied), and a system service may look at it first (busy).
+    // Both pass, so they are waited out for a short while; a missing rule still fails after it.
+    // Measured: 1 of 3 back-to-back DFU_DETACH entries failed with EACCES on a host with the rule
+    // (ArduinoCore-CH32RV's usb-upload test, CH32X035).
+    // ja: 列挙されたばかりの bootloader はすぐには開けない。udev がルールの mode と ACL を付けるのが
+    // 少し遅れ(access denied)、システムのサービスが先に見ることもある(busy)。少し待つ。ルールが
+    // 無ければその後も失敗する。ルールのある host で、続けて 3 回のうち 1 回が EACCES だった。
+    let open_until = Instant::now() + OPEN_RETRY;
+    let mut isp = loop {
+        match IspDevice::open(&dev) {
+            Ok(i) => break i,
+            Err(ch32rv_isp::IspError::Usb(
+                ch32rv_usb::UsbError::AccessDenied(_) | ch32rv_usb::UsbError::Busy(_),
+            )) if Instant::now() < open_until => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(isp_fail(cli, cmd, e)),
+        }
+    };
     if let Some(s) = cli.timeout {
         isp.set_timeout(Duration::from_secs(s));
     }
@@ -906,6 +923,8 @@ fn reset(cli: &Cli, args: &IspArgs) -> ExitCode {
 
 /// How long a chip put in its bootloader over the debug wire takes to enumerate, at most.
 const ENTER_WAIT: Duration = Duration::from_secs(5);
+/// How long a just-enumerated bootloader's permission / busy refusal is waited out.
+const OPEN_RETRY: Duration = Duration::from_secs(2);
 
 const FLASH_KEYR: u32 = 0x4002_2004;
 const FLASH_STATR: u32 = 0x4002_200c;
