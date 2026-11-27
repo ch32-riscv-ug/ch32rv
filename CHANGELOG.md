@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.37.0 - 2026-11-27
+
 - (EN) `isp` through a running application (DFU_DETACH or the 1200 bps touch): when no bootloader has come after the 5 s wait and the application is still at its USB position, it is asked once more and waited for again. An application still coming up after its previous restart missed the request (1 of 6 uploads 3 s apart on a busy host, CH32X035).
 - (JA) 走っているアプリ経由の `isp`(DFU_DETACH か 1200 bps のタッチ): 5 秒待っても bootloader が来ず、アプリがまだ同じ USB の位置に居るときは、もう 1 度頼んで待ち直す。前の再起動から立ち上がりきっていないアプリが依頼を受け損ねた(忙しい host で 3 秒おきの書き込み 6 回に 1 回、CH32X035)。
 - (EN) Fix: `isp` opened a factory ISP bootloader the moment it enumerated, before udev had applied the rule's mode and ACL, and failed now and then with "access denied" although the rule was installed (1 of 3 back-to-back DFU_DETACH entries, CH32X035, Linux). A refusal (access denied, busy) is now waited out for up to 2 s; a missing rule still fails after that, with the fix.
