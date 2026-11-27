@@ -641,9 +641,10 @@ fn isp_route_ports() -> Vec<Value> {
     for d in &devs {
         let topology = d.topology();
         if crate::cmd_isp::is_ch32rv_app(d) {
+            let id = crate::cmd_isp::app_id(d, &apps);
             ports.push(json!({
-                "address": format!("{}{}", crate::cmd_isp::APP_SCHEME, crate::cmd_isp::app_id(d, &apps)),
-                "label": format!("{} (CH32RV, USB)", d.product().unwrap_or("CH32RV application")),
+                "address": format!("{}{id}", crate::cmd_isp::APP_SCHEME),
+                "label": app_label(d.product(), &id, d.serial_ports().first().map(String::as_str)),
                 "protocol": "ch32rv-app",
                 "protocolLabel": "CH32RV application (USB)",
                 "hardwareId": d.serial().filter(|s| !s.is_empty()).map_or_else(|| topology.clone(), str::to_owned),
@@ -652,7 +653,7 @@ fn isp_route_ports() -> Vec<Value> {
         } else if (d.vid(), d.pid()) == (0x1a86, 0x55e0) {
             ports.push(json!({
                 "address": format!("{}{topology}", crate::cmd_isp::ISP_SCHEME),
-                "label": "CH32RV ISP bootloader (USB)",
+                "label": format!("WCH ISP bootloader (USB {})", short_position(&topology)),
                 "protocol": "ch32rv-isp",
                 "protocolLabel": "WCH factory ISP bootloader (USB)",
                 "hardwareId": topology,
@@ -661,6 +662,28 @@ fn isp_route_ports() -> Vec<Value> {
         }
     }
     ports
+}
+
+/// en: A CH32RV application's label in the IDE's port menu: its product name, its id and its serial
+/// port, so that two boards running the same sketch (one product name) are told apart there; the
+/// menu shows only the label. ja: IDE のポートのメニューに出るアプリの表示名。製品名・id・serial port
+/// (同じスケッチの板が 2 台あっても見分けられるように。メニューは label しか出さない)。
+fn app_label(product: Option<&str>, id: &str, port: Option<&str>) -> String {
+    let name = product.unwrap_or("CH32RV application");
+    match port {
+        Some(p) => {
+            // `/dev/ttyACM5` as `ttyACM5`; `COM6` as it is.
+            let short = p.rsplit('/').next().unwrap_or(p);
+            format!("{name} {id} ({short})")
+        }
+        None => format!("{name} {id}"),
+    }
+}
+
+/// en: The tail of a USB position for a label: `1.3.2` of `PCIROOT(0)#PCI(1400)#USBROOT(0)-1.3.2`
+/// (Windows) or of `3-1.3.2`. ja: 表示名のための USB の位置の末尾。
+fn short_position(topology: &str) -> &str {
+    topology.rsplit('-').next().unwrap_or(topology)
 }
 
 fn emit(out: &mut impl Write, v: &Value) {
@@ -1755,6 +1778,23 @@ mod tests {
             json!(["auto", "uart", "dmdata", "dmseq", "sdi", "rtt"])
         );
         assert_eq!(s.speed, "4000");
+    }
+
+    #[test]
+    fn an_application_is_labelled_with_its_id_and_port() {
+        assert_eq!(
+            app_label(Some("CH32RV Arduino"), "AFC6ABCD17D0BC3D", Some("COM6")),
+            "CH32RV Arduino AFC6ABCD17D0BC3D (COM6)"
+        );
+        assert_eq!(
+            app_label(None, "usb-3-1.2", Some("/dev/ttyACM5")),
+            "CH32RV application usb-3-1.2 (ttyACM5)"
+        );
+        assert_eq!(
+            short_position("PCIROOT(0)#PCI(1400)#USBROOT(0)-1.3.2"),
+            "1.3.2"
+        );
+        assert_eq!(short_position("3-3.2"), "3.2");
     }
 
     #[test]
