@@ -165,6 +165,7 @@ fn open_usb(
         wait = wait.max(BOOT_WAIT);
     }
     let mut entered = false;
+    let mut via_app = false;
     if entry != IspEntry::None && !ch32rv_usb::replay::active() && !present(&want) {
         let via = match entry {
             IspEntry::Probe => Via::Probe,
@@ -194,8 +195,10 @@ fn open_usb(
             entered = true;
             wait = wait.max(ENTER_WAIT);
         }
+        via_app = via == Via::App;
     }
-    let deadline = Instant::now() + wait;
+    let mut deadline = Instant::now() + wait;
+    let mut asked_again = false;
     let mut told = false;
     let mut countdown = Countdown::new(deadline);
     let dev = loop {
@@ -233,6 +236,26 @@ fn open_usb(
         }
         if let Some(d) = found.pop() {
             break d;
+        }
+        // en: Asked, but no bootloader came and the application is still there: it did not take
+        // the request (an application still coming up after its previous restart, measured once
+        // in six uploads 3 s apart on a busy host). Ask once more and wait again.
+        // ja: 頼んだのに bootloader が来ず、アプリがまだ居る: 依頼を受け損ねた(前の再起動から立ち
+        // 上がりきっていないアプリ。忙しい host で 3 秒おきの書き込み 6 回に 1 回)。もう 1 度頼んで待つ。
+        if via_app
+            && !asked_again
+            && Instant::now() >= deadline
+            && want.as_deref().is_some_and(app_still_at)
+        {
+            asked_again = true;
+            if !cli.json {
+                println!("no bootloader yet and the application is still there: asking it again");
+            }
+            if let AppEntry::Sent(_) = enter_via_app(cli, cmd, args, entry, None)? {
+                deadline = Instant::now() + ENTER_WAIT;
+                countdown = Countdown::new(deadline);
+                continue;
+            }
         }
         if ch32rv_usb::replay::active() || Instant::now() >= deadline {
             return Err(fail(
@@ -1349,6 +1372,11 @@ fn find_usb_device(sel: &str) -> Result<AppDevice, Miss> {
 /// port への 1200 bps touch(`auto` はこの順)。app の USB の位置(bootloader が現れる所)を返す。
 /// touch は `--device` で名指しされた device にだけ送る(他の板の serial を reset しない)。
 /// `resolved` is the application `--device` already named, if the caller looked it up.
+/// Whether a CH32RV application is (still) at the USB position `at`.
+fn app_still_at(at: &str) -> bool {
+    ch32rv_usb::enumerate().is_ok_and(|v| v.iter().any(|d| d.topology() == at && is_ch32rv_app(d)))
+}
+
 /// What asking the application to reboot into its bootloader came to.
 enum AppEntry {
     /// Asked; the bootloader comes up at this position.
