@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.36.0 - 2026-11-27
+
 - (EN) `arduino discovery` labels a CH32RV application with its id and serial port (`CH32RV Arduino AFC6ABCD17D0BC3D (COM6)`; before, its product name alone, `CH32RV Arduino (CH32RV, USB)`), so that two boards running the same sketch are told apart in the IDE's port menu, which shows only the label; a factory ISP bootloader with its USB position (`WCH ISP bootloader (USB 1.3.2)`).
 - (JA) `arduino discovery` は、CH32RV のアプリの表示名に id と serial port を入れる(`CH32RV Arduino AFC6ABCD17D0BC3D (COM6)`。以前は製品名だけの `CH32RV Arduino (CH32RV, USB)`)。IDE のポートのメニューは表示名しか出さないので、同じスケッチの板が 2 台あっても見分けられるように。工場の ISP の bootloader には USB の位置を入れる(`WCH ISP bootloader (USB 1.3.2)`)。
 ## 0.35.10 - 2026-11-26
