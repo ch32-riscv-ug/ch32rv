@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) A debug probe's read-protection refusal (`flash` over a WCH-Link or an OEP probe) names the part too: `the chip (CH32V203C8T6) is read-protected: code flash cannot be written while it is` (the family when the id leaves several).
+- (JA) debug probe の読み出し保護での断り(WCH-Link / OEP の `flash`)も型番を入れる: `the chip (CH32V203C8T6) is read-protected: code flash cannot be written while it is`(id が 1 つに決まらなければ family)。
 - (EN) `isp`'s read-protection refusal names the part and the bootloader in its own text (`the chip (CH32X035G8U6, bootloader 2.60) is read-protected: ...`): an IDE merges stdout and stderr as they arrive, and the `chip:` line on stdout came after the error there, flush or not. After `--unprotect` turns the protection off, the wait for the bootloader is the waiting port's, with its one line on how to bring it up (BOOT); the general entry hint (BOOT0 parts, `--entry probe`) no longer follows it.
 - (JA) `isp` の読み出し保護での断りは、文そのものに型番と bootloader の版を入れる(`the chip (CH32X035G8U6, bootloader 2.60) is read-protected: ...`)。IDE は stdout と stderr を届いた順に混ぜるので、flush しても stdout の `chip:` の行がエラーの後に出ていた。`--unprotect` で保護を外した後の bootloader の待ちは、待つポートと同じ待ち方にし、入り方(BOOT)の 1 行だけを出す(汎用の案内(BOOT0 の系列、`--entry probe`)はもう続かない)。
 ## 0.39.0 - 2026-11-27

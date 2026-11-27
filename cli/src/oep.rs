@@ -1531,7 +1531,16 @@ fn flash_attached(
         w.first()
             .is_some_and(|v| v & crate::cmd_isp::OBR_RDPRT != 0)
     }) {
-        return crate::cmd_flash::protected_refusal(cli, CMD);
+        let part = chip_id
+            .and_then(|id| {
+                crate::cmd_target::flashed_part(
+                    &ch32rv_target::Db::builtin(),
+                    id,
+                    cli.chip.as_deref(),
+                )
+            })
+            .map_or_else(|| family.clone(), |p| p.sku);
+        return crate::cmd_flash::protected_refusal(cli, CMD, &part);
     }
     let Some(plan) = ch32rv_flash::loader::plan_for_family(&family) else {
         return fail(

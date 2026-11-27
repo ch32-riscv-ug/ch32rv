@@ -502,12 +502,12 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
 /// written: refused with the way out, instead of the transfer fault the write then ends in
 /// ("read_block: fault (0x03)" through an OEP probe, a CH32V203).
 /// ja: debug 線で読み出し保護を書く前に見つけたら、外し方を添えて断る(書けば転送の fault で終わる)。
-pub(crate) fn protected_refusal(cli: &Cli, cmd: &str) -> ExitCode {
+pub(crate) fn protected_refusal(cli: &Cli, cmd: &str, part: &str) -> ExitCode {
     fail(
         cli,
         cmd,
         ErrorKind::TargetProtected,
-        "the chip is read-protected: code flash cannot be written while it is",
+        format!("the chip ({part}) is read-protected: code flash cannot be written while it is"),
         Some(
             "write with --unprotect (this erases all of code flash), or `ch32rv target protect off`",
         ),
@@ -701,7 +701,15 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
             .read_mem32(crate::cmd_isp::FLASH_OBR)
             .is_ok_and(|v| v & crate::cmd_isp::OBR_RDPRT != 0)
     {
-        return protected_refusal(cli, CMD);
+        // The part as the summary line names it (the family when the id leaves several).
+        let family = session.family();
+        let part = crate::cmd_target::flashed_part(
+            session.db(),
+            session.attach.chip_id,
+            cli.chip.as_deref(),
+        )
+        .map_or(family, |p| p.sku);
+        return protected_refusal(cli, CMD, &part);
     }
 
     if args.programmer == crate::args::ProgrammerChoice::Loader {
