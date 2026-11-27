@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) `isp`'s read-protection refusal names the part and the bootloader in its own text (`the chip (CH32X035G8U6, bootloader 2.60) is read-protected: ...`): an IDE merges stdout and stderr as they arrive, and the `chip:` line on stdout came after the error there, flush or not. After `--unprotect` turns the protection off, the wait for the bootloader is the waiting port's, with its one line on how to bring it up (BOOT); the general entry hint (BOOT0 parts, `--entry probe`) no longer follows it.
+- (JA) `isp` の読み出し保護での断りは、文そのものに型番と bootloader の版を入れる(`the chip (CH32X035G8U6, bootloader 2.60) is read-protected: ...`)。IDE は stdout と stderr を届いた順に混ぜるので、flush しても stdout の `chip:` の行がエラーの後に出ていた。`--unprotect` で保護を外した後の bootloader の待ちは、待つポートと同じ待ち方にし、入り方(BOOT)の 1 行だけを出す(汎用の案内(BOOT0 の系列、`--entry probe`)はもう続かない)。
 ## 0.39.0 - 2026-11-27
 
 - (EN) Fix: `isp flash --unprotect` turned read protection off and wrote in the same session, and the verify failed: the change takes effect only at the chip's next reset (CH32X035G8U6, bootloader 2.60, Windows). It now leaves the bootloader (the chip resets), asks the user to bring it up again with BOOT, waits for it at the same USB position for at least 60 s, and writes there. After the reset the chip read `read-protect off` and took the write, verify and start.

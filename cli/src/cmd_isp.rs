@@ -736,11 +736,21 @@ fn settle_protection(
         return Ok(o);
     }
     if !unprotect {
+        // en: The part and bootloader named in the error itself: an IDE merges stdout and stderr
+        // as they arrive, so the `chip:` line on stdout may come after it (flushing first does
+        // not order two pipes). ja: エラーの文そのものに型番と版を入れる(IDE は 2 本を届いた順に
+        // 混ぜるので、stdout の `chip:` の行が後に出ることがある)。
+        let part = isp_part(cli.chip.as_deref(), o.id)
+            .map(|p| p.sku)
+            .unwrap_or_else(|| series(o.id));
         return Err(fail(
             cli,
             cmd,
             ErrorKind::TargetProtected,
-            "the chip is read-protected: its bootloader does not write code flash while it is",
+            format!(
+                "the chip ({part}, bootloader {}) is read-protected: its bootloader does not write code flash while it is",
+                o.cfg.btver_text()
+            ),
             Some(
                 "turn it off with `ch32rv isp config set read-protect=off` (this erases code flash), or write with --unprotect",
             ),
@@ -770,16 +780,19 @@ fn settle_protection(
     // Leave the bootloader: the chip resets, and the protection is off from then on.
     let topology = o.topology.clone();
     let _ = o.dev.end(true);
-    // The user must act: stderr, which an IDE always shows.
-    eprintln!(
-        "read protection is off; it takes effect at the chip's reset: put the chip in its bootloader again now (hold BOOT and reset it, or plug in USB with BOOT held)"
-    );
+    // en: The user must act (stderr, which an IDE always shows); the wait that follows is the
+    // waiting port's, whose one line says how (BOOT), rather than the general entry hint.
+    // ja: 利用者がすること(stderr)。続く待ちは待つポートのもので、その 1 行が入り方(BOOT)を言う。
+    eprintln!("read protection is off; it takes effect at the chip's reset");
     let again = IspArgs {
         cmd: crate::args::IspCmd::Reset,
         transport: args.transport,
         port: args.port.clone(),
         baud: args.baud,
-        device: topology.map(|t| format!("{ISP_SCHEME}{t}")),
+        device: match (&topology, args.transport) {
+            (Some(_), IspTransport::Usb) => Some(format!("{BOOTLOADER_SCHEME}{WAIT_FOR_BOOT}")),
+            _ => None,
+        },
         wait: BOOT_WAIT.as_secs().max(args.wait),
         entry: IspEntry::None,
         app_device: None,
