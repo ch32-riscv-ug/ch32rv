@@ -1526,6 +1526,13 @@ fn flash_attached(
         Ok(f) => f,
         Err(c) => return c,
     };
+    let mut halted = true;
+    if read_words_halting(&mut t, &mut halted, crate::cmd_isp::FLASH_OBR, 1).is_ok_and(|w| {
+        w.first()
+            .is_some_and(|v| v & crate::cmd_isp::OBR_RDPRT != 0)
+    }) {
+        return crate::cmd_flash::protected_refusal(cli, CMD);
+    }
     let Some(plan) = ch32rv_flash::loader::plan_for_family(&family) else {
         return fail(
             cli,

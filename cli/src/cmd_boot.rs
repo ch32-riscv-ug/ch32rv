@@ -40,8 +40,13 @@ pub fn hid_flash(
     wait_secs: u64,
     device: Option<&str>,
     erase: EraseMode,
+    unprotect: bool,
 ) -> ExitCode {
     const CMD: &str = "boot.hid.flash";
+    // en: Taken on every write route; the HID bootloader cannot turn read protection off, so a
+    // protected chip is refused with the way that can (see `hid_error`).
+    // ja: どの書き込み経路でも受ける。HID の bootloader は保護を外せないので、保護されていれば断る。
+    let _ = unprotect;
     if let Some(c) = refuse_erase(cli, CMD, "the HID bootloader", erase) {
         return c;
     }
@@ -254,9 +259,17 @@ fn hid_error(cli: &Cli, cmd: &str, error: HidBootError) -> ExitCode {
             ErrorKind::TransferFailed
         }
     };
-    let hint = matches!(error, HidBootError::NotFound(..) | HidBootError::NotAt(_)).then_some(
-        "hold RESET, plug in USB, and release RESET right away; --wait <SECS> waits longer",
-    );
+    let hint = match error {
+        HidBootError::NotFound(..) | HidBootError::NotAt(_) => Some(
+            "hold RESET, plug in USB, and release RESET right away; --wait <SECS> waits longer",
+        ),
+        // en: The HID bootloader has no way to turn read protection off (--unprotect included):
+        // a debug probe does. ja: HID の bootloader には保護を外す手段が無い(--unprotect でも)。
+        HidBootError::ReadProtected(_) => Some(
+            "the HID bootloader cannot turn read protection off (--unprotect cannot either): over a debug probe, `ch32rv recover --method unprotect` (erases code flash)",
+        ),
+        _ => None,
+    };
     fail(cli, cmd, kind, error.to_string(), hint)
 }
 

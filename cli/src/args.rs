@@ -185,6 +185,10 @@ pub struct FlashArgs {
     /// Verify after programming. The RAM-loader paths always read back: readback only
     #[arg(long, value_enum, default_value = "readback")]
     pub verify: VerifyMode,
+    /// If the chip is read-protected, turn the protection off first - this erases all of code
+    /// flash - then write; nothing when it is not. The flag is the consent (no --yes needed)
+    #[arg(long)]
+    pub unprotect: bool,
     /// Skip programming when the contents already match
     #[arg(long)]
     pub preverify: bool,
@@ -626,6 +630,10 @@ pub enum IspCmd {
         verify: IspVerify,
         #[arg(long, value_enum, default_value = "run")]
         reset: IspReset,
+        /// If the chip is read-protected, turn the protection off first - this erases all of code
+        /// flash - then write; nothing when it is not. The flag is the consent (no --yes needed)
+        #[arg(long)]
+        unprotect: bool,
     },
     /// Compare code flash against an image (the bootloader compares)
     Verify { file: PathBuf },
@@ -703,6 +711,10 @@ pub enum DfuCmd {
         /// (chip and none are refused)
         #[arg(long, value_enum, default_value = "keep-store")]
         erase: EraseMode,
+        /// Accepted on every write route; nothing here: the running application rewrites its
+        /// own flash, read protection or not
+        #[arg(long)]
+        unprotect: bool,
     },
     /// Show the DFU device and its state
     Info {
@@ -731,6 +743,10 @@ pub enum HidBootCmd {
         /// (chip and none are refused)
         #[arg(long, value_enum, default_value = "keep-store")]
         erase: EraseMode,
+        /// Accepted on every write route: the HID bootloader cannot turn read protection off,
+        /// so a protected chip is refused with the way that can (a debug probe)
+        #[arg(long)]
+        unprotect: bool,
     },
 }
 

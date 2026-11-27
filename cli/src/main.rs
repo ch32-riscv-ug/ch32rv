@@ -372,6 +372,7 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             wait,
             device,
             erase,
+            unprotect,
         })) => cmd_boot::hid_flash(
             cli,
             file,
@@ -379,6 +380,7 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             *wait,
             device.as_deref(),
             *erase,
+            *unprotect,
         ),
         Command::Boot(BootCmd::Dfu(DfuCmd::Flash {
             file,
@@ -386,6 +388,7 @@ fn run_command(cli: &Cli) -> std::process::ExitCode {
             at,
             device,
             erase,
+            unprotect: _,
         })) => cmd_boot::dfu_flash(cli, file, *format, at.as_deref(), device.as_deref(), *erase),
         Command::Boot(BootCmd::Dfu(DfuCmd::Info { device })) => {
             cmd_boot::dfu_info(cli, device.as_deref())

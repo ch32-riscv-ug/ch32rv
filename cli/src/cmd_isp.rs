@@ -29,7 +29,8 @@ pub fn isp(cli: &Cli, args: &IspArgs) -> ExitCode {
             erase,
             verify,
             reset,
-        } => flash(cli, args, file, *erase, *verify, *reset),
+            unprotect,
+        } => flash(cli, args, file, *erase, *verify, *reset, *unprotect),
         IspCmd::Verify { file } => verify_only(cli, args, file),
         IspCmd::Erase => erase_only(cli, args),
         IspCmd::Reset => reset(cli, args),
@@ -719,19 +720,53 @@ fn say_state(cli: &Cli, o: &Opened) {
 /// protection off erases code flash, so it is the user's to do.
 /// ja: 読み出し保護された chip は書く前に断る。bootloader は書き込みを受けても flash は変わらず、
 /// 照合で初めて失敗していた(Windows の CH32X035)。保護を外すと code flash が消えるので、利用者に任せる。
-fn check_unprotected(cli: &Cli, cmd: &str, o: &Opened) -> Result<(), ExitCode> {
+fn check_unprotected(
+    cli: &Cli,
+    cmd: &str,
+    o: &mut Opened,
+    unprotect: bool,
+) -> Result<(), ExitCode> {
     if !o.cfg.read_protected() {
         return Ok(());
     }
-    Err(fail(
-        cli,
-        cmd,
-        ErrorKind::TargetProtected,
-        "the chip is read-protected: its bootloader does not write code flash while it is",
-        Some(
-            "turn it off with `ch32rv isp config set read-protect=off` (this erases code flash), then write again",
-        ),
-    ))
+    if !unprotect {
+        return Err(fail(
+            cli,
+            cmd,
+            ErrorKind::TargetProtected,
+            "the chip is read-protected: its bootloader does not write code flash while it is",
+            Some(
+                "turn it off with `ch32rv isp config set read-protect=off` (this erases code flash), or write with --unprotect",
+            ),
+        ));
+    }
+    // en: `--unprotect`: RDPR off through WriteConfig (the chip erases all of code flash), read
+    // back, then write. ja: `--unprotect`: WriteConfig で RDPR を外し(code flash は全部消える)、
+    // 読み直してから書く。
+    if !cli.json {
+        println!("read protection on: turning it off (this erases all of code flash)");
+    }
+    let mut want = OptionFields::from_config(&o.cfg.config);
+    want.rdpr = ch32rv_isp::RDPR_OFF;
+    if let Err(e) = o.dev.write_config(&want.to_config()) {
+        return Err(isp_fail(cli, cmd, e));
+    }
+    match o.dev.read_config() {
+        Ok(c) if !c.read_protected() => {
+            o.cfg = c;
+            Ok(())
+        }
+        Ok(_) => Err(fail(
+            cli,
+            cmd,
+            ErrorKind::TargetProtected,
+            "read protection is still on after turning it off",
+            Some(
+                "power-cycle the board into its bootloader and write again, or over a debug probe: `ch32rv recover --method unprotect`",
+            ),
+        )),
+        Err(e) => Err(isp_fail(cli, cmd, e)),
+    }
 }
 
 fn check_size(cli: &Cli, cmd: &str, o: &Opened, image: &[u8]) -> Result<(), ExitCode> {
@@ -763,6 +798,7 @@ fn progress(cli: &Cli, phase: &'static str, total: usize) -> impl FnMut(usize) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn flash(
     cli: &Cli,
     args: &IspArgs,
@@ -770,6 +806,7 @@ fn flash(
     erase: EraseMode,
     verify: IspVerify,
     reset: IspReset,
+    unprotect: bool,
 ) -> ExitCode {
     const CMD: &str = "isp.flash";
     let image = match load_image(cli, CMD, file) {
@@ -787,7 +824,7 @@ fn flash(
     if let Err(c) = check_chip(cli, CMD, o.id) {
         return c;
     }
-    if let Err(c) = check_unprotected(cli, CMD, &o) {
+    if let Err(c) = check_unprotected(cli, CMD, &mut o, unprotect) {
         return c;
     }
     if let Err(c) = check_size(cli, CMD, &o, &image) {
@@ -920,7 +957,7 @@ fn verify_only(cli: &Cli, args: &IspArgs, file: &std::path::Path) -> ExitCode {
     if let Err(c) = check_chip(cli, CMD, o.id) {
         return c;
     }
-    if let Err(c) = check_unprotected(cli, CMD, &o) {
+    if let Err(c) = check_unprotected(cli, CMD, &mut o, false) {
         return c;
     }
     if let Err(c) = check_size(cli, CMD, &o, &image) {
@@ -1006,9 +1043,9 @@ const FLASH_STATR: u32 = 0x4002_200c;
 const FLASH_BOOT_MODEKEYR: u32 = 0x4002_2028;
 const FLASH_KEY1: u32 = 0x4567_0123;
 const FLASH_KEY2: u32 = 0xcdef_89ab;
-const FLASH_OBR: u32 = 0x4002_201c;
+pub(crate) const FLASH_OBR: u32 = 0x4002_201c;
 /// `FLASH_OBR.RDPRT`: read protection is in force.
-const OBR_RDPRT: u32 = 1 << 1;
+pub(crate) const OBR_RDPRT: u32 = 1 << 1;
 /// en: Why `--entry probe` refuses a read-protected chip: measured on CH32X035F8U6 (BTVER 2.60,
 /// 2026-10-14), the factory bootloader does not run while read protection is on - entered over the
 /// debug wire, or from the application after a debugger-free power-up, it stops at PC 0 and never
@@ -1978,6 +2015,7 @@ pub(crate) fn flash_through_app(cli: &Cli, f: &crate::args::FlashArgs, port: &st
                 ResetPolicy::Run => IspReset::Run,
                 _ => IspReset::None,
             },
+            unprotect: f.unprotect,
         },
         transport: IspTransport::Usb,
         port: None,

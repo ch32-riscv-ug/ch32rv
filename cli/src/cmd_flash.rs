@@ -448,7 +448,15 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
                     "{addr} is an HID bootloader, not a debug probe: writing through it (boot hid flash --device {addr})"
                 );
             }
-            return crate::cmd_boot::hid_flash(cli, &args.file, None, 30, Some(addr), args.erase);
+            return crate::cmd_boot::hid_flash(
+                cli,
+                &args.file,
+                None,
+                30,
+                Some(addr),
+                args.erase,
+                args.unprotect,
+            );
         }
     }
     // en: An OEP probe's path is known from the address alone: refuse what it cannot do before
@@ -478,11 +486,98 @@ pub fn flash(cli: &Cli, args: &FlashArgs) -> ExitCode {
     {
         return c;
     }
+    if args.unprotect
+        && let Err(c) = unprotect_first(cli)
+    {
+        return c;
+    }
     if args.repeat {
         flash_repeat(cli, args)
     } else {
         flash_once(cli, args, addr)
     }
+}
+
+/// en: A read-protected chip, found over the debug wire (FLASH_OBR.RDPRT) before anything is
+/// written: refused with the way out, instead of the transfer fault the write then ends in
+/// ("read_block: fault (0x03)" through an OEP probe, a CH32V203).
+/// ja: debug 線で読み出し保護を書く前に見つけたら、外し方を添えて断る(書けば転送の fault で終わる)。
+pub(crate) fn protected_refusal(cli: &Cli, cmd: &str) -> ExitCode {
+    fail(
+        cli,
+        cmd,
+        ErrorKind::TargetProtected,
+        "the chip is read-protected: code flash cannot be written while it is",
+        Some(
+            "write with --unprotect (this erases all of code flash), or `ch32rv target protect off`",
+        ),
+    )
+}
+
+/// en: `flash --unprotect` over a debug probe (WCH-Link / OEP): `target protect off` first, in a
+/// child process of this same ch32rv (it reports and resets on its own; its envelope is not this
+/// command's), which does nothing when the chip is not read-protected. Turning the protection off
+/// erases all of code flash; the flag is the user's consent, so the child gets --yes.
+/// ja: debug probe 経由の `flash --unprotect`。先に `target protect off` を子 process で走らせる
+/// (保護が無ければ何もしない)。外すと code flash は全部消える。フラグが同意なので子には --yes。
+fn unprotect_first(cli: &Cli) -> Result<(), ExitCode> {
+    const CMD: &str = "flash";
+    let exe = std::env::current_exe().map_err(|e| {
+        fail(
+            cli,
+            CMD,
+            ErrorKind::Usage,
+            format!("--unprotect: {e}"),
+            None,
+        )
+    })?;
+    let mut args: Vec<String> = vec!["--json".into(), "--non-interactive".into(), "--yes".into()];
+    if let Some(p) = &cli.probe {
+        args.extend(["--probe".into(), p.clone()]);
+    }
+    if let Some(c) = &cli.chip {
+        args.extend(["--chip".into(), c.clone()]);
+    }
+    args.extend(["--speed".into(), cli.speed.clone()]);
+    args.extend(["--lock-timeout".into(), cli.lock_timeout.to_string()]);
+    if cli.connect_under_reset {
+        args.push("--connect-under-reset".into());
+    }
+    if let Some(p) = &cli.pins {
+        args.extend(["--pins".into(), p.clone()]);
+    }
+    args.extend(["target".into(), "protect".into(), "off".into()]);
+    let out = std::process::Command::new(exe)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map_err(|e| {
+            fail(
+                cli,
+                CMD,
+                ErrorKind::Usage,
+                format!("--unprotect: {e}"),
+                None,
+            )
+        })?;
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+    if v["ok"] != serde_json::Value::Bool(true) {
+        return Err(fail(
+            cli,
+            CMD,
+            ErrorKind::TargetProtected,
+            format!(
+                "--unprotect: turning read protection off failed: {}",
+                v["error"]["msg"].as_str().unwrap_or("no answer")
+            ),
+            Some("`ch32rv recover --method unprotect` diagnoses and tries the other ways in"),
+        ));
+    }
+    if v["result"]["changed"] != serde_json::Value::Bool(false) && !cli.json {
+        println!("read protection was on: turned it off (code flash erased)");
+    }
+    Ok(())
 }
 
 /// en: `--repeat` (production): program the current target, then wait for the operator to remove it
@@ -598,6 +693,13 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
         Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
     clear_stale_flash_mode(&mut session, &mut warnings);
+    if session
+        .dm()
+        .read_mem32(crate::cmd_isp::FLASH_OBR)
+        .is_ok_and(|v| v & crate::cmd_isp::OBR_RDPRT != 0)
+    {
+        return protected_refusal(cli, CMD);
+    }
 
     if args.programmer == crate::args::ProgrammerChoice::Loader {
         return flash_via_loader(cli, args, &bytes, session, warnings);
