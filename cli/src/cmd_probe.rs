@@ -654,6 +654,13 @@ pub(crate) fn fail_with_candidates(
     hint: Option<&str>,
     candidates: Vec<serde_json::Value>,
 ) -> ExitCode {
+    // en: Progress lines on stdout come out before the error on stderr: a pipe (an IDE) buffers
+    // stdout, and a `chip:` line printed first showed after the error.
+    // ja: stdout の経過の行をエラーより先に出す(パイプでは stdout が溜まり、先に出した行が後に見えた)。
+    {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+    }
     let msg = msg.into();
     if cli.json {
         let mut env = ResultEnvelope::failure(cmd, kind, msg);
