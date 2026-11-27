@@ -693,10 +693,13 @@ fn flash_once(cli: &Cli, args: &FlashArgs, addr: Option<crate::oep::OepAddr>) ->
         Err(e) => return crate::cmd_probe::session_error(cli, CMD, e),
     };
     clear_stale_flash_mode(&mut session, &mut warnings);
-    if session
-        .dm()
-        .read_mem32(crate::cmd_isp::FLASH_OBR)
-        .is_ok_and(|v| v & crate::cmd_isp::OBR_RDPRT != 0)
+    // en: Not under --replay: the recorded sessions predate this read, and a replay serves only
+    // what was recorded. ja: --replay では読まない(記録はこの読み出しより前のもの)。
+    if !ch32rv_usb::replay::active()
+        && session
+            .dm()
+            .read_mem32(crate::cmd_isp::FLASH_OBR)
+            .is_ok_and(|v| v & crate::cmd_isp::OBR_RDPRT != 0)
     {
         return protected_refusal(cli, CMD);
     }
