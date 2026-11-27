@@ -714,20 +714,26 @@ fn say_state(cli: &Cli, o: &Opened) {
     );
 }
 
-/// en: A read-protected chip is refused before anything is written: its bootloader takes the
-/// program frames but the flash does not change, and the failure only showed at the verify
-/// ("verify mismatch in the chunk at offset 0x000000", a CH32X035 on Windows). Turning the
-/// protection off erases code flash, so it is the user's to do.
-/// ja: 読み出し保護された chip は書く前に断る。bootloader は書き込みを受けても flash は変わらず、
-/// 照合で初めて失敗していた(Windows の CH32X035)。保護を外すと code flash が消えるので、利用者に任せる。
-fn check_unprotected(
+/// en: A read-protected chip: refused before anything is written, or with `--unprotect` the
+/// protection turned off and the bootloader opened again. Its bootloader takes the program frames
+/// but the flash does not change while protected, and the failure only showed at the verify
+/// ("verify mismatch in the chunk at offset 0x000000", a CH32X035 on Windows). Turning it off
+/// erases code flash, and it takes effect only at the chip's next reset (measured: written in the
+/// same session, the verify still failed on a CH32X035G8U6, bootloader 2.60), so the bootloader
+/// is left (the chip resets) and the user brings it up again (BOOT), waited for at the same place.
+/// ja: 読み出し保護された chip。書く前に断るか、`--unprotect` なら保護を外して bootloader を開き直す。
+/// 保護中は書き込みを受けても flash は変わらない。外すと code flash は消え、効くのは次の reset から
+/// (同じ session で書くと照合がまた失敗した。CH32X035G8U6、bootloader 2.60)。なので bootloader を
+/// 抜け(chip は reset)、利用者に BOOT で入れ直してもらい、同じ場所で待つ。
+fn settle_protection(
     cli: &Cli,
     cmd: &str,
-    o: &mut Opened,
+    args: &IspArgs,
+    mut o: Opened,
     unprotect: bool,
-) -> Result<(), ExitCode> {
+) -> Result<Opened, ExitCode> {
     if !o.cfg.read_protected() {
-        return Ok(());
+        return Ok(o);
     }
     if !unprotect {
         return Err(fail(
@@ -740,9 +746,6 @@ fn check_unprotected(
             ),
         ));
     }
-    // en: `--unprotect`: RDPR off through WriteConfig (the chip erases all of code flash), read
-    // back, then write. ja: `--unprotect`: WriteConfig で RDPR を外し(code flash は全部消える)、
-    // 読み直してから書く。
     if !cli.json {
         println!("read protection on: turning it off (this erases all of code flash)");
     }
@@ -752,21 +755,49 @@ fn check_unprotected(
         return Err(isp_fail(cli, cmd, e));
     }
     match o.dev.read_config() {
-        Ok(c) if !c.read_protected() => {
-            o.cfg = c;
-            Ok(())
+        Ok(c) if !c.read_protected() => {}
+        Ok(_) => {
+            return Err(fail(
+                cli,
+                cmd,
+                ErrorKind::TargetProtected,
+                "read protection is still on after turning it off",
+                Some("over a debug probe: `ch32rv recover --method unprotect`"),
+            ));
         }
-        Ok(_) => Err(fail(
+        Err(e) => return Err(isp_fail(cli, cmd, e)),
+    }
+    // Leave the bootloader: the chip resets, and the protection is off from then on.
+    let topology = o.topology.clone();
+    let _ = o.dev.end(true);
+    // The user must act: stderr, which an IDE always shows.
+    eprintln!(
+        "read protection is off; it takes effect at the chip's reset: put the chip in its bootloader again now (hold BOOT and reset it, or plug in USB with BOOT held)"
+    );
+    let again = IspArgs {
+        cmd: crate::args::IspCmd::Reset,
+        transport: args.transport,
+        port: args.port.clone(),
+        baud: args.baud,
+        device: topology.map(|t| format!("{ISP_SCHEME}{t}")),
+        wait: BOOT_WAIT.as_secs().max(args.wait),
+        entry: IspEntry::None,
+        app_device: None,
+    };
+    // Give the chip a moment to leave before the bootloader is looked for again.
+    std::thread::sleep(Duration::from_millis(500));
+    let o = open(cli, cmd, &again)?;
+    say_state(cli, &o);
+    if o.cfg.read_protected() {
+        return Err(fail(
             cli,
             cmd,
             ErrorKind::TargetProtected,
-            "read protection is still on after turning it off",
-            Some(
-                "power-cycle the board into its bootloader and write again, or over a debug probe: `ch32rv recover --method unprotect`",
-            ),
-        )),
-        Err(e) => Err(isp_fail(cli, cmd, e)),
+            "the chip is still read-protected after it was turned off and reset",
+            Some("over a debug probe: `ch32rv recover --method unprotect`"),
+        ));
     }
+    Ok(o)
 }
 
 fn check_size(cli: &Cli, cmd: &str, o: &Opened, image: &[u8]) -> Result<(), ExitCode> {
@@ -816,7 +847,7 @@ fn flash(
     let store = std::fs::read(file)
         .ok()
         .and_then(|b| ch32rv_flash::store_region(&b, CODE_FLASH_START));
-    let mut o = match open(cli, CMD, args) {
+    let o = match open(cli, CMD, args) {
         Ok(o) => o,
         Err(c) => return c,
     };
@@ -824,9 +855,10 @@ fn flash(
     if let Err(c) = check_chip(cli, CMD, o.id) {
         return c;
     }
-    if let Err(c) = check_unprotected(cli, CMD, &mut o, unprotect) {
-        return c;
-    }
+    let mut o = match settle_protection(cli, CMD, args, o, unprotect) {
+        Ok(o) => o,
+        Err(c) => return c,
+    };
     if let Err(c) = check_size(cli, CMD, &o, &image) {
         return c;
     }
@@ -949,7 +981,7 @@ fn verify_only(cli: &Cli, args: &IspArgs, file: &std::path::Path) -> ExitCode {
         Ok(i) => i,
         Err(c) => return c,
     };
-    let mut o = match open(cli, CMD, args) {
+    let o = match open(cli, CMD, args) {
         Ok(o) => o,
         Err(c) => return c,
     };
@@ -957,9 +989,10 @@ fn verify_only(cli: &Cli, args: &IspArgs, file: &std::path::Path) -> ExitCode {
     if let Err(c) = check_chip(cli, CMD, o.id) {
         return c;
     }
-    if let Err(c) = check_unprotected(cli, CMD, &mut o, false) {
-        return c;
-    }
+    let mut o = match settle_protection(cli, CMD, args, o, false) {
+        Ok(o) => o,
+        Err(c) => return c,
+    };
     if let Err(c) = check_size(cli, CMD, &o, &image) {
         return c;
     }
