@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.39.0 - 2026-11-27
+
 - (EN) Fix: `isp flash --unprotect` turned read protection off and wrote in the same session, and the verify failed: the change takes effect only at the chip's next reset (CH32X035G8U6, bootloader 2.60, Windows). It now leaves the bootloader (the chip resets), asks the user to bring it up again with BOOT, waits for it at the same USB position for at least 60 s, and writes there. After the reset the chip read `read-protect off` and took the write, verify and start.
 - (JA) 修正: `isp flash --unprotect` は読み出し保護を外して同じ session で書き、照合で失敗していた。外した設定が効くのは chip の次の reset から(CH32X035G8U6、bootloader 2.60、Windows)。今は bootloader を抜け(chip は reset)、BOOT で入れ直すよう案内し、同じ USB の位置に少なくとも 60 秒待って、そこで書く。reset の後は `read-protect off` で、書き込み・照合・起動まで通った。
 - (EN) Progress lines on stdout come out before an error on stderr through a pipe (stdout is flushed first): `isp`'s `chip:` line showed after the error in the IDE.
