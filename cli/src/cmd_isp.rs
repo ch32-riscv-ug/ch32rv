@@ -691,6 +691,49 @@ fn load_image(cli: &Cli, cmd: &str, file: &std::path::Path) -> Result<Vec<u8>, E
     Ok(flat)
 }
 
+/// en: One line on the chip the bootloader answers for, before anything is done to it: the part,
+/// the bootloader's version and the protection, so that a refusal or a failure that follows can
+/// be read against it. ja: bootloader が答えた chip の状態を 1 行(型番、bootloader の版、保護)。
+fn say_state(cli: &Cli, o: &Opened) {
+    if cli.json {
+        return;
+    }
+    let part = isp_part(cli.chip.as_deref(), o.id)
+        .map(|p| format!("{} ", p.sku))
+        .unwrap_or_default();
+    let wrpr = ch32rv_isp::OptionFields::from_config(&o.cfg.config).wrpr;
+    println!(
+        "chip: {part}({}, chip 0x{:02x}, type 0x{:02x}), bootloader {}, read-protect {}, write-protect 0x{:08x}",
+        series(o.id),
+        o.id.chip_id,
+        o.id.device_type,
+        o.cfg.btver_text(),
+        if o.cfg.read_protected() { "on" } else { "off" },
+        !wrpr,
+    );
+}
+
+/// en: A read-protected chip is refused before anything is written: its bootloader takes the
+/// program frames but the flash does not change, and the failure only showed at the verify
+/// ("verify mismatch in the chunk at offset 0x000000", a CH32X035 on Windows). Turning the
+/// protection off erases code flash, so it is the user's to do.
+/// ja: 読み出し保護された chip は書く前に断る。bootloader は書き込みを受けても flash は変わらず、
+/// 照合で初めて失敗していた(Windows の CH32X035)。保護を外すと code flash が消えるので、利用者に任せる。
+fn check_unprotected(cli: &Cli, cmd: &str, o: &Opened) -> Result<(), ExitCode> {
+    if !o.cfg.read_protected() {
+        return Ok(());
+    }
+    Err(fail(
+        cli,
+        cmd,
+        ErrorKind::TargetProtected,
+        "the chip is read-protected: its bootloader does not write code flash while it is",
+        Some(
+            "turn it off with `ch32rv isp config set read-protect=off` (this erases code flash), then write again",
+        ),
+    ))
+}
+
 fn check_size(cli: &Cli, cmd: &str, o: &Opened, image: &[u8]) -> Result<(), ExitCode> {
     match ch32rv_isp::flash_size(o.id) {
         Some(limit) if image.len() > limit => Err(isp_fail(
@@ -740,7 +783,11 @@ fn flash(
         Ok(o) => o,
         Err(c) => return c,
     };
+    say_state(cli, &o);
     if let Err(c) = check_chip(cli, CMD, o.id) {
+        return c;
+    }
+    if let Err(c) = check_unprotected(cli, CMD, &o) {
         return c;
     }
     if let Err(c) = check_size(cli, CMD, &o, &image) {
@@ -869,7 +916,11 @@ fn verify_only(cli: &Cli, args: &IspArgs, file: &std::path::Path) -> ExitCode {
         Ok(o) => o,
         Err(c) => return c,
     };
+    say_state(cli, &o);
     if let Err(c) = check_chip(cli, CMD, o.id) {
+        return c;
+    }
+    if let Err(c) = check_unprotected(cli, CMD, &o) {
         return c;
     }
     if let Err(c) = check_size(cli, CMD, &o, &image) {
@@ -898,6 +949,7 @@ fn erase_only(cli: &Cli, args: &IspArgs) -> ExitCode {
         Ok(o) => o,
         Err(c) => return c,
     };
+    say_state(cli, &o);
     let Some(size) = ch32rv_isp::flash_size(o.id) else {
         return fail(
             cli,

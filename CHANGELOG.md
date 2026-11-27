@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- (EN) `isp flash` / `verify` refuse a read-protected chip before writing (exit 21, `target-protected`, with `isp config set read-protect=off` - which erases code flash - as the way out). Its bootloader takes the program frames but the flash does not change, and before this the failure only showed at the verify ("verify mismatch in the chunk at offset 0x000000", a CH32X035 on Windows). `isp flash` / `verify` / `erase` also say the chip's state in one line once connected: the part, the bootloader's version, read and write protection.
+- (JA) `isp flash` / `verify` は、読み出し保護された chip を書く前に断る(exit 21、`target-protected`。外し方の `isp config set read-protect=off` を添える。外すと code flash は消える)。bootloader は書き込みを受けても flash は変わらず、以前は照合で初めて失敗していた(「verify mismatch in the chunk at offset 0x000000」、Windows の CH32X035)。`isp flash` / `verify` / `erase` は、つながった後に chip の状態(型番、bootloader の版、読み出し / 書き込み保護)を 1 行出す。
 ## 0.37.0 - 2026-11-27
 
 - (EN) `isp` through a running application (DFU_DETACH or the 1200 bps touch): when no bootloader has come after the 5 s wait and the application is still at its USB position, it is asked once more and waited for again. An application still coming up after its previous restart missed the request (1 of 6 uploads 3 s apart on a busy host, CH32X035).
